@@ -86,10 +86,8 @@ public:
     // is emitted exactly once at completion. on_progress may be null.
     int extract_all(const uint8_t* data, size_t size,
                     std::vector<std::pair<std::string, std::vector<uint8_t>>>& out_files,
-                    progress_cb on_progress = nullptr,
-                    void* user = nullptr,
-                    cancel_cb on_cancel = nullptr,
-                    void* cancel_user = nullptr);
+                    progress_cb on_progress = nullptr, void* user = nullptr,
+                    cancel_cb on_cancel = nullptr, void* cancel_user = nullptr);
 
 private:
     // Cached result from the most recent list() call.
@@ -113,23 +111,19 @@ private:
 // Directory entries have path with trailing '/', method=0, size=0.
 int create_archive(const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files,
                    std::vector<uint8_t>& out, int method = 3, unsigned window_log2 = 4,
-                   progress_cb on_progress = nullptr,
-                   void* user = nullptr,
-                   cancel_cb on_cancel = nullptr,
-                   void* cancel_user = nullptr);
+                   progress_cb on_progress = nullptr, void* user = nullptr,
+                   cancel_cb on_cancel = nullptr, void* cancel_user = nullptr);
 
 // ── Input file (struct-based overload) ───────────────────────────────────────
 struct ArchiveFileInput {
-    std::string path;            // forward-slash separated; trailing '/' iff dir
-    std::vector<uint8_t> data;   // empty for dirs / empty files
-    uint64_t mtime_unix{0};      // 0 ⇒ now() (this overload only)
+    std::string path;          // forward-slash separated; trailing '/' iff dir
+    std::vector<uint8_t> data; // empty for dirs / empty files
+    uint64_t mtime_unix{0};    // 0 ⇒ now() (this overload only)
 };
 
-int create_archive(const std::vector<ArchiveFileInput>& files,
-                   std::vector<uint8_t>& out, int method = 3, unsigned window_log2 = 4,
-                   progress_cb on_progress = nullptr,
-                   void* user = nullptr,
-                   cancel_cb on_cancel = nullptr,
+int create_archive(const std::vector<ArchiveFileInput>& files, std::vector<uint8_t>& out,
+                   int method = 3, unsigned window_log2 = 4, progress_cb on_progress = nullptr,
+                   void* user = nullptr, cancel_cb on_cancel = nullptr,
                    void* cancel_user = nullptr);
 
 } // namespace openrar::archive

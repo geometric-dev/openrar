@@ -63,7 +63,8 @@ inline size_t match_length_scalar(const core::byte* p, const core::byte* q, size
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("avx2")))
 #endif
-inline size_t match_length_avx2(const core::byte* p, const core::byte* q, size_t cap) noexcept {
+inline size_t
+match_length_avx2(const core::byte* p, const core::byte* q, size_t cap) noexcept {
     if (cap == 0 || p[0] != q[0]) return 0;
     size_t i = 0;
     while (i + 32 <= cap) {

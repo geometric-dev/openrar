@@ -50,7 +50,11 @@ const ourExe = process.env.OPENRAR_EXE;
 const foundExe = ourExe
   ? existsSync(ourExe)
   : existsSync(path.join(repo, 'build', 'openrar64', 'Release', 'openrar.exe')) ||
-    existsSync(path.join(repo, 'build', 'unrar64', 'Release', 'openrar.exe'));
+    existsSync(path.join(repo, 'build', 'unrar64', 'Release', 'openrar.exe')) ||
+    // Single-config generators (Ninja on Linux/macOS) drop the binary at the
+    // build root; also honour MSVC's flat Release directory.
+    existsSync(path.join(repo, 'build', 'openrar')) ||
+    existsSync(path.join(repo, 'build', 'Release', 'openrar.exe'));
 if (!foundExe) {
   console.error('openrar binary not found (set OPENRAR_EXE or build first).');
   process.exit(2);

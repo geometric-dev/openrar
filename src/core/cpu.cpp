@@ -3,7 +3,11 @@
 
 #if defined(_MSC_VER)
 #include <intrin.h>
+#if defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86) || defined(__x86_64__) ||           \
+    defined(__i386__)
+// x86-only: MSVC's immintrin.h #errors on ARM targets.
 #include <immintrin.h>
+#endif
 #elif defined(__GNUC__) || defined(__clang__)
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
