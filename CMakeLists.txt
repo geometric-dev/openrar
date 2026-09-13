@@ -9,6 +9,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# The AES-256 and SHA-256 kernels take the ARMv8 crypto-intrinsic path
+# whenever __aarch64__ is defined (see src/crypto/aes256.cpp / sha256.cpp).
+# Generic GNU/Clang aarch64 targets don't enable the crypto feature by
+# default (Apple clang does), so request it explicitly or vaeseq_u8 and
+# friends fail to inline with "target specific option mismatch".
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64" AND NOT APPLE AND
+   CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-march=armv8-a+crypto)
+endif()
+
 # ── Core sources (shared by native + wasm) — keep separate so wasm can reuse without CLI ──
 # These are linked into every native target AND every wasm target.
 # The in-memory archive layer (used by the DLL and the WASM archive API, not
