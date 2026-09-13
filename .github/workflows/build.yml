@@ -115,10 +115,15 @@ jobs:
           echo "DLL artifact verified."
 
       - name: Run Unit Test Suite (CTest)
+        # Windows ARM64 is a cross-compile leg (x64 host): ARM64 exes cannot
+        # execute there, so test execution is limited to other legs. aarch64
+        # Linux coverage runs under QEMU in the dedicated job below.
+        if: matrix.arch != 'arm64'
         run: |
           ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
 
       - name: Interop Gate (local spec, no rar.exe in CI)
+        if: matrix.arch != 'arm64'
         shell: bash
         run: |
           # No rar.exe in CI; the gate degrades to self-roundtrip + two-block probe
@@ -127,6 +132,7 @@ jobs:
           python tools/interop_gate.py --quick
 
       - name: CLI Smoke Test (Archive Creation & Extraction)
+        if: matrix.arch != 'arm64'
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
