@@ -64,8 +64,14 @@ soname/dll file version automatically. Embedders keep probing
    range since the last release tag (highlights only).
 3. Stamp `project(openrar VERSION X.Y.<counter>)`; sync
    `wasm/js/package.json`.
-4. Commit as `release: vX.Y.<counter>`, tag `vX.Y.<counter>`, and build
-   release artifacts from the tag.
+4. Commit as `release: vX.Y.<counter>`, tag `vX.Y.<counter>`, and push both.
+   Pushing the tag runs the full CI matrix (the `v*` tag trigger) and its
+   `release-assets` job packages every artifact of that run — per-platform
+   shared libraries, import libs, and the WASM modules, named
+   `openrar<version>-<target>.zip` — and attaches them to the GitHub release
+   named after the tag, creating the release with generated notes if it does
+   not exist yet. Create or edit the release with the drafted CHANGELOG
+   section as its notes.
 
 ## Embedding the version
 
