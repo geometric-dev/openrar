@@ -10,7 +10,7 @@ ordering and compatibility, not what a patch number counts.
 The release version lives in `CMakeLists.txt`:
 
 ```cmake
-project(openrar VERSION 1.0.121 LANGUAGES CXX)
+project(openrar VERSION 1.0.126 LANGUAGES CXX)
 ```
 
 Everything else derives from it or is synced to it in the same release commit
@@ -22,12 +22,12 @@ PATCH is not a count of bug fixes. It is the number of commits on the default
 branch since the start of the current MAJOR.MINOR line, and every commit
 advances it by one:
 
-- Anchor for the 1.0 line: the `v1.0.121` tag (the initial public commit of
-  this repository). The counter carried over from private development — the
-  version at publication was 121 commits past the original `v1.0.0` baseline
-  (2026-08-31), which is not part of the published history — so the tag
-  `v1.0.121` anchors the same numbering at the point the repo went public.
-- Current counter: `git rev-list --count v1.0.121..HEAD`
+- Anchor for the 1.0 line: the `v1.0.126` tag. The counter carried over from
+  private development — the initial public commit was tagged `v1.0.121`
+  (121 commits past the original `v1.0.0` baseline of 2026-08-31, which is
+  not part of the published history) — and every commit on the public
+  repository advances it from there.
+- Current counter: `git rev-list --count v1.0.126..HEAD`
 - Intermediate commits do **not** touch `project(VERSION)` — the stamp is
   updated only in a release commit, which freezes the counter at that moment.
   The release commit itself documents the state up to that point and is not
@@ -36,7 +36,7 @@ advances it by one:
   new `vX.Y.0` release tag.
 
 This gives every shipped build a unique, strictly increasing version
-(`1.0.121 > 1.0.9` in SemVer ordering) while MAJOR/MINOR keep answering the
+(`1.0.126 > 1.0.9` in SemVer ordering) while MAJOR/MINOR keep answering the
 compatibility question.
 
 ## What bumps what
@@ -58,7 +58,7 @@ soname/dll file version automatically. Embedders keep probing
 
 ## Release procedure
 
-1. Read the counter: `git rev-list --count v1.0.121..HEAD` (adjust the anchor
+1. Read the counter: `git rev-list --count v1.0.126..HEAD` (adjust the anchor
    tag for newer MAJOR.MINOR lines).
 2. Draft the new `CHANGELOG.md` section for `vX.Y.<counter>` from the commit
    range since the last release tag (highlights only).

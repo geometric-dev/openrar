@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 # Release version - single source of truth (SemVer; PATCH is a monotonic
-# commit counter since the v1.0.0 baseline - see docs/versioning.md).
+# commit counter since the current MAJOR.MINOR line's anchor tag - see
+# docs/versioning.md).
 # wasm/js/package.json and CHANGELOG.md are synced at release time.
-project(openrar VERSION 1.0.121 LANGUAGES CXX)
+project(openrar VERSION 1.0.126 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

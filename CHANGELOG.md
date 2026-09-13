@@ -5,6 +5,53 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.126] - 2026-09-13
+
+First release on the public repository (github.com/geometric-dev/openrar).
+Rolls up the initial CI bring-up: the codebase had never run under hosted CI,
+and the first runs surfaced five platform correctness bugs alongside the
+expected workflow fixes.
+
+### Fixed
+
+- **ARM64 CRC-32 produced wrong checksums on Apple silicon** — the ARMv8 CRC
+  instructions chain the accumulator in the same raw (pre-inversion)
+  convention as the scalar table step; an erroneous double inversion
+  corrupted every CRC when the hardware path dispatched (`arm_crc32=1`).
+  This path only compiles on macOS, where it had never been exercised.
+- **SFX modules built with the bundled `Default.SFX` stub failed in
+  UnRAR** ("Main archive header is corrupt"): the stub binary embedded a
+  literal RAR5 signature constant, and UnRAR locates the archive behind an
+  SFX prefix with a naive first-match scan, stopping inside the module.
+  The signature is now assembled at runtime from XOR-masked bytes; the
+  literal no longer appears in any binary. WinRAR's own stubs avoid
+  embedding it for the same reason.
+- **SFX structural test parser**: the JS `findSig` helper locked onto the
+  first signature match — inside a module that legitimately embeds one —
+  and parsed garbage. Candidates are now validated (header CRC plus a
+  main/crypt block type must follow), mirroring the C++ reader.
+- POSIX portability: `<sys/stat.h>` include in `archive_mutator.cpp`;
+  MSVC ARM64 include guards (`<arm_acle.h>` / `<immintrin.h>` are not
+  available there).
+- aarch64 GNU/Clang builds now request `-march=armv8-a+crypto`; the AES-256
+  and SHA-256 kernels use the crypto intrinsics unconditionally on
+  `__aarch64__` and generic cross toolchains don't enable the feature by
+  default (Apple clang does).
+
+### Changed
+
+- CI: Windows legs pinned to `windows-2022` (`windows-latest` now ships
+  only VS 2026, so the VS 2022 generator cannot configure); the
+  `msvc-arm64` leg is cross-compile-only (x64 hosts cannot execute ARM64
+  test binaries — aarch64 runtime coverage stays with the QEMU job); all
+  third-party actions pinned to commit SHAs; dead `numa08/setup-ninja`
+  replaced with `seanmiddleditch/gha-setup-ninja`; formatting gate pinned
+  to `clang-format-18` and the tree reformatted with it; Linux test
+  runners accept Ninja-style binary paths.
+- Repository: `LICENSE` renamed from `license.txt` (acknowledgement footer
+  moved out so GitHub detects MIT), trademark/non-affiliation notice added
+  to the README, `.gitattributes` added for cross-platform line endings.
+
 ## [1.0.121] - 2026-09-10
 
 First tagged release, cut 121 commits past the v1.0.0 baseline. Entries cover
