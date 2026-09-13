@@ -42,7 +42,7 @@ jobs:
             arch_suffix: ""
             cmake_arch: ""
             dll_suffix: ""
-          - os: windows-latest
+          - os: windows-2022
             compiler: msvc
             cxx: cl
             build_type: Release
@@ -50,7 +50,7 @@ jobs:
             arch_suffix: " (x64)"
             cmake_arch: "x64"
             dll_suffix: "_x64"
-          - os: windows-latest
+          - os: windows-2022
             compiler: msvc-arm64
             cxx: cl
             build_type: Release
