@@ -347,7 +347,7 @@ bool headers_verify(const std::filesystem::path& arc_path, core::uint64 sfx_off)
     stream.seek(static_cast<core::int64>(sfx_off), io::SeekOrigin::Begin);
     core::byte sig[8];
     if (stream.read(sig, 8) != 8) return false;
-    if (std::memcmp(sig, format::RAR5_SIGNATURE, 8) != 0) return false;
+    if (std::memcmp(sig, format::rar5_signature(), 8) != 0) return false;
 
     bool saw_end = false;
     while (stream.tell() < file_size) {

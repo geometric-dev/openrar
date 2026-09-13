@@ -15,11 +15,53 @@ const FILE_FLAGS = ['directory', 'utime', 'crc32', 'unpunknown'];
 const END_FLAGS = ['nextvolume'];
 
 function findSig(b) {
-  outer: for (let i = 0; i <= Math.min(b.length - 8, 0x400000); i++) {
+  // SFX modules (including our own Default.SFX stub and any openrar binary)
+  // legitimately embed a RAR5 signature constant in their code/data, so the
+  // first byte-match is not necessarily the archive start. Validate each
+  // candidate like the C++ reader does: a header with a matching CRC and a
+  // main/crypt block type must follow.
+  const limit = Math.min(b.length - 8, 0x400000);
+  outer: for (let i = 0; i <= limit; i++) {
     for (let j = 0; j < 8; j++) if (b[i + j] !== SIG[j]) continue outer;
-    return i;
+    if (validArchiveStart(b, i)) return i;
   }
   return -1;
+}
+
+// True when the block right behind the signature parses as a main (1) or
+// header-crypt (4) block with a correct header CRC.
+function validArchiveStart(b, sigAt) {
+  const pos = sigAt + 8;
+  if (pos + 7 > b.length) return false;
+  const storedCrc = b.readUInt32LE(pos);
+  const sizePos = pos + 4;
+  let hdrSize, typePos, type;
+  try {
+    // Header layout: storedCrc | hdrSize vint | hdrSize bytes of body. The
+    // header CRC covers the size vint itself plus the body that follows it.
+    const hs = readVint(b, sizePos);
+    hdrSize = hs.value;
+    typePos = hs.next;
+    if (hdrSize < 2 || typePos + hdrSize > b.length) return false;
+    if (crc32(b.subarray(sizePos, typePos + hdrSize)) !== storedCrc) return false;
+    type = readVint(b, typePos).value;
+  } catch {
+    return false;
+  }
+  return type === 1 || type === 4;
+}
+
+// Returns { value, next } for the vint at p; throws on truncation/overrun.
+function readVint(b, p) {
+  let value = 0, shift = 0, byte;
+  do {
+    if (p >= b.length) throw new Error('truncated vint');
+    byte = b[p++];
+    value |= (byte & 0x7f) * Math.pow(2, shift);
+    shift += 7;
+    if (shift > 35) throw new Error('vint too long');
+  } while (byte & 0x80);
+  return { value, next: p };
 }
 
 const CRC_TABLE = (() => {

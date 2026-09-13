@@ -376,7 +376,7 @@ static void test_create2_with_mtime_progress() {
     CHECK(rc == openrar::wasm::RAR_OK);
     CHECK(out != nullptr);
     CHECK(out_len > 0);
-    CHECK(g_progress_calls >= 2);       // one emit per entry (plus initial)
+    CHECK(g_progress_calls >= 2); // one emit per entry (plus initial)
     CHECK(g_progress_last_total > 0);
 
     // List: mtime round-trips through DOS conversion (2s granularity).
@@ -417,8 +417,8 @@ static void test_extract_all2_cancel() {
     size_t buf_size = 0;
     uint64_t* offsets = nullptr;
     uint32_t count = 0;
-    int rc = openrar_archive_extract_all2(arc.data(), arc.size(), &hooks, &buf, &buf_size,
-                                          &offsets, &count);
+    int rc = openrar_archive_extract_all2(arc.data(), arc.size(), &hooks, &buf, &buf_size, &offsets,
+                                          &count);
     CHECK(rc == openrar::wasm::RAR_ERR_ABORTED);
     CHECK(buf == nullptr);
     CHECK(offsets == nullptr);

@@ -85,7 +85,7 @@ bool HeaderWriter::emit_block(io::FileStream& dest, const std::vector<core::byte
 }
 
 bool HeaderWriter::write_signature(io::FileStream& dest) {
-    return dest.write(RAR5_SIGNATURE, sizeof(RAR5_SIGNATURE)) == sizeof(RAR5_SIGNATURE);
+    return dest.write(rar5_signature(), RAR5_SIGNATURE_SIZE) == RAR5_SIGNATURE_SIZE;
 }
 
 std::vector<core::byte> HeaderWriter::wrap_block(const std::vector<core::byte>& body) {

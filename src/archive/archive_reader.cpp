@@ -92,7 +92,7 @@ std::filesystem::path ArchiveReader::derive_first_volume_name(const std::filesys
 bool ArchiveReader::scan_archive() {
     // Preserve original stream for single-volume compat, but multivolume scan uses per-volume streams
     core::uint64 file_size = stream_.size();
-    if (file_size < sizeof(format::RAR5_SIGNATURE)) {
+    if (file_size < format::RAR5_SIGNATURE_SIZE) {
         return false;
     }
 
@@ -100,7 +100,7 @@ bool ArchiveReader::scan_archive() {
     core::byte sig_buf[8];
     if (stream_.read(sig_buf, 8) != 8) return false;
 
-    if (std::memcmp(sig_buf, format::RAR5_SIGNATURE, 8) == 0) {
+    if (std::memcmp(sig_buf, format::rar5_signature(), 8) == 0) {
         sfx_offset_ = 0;
     } else {
         // SFX scan: search up to 4MB (0x400000) on first volume
@@ -117,7 +117,7 @@ bool ArchiveReader::scan_archive() {
             if (read_bytes < 8) break;
 
             for (size_t i = 0; i <= read_bytes - 8; ++i) {
-                if (std::memcmp(scan_buf.data() + i, format::RAR5_SIGNATURE, 8) == 0) {
+                if (std::memcmp(scan_buf.data() + i, format::rar5_signature(), 8) == 0) {
                     core::uint64 cand_offset = pos + i;
                     stream_.seek(static_cast<core::int64>(cand_offset + 8), io::SeekOrigin::Begin);
                     core::uint64 type = 0, flags = 0, data_size = 0;
@@ -161,7 +161,7 @@ bool ArchiveReader::scan_archive() {
             // Subsequent volumes have no SFX, check signature at 0
             core::byte sig[8];
             vs.seek(0, io::SeekOrigin::Begin);
-            if (vs.read(sig, 8) != 8 || std::memcmp(sig, format::RAR5_SIGNATURE, 8) != 0)
+            if (vs.read(sig, 8) != 8 || std::memcmp(sig, format::rar5_signature(), 8) != 0)
                 return false;
             start_off = 8;
         }
