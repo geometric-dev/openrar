@@ -147,13 +147,14 @@ crc32_step_pclmul(core::uint32 crc, const void* data, size_t len) {
 
 #if defined(OPENRAR_HAS_ARM_CRC32)
 inline core::uint32 crc32_step_arm64(core::uint32 crc, const void* data, size_t size) {
-    // INTENDED (double inversion): the ARMv8 CRC32 instructions expect the
-    // complemented (final-form) CRC, while crc32_step's accumulator is the
-    // raw pre-inversion form. The ~ on entry and on exit convert between the
-    // two conventions so this path is bit-identical to the scalar one; do
-    // not remove either inversion.
+    // The ARMv8 CRC32 instructions chain the accumulator in exactly the same
+    // raw (pre-inversion) convention as the scalar table step:
+    // __crc32b(c, b) == (c >> 8) ^ table0[(c ^ b) & 0xFF]. Standard usage is
+    // init 0xFFFFFFFF, chain the instructions, invert once at the end — and
+    // crc32() already performs that single inversion around crc32_step. No
+    // conversions on entry or exit; adding them corrupts the result.
     const auto* p = static_cast<const core::byte*>(data);
-    core::uint32 c = ~crc;
+    core::uint32 c = crc;
 
     while (size > 0 && (reinterpret_cast<uintptr_t>(p) & 7) != 0) {
         c = __crc32b(c, *p++);
@@ -188,7 +189,7 @@ inline core::uint32 crc32_step_arm64(core::uint32 crc, const void* data, size_t 
         c = __crc32b(c, *p);
     }
 
-    return ~c;
+    return c;
 }
 #endif
 

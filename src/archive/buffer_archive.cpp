@@ -149,12 +149,12 @@ size_t window_size_from_log2(unsigned window_log2) {
 // Returns the byte offset of the 8-byte signature, or size_t(-1) if not found.
 size_t find_rar5_signature(const uint8_t* data, size_t size) {
     if (size < 8) return static_cast<size_t>(-1);
-    if (std::memcmp(data, format::RAR5_SIGNATURE, 8) == 0) return 0;
+    if (std::memcmp(data, format::rar5_signature(), 8) == 0) return 0;
 
     constexpr size_t SFX_SCAN = 4ULL * 1024 * 1024;
     size_t limit = std::min(size, SFX_SCAN);
     for (size_t i = 1; i + 8 <= limit; ++i) {
-        if (std::memcmp(data + i, format::RAR5_SIGNATURE, 8) == 0) {
+        if (std::memcmp(data + i, format::rar5_signature(), 8) == 0) {
             // Verify that a header follows: read first block at i+8.
             size_t off = i + 8;
             core::uint64 type = 0, flags = 0, data_size = 0;
@@ -610,7 +610,7 @@ int create_archive_impl(const std::vector<std::pair<std::string, std::vector<uin
 
     // ── Reserve and emit signature ───────────────────────────────────────────
     out.reserve(static_cast<size_t>(total_input_bytes + 256));
-    append(out, format::RAR5_SIGNATURE, sizeof(format::RAR5_SIGNATURE));
+    append(out, format::rar5_signature(), format::RAR5_SIGNATURE_SIZE);
 
     ProgressTracker prog;
     prog.cb = on_progress;

@@ -10,7 +10,28 @@
 namespace openrar::format {
 
 // RAR 5.0 Magic Signature: "Rar!\x1A\x07\x01\x00"
-inline constexpr core::byte RAR5_SIGNATURE[8] = {0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00};
+//
+// The signature must never appear as a literal byte sequence in compiled
+// binaries: the Default.SFX stub links this header's users, and an SFX module
+// that carries an embedded signature breaks reference tools — UnRAR locates
+// the archive behind an SFX prefix with a naive first-match scan and stops
+// inside the module, reporting the main header as corrupt. (WinRAR's own
+// stubs avoid embedding the signature for the same reason.) The bytes are
+// stored XOR-masked and assembled at runtime; the volatile loads defeat
+// constant folding back into .rdata.
+inline constexpr std::size_t RAR5_SIGNATURE_SIZE = 8;
+
+inline const core::byte* rar5_signature() {
+    static const volatile core::byte masked[8] = {0x52 ^ 0x5B, 0x61 ^ 0x5B, 0x72 ^ 0x5B,
+                                                  0x21 ^ 0x5B, 0x1A ^ 0x5B, 0x07 ^ 0x5B,
+                                                  0x01 ^ 0x5B, 0x00 ^ 0x5B};
+    static const std::array<core::byte, 8> sig = [] {
+        std::array<core::byte, 8> s{};
+        for (int i = 0; i < 8; ++i) s[i] = static_cast<core::byte>(masked[i] ^ 0x5B);
+        return s;
+    }();
+    return sig.data();
+}
 
 // Header Block Types
 enum class HeaderType : core::uint64 { Main = 1, File = 2, Service = 3, Crypt = 4, EndArc = 5 };

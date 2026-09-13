@@ -522,8 +522,7 @@ void test_decompressor50_wrapped_src_stale_gap() {
     // at W-1 and at W+LEAD (= W-1+PERIOD) and nowhere else.
     std::vector<core::byte> big(PATTERN_SIZE);
     for (size_t i = 0; i < PATTERN_SIZE; ++i) big[i] = pat[i % PERIOD];
-    for (size_t k = 0; k < PERIOD + PATTERN_SIZE; ++k)
-        src[WIN_SIZE - 1 + k] = pat[k % PERIOD];
+    for (size_t k = 0; k < PERIOD + PATTERN_SIZE; ++k) src[WIN_SIZE - 1 + k] = pat[k % PERIOD];
     // Poison the stale byte the old bug would surface: pre-match win[0x1A]
     // (abs 0x1A, inside the periodic filler) must differ from the correct
     // just-written value P[1].

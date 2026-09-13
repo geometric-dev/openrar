@@ -61,9 +61,7 @@ void test_cli_lifecycle() {
     std::filesystem::remove(f1);
 
     // Create a file to move
-    {
-        std::ofstream(f1) << "OPENRAR CLI TEST SUITE ITEM";
-    }
+    { std::ofstream(f1) << "OPENRAR CLI TEST SUITE ITEM"; }
     assert(std::filesystem::exists(f1));
 
     std::string exe = get_cli_path();
@@ -220,11 +218,10 @@ void test_cli_mt_batch_equivalence() {
     std::string exe = get_cli_path();
     std::string src_list =
         root.string() + "/a_text.txt " + root.string() + "/sub " + root.string() + "/c_empty.txt";
-    int res = std::system(
-        (exe + " a " + arc1.string() + " -mt1 " + src_list + " > nul 2>&1").c_str());
+    int res =
+        std::system((exe + " a " + arc1.string() + " -mt1 " + src_list + " > nul 2>&1").c_str());
     assert(res == 0);
-    res = std::system(
-        (exe + " a " + arc4.string() + " -mt4 " + src_list + " > nul 2>&1").c_str());
+    res = std::system((exe + " a " + arc4.string() + " -mt4 " + src_list + " > nul 2>&1").c_str());
     assert(res == 0);
 
     res = std::system((exe + " x " + arc1.string() + " " + out1.string() + " > nul 2>&1").c_str());

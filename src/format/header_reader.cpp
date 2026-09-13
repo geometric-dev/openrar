@@ -73,11 +73,11 @@ bool HeaderCryptReader::init(const std::string& password, const CryptBlock& cryp
 }
 
 bool HeaderReader::read_signature(io::FileStream& src) {
-    core::byte buf[sizeof(RAR5_SIGNATURE)];
+    core::byte buf[RAR5_SIGNATURE_SIZE];
     if (src.read(buf, sizeof(buf)) != sizeof(buf)) {
         return false;
     }
-    return std::memcmp(buf, RAR5_SIGNATURE, sizeof(RAR5_SIGNATURE)) == 0;
+    return std::memcmp(buf, rar5_signature(), RAR5_SIGNATURE_SIZE) == 0;
 }
 
 HeaderResult HeaderReader::read_block_raw(io::FileStream& src, core::uint64& out_type,
