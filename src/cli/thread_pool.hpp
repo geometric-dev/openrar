@@ -7,8 +7,8 @@
 
 namespace openrar::cli {
 using core::ByteBudget;
-using core::ThreadPool;
 using core::hardware_thread_hint;
+using core::ThreadPool;
 } // namespace openrar::cli
 
 #endif // OPENRAR_CLI_THREAD_POOL_HPP

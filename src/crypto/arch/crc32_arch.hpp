@@ -6,8 +6,13 @@
 
 #if (defined(__aarch64__) || defined(_M_ARM64)) &&                                                 \
     (defined(__ARM_FEATURE_CRC32) || defined(_MSC_VER))
-#if defined(__ARM_ACLE) || defined(_MSC_VER)
+#if defined(__ARM_ACLE) && !defined(_MSC_VER)
 #include <arm_acle.h>
+#define OPENRAR_HAS_ARM_CRC32 1
+#elif defined(_MSC_VER)
+// MSVC ARM64 declares the ACLE CRC32 intrinsics in <intrin.h>; it does not
+// ship <arm_acle.h>.
+#include <intrin.h>
 #define OPENRAR_HAS_ARM_CRC32 1
 #endif
 #endif
@@ -30,7 +35,8 @@ namespace openrar::crypto::arch {
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((__target__("sse4.2,pclmul")))
 #endif
-inline core::uint32 crc32_step_pclmul(core::uint32 crc, const void* data, size_t len) {
+inline core::uint32
+crc32_step_pclmul(core::uint32 crc, const void* data, size_t len) {
     const auto* buf = static_cast<const core::byte*>(data);
 #if defined(_MSC_VER)
     __declspec(align(16)) static const core::uint64 K1K2[] = {0x0154442bd4, 0x01c6e41596};

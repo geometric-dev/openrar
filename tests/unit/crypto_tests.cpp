@@ -1,4 +1,5 @@
 #include "../../src/core/types.hpp"
+#include "../../src/core/cpu.hpp"
 #include "../../src/core/vint.hpp"
 #include "../../src/core/error.hpp"
 #include "../../src/crypto/crc32.hpp"
@@ -120,7 +121,14 @@ void test_vint() {
 void test_crc32() {
     const char* data = "123456789";
     core::uint32 val = crypto::crc32(data, 9);
-    assert(val == 0xCBF43926);
+    if (val != 0xCBF43926) {
+        const auto& cpu = core::get_cpu_features();
+        std::fprintf(stderr,
+                     "CRC32 mismatch: got %08X, expected CBF43926 "
+                     "(arm_crc32=%d pclmulqdq=%d)\n",
+                     val, cpu.arm_crc32 ? 1 : 0, cpu.pclmulqdq ? 1 : 0);
+        assert(false && "crc32('123456789') != 0xCBF43926");
+    }
 
     // Streaming CRC
     crypto::Crc32 stream;
