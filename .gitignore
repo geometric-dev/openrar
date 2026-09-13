@@ -1,0 +1,71 @@
+# Build output
+build/
+build-linux/
+build_fuzz/
+Testing/
+bin/
+lib/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile.cmake
+
+# Compiler intermediate & debug files
+*.obj
+*.o
+*.pdb
+*.ilk
+*.idb
+*.log
+*.tlog
+*.exp
+*.lib
+*.a
+*.so
+*.dylib
+
+# IDE and editor files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Local test archives and scratch files (keep committed smoke archives)
+*.rar
+!tests/*.rar
+!tools/testdata/*.rar
+
+# CI smoke outputs
+tests/out_*/
+
+# Generated coverage output
+tools/coverage-report.json
+
+# WASM build outputs (keep republishable dist out of git; CI builds it)
+wasm/dist/
+
+# Local test runs (fixture trees, extracted files, token logs)
+testrun/
+tools/testrun/
+
+# Test failure dumps & parity artifacts
+*.rev
+*.bad
+
+# Scratch, benchmark, and temporary test outputs
+*.bin
+scratch/
+bench_out/
+debug_ext/
+ext_openrar/
+ext_rar/
+out_*/
+alt/
+test_match.cpp
+test_small.txt
+
+# Local debug scratch files
+

@@ -1,0 +1,26 @@
+#!/bin/sh
+# Shared pre-commit hook — install with:  git config core.hooksPath .githooks
+#
+# Runs the quick interop gate whenever compressor/archive/format code, the
+# gate itself, or the roundtrip tests change. Bypass with --no-verify (not
+# recommended; see CONTRIBUTING.md "Local gate").
+
+CHANGED=$(git diff --cached --name-only)
+
+if echo "$CHANGED" | grep -qE "^(src/compress/|src/archive/|src/format/|tools/interop_gate\.py|tests/test_roundtrip)"; then
+    echo "Compressor/archive changed. Running interop gate (local)..."
+    cmake --build build --config Release --parallel 8 >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "Interop gate: build failed. Trying Debug..."
+        cmake --build build --config Debug --parallel 8
+        if [ $? -ne 0 ]; then echo "Build failed! Commit aborted."; exit 1; fi
+    fi
+    python tools/interop_gate.py --quick
+    if [ $? -ne 0 ]; then
+        echo "Interop gate FAILED. Commit aborted."
+        echo "To bypass locally (not recommended): git commit --no-verify"
+        exit 1
+    fi
+    echo "Interop gate passed."
+fi
+exit 0

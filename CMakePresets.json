@@ -1,0 +1,164 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default Config",
+      "description": "Base configure preset with compilation database enabled",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "inherits": "default",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "inherits": "default",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows (MSVC 2022 x64)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/msvc",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "linux-gcc",
+      "displayName": "Linux (GCC Release)",
+      "inherits": "release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "linux-clang",
+      "displayName": "Linux (Clang Release)",
+      "inherits": "release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "macos-clang",
+      "displayName": "macOS (Apple Clang Release)",
+      "inherits": "release",
+      "generator": "Ninja"
+    },
+    {
+      "name": "wasm",
+      "displayName": "WASM Release (Emscripten)",
+      "description": "Requires emsdk env (emcmake). Produces wasm/dist/openrar.{js,wasm} via src/wasm/wasm_api.cpp. Keep separate from native presets.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/wasm",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "wasm-debug",
+      "displayName": "WASM Debug (Emscripten)",
+      "inherits": "wasm",
+      "binaryDir": "${sourceDir}/build/wasm-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "wasm-cli",
+      "displayName": "WASM CLI with MEMFS (Emscripten)",
+      "inherits": "wasm",
+      "binaryDir": "${sourceDir}/build/wasm-cli",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OPENRAR_WASM_CLI": "ON"
+      }
+    },
+    {
+      "name": "wasm-archive",
+      "displayName": "WASM Archive API (Emscripten)",
+      "description": "Block codec + in-memory RAR5 archive API. Produces wasm/dist/openrar_archive.{js,wasm}.",
+      "inherits": "wasm",
+      "binaryDir": "${sourceDir}/build/wasm-archive",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OPENRAR_INMEM_ARCHIVE": "ON"
+      }
+    },
+    {
+      "name": "wasm-archive-debug",
+      "displayName": "WASM Archive API Debug (Emscripten)",
+      "inherits": "wasm-archive",
+      "binaryDir": "${sourceDir}/build/wasm-archive-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "displayName": "Build Release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug",
+      "displayName": "Build Debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "Build Windows MSVC Release",
+      "configurePreset": "windows-msvc",
+      "configuration": "Release"
+    },
+    {
+      "name": "wasm",
+      "displayName": "Build WASM Release",
+      "configurePreset": "wasm"
+    },
+    {
+      "name": "wasm-debug",
+      "displayName": "Build WASM Debug",
+      "configurePreset": "wasm-debug"
+    },
+    {
+      "name": "wasm-cli",
+      "displayName": "Build WASM CLI (MEMFS)",
+      "configurePreset": "wasm-cli"
+    },
+    {
+      "name": "wasm-archive",
+      "displayName": "Build WASM Archive API",
+      "configurePreset": "wasm-archive"
+    },
+    {
+      "name": "wasm-archive-debug",
+      "displayName": "Build WASM Archive API Debug",
+      "configurePreset": "wasm-archive-debug"
+    }
+  ]
+}

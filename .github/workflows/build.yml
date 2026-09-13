@@ -1,0 +1,312 @@
+name: CI Build & Test
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} - ${{ matrix.compiler }} (${{ matrix.build_type }})${{ matrix.arch_suffix }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cxx: g++
+            build_type: Release
+            arch: x64
+            arch_suffix: ""
+            cmake_arch: ""
+            dll_suffix: ""
+            # Gate leg: only this leg fails on warnings (-Werror) and runs the
+            # clang-format check; see CONTRIBUTING.md §Warnings/§Formatting.
+            warnings_as_errors: true
+            format_check: true
+          - os: ubuntu-latest
+            compiler: clang
+            cxx: clang++
+            build_type: Release
+            arch: x64
+            arch_suffix: ""
+            cmake_arch: ""
+            dll_suffix: ""
+          - os: macos-latest
+            compiler: clang
+            cxx: clang++
+            build_type: Release
+            arch: universal
+            arch_suffix: ""
+            cmake_arch: ""
+            dll_suffix: ""
+          - os: windows-latest
+            compiler: msvc
+            cxx: cl
+            build_type: Release
+            arch: x64
+            arch_suffix: " (x64)"
+            cmake_arch: "x64"
+            dll_suffix: "_x64"
+          - os: windows-latest
+            compiler: msvc-arm64
+            cxx: cl
+            build_type: Release
+            arch: arm64
+            arch_suffix: " (arm64)"
+            cmake_arch: "ARM64"
+            dll_suffix: "_arm64"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+
+      - name: Set up Ninja & Ccache (Linux/macOS)
+        if: runner.os != 'Windows'
+        uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
+
+      - name: Configure CMake (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          WARN_FLAG=""
+          if [ "${{ matrix.warnings_as_errors }}" = "true" ]; then WARN_FLAG="-DOPENRAR_WARNINGS_AS_ERRORS=ON"; fi
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DOPENRAR_DLL_SUFFIX=${{ matrix.dll_suffix }} \
+            -DOPENRAR_INMEM_ARCHIVE=ON \
+            $WARN_FLAG
+
+      - name: Formatting check (clang-format, gate leg only)
+        if: matrix.format_check == true
+        run: |
+          clang-format --version
+          find src include tests -name '*.cpp' -o -name '*.hpp' -o -name '*.h' | \
+            xargs clang-format --dry-run --Werror
+
+      - name: Configure CMake (Windows MSVC)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} -DOPENRAR_DLL_SUFFIX=${{ matrix.dll_suffix }} -DOPENRAR_INMEM_ARCHIVE=ON
+
+      - name: Build All Targets
+        run: |
+          cmake --build build --config ${{ matrix.build_type }} --parallel
+
+      - name: Verify DLL artifact exists
+        shell: bash
+        run: |
+          echo "Checking for openrar shared library (arch=${{ matrix.arch }}, suffix=${{ matrix.dll_suffix }})..."
+          ls -lh build/openrar*.dll build/*.so build/*.dylib build/Release/openrar*.dll 2>&1 || true
+          ls -lh build/libopenrar.* 2>&1 || true
+          # At least one shared lib must exist (suffix-aware)
+          SUFFIX="${{ matrix.dll_suffix }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            test -f build/openrar${SUFFIX}.dll || test -f build/Release/openrar${SUFFIX}.dll || test -f build/openrar.dll || test -f build/Release/openrar.dll
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            test -f build/libopenrar${SUFFIX}.dylib || test -f build/libopenrar.dylib || test -f build/openrar${SUFFIX}.dylib
+          else
+            test -f build/libopenrar${SUFFIX}.so || test -f build/libopenrar.so || test -f build/openrar${SUFFIX}.so
+          fi
+          echo "DLL artifact verified."
+
+      - name: Run Unit Test Suite (CTest)
+        run: |
+          ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+      - name: Interop Gate (local spec, no rar.exe in CI)
+        shell: bash
+        run: |
+          # No rar.exe in CI; the gate degrades to self-roundtrip + two-block probe
+          # + compress_tests on its own. It is authoritative here: a gate failure
+          # must fail CI (no `|| weaker-check` fallback).
+          python tools/interop_gate.py --quick
+
+      - name: CLI Smoke Test (Archive Creation & Extraction)
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            EXE="./build/openrar64/${{ matrix.build_type }}/openrar.exe"
+          else
+            EXE="./build/openrar"
+          fi
+          
+          # Verify help output
+          $EXE
+          
+          # Create test archive
+          mkdir -p ci_test_data
+          echo "OpenRAR Cross-Platform CI Payload 12345" > ci_test_data/hello.txt
+          $EXE a -plain ci_test.rar ci_test_data
+          
+          # Test archive integrity
+          $EXE t -plain ci_test.rar
+          
+          # Extract archive
+          mkdir -p ci_out
+          $EXE x -plain ci_test.rar ci_out/
+          
+          # Verify extracted content
+          diff -u ci_test_data/hello.txt ci_out/ci_test_data/hello.txt
+          echo "Cross-platform CLI smoke test PASSED!"
+
+      - name: Upload DLL artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: openrar-dll-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.arch }}
+          path: |
+            build/openrar*.dll
+            build/Release/openrar*.dll
+            build/libopenrar*.so
+            build/libopenrar*.dylib
+            build/openrar*.lib
+            build/Release/openrar*.lib
+            build/*.lib
+          if-no-files-found: warn
+
+  linux-arm64-qemu:
+    name: linux-arm64 (gcc cross, QEMU run)
+    runs-on: ubuntu-latest
+    env:
+      # cli_tests shells out to the CLI binary; under cross-compilation the
+      # host kernel cannot exec an aarch64 ELF directly, so every invocation
+      # goes through the user-mode emulator (see tests/unit/cli_tests.cpp).
+      OPENRAR_RUNNER: "qemu-aarch64-static -L /usr/aarch64-linux-gnu"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+
+      - name: Install aarch64 cross toolchain + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-aarch64-linux-gnu qemu-user-static
+
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
+
+      - name: Configure (cross aarch64)
+        # CMAKE_CROSSCOMPILING_EMULATOR makes add_test()-registered CTest
+        # entries run each target binary under QEMU automatically.
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -DCMAKE_CROSSCOMPILING_EMULATOR="/usr/bin/qemu-aarch64-static;-L;/usr/aarch64-linux-gnu" \
+            -DOPENRAR_INMEM_ARCHIVE=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run unit tests under QEMU (aarch64 NEON / scalar paths)
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: CLI smoke (create/test/extract under QEMU)
+        run: |
+          QEMU="qemu-aarch64-static -L /usr/aarch64-linux-gnu"
+          mkdir -p arm_ci_data
+          echo "OpenRAR aarch64 QEMU payload" > arm_ci_data/hello.txt
+          $QEMU ./build/openrar a -plain arm_ci.rar arm_ci_data
+          $QEMU ./build/openrar t -plain arm_ci.rar
+          mkdir -p arm_ci_out
+          $QEMU ./build/openrar x -plain arm_ci.rar arm_ci_out/
+          diff -u arm_ci_data/hello.txt arm_ci_out/arm_ci_data/hello.txt
+          echo "aarch64 QEMU smoke test PASSED!"
+
+  writer-conformance:
+    name: Writer structural conformance (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run structural writer tests (no WinRAR oracle)
+        # The WinRAR-independent subset: writer output is parsed and
+        # structurally asserted, self-tested and self-extracted, and
+        # determinism-checked by SHA-256. Oracle asserts are skipped
+        # automatically when no UnRAR is present.
+        run: node tools/run-tests.cjs format roundtrip parity
+
+  wasm:
+    name: WASM (Emscripten) — block codec + archive API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+      # Pinned: the makefile + wasm/README.md document the same version.
+      # Bump deliberately (build size/behaviour shifts), never by accident.
+      - uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021 # v14
+        with:
+          version: '3.1.50'
+      - uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
+      - name: Configure WASM (block codec + archive API)
+        run: |
+          emcmake cmake --preset wasm
+          emcmake cmake --preset wasm-archive
+      - name: Build WASM
+        run: |
+          cmake --build --preset wasm --parallel
+          cmake --build --preset wasm-archive --parallel
+      - name: Contract check — required exports present on both modules
+        run: node wasm/js/check-exports.mjs
+      - name: Test — JS wrapper suites against the fresh build
+        run: node --test wasm/js/test.mjs wasm/js/helpers.test.mjs wasm/js/archive.test.mjs wasm/js/worker.test.mjs
+      - name: Assert WASM size budgets (§5.3 wasm-limitations.md)
+        # Catch accidental binary bloat. Block codec ≤ 500 KiB (2× headroom),
+        # archive module ≤ 1.5 MiB (spec §4 budget, currently ~120 KiB).
+        run: |
+          SIZE=$(stat -c %s wasm/dist/openrar.wasm)
+          echo "openrar.wasm size: $SIZE bytes"
+          if [ "$SIZE" -gt 512000 ]; then
+            echo "FAIL: block codec wasm exceeds 500 KiB budget"
+            exit 1
+          fi
+          ASIZE=$(stat -c %s wasm/dist/openrar_archive.wasm)
+          echo "openrar_archive.wasm size: $ASIZE bytes"
+          if [ "$ASIZE" -gt 1572864 ]; then
+            echo "FAIL: archive wasm exceeds 1.5 MiB budget"
+            exit 1
+          fi
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: openrar-wasm
+          path: wasm/dist/
+
+      - name: SIMD128 variant — configure & build (OPENRAR_WASM_SIMD=ON)
+        # Opt-in kernel build: same sources with -msimd128, so the SIMD128
+        # match finder in match_simd.hpp compiles in. Runs last because it
+        # overwrites wasm/dist; baseline checks and artifacts already ran.
+        run: |
+          emcmake cmake -B build-simd -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENRAR_WASM_SIMD=ON
+          cmake --build build-simd --parallel
+
+      - name: SIMD128 variant — contract + JS suites + size budget
+        # The JS suites drive the fresh SIMD module end-to-end (compress/
+        # decompress roundtrips through the SIMD match finder). The baseline
+        # archive module in dist is untouched, so its suites still run.
+        run: |
+          node wasm/js/check-exports.mjs
+          node --test wasm/js/test.mjs wasm/js/helpers.test.mjs wasm/js/archive.test.mjs wasm/js/worker.test.mjs
+          SIZE=$(stat -c %s wasm/dist/openrar.wasm)
+          echo "openrar.wasm (simd128) size: $SIZE bytes"
+          if [ "$SIZE" -gt 512000 ]; then
+            echo "FAIL: simd128 block codec exceeds 500 KiB budget"
+            exit 1
+          fi

@@ -1,0 +1,46 @@
+{
+  "name": "openrar-wasm",
+  "version": "1.0.121",
+  "description": "OpenRAR RAR5 block codec + in-memory archive API — WASM build (Emscripten MODULARIZE)",
+  "type": "module",
+  "main": "./openrar.js",
+  "types": "./openrar.d.ts",
+  "exports": {
+    ".": {
+      "types": "./openrar.d.ts",
+      "import": "./openrar.js"
+    },
+    "./archive": {
+      "types": "./openrar-archive.d.ts",
+      "import": "./openrar-archive.js"
+    },
+    "./quickjs": {
+      "import": "./quickjs-host.mjs"
+    }
+  },
+  "files": [
+    "./openrar.js",
+    "./openrar.d.ts",
+    "./openrar-archive.js",
+    "./openrar-archive.d.ts",
+    "./heap_helpers.js",
+    "./worker.js",
+    "./worker-host.mjs",
+    "./worker.test.mjs",
+    "./quickjs-host.mjs",
+    "./check-exports.mjs",
+    "./test.mjs",
+    "./helpers.test.mjs",
+    "./archive.test.mjs",
+    "./README.md"
+  ],
+  "scripts": {
+    "build": "emcmake cmake --preset wasm && cmake --build --preset wasm && emcmake cmake --preset wasm-archive && cmake --build --preset wasm-archive",
+    "build:cli": "emcmake cmake --preset wasm-cli && cmake --build --preset wasm-cli",
+    "test": "node --test test.mjs helpers.test.mjs archive.test.mjs worker.test.mjs",
+    "check-exports": "node check-exports.mjs"
+  },
+  "keywords": ["rar", "rar5", "wasm", "emscripten", "compression", "archive"],
+  "license": "MIT",
+  "engines": { "node": ">=18" }
+}

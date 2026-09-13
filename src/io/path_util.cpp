@@ -1,0 +1,187 @@
+#include "path_util.hpp"
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <sstream>
+
+namespace openrar::io {
+
+std::string normalize_separators(const std::string& path, char sep) {
+    std::string res = path;
+    for (char& c : res) {
+        if (c == '/' || c == '\\') {
+            c = sep;
+        }
+    }
+    return res;
+}
+
+namespace {
+
+// Windows-specific component hardening for names coming from untrusted
+// archives (report M10): Win32 silently reinterprets several harmless-looking
+// names, so neutralize them before the caller joins the result onto the
+// extraction root.
+//  - Reserved DOS device names (CON, NUL, COM1, "aux.txt", ...): the stem
+//    before the first dot decides, case-insensitively. Prefixing with '_'
+//    keeps the entry on disk instead of opening a device.
+//  - Colons: NTFS alternate data streams ("file:stream"). Any colon that
+//    survived drive stripping is replaced with '_'.
+//  - Trailing dots/spaces: Win32 strips them at open time, letting two
+//    distinct entry names collapse onto one file. Trimmed; a component that
+//    trims to nothing becomes '_'.
+std::string make_safe_component(std::string item) {
+    static const char* RESERVED_NAMES[] = {
+        "con",  "prn",  "aux",  "nul",  "com0", "com1", "com2", "com3",
+        "com4", "com5", "com6", "com7", "com8", "com9", "lpt0", "lpt1",
+        "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    };
+    for (char& c : item) {
+        if (c == ':') c = '_';
+    }
+    std::string stem = item;
+    size_t dot = stem.find('.');
+    if (dot != std::string::npos) stem.resize(dot);
+    for (char& c : stem) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    for (const char* r : RESERVED_NAMES) {
+        if (stem == r) {
+            item.insert(item.begin(), '_');
+            break;
+        }
+    }
+    size_t end = item.size();
+    while (end > 0 && (item[end - 1] == '.' || item[end - 1] == ' ')) {
+        --end;
+    }
+    if (end == 0) return "_";
+    item.resize(end);
+    return item;
+}
+
+} // namespace
+
+std::string sanitize_archive_path(const std::string& path) {
+    std::string norm = normalize_separators(path, '/');
+
+    // Strip drive letter (e.g. "C:")
+    if (norm.size() >= 2 && std::isalpha(static_cast<unsigned char>(norm[0])) && norm[1] == ':') {
+        norm = norm.substr(2);
+    }
+
+    // Strip leading slashes
+    size_t start = norm.find_first_not_of('/');
+    if (start == std::string::npos) return "";
+    norm = norm.substr(start);
+
+    // Tokenize and resolve '.' and '..'
+    std::vector<std::string> parts;
+    std::stringstream ss(norm);
+    std::string item;
+
+    while (std::getline(ss, item, '/')) {
+        if (item.empty() || item == ".") {
+            continue;
+        }
+        if (item == "..") {
+            if (!parts.empty()) {
+                parts.pop_back();
+            }
+        } else {
+            parts.push_back(make_safe_component(item));
+        }
+    }
+
+    std::string result;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) result += '/';
+        result += parts[i];
+    }
+    return result;
+}
+
+std::string format_archive_path(const std::string& full_path, const std::string& base_path,
+                                ExcludePathMode mode) {
+    std::string norm_full = normalize_separators(full_path, '/');
+    std::string norm_base = normalize_separators(base_path, '/');
+
+    switch (mode) {
+    case ExcludePathMode::SkipWholePath: {
+        // -ep: return filename only
+        size_t last_slash = norm_full.find_last_of('/');
+        if (last_slash != std::string::npos) {
+            return norm_full.substr(last_slash + 1);
+        }
+        return norm_full;
+    }
+    case ExcludePathMode::BasePath: {
+        // -ep1: strip base directory prefix
+        if (!norm_base.empty() && norm_full.rfind(norm_base, 0) == 0) {
+            size_t offset = norm_base.size();
+            while (offset < norm_full.size() && norm_full[offset] == '/') {
+                offset++;
+            }
+            return norm_full.substr(offset);
+        }
+        return sanitize_archive_path(norm_full);
+    }
+    case ExcludePathMode::SaveFullPathNoDrive: {
+        // -ep2: strip drive letter, retain path
+        if (norm_full.size() >= 2 && std::isalpha(static_cast<unsigned char>(norm_full[0])) &&
+            norm_full[1] == ':') {
+            norm_full = norm_full.substr(2);
+        }
+        return sanitize_archive_path(norm_full);
+    }
+    case ExcludePathMode::AbsPath: {
+        // -ep3: full absolute path with disk letter
+        return norm_full;
+    }
+    case ExcludePathMode::None:
+    default: {
+        if (!norm_base.empty() && norm_full.rfind(norm_base, 0) == 0) {
+            size_t offset = norm_base.size();
+            while (offset < norm_full.size() && norm_full[offset] == '/') {
+                offset++;
+            }
+            return norm_full.substr(offset);
+        }
+        return sanitize_archive_path(norm_full);
+    }
+    }
+}
+
+bool wildcard_match(const std::string& pattern, const std::string& text, bool case_sensitive) {
+    size_t p = 0, t = 0;
+    size_t star_p = std::string::npos, star_t = 0;
+
+    auto eq = [case_sensitive](char a, char b) {
+        if (case_sensitive) return a == b;
+        return std::tolower(static_cast<unsigned char>(a)) ==
+               std::tolower(static_cast<unsigned char>(b));
+    };
+
+    while (t < text.size()) {
+        if (p < pattern.size() && (pattern[p] == '?' || eq(pattern[p], text[t]))) {
+            p++;
+            t++;
+        } else if (p < pattern.size() && pattern[p] == '*') {
+            star_p = p++;
+            star_t = t;
+        } else if (star_p != std::string::npos) {
+            p = star_p + 1;
+            t = ++star_t;
+        } else {
+            return false;
+        }
+    }
+
+    while (p < pattern.size() && pattern[p] == '*') {
+        p++;
+    }
+
+    return p == pattern.size();
+}
+
+} // namespace openrar::io
