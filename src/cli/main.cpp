@@ -1,0 +1,1354 @@
+#include "../core/types.hpp"
+#include "../io/file_stream.hpp"
+#include "../io/path_util.hpp"
+#include "../format/headers.hpp"
+#include "../archive/archive_reader.hpp"
+#include "../archive/archive_mutator.hpp"
+#include "../archive/volume.hpp"
+#include "../recovery/recovery_record.hpp"
+#include "../recovery/recovery_writer.hpp"
+#include "progress.hpp"
+#include "thread_pool.hpp"
+#include "../core/cpu.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <vector>
+#include <string>
+#include <filesystem>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
+namespace openrar::cli {
+
+bool g_plain_mode = false;
+bool g_quiet_mode = false;
+
+void print_banner() {
+    if (g_quiet_mode) return;
+    std::cout << "\nOpenRAR 1.0 (x64) Open Source Archiver\n"
+              << "Copyright (c) 2026 OpenRAR Project\n";
+    // Acceleration line: shows which hardware kernels the dispatchers
+    // actually selected on this machine, so speed differences between
+    // machines have a visible explanation. Amber warning (not red — missing
+    // acceleration is slow, not an error) when every path runs scalar.
+    const core::AccelerationReport accel = core::describe_acceleration();
+    if (!accel.tags.empty()) {
+        if (is_vt_supported())
+            std::cout << "\x1b[38;2;123;193;127m⚡\x1b[0m ";
+        else
+            std::cout << "* ";
+        for (size_t i = 0; i < accel.tags.size(); ++i) {
+            if (i) std::cout << " \xC2\xB7 ";
+            std::cout << accel.tags[i];
+        }
+        std::cout << "\n";
+    } else if (is_vt_supported()) {
+        std::cout << "\x1b[38;2;224;164;88m⚠\x1b[0m no hardware acceleration (scalar paths)\n";
+    } else {
+        std::cout << "! no hardware acceleration (scalar paths)\n";
+    }
+    std::cout << "\n";
+}
+
+void print_help() {
+    print_banner();
+    std::cout << "Usage: openrar <command> -<switch 1> -<switch N> <archive> <files...>\n\n"
+              << "<Commands>\n"
+              << "  a             Add files to archive\n"
+              << "  d             Delete files from archive\n"
+              << "  e             Extract files without archived paths\n"
+              << "  f             Freshen existing files in archive\n"
+              << "  k             Lock archive against changes\n"
+              << "  l[t[a],b]     List contents of archive [technical, bare]\n"
+              << "  m             Move files to archive (delete after archiving)\n"
+              << "  r             Repair damaged archive\n"
+              << "  t             Test archive integrity\n"
+              << "  u             Update files in archive\n"
+              << "  x             Extract files with full paths\n\n"
+              << "<Switches>\n"
+              << "  -ed           Do not add empty directories\n"
+              << "  -ep           Exclude paths from names\n"
+              << "  -hp<p>        Encrypt both file data and headers\n"
+              << "  -m<0..5>      Set compression level (0-store...3-default...5-maximal)\n"
+              << "  -ed           Do not store directory records\n"
+              << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto)\n"
+              << "  -ol           Save symbolic links as the link instead of the file\n"
+              << "  -os           Save NTFS Alternate Data Streams\n"
+              << "  -ow           Save file Security ACLs\n"
+              << "  -p<p>         Set password\n"
+              << "  -plain, --plain\n"
+              << "                Plain line-by-line output (disable ANSI animations)\n"
+              << "  -q, -quiet, --quiet\n"
+              << "                Quiet mode (suppress informational output)\n"
+              << "  -r            Recurse subdirectories\n"
+              << "  -rr[N]        Add data recovery record (percentage)\n"
+              << "  -s            Create solid archive\n"
+              << "  -sfx          Create SFX archive\n"
+              << "  -ts<m|c|a>    Time fields to store: m=modified, c=created, a=accessed\n"
+              << "                (letters combine; default -tsm)\n"
+              << "  -v<size>      Create multi-volume archive\n"
+              << "  -y            Assume Yes on all queries\n"
+              << "  -z<file>      Read archive comment from file\n";
+}
+
+int list_archive(const std::string& arc_path, bool bare, bool technical,
+                 const std::string& password = "") {
+    // INFO8: quiet mode only suppresses OUTPUT. The archive must still be
+    // opened and validated here so a quiet list of a missing archive exits
+    // nonzero instead of reporting success without ever touching the archive.
+    archive::ArchiveReader reader;
+    if (!reader.open(arc_path, password)) {
+        if (reader.has_bad_password()) {
+            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
+        } else {
+            std::cerr << "Cannot open " << arc_path << "\n";
+        }
+        return 1;
+    }
+
+    if (!g_quiet_mode) {
+        if (!bare) {
+            std::cout << "Archive: " << arc_path << "\n"
+                      << "Details: RAR 5.0" << (reader.is_solid() ? ", solid" : "")
+                      << (reader.is_locked() ? ", locked" : "")
+                      << (reader.is_volume() ? ", volume" : "") << "\n\n";
+            if (!technical) {
+                std::cout << " Attributes      Size     Date     Time   Name\n"
+                          << "-----------  --------  ---------- -----  ----\n";
+            }
+        }
+
+        for (const auto& entry : reader.entries()) {
+            if (entry.header.is_service) continue;
+            if (bare) {
+                std::cout << sanitize_for_display(entry.header.file_name) << "\n";
+            } else if (technical) {
+                std::cout << "  File:        " << sanitize_for_display(entry.header.file_name)
+                          << "\n"
+                          << "  Size:        " << entry.header.unp_size << "\n"
+                          << "  Packed:      " << entry.header.pack_size << "\n"
+                          << "  Method:      " << entry.header.method << "\n"
+                          << "  CRC32:       " << std::hex << entry.header.data_crc32 << std::dec
+                          << "\n\n";
+            } else {
+                std::cout << "    ..A....  " << entry.header.unp_size << "  "
+                          << sanitize_for_display(entry.header.file_name) << "\n";
+            }
+        }
+    }
+
+    return 0;
+}
+
+static CLIProgress Prog;
+
+// — parallel entry processing for x/e/t —
+//
+// Entries of a non-solid archive decode independently, so extraction and
+// testing can run on the worker pool. Two pieces make that safe:
+//
+//   ReaderSlots — one independently opened ArchiveReader per concurrent slot,
+//   borrowed by jobs. stream_ / solid-chain state never cross threads, and
+//   each archive pays its header scan once per slot rather than once per
+//   entry.
+//
+//   EntryFlags — per-entry completion flags. Workers decode out of order;
+//   the main thread waits in archive order for the per-file console lines so
+//   output looks exactly like the sequential run.
+
+struct EntryFlags {
+    std::mutex mu;
+    std::condition_variable cv;
+    std::vector<char> done, ok;
+
+    void resize(size_t n) {
+        done.assign(n, 0);
+        ok.assign(n, 0);
+    }
+    void finish(size_t i, bool okv) {
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            done[i] = 1;
+            ok[i] = okv ? 1 : 0;
+        }
+        cv.notify_all();
+    }
+    bool wait(size_t i) {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [&] { return done[i] != 0; });
+        return ok[i] != 0;
+    }
+};
+
+struct ReaderSlots {
+    std::vector<std::unique_ptr<archive::ArchiveReader>> readers;
+    std::vector<char> in_use;
+    std::mutex mu;
+    std::condition_variable cv;
+
+    bool init(const std::string& arc_path, const std::string& password, size_t n) {
+        readers.resize(n);
+        in_use.assign(n, 0);
+        for (size_t i = 0; i < n; ++i) {
+            readers[i] = std::make_unique<archive::ArchiveReader>();
+            if (!readers[i]->open(arc_path, password)) return false;
+        }
+        return true;
+    }
+    size_t acquire() {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [&] { return std::find(in_use.begin(), in_use.end(), 0) != in_use.end(); });
+        size_t i = static_cast<size_t>(std::find(in_use.begin(), in_use.end(), 0) - in_use.begin());
+        in_use[i] = 1;
+        return i;
+    }
+    void release(size_t i) {
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            in_use[i] = 0;
+        }
+        cv.notify_one();
+    }
+};
+
+// Parallel decode is only safe when every entry decodes independently: no
+// solid archive or solid-flagged entry (they share one LZ window in order),
+// no multi-volume set (chain state across volumes), no redirections/symlinks
+// (self-link conversion is order-sensitive), no duplicate names (target-path
+// collisions are checked separately by the extract path).
+bool entries_independently_decodable(const archive::ArchiveReader& reader) {
+    if (reader.is_solid() || reader.is_volume()) return false;
+    for (const auto& e : reader.entries()) {
+        if (e.header.is_service) continue;
+        if (e.header.is_solid || e.header.redir_type != 0) return false;
+    }
+    return true;
+}
+
+int test_archive(const std::string& arc_path, const std::string& password = "",
+                 unsigned threads = 1) {
+    archive::ArchiveReader reader;
+    if (!reader.open(arc_path, password)) {
+        if (reader.has_bad_password()) {
+            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
+        } else {
+            std::cerr << "Cannot open " << arc_path << "\n";
+        }
+        return 1;
+    }
+
+    if (!g_quiet_mode && !is_vt_supported()) {
+        std::cout << "Testing archive: " << arc_path << "\n\n";
+    }
+
+    size_t total_entries = 0;
+    core::uint64 total_bytes = 0;
+    for (const auto& entry : reader.entries()) {
+        if (!entry.header.is_service) {
+            total_entries++;
+            total_bytes += entry.header.unp_size;
+        }
+    }
+
+    Prog.init("TESTING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
+    Prog.set_totals(total_entries, total_bytes);
+
+    size_t error_count = 0;
+    size_t idx = 0;
+
+    // Jobs = non-service entries, decoded independently.
+    std::vector<const archive::ArchiveEntry*> jobs;
+    for (const auto& entry : reader.entries()) {
+        if (!entry.header.is_service) jobs.push_back(&entry);
+    }
+
+    const bool want_parallel =
+        threads > 1 && jobs.size() > 1 && entries_independently_decodable(reader);
+    ReaderSlots slots;
+    if (want_parallel && !slots.init(arc_path, password, std::min<size_t>(threads, jobs.size()))) {
+        // A slot failed to open what the main reader already opened
+        // successfully (transient IO). Stay sequential rather than fail.
+        slots.readers.clear();
+    }
+
+    if (slots.readers.empty()) {
+        for (const auto& entry : reader.entries()) {
+            if (entry.header.is_service) continue;
+            idx++;
+            Prog.start_file(entry.header.file_name, idx);
+
+            if (!g_quiet_mode && !is_vt_supported()) {
+                std::cout << "Testing     " << sanitize_for_display(entry.header.file_name)
+                          << "... ";
+            }
+
+            if (reader.test_entry(entry)) {
+                if (!g_quiet_mode && !is_vt_supported()) std::cout << "OK\n";
+            } else {
+                if (!g_quiet_mode && !is_vt_supported()) std::cout << "FAILED\n";
+                error_count++;
+            }
+            Prog.update_bytes(entry.header.unp_size);
+        }
+    } else {
+        EntryFlags flags;
+        flags.resize(jobs.size());
+        ThreadPool pool(static_cast<unsigned>(slots.readers.size()));
+        for (size_t i = 0; i < jobs.size(); ++i) {
+            pool.submit([&slots, &flags, &jobs, i] {
+                // test_entry decodes untrusted archive data and can throw
+                // (bad_alloc, filesystem errors); an escaping exception would
+                // skip flags.finish and hang the reporting loop, and pre-guard
+                // it also kept the process alive (sweep finding H2).
+                bool okv = false;
+                size_t s = 0;
+                bool acquired = false;
+                try {
+                    s = slots.acquire();
+                    acquired = true;
+                    okv = slots.readers[s]->test_entry(*jobs[i]);
+                } catch (...) {
+                    okv = false;
+                }
+                if (acquired) slots.release(s);
+                flags.finish(i, okv);
+                try {
+                    Prog.note_file_done(jobs[i]->header.file_name, jobs[i]->header.unp_size);
+                } catch (...) {
+                }
+            });
+        }
+        // Report in archive order so console output matches the sequential run.
+        for (size_t i = 0; i < jobs.size(); ++i) {
+            const bool okv = flags.wait(i);
+            if (!g_quiet_mode && !is_vt_supported()) {
+                std::cout << "Testing     " << sanitize_for_display(jobs[i]->header.file_name)
+                          << "... " << (okv ? "OK" : "FAILED") << "\n";
+            }
+            if (!okv) error_count++;
+        }
+    }
+
+    Prog.done(total_entries, "tested", "", total_bytes, 0,
+              error_count == 0 ? "all OK" : (std::to_string(error_count) + " errors"));
+    return error_count == 0 ? 0 : 1;
+}
+
+int delete_from_archive(const std::string& arc_path, const std::vector<std::string>& files) {
+    if (files.empty()) {
+        std::cerr << "No files specified for deletion\n";
+        return 1;
+    }
+
+    if (!archive::ArchiveMutator::delete_entries(arc_path, files)) {
+        std::cerr << "Cannot delete files from archive (archive may be locked or volume)\n";
+        return 1;
+    }
+
+    if (!g_quiet_mode) {
+        std::cout << "Deleted specified entries from " << arc_path << "\n";
+    }
+    return 0;
+}
+
+// One queued source file for batch add: the directory scan (command 'a') or
+// the explicit file list (command 'm') produce this, the pipeline consumes it
+// in order.
+struct PendingFile {
+    std::filesystem::path src_path;
+    std::string entry_name;
+    core::uint64 file_size;
+    bool is_dir{false};
+};
+
+// Parallel batch add: prepare every file on the pool (read + CRC + compress +
+// optional encrypt), then write the archive in queue order on the calling
+// thread. write_batch_add's on_write hook blocks until that entry's prepare
+// has finished, so output bytes match the serial path exactly while
+// compression overlaps disk writes. Memory stays bounded by PREPARE_BUDGET:
+// a job may only begin once its bytes are available, and the charge is
+// released when the entry's payload reaches the archive — preparing ahead of
+// the writer can never accumulate the whole batch in RAM. Any prepare or
+// write failure aborts before the archive is replaced (all-or-nothing).
+// err_name (optional) receives the failing entry's name.
+static int run_batch_add(const std::string& arc_path, const std::vector<PendingFile>& queue,
+                         int method, const std::filesystem::path& sfx_stub,
+                         const std::string& password, bool encrypt_headers, bool delete_source,
+                         bool announce, unsigned threads, std::string* err_name = nullptr,
+                         core::uint32 times_mask = archive::time_flags::MTIME, bool solid = false,
+                         const std::vector<core::byte>* comment = nullptr) {
+    constexpr core::uint64 PREPARE_BUDGET = 1ull << 30; // in-flight prepare bytes
+
+    std::vector<archive::ArchiveMutator::PreparedAdd> prepared(queue.size());
+    // entry_name/src_path are caller-owned identity fields: fill them before
+    // any prepare job runs. prepare_add_* never writes them, so the writer
+    // thread can read them while a prepare is still in flight without a data
+    // race (sweep finding M4).
+    for (size_t i = 0; i < queue.size(); ++i) {
+        prepared[i].entry_name = queue[i].entry_name;
+        prepared[i].src_path = queue[i].src_path;
+    }
+
+    // Single file: nothing to overlap, so skip the pool and pipeline entirely
+    // (no thread spawn, no handoff) and prepare inline. Semantics match the
+    // pipelined path: prepare failure reports the entry and writes nothing;
+    // a write failure exits non-zero without a per-file line.
+    if (queue.size() == 1) {
+        bool okv = false;
+        try {
+            if (queue[0].is_dir)
+                okv = archive::ArchiveMutator::prepare_add_dir(
+                    queue[0].src_path, queue[0].entry_name, prepared[0], times_mask);
+            else
+                okv = archive::ArchiveMutator::prepare_add_file(queue[0].src_path,
+                                                                queue[0].entry_name, method,
+                                                                password, prepared[0], times_mask);
+        } catch (...) {
+            okv = false;
+        }
+        if (!okv) {
+            if (err_name) *err_name = queue[0].entry_name;
+            if (announce && !g_quiet_mode && !is_vt_supported()) {
+                std::cout << "Adding    " << queue[0].entry_name << " ... FAILED\n";
+            }
+            return 1;
+        }
+        prepared[0].delete_source = delete_source;
+        Prog.note_file_done(queue[0].entry_name, queue[0].file_size);
+        if (!archive::ArchiveMutator::write_batch_add(
+                arc_path, prepared, sfx_stub, password, encrypt_headers, {}, solid,
+                comment ? *comment : std::vector<core::byte>())) {
+            return 1;
+        }
+        if (announce && !g_quiet_mode && !is_vt_supported()) {
+            std::cout << "Adding    " << queue[0].entry_name << " ... OK\n";
+        }
+        return 0;
+    }
+
+    // Shared pipeline state. One mutex/cv pair drives both the FIFO admission
+    // gate and completion tracking; every wait has an aborting escape so a
+    // failed batch always drains without deadlock.
+    struct Pipeline {
+        std::mutex mu;
+        std::condition_variable cv;
+        size_t admit_head = 0; // FIFO: only this index may charge bytes
+        core::uint64 budget = PREPARE_BUDGET;
+        std::vector<core::uint64> holds; // bytes charged per entry (0 = released)
+        std::vector<char> done, ok;
+        bool aborting = false;
+    } pl;
+    pl.holds.assign(queue.size(), 0);
+    pl.done.assign(queue.size(), 0);
+    pl.ok.assign(queue.size(), 0);
+
+    ThreadPool pool(threads);
+
+    for (size_t i = 0; i < queue.size(); ++i) {
+        pool.submit([&pl, &queue, &prepared, i, method, &password, delete_source, times_mask,
+                     budget_bytes = PREPARE_BUDGET] {
+            std::unique_lock<std::mutex> lk(pl.mu);
+            pl.cv.wait(lk, [&] { return pl.aborting || pl.admit_head == i; });
+            if (pl.aborting) {
+                pl.done[i] = 1;
+            } else {
+                // Record the charge before acquiring so an aborting writer can
+                // always find (and release) it; a 1-byte minimum keeps empty
+                // files inside the budget without a special case.
+                const core::uint64 hold = std::max<core::uint64>(
+                    1, std::min<core::uint64>(queue[i].file_size, budget_bytes));
+                pl.holds[i] = hold;
+                pl.cv.wait(lk, [&] { return pl.aborting || pl.budget >= hold; });
+                if (pl.aborting) {
+                    pl.holds[i] = 0;
+                    pl.done[i] = 1;
+                } else {
+                    pl.budget -= hold;
+                    pl.admit_head = i + 1;
+                    lk.unlock();
+                    pl.cv.notify_all();
+
+                    bool okv = false;
+                    try {
+                        if (queue[i].is_dir)
+                            okv = archive::ArchiveMutator::prepare_add_dir(
+                                queue[i].src_path, queue[i].entry_name, prepared[i], times_mask);
+                        else
+                            okv = archive::ArchiveMutator::prepare_add_file(
+                                queue[i].src_path, queue[i].entry_name, method, password,
+                                prepared[i], times_mask);
+                    } catch (...) {
+                        // std::filesystem throws on sources that vanish or
+                        // become unreadable after the scan; same handling as
+                        // a plain false return.
+                        okv = false;
+                    }
+                    if (okv) {
+                        prepared[i].delete_source = delete_source;
+                        Prog.note_file_done(queue[i].entry_name, queue[i].file_size);
+                    }
+
+                    lk.lock();
+                    pl.ok[i] = okv ? 1 : 0;
+                    pl.done[i] = 1;
+                }
+            }
+            lk.unlock();
+            pl.cv.notify_all();
+        });
+    }
+
+    // Writer-side abort signal: thrown out of on_write, through
+    // write_batch_add (which removes its tmp file), caught below.
+    struct PrepareFailed {
+        size_t index;
+    };
+    size_t failed_index = queue.size();
+    auto on_write = [&](size_t i, const std::string&) {
+        std::unique_lock<std::mutex> lk(pl.mu);
+        pl.cv.wait(lk, [&] { return pl.done[i] || pl.aborting; });
+        if (pl.aborting) {
+            failed_index = std::min(failed_index, i);
+            throw PrepareFailed{i};
+        }
+        if (!pl.ok[i]) {
+            pl.aborting = true;
+            failed_index = i;
+            throw PrepareFailed{i};
+        }
+        // The entry leaves the in-flight set as its payload hits the disk.
+        pl.budget += pl.holds[i];
+        pl.holds[i] = 0;
+        lk.unlock();
+        pl.cv.notify_all();
+    };
+
+    // Drain: release every remaining charge so blocked admissions finish, and
+    // wait until all jobs have reached done[] before the pool joins. Runs on
+    // EVERY exit path — a non-PrepareFailed exception from write_batch_add
+    // must also drain, or workers parked on the admission/budget waits never
+    // finish and ~ThreadPool hangs in join() forever (sweep finding M3).
+    auto drain_pipeline = [&pl] {
+        {
+            std::lock_guard<std::mutex> lk(pl.mu);
+            pl.aborting = true;
+            for (auto& h : pl.holds) {
+                pl.budget += h;
+                h = 0;
+            }
+        }
+        pl.cv.notify_all();
+        std::unique_lock<std::mutex> lk(pl.mu);
+        pl.cv.wait(lk, [&] {
+            for (char d : pl.done)
+                if (!d) return false;
+            return true;
+        });
+    };
+
+    bool ok = false;
+    try {
+        ok = archive::ArchiveMutator::write_batch_add(
+            arc_path, prepared, sfx_stub, password, encrypt_headers, on_write, solid,
+            comment ? *comment : std::vector<core::byte>());
+    } catch (const PrepareFailed&) {
+        ok = false;
+    } catch (...) {
+        drain_pipeline();
+        throw;
+    }
+    drain_pipeline();
+
+    if (!ok) {
+        if (failed_index < queue.size() && err_name) *err_name = queue[failed_index].entry_name;
+        if (announce && !g_quiet_mode && !is_vt_supported() && failed_index < queue.size()) {
+            std::cout << "Adding    " << queue[failed_index].entry_name << " ... FAILED\n";
+        }
+        return 1;
+    }
+    if (announce && !g_quiet_mode && !is_vt_supported()) {
+        for (const auto& item : queue) {
+            std::cout << "Adding    " << item.entry_name << " ... OK\n";
+        }
+    }
+    return 0;
+}
+
+int add_to_archive(const std::string& arc_path, const std::vector<std::string>& files,
+                   int method = 3, const std::filesystem::path& sfx_stub = {},
+                   ::openrar::core::uint64 vol_size = 0, const std::string& password = "",
+                   bool encrypt_headers = false, unsigned threads = 1, bool solid = false,
+                   const std::vector<core::byte>& comment = {},
+                   core::uint32 times_mask = archive::time_flags::MTIME,
+                   bool no_dir_records = false) {
+    if (files.empty()) {
+        std::cerr << "No files specified for addition\n";
+        return 1;
+    }
+
+    std::vector<PendingFile> queue;
+    core::uint64 total_unp = 0;
+    // Multi-volume writes have no directory-record support yet (file-centric
+    // slicing); queue files only and say so.
+    const bool volume_add = vol_size != 0;
+    size_t skipped_dirs = 0;
+
+    Prog.init(method == 0 ? "STORING" : "COMPRESSING",
+              method == 0 ? "\x1b[38;2;139;147;216m" : "\x1b[38;2;224;164;88m",
+              method == 0 ? "\x1b[48;2;28;30;46m" : "\x1b[48;2;45;33;18m");
+
+    for (const auto& f : files) {
+        std::filesystem::path p(f);
+        if (std::filesystem::is_directory(p)) {
+            for (const auto& dir_entry : std::filesystem::recursive_directory_iterator(p)) {
+                // L10: a file can vanish or become unreadable between the
+                // directory scan and these stats. Skip it gracefully instead
+                // of letting a filesystem_error abort the whole process.
+                std::error_code stat_ec;
+                if (dir_entry.is_symlink(stat_ec)) continue;
+                bool is_dir = dir_entry.is_directory(stat_ec);
+                if (stat_ec) continue;
+                std::string rel =
+                    dir_entry.path().lexically_relative(p.parent_path()).generic_string();
+                // Names are stored without the "./" prefix (per archive path format specification);
+                // adding "." would otherwise leak it into every entry name.
+                if (rel.rfind("./", 0) == 0) rel.erase(0, 2);
+                if (rel.empty()) continue;
+                if (is_dir) {
+                    if (volume_add || no_dir_records) {
+                        skipped_dirs++;
+                        continue;
+                    }
+                    queue.push_back({dir_entry.path(), rel, 0, true});
+                } else {
+                    if (!dir_entry.is_regular_file(stat_ec)) continue;
+                    core::uint64 sz = dir_entry.file_size(stat_ec);
+                    if (stat_ec) continue;
+                    queue.push_back({dir_entry.path(), rel, sz});
+                    total_unp += sz;
+                }
+                Prog.spin("Scanning files…", queue.size());
+            }
+        } else if (std::filesystem::exists(p)) {
+            // L10: same vanish-between-exists-and-stat race as above.
+            std::error_code stat_ec;
+            core::uint64 sz = std::filesystem::file_size(p, stat_ec);
+            if (stat_ec) {
+                std::cerr << "W: cannot stat " << p.string() << ", skipping\n";
+                continue;
+            }
+            std::string entry = p.filename().generic_string();
+            queue.push_back({p, entry, sz});
+            total_unp += sz;
+            Prog.spin("Scanning files…", queue.size());
+        }
+    }
+    if (skipped_dirs > 0 && !g_quiet_mode) {
+        std::cout << "W: " << skipped_dirs
+                  << " director"
+                     "y records not stored (multi-volume mode does not store directory records "
+                     "yet)\n";
+    }
+
+    if (queue.empty()) {
+        std::cerr << "No files found to add\n";
+        return 1;
+    }
+
+    Prog.set_totals(queue.size(), total_unp);
+
+    if (!g_quiet_mode && !is_vt_supported()) {
+        std::cout << "Creating archive " << arc_path << "\n";
+    }
+
+    const bool volume_mode = (vol_size != 0 && vol_size != archive::volume::VOLSIZE_AUTO);
+    if (volume_mode) {
+        // Multi-volume: every add rewrites the whole chain (sidecar rotation,
+        // extent rewriting), so preparation cannot be decoupled from writing;
+        // stay sequential.
+        for (size_t i = 0; i < queue.size(); ++i) {
+            const auto& item = queue[i];
+            Prog.start_file(item.entry_name, i + 1);
+
+            if (!g_quiet_mode && !is_vt_supported()) {
+                std::cout << "Adding    " << item.entry_name << " ... ";
+            }
+            bool ok = false;
+            if (!sfx_stub.empty())
+                ok = archive::ArchiveMutator::add_file_to_archive(
+                    arc_path, item.src_path, item.entry_name, method, sfx_stub, vol_size, password,
+                    /*encrypt_headers=*/false, solid);
+            else
+                ok = archive::ArchiveMutator::add_file_to_archive_vol(
+                    arc_path, item.src_path, item.entry_name, method, vol_size, password, solid);
+            if (!ok) {
+                if (!g_quiet_mode && !is_vt_supported()) std::cout << "FAILED\n";
+                return 1;
+            }
+            if (!g_quiet_mode && !is_vt_supported()) std::cout << "OK\n";
+            Prog.update_bytes(item.file_size);
+        }
+    } else {
+        int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
+                               /*delete_source=*/false, /*announce=*/true, threads, nullptr,
+                               times_mask, solid, &comment);
+        if (rc != 0) return rc;
+    }
+
+    Prog.spin("Writing archive index…");
+
+    core::uint64 final_arc_size = 0;
+    if (vol_size != 0 && vol_size != archive::volume::VOLSIZE_AUTO) {
+        auto firstVol = archive::volume::first_volume_name(arc_path);
+        if (std::filesystem::exists(firstVol))
+            final_arc_size = std::filesystem::file_size(firstVol);
+        else if (std::filesystem::exists(arc_path))
+            final_arc_size = std::filesystem::file_size(arc_path);
+    } else {
+        if (std::filesystem::exists(arc_path))
+            final_arc_size = std::filesystem::file_size(arc_path);
+    }
+
+    Prog.done(queue.size(), "packed", arc_path, total_unp, final_arc_size);
+    return 0;
+}
+
+int extract_archive(const std::string& arc_path, const std::string& dest_dir, bool full_paths,
+                    const std::string& password = "", unsigned threads = 1) {
+    archive::ArchiveReader reader;
+    if (!reader.open(arc_path, password)) {
+        if (reader.has_bad_password()) {
+            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
+        } else {
+            std::cerr << "Cannot open " << arc_path << "\n";
+        }
+        return 1;
+    }
+
+    if (!g_quiet_mode && !is_vt_supported()) {
+        std::cout << "Extracting from " << arc_path << "\n\n";
+    }
+
+    size_t total_entries = 0;
+    core::uint64 total_bytes = 0;
+    for (const auto& entry : reader.entries()) {
+        if (!entry.header.is_service) {
+            total_entries++;
+            total_bytes += entry.header.unp_size;
+        }
+    }
+
+    Prog.init("DECOMPRESSING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
+    Prog.set_totals(total_entries, total_bytes);
+
+    std::filesystem::path out_root =
+        dest_dir.empty() ? std::filesystem::current_path() : std::filesystem::path(dest_dir);
+
+    // Precompute every sanitized target up front: the parallel path must not
+    // build paths per job, and duplicate targets (two entries landing on the
+    // same file) would race their writers — those fall back to sequential.
+    struct ExtractJob {
+        const archive::ArchiveEntry* entry;
+        std::filesystem::path target;
+        std::string display_name;
+    };
+    std::vector<ExtractJob> extract_jobs;
+    bool duplicate_targets = false;
+    {
+        std::set<std::string> seen_targets;
+        for (const auto& entry : reader.entries()) {
+            if (entry.header.is_service) continue;
+            std::string safe_name = io::sanitize_archive_path(entry.header.file_name);
+            if (safe_name.empty()) {
+                std::cerr << "Skipping entry with unsafe empty path: "
+                          << sanitize_for_display(entry.header.file_name) << "\n";
+                continue;
+            }
+            std::filesystem::path target =
+                full_paths ? (out_root / std::filesystem::path(safe_name))
+                           : (out_root / std::filesystem::path(safe_name).filename());
+            if (!seen_targets.insert(target.string()).second) duplicate_targets = true;
+            extract_jobs.push_back({&entry, target, sanitize_for_display(target.string())});
+        }
+        // Component-prefix overlap (sweep finding L11): a file entry "a"
+        // alongside a directory entry "a/b" makes create_directories race the
+        // file write when threaded. Walk every target's ancestor chain and
+        // fall back to sequential if any ancestor is itself a target (covers
+        // both orders of the pair).
+        if (!duplicate_targets) {
+            std::set<std::string> all_targets;
+            for (const auto& j : extract_jobs) all_targets.insert(j.target.string());
+            for (const auto& j : extract_jobs) {
+                const std::filesystem::path& t = j.target;
+                std::filesystem::path anc;
+                for (auto it = t.begin(); it != t.end() && std::next(it) != t.end(); ++it) {
+                    anc /= *it;
+                    if (all_targets.count(anc.string())) {
+                        duplicate_targets = true;
+                        break;
+                    }
+                }
+                if (duplicate_targets) break;
+            }
+        }
+    }
+
+    const bool want_parallel = threads > 1 && extract_jobs.size() > 1 && !duplicate_targets &&
+                               entries_independently_decodable(reader);
+    ReaderSlots slots;
+    if (want_parallel &&
+        !slots.init(arc_path, password, std::min<size_t>(threads, extract_jobs.size()))) {
+        // A slot failed to open what the main reader already opened
+        // successfully (transient IO). Stay sequential rather than fail.
+        slots.readers.clear();
+    }
+
+    bool any_failed = false;
+
+    if (slots.readers.empty()) {
+        size_t idx = 0;
+        for (const auto& job : extract_jobs) {
+            idx++;
+            Prog.start_file(job.entry->header.file_name, idx);
+
+            if (!g_quiet_mode && !is_vt_supported()) {
+                std::cout << "Extracting  " << job.display_name << " ... ";
+            }
+
+            if (reader.extract_entry(*job.entry, job.target, password)) {
+                if (!g_quiet_mode && !is_vt_supported()) std::cout << "OK\n";
+            } else {
+                if (!g_quiet_mode && !is_vt_supported()) {
+                    if (reader.has_bad_password()) {
+                        std::cout << "FAILED (incorrect password / BADPSW)\n";
+                    } else {
+                        std::cout << "FAILED\n";
+                    }
+                }
+                return 1;
+            }
+            Prog.update_bytes(job.entry->header.unp_size);
+        }
+    } else {
+        EntryFlags flags;
+        flags.resize(extract_jobs.size());
+        std::atomic<int> badpw_flag{0};
+        ThreadPool pool(static_cast<unsigned>(slots.readers.size()));
+        for (size_t i = 0; i < extract_jobs.size(); ++i) {
+            pool.submit([&slots, &flags, &extract_jobs, &badpw_flag, i] {
+                // Same exception contract as the test path: extract_entry
+                // handles untrusted data; never skip flags.finish (H2).
+                bool okv = false;
+                size_t s = 0;
+                bool acquired = false;
+                try {
+                    s = slots.acquire();
+                    acquired = true;
+                    okv = slots.readers[s]->extract_entry(*extract_jobs[i].entry,
+                                                          extract_jobs[i].target,
+                                                          slots.readers[s]->password());
+                    if (!okv && slots.readers[s]->has_bad_password()) badpw_flag.store(1);
+                } catch (...) {
+                    okv = false;
+                }
+                if (acquired) slots.release(s);
+                flags.finish(i, okv);
+                try {
+                    Prog.note_file_done(extract_jobs[i].entry->header.file_name,
+                                        extract_jobs[i].entry->header.unp_size);
+                } catch (...) {
+                }
+            });
+        }
+        // Report in archive order so console output matches the sequential run.
+        // Unlike the old first-failure abort, every entry is attempted —
+        // whatever is decodable gets extracted before the non-zero exit.
+        for (size_t i = 0; i < extract_jobs.size(); ++i) {
+            const bool okv = flags.wait(i);
+            if (!g_quiet_mode && !is_vt_supported()) {
+                std::cout << "Extracting  " << extract_jobs[i].display_name << " ... "
+                          << (okv ? "OK"
+                                  : (badpw_flag.load() ? "FAILED (incorrect password / BADPSW)"
+                                                       : "FAILED"))
+                          << "\n";
+            }
+            if (!okv) any_failed = true;
+        }
+    }
+
+    if (any_failed) {
+        Prog.done(extract_jobs.size(), "unpacked", arc_path, total_bytes, 0);
+        return 1;
+    }
+    Prog.done(total_entries, "unpacked", arc_path, total_bytes, 0);
+    return 0;
+}
+
+int repair_archive(const std::string& arc_path) {
+    // Uses the inline "RR" service block's Reed-Solomon parity (0x1100B GF(2^16)
+    // Cauchy). Recoverable damage: tail-truncated data shards where the RR
+    // block itself remains intact, and archives whose structure still verifies.
+    // Unrecoverable via inline RR: RR block itself damaged, or damage exceeds
+    // the parity redundancy. Multi-volume repair via external .rev files is
+    // not yet implemented.
+    if (openrar::recovery::RecoveryWriter::repair(arc_path)) {
+        if (!g_quiet_mode) std::cout << "Archive " << arc_path << ": OK (RR structure verified)\n";
+        return 0;
+    }
+    std::cerr << "Cannot repair " << arc_path
+              << " (RR block damaged, damage exceeds parity, or unsupported "
+                 "recovery format)\n";
+    return 1;
+}
+
+int lock_archive(const std::string& arc_path) {
+    if (!archive::ArchiveMutator::lock_archive(arc_path)) {
+        std::cerr << "Cannot lock archive\n";
+        return 1;
+    }
+
+    if (!g_quiet_mode) {
+        std::cout << "Archive " << arc_path << " locked successfully\n";
+    }
+    return 0;
+}
+
+int move_to_archive(const std::string& arc_path, const std::vector<std::string>& files,
+                    int method = 3, const std::filesystem::path& sfx_stub = {},
+                    ::openrar::core::uint64 vol_size = 0, const std::string& password = "",
+                    bool encrypt_headers = false, unsigned threads = 1) {
+    if (files.empty()) {
+        std::cerr << "No files specified for move\n";
+        return 1;
+    }
+    std::vector<PendingFile> queue;
+    for (const auto& f : files) {
+        std::string entry_name = std::filesystem::path(f).filename().string();
+        std::error_code stat_ec;
+        core::uint64 sz = std::filesystem::file_size(f, stat_ec);
+        if (stat_ec) sz = 0; // let prepare_add_file report the unreadable source
+        queue.push_back({std::filesystem::path(f), entry_name, sz});
+    }
+
+    if (vol_size != 0 && vol_size != archive::volume::VOLSIZE_AUTO) {
+        // Volume chain rewrite is inherently sequential (see add_to_archive).
+        for (const auto& item : queue) {
+            bool ok = archive::ArchiveMutator::move_file_to_archive_vol(
+                arc_path, item.src_path, item.entry_name, method, vol_size, password);
+            if (!ok) {
+                std::cerr << "Failed moving " << item.src_path.string() << " to " << arc_path
+                          << "\n";
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    std::string failed_name;
+    int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
+                           /*delete_source=*/true, /*announce=*/false, threads, &failed_name);
+    if (rc != 0) {
+        std::cerr << "Failed moving "
+                  << (failed_name.empty() ? queue.front().src_path.string() : failed_name) << " to "
+                  << arc_path << "\n";
+        return 1;
+    }
+    return 0;
+}
+
+} // namespace openrar::cli
+
+// L10: everything from switch parsing down can throw (std::filesystem on
+// unreadable dirs, vanishing files, current_path(), bad_alloc from hostile
+// archives). This body must not be reached by an escaping exception directly;
+// main() below wraps it. The argc<2/argv copies here cannot throw.
+static int cli_main(int argc, char* argv[]) {
+    if (argc < 2) {
+        openrar::cli::print_help();
+        return 0;
+    }
+
+    std::string cmd = argv[1];
+    std::string arc_path;
+    std::vector<std::string> files;
+    std::vector<std::string> switches;
+
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (!arg.empty() && arg[0] == '-') {
+            switches.push_back(arg);
+            continue;
+        }
+        if (arc_path.empty()) {
+            arc_path = arg;
+        } else {
+            files.push_back(arg);
+        }
+    }
+
+    if (arc_path.empty()) {
+        std::cerr << "Error: No archive name specified.\n";
+        openrar::cli::print_help();
+        return 1;
+    }
+
+    std::string password;
+    bool want_header_encryption = false; // -hp
+    int method = 3;
+    unsigned mt_flag = 0; // 0 = auto-detect
+    openrar::core::uint64 vol_size = 0;
+    bool vol_pause = false;
+    // Feature switch flags
+    bool want_sfx = false, want_rr = false;
+    bool want_acl = false, want_stm = false;
+    bool want_solid = false;                                                // -s
+    bool no_dir_records = false;                                            // -ed
+    bool want_lock = false;                                                 // -k
+    std::string comment_path;                                               // -z<file>
+    openrar::core::uint32 times_mask = openrar::archive::time_flags::MTIME; // -ts<...>
+    std::string sfx_name_raw;
+    openrar::core::uint32 rr_percent = 3;
+    for (const auto& s : switches) {
+        if (s == "-plain" || s == "--plain" || s == "-idp" || s == "--no-color") {
+            openrar::cli::g_plain_mode = true;
+        } else if (s == "-q" || s == "-quiet" || s == "--quiet" || s == "-inul" || s == "-idq") {
+            openrar::cli::g_quiet_mode = true;
+        } else if (s.rfind("-hp", 0) == 0 && s.size() > 3) {
+            // Header encryption. Match this BEFORE the -p prefix check.
+            password = s.substr(3);
+            want_header_encryption = true;
+        } else if (s == "-hp") {
+            // A bare -hp must fail loudly: falling through silently produced
+            // an UNENCRYPTED archive while the user believed headers were
+            // protected (sweep finding M7).
+            std::cerr << "Error: -hp requires a password (-hp<password>).\n";
+            return 7;
+        } else if (s.rfind("-p", 0) == 0 && s.size() > 2) {
+            password = s.substr(2);
+        } else if (s == "-p") {
+            std::cerr << "Error: -p requires a password (-p<password>).\n";
+            return 7;
+        } else if (s.rfind("-m", 0) == 0 && s.size() == 3 && s[2] >= '0' && s[2] <= '5') {
+            method = s[2] - '0';
+        } else if (s.rfind("-mt", 0) == 0) {
+            // -mt<N> worker threads for batch add. -mt0 / bare
+            // -mt / unparseable = auto-detect. Clamped to a sane ceiling;
+            // file-granular work beyond this only costs thread stacks.
+            std::string mt_tail = s.substr(3);
+            long v = 0;
+            try {
+                v = mt_tail.empty() ? 0 : std::stol(mt_tail);
+            } catch (...) {
+                v = 0;
+            }
+            if (v < 0) v = 0;
+            if (v > 64) v = 64;
+            mt_flag = static_cast<unsigned>(v);
+        } else if (s.rfind("-v", 0) == 0) {
+            std::string vs = s.substr(2);
+            if (vs == "p" || vs == "-") {
+                if (vs == "p") vol_pause = true;
+                if (vs == "-") vol_size = 0;
+            } else if (vs.rfind("p", 0) == 0) {
+                vol_pause = true;
+                std::string rest = vs.substr(1);
+                if (!rest.empty()) {
+                    bool ok = false;
+                    openrar::core::uint64 v =
+                        openrar::archive::volume::parse_vol_size_str(rest, ok);
+                    if (ok) vol_size = v;
+                }
+            } else {
+                bool ok = false;
+                openrar::core::uint64 v = openrar::archive::volume::parse_vol_size_str(vs, ok);
+                if (ok)
+                    vol_size = v;
+                else
+                    vol_size = openrar::archive::volume::VOLSIZE_AUTO;
+            }
+            if (s == "-vp") vol_pause = true;
+        } else if (s.rfind("-rr", 0) == 0) {
+            want_rr = true;
+            // Parse -rr[N][%] where N is percent (e.g. -rr, -rr3, -rr10%, -rr100)
+            std::string tail = s.substr(3);
+            // strip trailing % or p
+            while (!tail.empty() &&
+                   (tail.back() == '%' || tail.back() == 'p' || tail.back() == 'P'))
+                tail.pop_back();
+            if (!tail.empty()) {
+                try {
+                    rr_percent = static_cast<openrar::core::uint32>(std::stoul(tail));
+                } catch (...) {
+                    rr_percent = 3;
+                }
+                if (rr_percent == 0) rr_percent = 3;
+                if (rr_percent > 1000) rr_percent = 1000;
+            } else {
+                rr_percent = 3;
+            }
+        } else if (s == "-s") {
+            want_solid = true;
+        } else if (s == "-ed") {
+            no_dir_records = true;
+        } else if (s == "-k") {
+            want_lock = true;
+        } else if (s.rfind("-z", 0) == 0) {
+            comment_path = s.substr(2);
+        } else if (s.rfind("-ts", 0) == 0) {
+            // -ts<m|c|a>[+|-][0-4]: time types to carry in FHEXTRA_HTIME;
+            // letters accumulate across switches. Precision digits are
+            // accepted (modes 1-4) but times are stored at whole-second
+            // granularity.
+            for (char c : s.substr(3)) {
+                if (c == 'm')
+                    times_mask |= openrar::archive::time_flags::MTIME;
+                else if (c == 'c')
+                    times_mask |= openrar::archive::time_flags::CTIME;
+                else if (c == 'a')
+                    times_mask |= openrar::archive::time_flags::ATIME;
+                else if (c == 'p' || c == '+' || c == '-' || (c >= '0' && c <= '4')) {
+                    // precision / sign accepted, second granularity
+                } else {
+                    break;
+                }
+            }
+        } else if (s.rfind("-sfx", 0) == 0) {
+            want_sfx = true;
+            sfx_name_raw = s.substr(4); // may be empty -> default.sfx; strip '=' later in resolver
+            if (!sfx_name_raw.empty() && sfx_name_raw[0] == '=')
+                sfx_name_raw = sfx_name_raw.substr(1);
+        } else if (s == "-ow" || s.rfind("-ow", 0) == 0) {
+            want_acl = true;
+        } else if (s == "-os" || s.rfind("-os", 0) == 0) {
+            want_stm = true;
+        } else {
+            // Unknown switches must not vanish silently: a mistyped
+            // security-relevant switch would otherwise degrade to insecure
+            // defaults with no trace (sweep finding M7).
+            std::cerr << "Warning: unknown switch '" << s << "' ignored\n";
+        }
+    }
+    (void)vol_pause;
+    // Defer W: messages to command handlers; keep flags
+    (void)want_acl;
+    (void)want_stm;
+
+    // Worker count for batch add/move and RR parity (and later extract/test):
+    // explicit -mt wins, otherwise one worker per hardware thread.
+    unsigned threads = mt_flag ? mt_flag : openrar::core::hardware_thread_hint();
+
+    // Header encryption (-hp) applies to single-file archives. It implies
+    // per-file data encryption and is incompatible with multi-volume output
+    // (each volume would need its own HEAD_CRYPT + encrypted headers).
+    if (want_header_encryption && (cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m")) {
+        if (vol_size != 0) {
+            std::cerr
+                << "Error: -hp (header encryption) is not supported together with -v "
+                   "(multi-volume).\n"
+                << "       Use -hp without -v, or -p<password> with -v for data-only encryption.\n";
+            return 7; // ExitCode::UserError
+        }
+        if (password.empty()) {
+            std::cerr << "Error: -hp requires a password (-hp<password>).\n";
+            return 7;
+        }
+    }
+    // RecoveryWriter now handles -rr (0x1100B Cauchy). Keep rejection only
+    // for vintage 0x11D if ever requested
+    // For now all -rr goes via RecoveryWriter; vintage detection would be via archive version flag
+    if ((cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m") && want_rr) {
+        // defer to handler below; no early rejection
+    }
+    // Comment / lock writes are batch-path features; the volume writer has no
+    // CMT placement or per-volume locking yet — reject explicitly rather than
+    // silently produce an archive without the requested feature.
+    if ((!comment_path.empty() || want_lock) &&
+        (cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m") && vol_size != 0) {
+        std::cerr << "Error: -z (comment) / -k (lock) is not supported together with -v "
+                     "(multi-volume).\n";
+        return 7;
+    }
+    // Read the -z comment payload up front so a bad file fails before any
+    // archive work starts.
+    std::vector<openrar::core::byte> comment;
+    if (!comment_path.empty() && (cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m")) {
+        openrar::io::FileStream cf;
+        if (!cf.open(comment_path, openrar::io::FileMode::ReadOnly)) {
+            std::cerr << "Error: cannot open comment file " << comment_path << "\n";
+            return 7;
+        }
+        openrar::core::uint64 csz = cf.size();
+        if (csz > 0x100000) { // sanity bound; comments are small by nature
+            std::cerr << "Error: comment file " << comment_path << " larger than 1 MiB\n";
+            return 7;
+        }
+        comment.resize(static_cast<size_t>(csz));
+        if (csz > 0 && cf.read(comment.data(), comment.size()) != comment.size()) {
+            std::cerr << "Error: cannot read comment file " << comment_path << "\n";
+            return 7;
+        }
+    }
+    // SFX creation is now supported via flag-driven mutator; keep multivolume
+    // edge rejection (stub only first volume)
+    // Previous generic SFX rejection removed. Multivalue case already returned above via want_vol.
+    // ACL/STM are read-skipped with warning; writer path warns once
+    if ((cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m") && (want_acl || want_stm)) {
+        std::cerr << "W: ACL (-ow) / alternate streams (-os) preservation not yet supported – "
+                     "files will be stored without ACL/STM\n";
+        // continue but without extra handling (skip)
+    }
+
+    // SFX handling: resolve stub, validate MAX_SFX_SIZE, apply SetSFXExt
+    // (first-volume-only with -v handled via want_vol reject above)
+    std::filesystem::path sfx_stub_path;
+    std::string sfx_arc_path_str = arc_path;
+    if (want_sfx && (cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m")) {
+        sfx_stub_path = openrar::archive::ArchiveMutator::resolve_sfx_stub(sfx_name_raw, argv[0]);
+        if (!std::filesystem::exists(sfx_stub_path)) {
+            std::cerr << "Cannot open " << sfx_stub_path.string() << "\n";
+            return 6;
+        }
+        std::error_code ec;
+        auto sz = std::filesystem::file_size(sfx_stub_path, ec);
+        if (!ec && sz > openrar::archive::ArchiveMutator::MAX_SFX_SIZE) {
+            std::cerr << "SFX module too large (" << sz << " > "
+                      << openrar::archive::ArchiveMutator::MAX_SFX_SIZE << ")\n";
+            return 7;
+        }
+        // SetSFXExt .exe/.sfx per 10-sfx.md:70 (final name known before open)
+        sfx_arc_path_str = openrar::archive::ArchiveMutator::apply_sfx_extension(arc_path).string();
+    }
+
+    if (cmd == "a" || cmd == "u" || cmd == "f") {
+        std::string target_arc = want_sfx ? sfx_arc_path_str : arc_path;
+        int rc = openrar::cli::add_to_archive(target_arc, files, method, sfx_stub_path, vol_size,
+                                              password, want_header_encryption, threads, want_solid,
+                                              comment, times_mask, no_dir_records);
+        if (rc == 0 && want_rr) {
+            bool rr_ok;
+            bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;
+            if (is_vol_set) {
+                // Multi-volume sets get external .rev parity volumes (spec §4.7).
+                rr_ok = openrar::recovery::RecoveryWriter::write_rev_volumes(target_arc, rr_percent,
+                                                                             threads);
+            } else {
+                rr_ok = openrar::recovery::RecoveryWriter::add_recovery_record(target_arc,
+                                                                               rr_percent, threads);
+            }
+            if (!rr_ok) {
+                std::cerr << "W: recovery record creation failed (-- vintage 0x11D not yet "
+                             "implemented)\n";
+                return 1;
+            }
+            if (!openrar::cli::g_quiet_mode) {
+                if (is_vol_set)
+                    std::cout << "Added .rev recovery volumes (" << rr_percent << "%)\n";
+                else
+                    std::cout << "Added RR " << rr_percent << "% (0x1100B)\n";
+            }
+        }
+        // -k locks after the archive (and any RR) is fully written, matching
+        // the `k` command's rewrite; locking earlier would block RR splicing.
+        if (rc == 0 && want_lock &&
+            !(vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO)) {
+            if (!openrar::archive::ArchiveMutator::lock_archive(target_arc)) {
+                std::cerr << "Error: failed to lock " << target_arc << "\n";
+                return 1;
+            }
+        }
+        return rc;
+    } else if (cmd == "x") {
+        std::string dest = files.empty() ? "" : files[0];
+        return openrar::cli::extract_archive(arc_path, dest, true, password, threads);
+    } else if (cmd == "e") {
+        std::string dest = files.empty() ? "" : files[0];
+        return openrar::cli::extract_archive(arc_path, dest, false, password, threads);
+    } else if (cmd == "r") {
+        return openrar::cli::repair_archive(arc_path);
+    } else if (cmd == "l" || cmd == "v") {
+        return openrar::cli::list_archive(arc_path, false, false, password);
+    } else if (cmd == "lb") {
+        return openrar::cli::list_archive(arc_path, true, false, password);
+    } else if (cmd == "lt" || cmd == "lta") {
+        return openrar::cli::list_archive(arc_path, false, true, password);
+    } else if (cmd == "t") {
+        return openrar::cli::test_archive(arc_path, password, threads);
+    } else if (cmd == "d") {
+        return openrar::cli::delete_from_archive(arc_path, files);
+    } else if (cmd == "k") {
+        return openrar::cli::lock_archive(arc_path);
+    } else if (cmd == "m") {
+        std::string move_arc = sfx_stub_path.empty() ? arc_path : sfx_arc_path_str;
+        int rc = openrar::cli::move_to_archive(move_arc, files, method, sfx_stub_path, vol_size,
+                                               password, want_header_encryption, threads);
+        if (rc == 0 && want_rr) {
+            bool rr_ok;
+            bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;
+            if (is_vol_set) {
+                // Multi-volume sets get external .rev parity volumes (spec §4.7),
+                // same as a/u/f. Writing an inline RR into the first volume
+                // would desynchronise the set instead.
+                rr_ok = openrar::recovery::RecoveryWriter::write_rev_volumes(move_arc, rr_percent,
+                                                                             threads);
+            } else {
+                rr_ok = openrar::recovery::RecoveryWriter::add_recovery_record(move_arc, rr_percent,
+                                                                               threads);
+            }
+            if (!rr_ok) {
+                std::cerr << "W: recovery record creation failed (-- vintage 0x11D not yet "
+                             "implemented)\n";
+                return 1;
+            }
+            if (!openrar::cli::g_quiet_mode) {
+                if (is_vol_set)
+                    std::cout << "Added .rev recovery volumes (" << rr_percent << "%)\n";
+                else
+                    std::cout << "Added RR " << rr_percent << "% (0x1100B)\n";
+            }
+        }
+        // -k locks after the archive (and any RR) is fully written (see a/u/f).
+        if (rc == 0 && want_lock &&
+            !(vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO)) {
+            if (!openrar::archive::ArchiveMutator::lock_archive(move_arc)) {
+                std::cerr << "Error: failed to lock " << move_arc << "\n";
+                return 1;
+            }
+        }
+        return rc;
+    } else {
+        std::cerr << "Unknown command: " << cmd << "\n";
+        openrar::cli::print_help();
+        return 1;
+    }
+
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    // L10: an uncaught std::filesystem/library exception used to reach the
+    // top of main and call std::terminate - no diagnostic, no partial-output
+    // cleanup, exit code meaningless. Report and exit non-zero instead.
+    try {
+        return cli_main(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "openrar: error: " << e.what() << "\n";
+        return 1;
+    } catch (...) {
+        std::cerr << "openrar: error: unknown non-standard exception\n";
+        return 1;
+    }
+}

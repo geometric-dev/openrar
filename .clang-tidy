@@ -1,0 +1,69 @@
+# Naming enforcement for OpenRAR — mirrors ARCHITECTURE.md §3.2 exactly.
+# Only the naming check is enabled here; code-quality checks are a separate
+# decision (add them deliberately, not implicitly).
+# Run: clang-tidy -p build/<preset> <file>   (needs compile_commands.json,
+# which the `default`/`windows-msvc` presets export)
+Checks: '-*,readability-identifier-naming'
+CheckOptions:
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeAliasCase
+    value: lower_case
+  - key: readability-identifier-naming.TypeAliasIgnoredRegexp
+    value: '^(RSCoder16|OutputCallback|InputCallback|MatchFn)$'
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.LocalVariableCase
+    value: lower_case
+  # Classes put the trailing underscore on data members; POD structs (wire
+  # format blocks that mirror on-disk layout) do not.
+  - key: readability-identifier-naming.ClassMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassMemberSuffix
+    value: '_'
+  # Class-scope constants (static constexpr members) are UPPER_SNAKE like
+  # every other scope — no k-prefix (CONTRIBUTING.md "Code style").
+  - key: readability-identifier-naming.ClassConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.StructMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.UnionMemberCase
+    value: lower_case
+  # Frozen C-ABI enum surface (openrar_dll.h) keeps its RAR_* names.
+  - key: readability-identifier-naming.EnumConstantIgnoredRegexp
+    value: '^RAR_'
+  # System-convention macros (e.g. WIN32_LEAN_AND_MEAN before windows.h).
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '^WIN32_'
+  # Windows system-struct replica in win32_meta.cpp.
+  - key: readability-identifier-naming.StructIgnoredRegexp
+    value: '^_REPARSE'
+  # Note: function-local `const` deliberately stays lower_snake (unpoliced);
+  # scope/class-scope constants are UPPER via GlobalConstantCase +
+  # ConstexprVariableCase below.
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.MacroDefinitionPrefix
+    value: 'OPENRAR_'
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: lower_case
+  - key: readability-identifier-naming.GlobalVariablePrefix
+    value: 'g_'
+  - key: readability-identifier-naming.IgnoreMainLike
+    value: '1'

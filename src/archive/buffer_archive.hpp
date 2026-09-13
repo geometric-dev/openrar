@@ -1,0 +1,137 @@
+#ifndef OPENRAR_ARCHIVE_BUFFER_ARCHIVE_HPP
+#define OPENRAR_ARCHIVE_BUFFER_ARCHIVE_HPP
+
+#include "../core/types.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace openrar::archive {
+
+// ── Error codes — canonical definition of the shared ABI contract ──────────
+// Re-exported by src/api/abi_contract.hpp to the DLL and WASM surfaces; JS
+// mirrors it as RarErrorCode (wasm/js/openrar-archive.d.ts).
+enum BufferArchiveError : int {
+    RAR_OK = 0,
+    RAR_ERR_PARTIAL_OK = 1,
+    RAR_ERR_NOT_RAR = -1,
+    RAR_ERR_UNSUPPORTED_FEATURE = -2,
+    RAR_ERR_TRUNCATED = -3,
+    RAR_ERR_CRC_MISMATCH = -4,
+    RAR_ERR_NOMEM = -5,
+    RAR_ERR_IO = -6,
+    RAR_ERR_BAD_PASSWORD = -7,
+    RAR_ERR_INVALID_ARG = -9,
+    RAR_ERR_ABORTED = -11,
+};
+
+// ── Callback conventions (mirror src/dll/openrar_dll.h) ─────────────────────
+// progress: (done, total) cumulative and monotonic; total never negative.
+// cancel:   polled once per entry; return non-zero to abort with
+//           RAR_ERR_ABORTED. Never called under a lock.
+using progress_cb = void (*)(uint64_t done, uint64_t total, void* user);
+using cancel_cb = int (*)(void* user);
+
+// ── One entry parsed from a RAR5 archive ─────────────────────────────────────
+struct BufferArchiveEntry {
+    std::string path; // forward-slash separated; trailing '/' iff is_dir
+    bool is_dir{false};
+    uint64_t size{0};        // uncompressed size
+    uint64_t packed_size{0}; // compressed (or stored) size; 0 for dirs
+    uint64_t mtime{0};       // UNIX seconds (converted from DOS time on disk)
+    uint32_t crc32{0};       // 0 == UNVERIFIED (NOT a verified-zero CRC); see spec
+    int method{0};           // 0/1/2/3/4/5
+    uint64_t win_size{0};    // compression window size
+    bool is_encrypted{false};
+    uint64_t header_offset{0}; // absolute byte offset of header in source buffer
+    uint64_t data_offset{0};   // absolute byte offset of payload start in source buffer
+    uint64_t data_size{0};     // byte size of packed payload (single extent in MVP)
+};
+
+// ── Validate an archive entry path. Returns true on success. ─────────────────
+// Path contract:
+//   - UTF-8, forward slashes only; backslash rejected.
+//   - Non-empty; max 2048 bytes.
+//   - No leading '/'; no control chars (<0x20) or NUL.
+//   - No '..' path segments.
+//   - For directories: trailing '/' required.
+//   - For files: trailing '/' forbidden.
+bool validate_archive_path(const std::string& path, bool is_dir, std::string& err_out);
+
+// ── In-memory RAR5 archive reader ────────────────────────────────────────────
+class BufferArchive {
+public:
+    BufferArchive() = default;
+    ~BufferArchive() = default;
+
+    // Parse a single-volume RAR5 archive from a buffer.
+    // On RAR_OK, out_entries contains the parsed entries and the archive
+    // state caches them so subsequent extract() / extract_all() calls can
+    // identify entries by index.
+    // Returns RAR_ERR_NOT_RAR if no RAR5 signature is found (incl. SFX scan up
+    // to 4 MiB), RAR_ERR_TRUNCATED on premature EOF, RAR_ERR_UNSUPPORTED_FEATURE
+    // on multi-volume / recovery / encrypted headers, RAR_ERR_IO on read fail.
+    int list(const uint8_t* data, size_t size, std::vector<BufferArchiveEntry>& out_entries);
+
+    // Decompress a single entry to `out`. `entry_index` is into the most
+    // recent list() result on this instance. Returns RAR_ERR_INVALID_ARG
+    // if entry_index is out of range.
+    int extract(const uint8_t* data, size_t size, size_t entry_index, std::vector<uint8_t>& out);
+
+    // Extract every entry from the most recent list(). Cumulative monotonic
+    // progress from 0 to `total` (sum of entry sizes); ~50% is the size-probe
+    // (list) phase; the remainder is payload materialisation. done === total
+    // is emitted exactly once at completion. on_progress may be null.
+    int extract_all(const uint8_t* data, size_t size,
+                    std::vector<std::pair<std::string, std::vector<uint8_t>>>& out_files,
+                    progress_cb on_progress = nullptr,
+                    void* user = nullptr,
+                    cancel_cb on_cancel = nullptr,
+                    void* cancel_user = nullptr);
+
+private:
+    // Cached result from the most recent list() call.
+    std::vector<BufferArchiveEntry> cached_entries_;
+    // Byte offset of the 8-byte signature in the most recent list() call.
+    // extract()/extract_all() recompute by re-scanning for the signature.
+    size_t cached_signature_offset_{0};
+    size_t cached_buffer_size_{0};
+    // Identity of the buffer list() parsed: a different buffer of the same
+    // size must not silently reuse stale offsets.
+    const uint8_t* cached_buffer_{nullptr};
+};
+
+// ── Write a single-volume RAR5 archive to `out` ──────────────────────────────
+// `method` ∈ {0, 3, 5}. `window_log2` ∈ {1, 2, 3, 4} → win_size 128KB..1MB
+// (doubling: 128KB / 256KB / 512KB / 1MB). Default 4 MiB in the spec was
+// inconsistent with the {1..4} range; we double cleanly. See implementation
+// notes for details.
+// MVP: no solid, no encryption, no recovery, no multi-volume, no mtime_ns.
+// DOS mtime encoded on disk per spec; in-memory `mtime` is UNIX seconds.
+// Directory entries have path with trailing '/', method=0, size=0.
+int create_archive(const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files,
+                   std::vector<uint8_t>& out, int method = 3, unsigned window_log2 = 4,
+                   progress_cb on_progress = nullptr,
+                   void* user = nullptr,
+                   cancel_cb on_cancel = nullptr,
+                   void* cancel_user = nullptr);
+
+// ── Input file (struct-based overload) ───────────────────────────────────────
+struct ArchiveFileInput {
+    std::string path;            // forward-slash separated; trailing '/' iff dir
+    std::vector<uint8_t> data;   // empty for dirs / empty files
+    uint64_t mtime_unix{0};      // 0 ⇒ now() (this overload only)
+};
+
+int create_archive(const std::vector<ArchiveFileInput>& files,
+                   std::vector<uint8_t>& out, int method = 3, unsigned window_log2 = 4,
+                   progress_cb on_progress = nullptr,
+                   void* user = nullptr,
+                   cancel_cb on_cancel = nullptr,
+                   void* cancel_user = nullptr);
+
+} // namespace openrar::archive
+
+#endif // OPENRAR_ARCHIVE_BUFFER_ARCHIVE_HPP

@@ -1,0 +1,287 @@
+#include "../../src/core/types.hpp"
+#include "../../src/archive/archive_mutator.hpp"
+#include <algorithm>
+#include <cassert>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <string>
+#include <vector>
+#ifdef _MSC_VER
+#include <crtdbg.h>
+#endif
+
+static std::string get_cli_path() {
+    // Cross-arch runs (CI's QEMU leg) cannot exec the target binary directly
+    // from the host kernel; OPENRAR_RUNNER prefixes every invocation, e.g.
+    // "qemu-aarch64-static -L /usr/aarch64-linux-gnu". Unset locally, so the
+    // native behavior is unchanged.
+    const char* runner = std::getenv("OPENRAR_RUNNER");
+    const std::string prefix = (runner && *runner) ? std::string(runner) + " " : "";
+    // Preferred: the exact path CMake built, injected as OPENRAR_CLI_EXE.
+    // The CWD-relative probing below is only a fallback for manual builds; it
+    // breaks as soon as the build directory isn't the default `build/`.
+#ifdef OPENRAR_CLI_EXE
+    if (std::filesystem::exists(OPENRAR_CLI_EXE)) {
+        return prefix + "\"" + std::filesystem::canonical(OPENRAR_CLI_EXE).string() + "\"";
+    }
+#endif
+    const std::vector<std::string> candidates = {"build/openrar64/Debug/openrar.exe",
+                                                 "build/openrar64/Release/openrar.exe",
+                                                 "build/openrar64/openrar.exe",
+                                                 "../openrar64/Debug/openrar.exe",
+                                                 "../openrar64/Release/openrar.exe",
+                                                 "../../build/openrar64/Debug/openrar.exe",
+                                                 "build/Debug/openrar.exe",
+                                                 "build/Release/openrar.exe",
+                                                 "openrar64/Debug/openrar.exe",
+                                                 "openrar64/Release/openrar.exe",
+                                                 "openrar.exe"};
+    for (const auto& path : candidates) {
+        if (std::filesystem::exists(path)) {
+            return prefix + "\"" + std::filesystem::canonical(path).string() + "\"";
+        }
+    }
+    return prefix + "\"build\\openrar64\\Debug\\openrar.exe\"";
+}
+
+void test_cli_help() {
+    std::string cmd = get_cli_path() + " > nul 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+    std::cout << "[PASS] CLI Help & Banner Output\n";
+}
+
+void test_cli_lifecycle() {
+    std::filesystem::path test_arc = "build/cli_test.rar";
+    std::filesystem::path f1 = "build/cli_doc.txt";
+    std::filesystem::remove(test_arc);
+    std::filesystem::remove(f1);
+
+    // Create a file to move
+    {
+        std::ofstream(f1) << "OPENRAR CLI TEST SUITE ITEM";
+    }
+    assert(std::filesystem::exists(f1));
+
+    std::string exe = get_cli_path();
+
+    // Move file into archive
+    std::string cmd_move = exe + " m build/cli_test.rar build/cli_doc.txt > nul 2>&1";
+    int res_move = std::system(cmd_move.c_str());
+    assert(res_move == 0);
+    assert(!std::filesystem::exists(f1));
+    assert(std::filesystem::exists(test_arc));
+
+    // Test archive
+    std::string cmd_test = exe + " t build/cli_test.rar > nul 2>&1";
+    int res_test = std::system(cmd_test.c_str());
+    assert(res_test == 0);
+
+    // List archive (bare)
+    std::string cmd_lb = exe + " lb build/cli_test.rar > nul 2>&1";
+    int res_lb = std::system(cmd_lb.c_str());
+    assert(res_lb == 0);
+
+    // Lock archive
+    std::string cmd_lock = exe + " k build/cli_test.rar > nul 2>&1";
+    int res_lock = std::system(cmd_lock.c_str());
+    assert(res_lock == 0);
+
+    // Attempt delete on locked archive -> should fail
+    std::string cmd_del = exe + " d build/cli_test.rar cli_doc.txt > nul 2>&1";
+    int res_del = std::system(cmd_del.c_str());
+    assert(res_del != 0);
+
+    std::filesystem::remove(test_arc);
+    std::cout << "[PASS] CLI Lifecycle (m -> t -> lb -> k -> rejected d)\n";
+}
+
+void test_cli_quiet_list_missing_archive_fails() {
+    // INFO8 regression: list_archive used to return 0 in quiet mode before
+    // ever opening the archive, so a quiet list of a missing archive reported
+    // success. Quiet mode must only suppress output, never the open/validate.
+    // NOTE: switches parse after the command in this CLI, so `-q` must follow
+    // the archive argument to actually reach list_archive.
+    int res =
+        std::system((get_cli_path() + " l build/cli_no_such_archive.rar -q > nul 2>&1").c_str());
+    assert(res != 0);
+
+    // Quiet list of a VALID archive: real exit code (0), zero output printed.
+    std::filesystem::path arc = "build/cli_quiet_ok.rar";
+    std::filesystem::path src = "build/cli_quiet_payload.txt";
+    std::filesystem::path captured = "build/cli_quiet_out.txt";
+    std::filesystem::remove(arc);
+    std::filesystem::remove(captured);
+    {
+        std::ofstream payload(src);
+        payload << "OpenRAR quiet-list payload";
+    }
+    assert(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "payload.txt"));
+    res = std::system(
+        (get_cli_path() + " lb " + arc.string() + " -q > " + captured.string() + " 2>&1").c_str());
+    assert(res == 0);
+    std::string data;
+    {
+        std::ifstream out(captured, std::ios::binary);
+        data.assign((std::istreambuf_iterator<char>(out)), std::istreambuf_iterator<char>());
+    } // close the handle BEFORE remove() below: an open ifstream makes
+    // std::filesystem::remove throw a sharing-violation filesystem_error.
+    assert(data.empty());
+
+    std::filesystem::remove(arc);
+    std::filesystem::remove(captured);
+    std::filesystem::remove(src);
+    std::cout << "[PASS] CLI quiet list: nonzero on missing, silent + zero on valid (INFO8)\n";
+}
+
+void test_cli_list_sanitizes_esc_entry_name() {
+    // L11 regression: an archive-controlled entry name containing ANSI escape
+    // bytes must not reach the terminal verbatim. NTFS file names cannot hold
+    // C0 control characters, so the CLI 'a' command cannot produce one - build
+    // the archive with the mutator API, whose entry name is free-form.
+    std::filesystem::path src = "build/cli_esc_payload.txt";
+    std::filesystem::path arc = "build/cli_esc_name.rar";
+    std::filesystem::path captured = "build/cli_esc_name_output.txt";
+    std::filesystem::remove(arc);
+    std::filesystem::remove(captured);
+    {
+        std::ofstream payload(src);
+        payload << "OpenRAR ESC-name payload";
+    }
+    assert(std::filesystem::exists(src));
+
+    const std::string evil_name = "evil\x1b]0;pwned\x07name.txt";
+    bool added = openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, evil_name);
+    assert(added);
+
+    // No quoting of the path arguments: std::system routes through cmd /c,
+    // which (with >2 quotes on the line) strips the first AND last quote of
+    // the string - quoting the redirect target corrupts it. The paths here
+    // contain no spaces, same as the rest of this suite.
+    std::string cmd = get_cli_path() + " lb " + arc.string() + " > " + captured.string() + " 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    std::string data;
+    {
+        std::ifstream out(captured, std::ios::binary);
+        data.assign((std::istreambuf_iterator<char>(out)), std::istreambuf_iterator<char>());
+    } // close the handle BEFORE remove() below: an open ifstream makes
+    // std::filesystem::remove throw a sharing-violation filesystem_error.
+    // No raw ESC (CSI/OSC introducer) or BEL (OSC terminator) byte may leak
+    // into the captured output...
+    assert(data.find('\x1b') == std::string::npos);
+    assert(data.find('\x07') == std::string::npos);
+    // ...and the entry must still be listed, control bytes replaced with '?'.
+    assert(data.find("evil?]0;pwned?name.txt") != std::string::npos);
+
+    std::filesystem::remove(arc);
+    std::filesystem::remove(captured);
+    std::filesystem::remove(src);
+    std::cout << "[PASS] CLI list output has ESC entry name sanitized (L11)\n";
+}
+
+void test_cli_mt_batch_equivalence() {
+    // -mt must never change archive content: parallel preparation parks each
+    // file's payload in a per-index slot and the writer consumes them in
+    // queue order, so a 4-thread run has to extract byte-identical to a
+    // 1-thread run. Timestamps are excluded from the comparison (entry mtime
+    // is wall-clock at prepare time); everything else must match exactly.
+    namespace fs = std::filesystem;
+    fs::path root = "build/cli_mt_src";
+    fs::path arc1 = "build/cli_mt1.rar";
+    fs::path arc4 = "build/cli_mt4.rar";
+    fs::path out1 = "build/cli_mt1_out";
+    fs::path out4 = "build/cli_mt4_out";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::remove(arc1, ec);
+    fs::remove(arc4, ec);
+    fs::remove_all(out1, ec);
+    fs::remove_all(out4, ec);
+    fs::create_directories(root / "sub");
+
+    // Varied payload mix: compressible text, semi-random binary, empty file,
+    // nested directory — exercises the LZ path, store fallback and batching
+    // across differently sized jobs.
+    {
+        std::ofstream(root / "a_text.txt") << std::string(300000, 'x') << "OpenRAR -mt test";
+        std::ofstream(root / "sub" / "b_mid.bin") << std::string(200000, '\x53') << "tail";
+        std::ofstream(root / "c_empty.txt", std::ios::binary);
+        std::string noise(70000, '\0');
+        for (size_t i = 0; i < noise.size(); ++i)
+            noise[i] = static_cast<char>((i * 2654435761u) >> 24);
+        std::ofstream(root / "sub" / "d_noise.bin", std::ios::binary) << noise;
+    }
+
+    std::string exe = get_cli_path();
+    std::string src_list =
+        root.string() + "/a_text.txt " + root.string() + "/sub " + root.string() + "/c_empty.txt";
+    int res = std::system(
+        (exe + " a " + arc1.string() + " -mt1 " + src_list + " > nul 2>&1").c_str());
+    assert(res == 0);
+    res = std::system(
+        (exe + " a " + arc4.string() + " -mt4 " + src_list + " > nul 2>&1").c_str());
+    assert(res == 0);
+
+    res = std::system((exe + " x " + arc1.string() + " " + out1.string() + " > nul 2>&1").c_str());
+    assert(res == 0);
+    res = std::system((exe + " x " + arc4.string() + " " + out4.string() + " > nul 2>&1").c_str());
+    assert(res == 0);
+
+    // Compare extracted trees: same file set, same bytes.
+    std::vector<std::string> names;
+    for (const auto& e : fs::recursive_directory_iterator(out1)) {
+        if (e.is_regular_file())
+            names.push_back(e.path().lexically_relative(out1).generic_string());
+    }
+    std::sort(names.begin(), names.end());
+    assert(names.size() == 4);
+    for (const auto& name : names) {
+        std::ifstream f1(out1 / name, std::ios::binary);
+        std::ifstream f4(out4 / name, std::ios::binary);
+        assert(f1 && f4);
+        std::string d1((std::istreambuf_iterator<char>(f1)), std::istreambuf_iterator<char>());
+        std::string d4((std::istreambuf_iterator<char>(f4)), std::istreambuf_iterator<char>());
+        assert(d1 == d4);
+    }
+
+    // -mt0 (auto) must also be accepted.
+    fs::path arc_auto = "build/cli_mt0.rar";
+    fs::remove(arc_auto, ec);
+    res = std::system(
+        (exe + " a " + arc_auto.string() + " -mt0 " + root.string() + "/a_text.txt > nul 2>&1")
+            .c_str());
+    assert(res == 0);
+    res = std::system((exe + " t " + arc_auto.string() + " > nul 2>&1").c_str());
+    assert(res == 0);
+
+    fs::remove_all(root, ec);
+    fs::remove(arc1, ec);
+    fs::remove(arc4, ec);
+    fs::remove(arc_auto, ec);
+    fs::remove_all(out1, ec);
+    fs::remove_all(out4, ec);
+    std::cout << "[PASS] CLI -mt1/-mt4/-mt0 batch add extracts byte-identical\n";
+}
+
+int main() {
+#ifdef _MSC_VER
+    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
+    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
+    // test process forever while ctest moves on, leaving file locks behind.
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
+    std::cout << "Running Clean-Room Milestone 7 CLI Verification...\n";
+    test_cli_help();
+    test_cli_lifecycle();
+    test_cli_quiet_list_missing_archive_fails();
+    test_cli_list_sanitizes_esc_entry_name();
+    test_cli_mt_batch_equivalence();
+    std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
+    return 0;
+}

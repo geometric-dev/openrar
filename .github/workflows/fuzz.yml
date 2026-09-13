@@ -1,0 +1,59 @@
+name: Nightly Fuzzing & Sanitizers
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # Run at 2 AM UTC daily
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  fuzz:
+    name: Continuous Fuzzing
+    runs-on: ubuntu-latest
+    env:
+      UBSAN_OPTIONS: halt_on_error=1
+      ASAN_OPTIONS: detect_leaks=1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+
+      - name: Create seeds directory
+        run: mkdir -p tests/fuzz/seeds
+
+      - name: Restore fuzzer corpus
+        # Persist the corpus across nightly runs so coverage accumulates
+        # instead of restarting from the dummy seed every night.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: tests/fuzz/seeds
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+
+      - name: Configure CMake (Fuzzing enabled)
+        run: |
+          cmake -B build_fuzz -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENRAR_FUZZ=ON \
+            -DOPENRAR_SANITIZERS=ON \
+            -DOPENRAR_CROSS_VALIDATE=ON
+
+      - name: Build Fuzzers
+        run: cmake --build build_fuzz --parallel
+
+      - name: Run Roundtrip Fuzzer (Deterministic Sweep)
+        run: ./build_fuzz/fuzz_roundtrip
+
+      - name: Run Decoder Fuzzer (libFuzzer mode)
+        # clang build defines OPENRAR_USE_LIBFUZZER and links -fsanitize=fuzzer
+        # (see CMakeLists.txt), so this is a real 30-minute libFuzzer run over
+        # the accumulated corpus, saving new inputs back into tests/fuzz/seeds/.
+        run: ./build_fuzz/fuzz_decompress -max_total_time=1800 tests/fuzz/seeds/
+      - name: Fuzz archive + block C ABI (30 min)
+        run: ./build_fuzz/fuzz_archive -max_total_time=1800 tests/fuzz/seeds/
+
+      - name: Upload new seeds (if any crashes or coverage expanded)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: fuzzer-corpus
+          path: tests/fuzz/seeds/

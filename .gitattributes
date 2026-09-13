@@ -1,0 +1,22 @@
+# Normalize line endings: all text files are stored with LF in the repo and
+# checked out per-platform. This keeps the POSIX pre-commit hook, the
+# clang-format gate, and Linux CI shell steps working regardless of which
+# platform a contributor commits from.
+* text=auto
+
+# Force LF for anything executed or parsed on POSIX
+*.sh text eol=lf
+*.py text eol=lf
+.githooks/** text eol=lf
+
+# Windows-only artifacts
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never normalize
+*.rar binary
+*.wasm binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.gif binary

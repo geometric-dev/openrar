@@ -1,0 +1,124 @@
+#ifndef OPENRAR_ARCHIVE_ARCHIVE_MUTATOR_HPP
+#define OPENRAR_ARCHIVE_ARCHIVE_MUTATOR_HPP
+
+#include "archive_reader.hpp"
+#include <filesystem>
+#include <functional>
+#include <string>
+#include <vector>
+
+namespace openrar::archive {
+
+// Which times FHEXTRA_HTIME carries (per -ts switches). The file header's
+// 32-bit mtime field is always written from the file's mtime regardless.
+// Flags-as-namespace, the same bitmask convention as format::header_flags.
+namespace time_flags {
+inline constexpr core::uint32 MTIME = 0x1;
+inline constexpr core::uint32 CTIME = 0x2;
+inline constexpr core::uint32 ATIME = 0x4;
+} // namespace time_flags
+
+class ArchiveMutator {
+public:
+    // Delete entries matching one or more wildcard masks (command 'd')
+    static bool delete_entries(const std::filesystem::path& arc_path,
+                               const std::vector<std::string>& masks);
+
+    // Lock archive against further modifications (command 'k')
+    static bool lock_archive(const std::filesystem::path& arc_path);
+
+    // Add file to archive (command 'a') - optionally with SFX stub + vol_size + password
+    // password: empty = no encryption. Non-empty enables per-file AES-256-CBC (spec §4)
+    // with a fresh salt+IV per file. encrypt_headers (-hp) additionally emits a
+    // HEAD_CRYPT block and AES-encrypts every archive header; it implies file
+    // encryption and is refused when it would have to mix with a plaintext
+    // archive's existing headers.
+    static bool add_file_to_archive(const std::filesystem::path& arc_path,
+                                    const std::filesystem::path& src_file,
+                                    const std::string& arc_entry_name, int method = 3,
+                                    const std::filesystem::path& sfx_stub_path = {},
+                                    core::uint64 vol_size = 0, const std::string& password = "",
+                                    bool encrypt_headers = false, bool solid = false);
+
+    // Volume-aware add ( -v )
+    static bool add_file_to_archive_vol(const std::filesystem::path& arc_path,
+                                        const std::filesystem::path& src_file,
+                                        const std::string& arc_entry_name, int method,
+                                        core::uint64 vol_size, const std::string& password = "",
+                                        bool solid = false);
+
+    // Move file to archive and delete from disk upon success (command 'm')
+    static bool move_file_to_archive(const std::filesystem::path& arc_path,
+                                     const std::filesystem::path& src_file,
+                                     const std::string& arc_entry_name, int method = 3,
+                                     const std::filesystem::path& sfx_stub_path = {},
+                                     const std::string& password = "",
+                                     bool encrypt_headers = false);
+
+    // Fully prepared payload for batch archive creation: everything the CLI
+    // can compute without touching the archive file (read + CRC + compress +
+    // optional per-file encryption). Parallel-safe: preparation is a pure
+    // per-file computation with no shared state.
+    struct PreparedAdd {
+        format::FileBlock fb;
+        std::vector<core::byte> payload; // packed (possibly encrypted) data
+        std::filesystem::path src_path;  // original file, removed for move after success
+        std::string entry_name;
+        bool delete_source{false};
+    };
+
+    // Stage 1 of batch add: read + CRC + compress (+ store fallback) + encrypt
+    // one file into `out`. method may be downgraded to 0 (store) exactly like
+    // the single-file path does. On success out.entry_name == arc_entry_name.
+    // times_mask selects the FHEXTRA_HTIME records (default: mtime only).
+    static bool prepare_add_file(const std::filesystem::path& src_file,
+                                 const std::string& arc_entry_name, int method,
+                                 const std::string& password, PreparedAdd& out,
+                                 core::uint32 times_mask = time_flags::MTIME);
+
+    // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,
+    // no data area) carrying the directory's timestamps. Encryption does not
+    // apply to directory records.
+    static bool prepare_add_dir(const std::filesystem::path& src_dir,
+                                const std::string& arc_entry_name, PreparedAdd& out,
+                                core::uint32 times_mask = time_flags::MTIME);
+
+    // Stage 2 of batch add: one sequential pass that writes SFX stub, archive
+    // prefix, every prepared file in vector order, and ENDARC, then atomically
+    // replaces arc_path and deletes sources flagged delete_source. Entries in
+    // the existing archive whose name matches any prepared entry are replaced
+    // (old copy skipped), matching the per-file append semantics. The archive
+    // is only replaced if every file is written — a failure leaves the
+    // original untouched. on_write (optional) fires right before each file's
+    // header is written, in final archive order. solid (fresh creates) marks
+    // the archive MHFL_SOLID and chains per-entry solid bits; comment (from
+    // -z) is written as a CMT service header right after the main header and
+    // replaces any existing CMT on append.
+    static bool
+    write_batch_add(const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
+                    const std::filesystem::path& sfx_stub_path = {},
+                    const std::string& password = "", bool encrypt_headers = false,
+                    const std::function<void(size_t, const std::string&)>& on_write = {},
+                    bool solid = false, const std::vector<core::byte>& comment = {});
+
+    // SFX stub upper bound: the reader locates the signature behind the stub
+    // by scanning at most 4 MiB (10-sfx.md:15), so a larger module would
+    // produce an archive nothing can open. Modules are rejected with exit 7
+    // before any output is created (10-sfx.md:80).
+    static constexpr core::uint64 MAX_SFX_SIZE = 0x400000ULL; // 4 MiB
+
+    // Helpers for CLI: resolve default.sfx lookup and SetSFXExt
+    static std::filesystem::path resolve_sfx_stub(const std::string& sfx_name_raw,
+                                                  const char* argv0 = nullptr);
+    static std::filesystem::path apply_sfx_extension(const std::filesystem::path& arc_path);
+
+    static bool move_file_to_archive_vol(const std::filesystem::path& arc_path,
+                                         const std::filesystem::path& src_file,
+                                         const std::string& arc_entry_name, int method,
+                                         core::uint64 vol_size, const std::string& password = "",
+                                         bool solid = false);
+};
+
+} // namespace openrar::archive
+
+#endif // OPENRAR_ARCHIVE_ARCHIVE_MUTATOR_HPP
