@@ -72,6 +72,9 @@ export const RarErrorCode = Object.freeze({
   NOMEM: 'NOMEM',
   ABORTED: 'ABORTED',
   INVALID_ARG: 'INVALID_ARG',
+  // Contract parity with src/archive/buffer_archive.hpp: returned only by the
+  // native DLL _ex listing exports; the wasm surface never emits it (yet).
+  ENCRYPTED: 'ENCRYPTED',
 });
 
 const CODE_MAP = Object.freeze({
@@ -84,6 +87,7 @@ const CODE_MAP = Object.freeze({
   [-7]: 'BAD_PASSWORD',
   [-9]: 'INVALID_ARG',
   [-11]: 'ABORTED',
+  [-12]: 'ENCRYPTED',
 });
 
 export class RarError extends Error {

@@ -43,10 +43,22 @@ extern "C" {
 #endif
 
 // ── Version ──────────────────────────────────────────────────────────────────
+// OPENRAR_DLL_API_VERSION changes only on ABI breaks (docs/versioning.md).
+// Additive exports must not bump it: embedders probe with strict equality
+// (docs/dll-integration-spec.md §3), so a bump would strand every host built
+// against the previous header. New capabilities are negotiated via
+// openrar_abi_features() / GetProcAddress instead.
 #define OPENRAR_DLL_API_VERSION 1
 
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_version(void);
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_version(void);
+
+// ── Capability negotiation (additive; feature bits) ──────────────────────────
+// Bit flags for openrar_abi_features(). Hosts must not assume an export
+// exists before the corresponding bit is set (or the symbol resolves via
+// GetProcAddress / dlsym).
+#define OPENRAR_ABI_FEATURE_LIST_PROGRESS (1ull << 0) // list_file_ex / list_ex below
+OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
 OPENRAR_DLL_API void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes);
@@ -67,7 +79,12 @@ enum RarError {
     RAR_ERR_IO = -6,
     RAR_ERR_BAD_PASSWORD = -7,
     RAR_ERR_INVALID_ARG = -9,
-    RAR_ERR_ABORTED = -11
+    RAR_ERR_ABORTED = -11,
+    // Archive headers are encrypted (HEAD_CRYPT): a password is required
+    // before any header can be read. Returned only by the _ex listing exports
+    // below, as soon as the block is reached; the non-_ex listing calls keep
+    // their historical RAR_ERR_UNSUPPORTED_FEATURE for the same condition.
+    RAR_ERR_ENCRYPTED = -12
 };
 
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_last_error(char* buf, int buf_len);
@@ -176,6 +193,34 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_stream_set_progress(uint32_t handle
                                                                  void* user);
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_stream_set_cancel(uint32_t handle,
                                                                openrar_cancel_cb cb, void* user);
+
+// ── Listing with progress / cancel (_ex variants; additive) ──────────────────
+// Byte-based progress: done = archive bytes consumed (includes any SFX
+// prefix), total = archive size. RAR has no central directory, so the entry
+// count is unknown until the walk completes — there is no entry-index
+// denominator, and an honest percentage must come from bytes. done/total are
+// cumulative and monotonic; exactly one final (total, total) callback fires
+// on success. The file variant walks the archive on disk (no whole-file
+// buffering), so it also avoids materialising multi-GB archives in RAM.
+//
+// cancel is polled between header blocks (and during the SFX scan); a
+// non-zero return aborts with RAR_ERR_ABORTED and leaves every output
+// null/zero — nothing partial is ever allocated. Both callbacks run on the
+// calling thread with no DLL-internal lock held and receive the same `user`
+// pointer. Either callback may be NULL; with both NULL the calls are
+// equivalent to their non-_ex counterparts.
+//
+// Error mapping matches the non-_ex calls, except RAR_ERR_ENCRYPTED (-12) is
+// returned as soon as an encrypted-header block (HEAD_CRYPT) is reached, so
+// hosts can prompt for a password immediately instead of after a walk that
+// could never succeed. Listing itself never needs a password; header-
+// encrypted archives cannot be listed without one.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_list_file_ex(
+    const char* arc_path, uint32_t* count, void** entries_out, void** paths_out,
+    size_t* paths_size_out, openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_list_ex(
+    const uint8_t* data, size_t size, uint32_t* count, void** entries_out, void** paths_out,
+    size_t* paths_size_out, openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
 
 #ifdef __cplusplus
 } // extern "C"

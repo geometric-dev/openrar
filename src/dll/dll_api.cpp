@@ -39,6 +39,8 @@ static_assert(static_cast<int>(RAR_ERR_BAD_PASSWORD) ==
 static_assert(static_cast<int>(RAR_ERR_INVALID_ARG) ==
               static_cast<int>(openrar::api::RAR_ERR_INVALID_ARG));
 static_assert(static_cast<int>(RAR_ERR_ABORTED) == static_cast<int>(openrar::api::RAR_ERR_ABORTED));
+static_assert(static_cast<int>(RAR_ERR_ENCRYPTED) ==
+              static_cast<int>(openrar::api::RAR_ERR_ENCRYPTED));
 static_assert(sizeof(openrar_archive_entry_t) == sizeof(openrar::api::ArchiveEntryOut),
               "openrar_archive_entry_t layout drifted from api::ArchiveEntryOut");
 #define OPENRAR_DLL_ENTRY_FIELD(field)                                                             \
@@ -71,6 +73,67 @@ struct ArchiveHandle {
     std::vector<openrar::archive::BufferArchiveEntry> entries;
 };
 openrar::api::HandleTable<ArchiveHandle> g_handles;
+
+// Adapter between the DLL callback convention (user, done, total) and the
+// core convention (done, total, user). One shared user pointer for both
+// callbacks, per the _ex listing contract. Thunks are passed to the core
+// unconditionally; they no-op when the host did not register that callback.
+struct ListCallbackCtx {
+    openrar_progress_cb progress;
+    openrar_cancel_cb cancel;
+    void* user;
+};
+void list_progress_thunk(uint64_t done, uint64_t total, void* user) {
+    auto* ctx = static_cast<ListCallbackCtx*>(user);
+    if (ctx->progress) ctx->progress(ctx->user, done, total);
+}
+int list_cancel_thunk(void* user) {
+    auto* ctx = static_cast<ListCallbackCtx*>(user);
+    return ctx->cancel ? ctx->cancel(ctx->user) : 0;
+}
+
+// Human-readable detail for the listing failure codes hosts act on.
+const char* list_error_message(int rc) {
+    switch (rc) {
+    case RAR_ERR_ENCRYPTED:
+        return "archive headers are encrypted (password required to list)";
+    case RAR_ERR_ABORTED:
+        return "listing aborted";
+    default:
+        return "list failed";
+    }
+}
+
+// Pack parsed entries into the flat host buffers (malloc'd; freed with
+// openrar_archive_list_free). Shared by every list export. Returns RAR_OK or
+// RAR_ERR_NOMEM with the thread-local error set.
+int pack_list_outputs(const std::vector<openrar::archive::BufferArchiveEntry>& parsed,
+                      uint32_t* count, void** entries_out, void** paths_out,
+                      size_t* paths_size_out) {
+    std::vector<uint8_t> entries, paths;
+    if (!openrar::api::pack_entries(parsed, entries, paths)) {
+        set_error("pack failed");
+        return RAR_ERR_NOMEM;
+    }
+    uint8_t* he = static_cast<uint8_t*>(std::malloc(entries.size() ? entries.size() : 1));
+    if (!he) {
+        set_error("oom entries");
+        return RAR_ERR_NOMEM;
+    }
+    if (!entries.empty()) std::memcpy(he, entries.data(), entries.size());
+    uint8_t* hp = static_cast<uint8_t*>(std::malloc(paths.size() ? paths.size() : 1));
+    if (!hp) {
+        std::free(he);
+        set_error("oom paths");
+        return RAR_ERR_NOMEM;
+    }
+    if (!paths.empty()) std::memcpy(hp, paths.data(), paths.size());
+    *count = static_cast<uint32_t>(parsed.size());
+    *entries_out = he;
+    *paths_out = hp;
+    *paths_size_out = paths.size();
+    return RAR_OK;
+}
 } // namespace
 
 extern "C" {
@@ -80,6 +143,9 @@ int OPENRAR_DLL_CALL openrar_version(void) {
 }
 int OPENRAR_DLL_CALL openrar_archive_version(void) {
     return 1;
+}
+uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
+    return OPENRAR_ABI_FEATURE_LIST_PROGRESS;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -208,29 +274,7 @@ int OPENRAR_DLL_CALL openrar_archive_list(const uint8_t* data, size_t size, uint
             set_error("list failed");
             return rc;
         }
-        std::vector<uint8_t> entries, paths;
-        if (!openrar::api::pack_entries(parsed, entries, paths)) {
-            set_error("pack failed");
-            return RAR_ERR_NOMEM;
-        }
-        uint8_t* he = static_cast<uint8_t*>(std::malloc(entries.size() ? entries.size() : 1));
-        if (!he) {
-            set_error("oom entries");
-            return RAR_ERR_NOMEM;
-        }
-        if (!entries.empty()) std::memcpy(he, entries.data(), entries.size());
-        uint8_t* hp = static_cast<uint8_t*>(std::malloc(paths.size() ? paths.size() : 1));
-        if (!hp) {
-            std::free(he);
-            set_error("oom paths");
-            return RAR_ERR_NOMEM;
-        }
-        if (!paths.empty()) std::memcpy(hp, paths.data(), paths.size());
-        *count = static_cast<uint32_t>(parsed.size());
-        *entries_out = he;
-        *paths_out = hp;
-        *paths_size_out = paths.size();
-        return RAR_OK;
+        return pack_list_outputs(parsed, count, entries_out, paths_out, paths_size_out);
     } catch (const std::exception& e) {
         set_error(e.what());
         return RAR_ERR_NOMEM;
@@ -857,6 +901,70 @@ int OPENRAR_DLL_CALL openrar_stream_set_cancel(uint32_t handle, openrar_cancel_c
     } catch (...) {
         set_error("unknown C++ exception");
         return RAR_ERR_INVALID_ARG;
+    }
+}
+
+// ── Listing with progress / cancel ───────────────────────────────────────────
+int OPENRAR_DLL_CALL openrar_archive_list_file_ex(const char* arc_path, uint32_t* count,
+                                                  void** entries_out, void** paths_out,
+                                                  size_t* paths_size_out,
+                                                  openrar_progress_cb progress,
+                                                  openrar_cancel_cb cancel, void* user) {
+    try {
+        if (!arc_path || !count || !entries_out || !paths_out || !paths_size_out) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *count = 0;
+        *entries_out = nullptr;
+        *paths_out = nullptr;
+        *paths_size_out = 0;
+        ListCallbackCtx ctx{progress, cancel, user};
+        std::vector<openrar::archive::BufferArchiveEntry> parsed;
+        int rc =
+            openrar::archive::list_file_stream(std::filesystem::u8path(arc_path), parsed,
+                                               list_progress_thunk, &ctx, list_cancel_thunk, &ctx);
+        if (rc != RAR_OK) {
+            set_error(list_error_message(rc));
+            return rc;
+        }
+        return pack_list_outputs(parsed, count, entries_out, paths_out, paths_size_out);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+int OPENRAR_DLL_CALL openrar_archive_list_ex(const uint8_t* data, size_t size, uint32_t* count,
+                                             void** entries_out, void** paths_out,
+                                             size_t* paths_size_out, openrar_progress_cb progress,
+                                             openrar_cancel_cb cancel, void* user) {
+    try {
+        if (!data || !count || !entries_out || !paths_out || !paths_size_out) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *count = 0;
+        *entries_out = nullptr;
+        *paths_out = nullptr;
+        *paths_size_out = 0;
+        ListCallbackCtx ctx{progress, cancel, user};
+        openrar::archive::BufferArchive ba;
+        std::vector<openrar::archive::BufferArchiveEntry> parsed;
+        int rc = ba.list(data, size, parsed, list_progress_thunk, &ctx, list_cancel_thunk, &ctx);
+        if (rc != RAR_OK) {
+            set_error(list_error_message(rc));
+            return rc;
+        }
+        return pack_list_outputs(parsed, count, entries_out, paths_out, paths_size_out);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_NOMEM;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_NOMEM;
     }
 }
 
