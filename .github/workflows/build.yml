@@ -337,6 +337,9 @@ jobs:
       - name: Package and attach to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The job downloads artifacts without a checkout, so gh has no git
+          # remote to resolve the repository from — pin it explicitly.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
