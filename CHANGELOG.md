@@ -5,6 +5,37 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Progress/cancel on the archive-listing APIs** (additive, new exports
+  only): `openrar_archive_list_file_ex` and `openrar_archive_list_ex` take the
+  existing `openrar_progress_cb` / `openrar_cancel_cb` convention. Progress is
+  byte-based — `done` = archive bytes consumed vs. `total` = archive size,
+  polled between header blocks and during the SFX scan, with one final
+  `(total, total)` on success — because RAR has no central directory and an
+  entry-count denominator cannot work. Cancel is polled between header
+  blocks; a non-zero return yields `RAR_ERR_ABORTED` with all outputs left
+  untouched and nothing partial allocated.
+- **Streaming file listing**: `openrar_archive_list_file_ex` walks the archive
+  on disk instead of slurping it into memory, so listing multi-GB archives no
+  longer materialises them in RAM and aborts stay responsive while the walk
+  seeks across slow (network) storage. The header-walk state machine is now
+  shared with the in-memory `BufferArchive::list` so both listing paths
+  cannot drift apart.
+- **Early password signal**: a header-encrypted archive (`HEAD_CRYPT`) now
+  returns the new `RAR_ERR_ENCRYPTED` (-12) from the `_ex` listing exports as
+  soon as the block is reached, letting hosts prompt for a password
+  immediately. The historical surfaces keep `RAR_ERR_UNSUPPORTED_FEATURE` for
+  the same condition.
+- **Capability negotiation**: `openrar_abi_features()` returns a feature
+  bitmask (`OPENRAR_ABI_FEATURE_LIST_PROGRESS`). `OPENRAR_DLL_API_VERSION`
+  stays at 1 by policy — hosts negotiate additive exports via the feature bit
+  or `GetProcAddress`, never via the version probe (`docs/versioning.md`).
+- C++ wrapper overloads `list_archive(rar, progress, cancel, user)` and
+  `list_archive_file(path, progress, cancel, user)`.
+
 ## [1.0.126] - 2026-09-13
 
 First release on the public repository (github.com/geometric-dev/openrar).
