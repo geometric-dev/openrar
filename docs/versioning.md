@@ -49,7 +49,11 @@ compatibility question.
 
 The DLL ABI version (`OPENRAR_DLL_API_VERSION` in `src/dll/openrar_dll.h`,
 currently `1`) is not the package version: it changes only on ABI breaks and
-matches the package MAJOR during the 1.x line. The shared-library target
+matches the package MAJOR during the 1.x line. Additive exports must not bump
+it — embedders probe with strict equality per `docs/dll-integration-spec.md`,
+so a bump would strand every host built against the previous header. New
+capabilities are negotiated at runtime instead: `openrar_abi_features()`
+(feature bitmask) or `GetProcAddress`/`dlsym` on the new symbol. The shared-library target
 already derives `VERSION ${PROJECT_VERSION}` / `SOVERSION
 ${PROJECT_VERSION_MAJOR}` from the project version, so a MAJOR bump moves the
 soname/dll file version automatically. Embedders keep probing

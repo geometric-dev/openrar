@@ -76,6 +76,10 @@ if (openrar_archive_version() != 1) abort();
 ```
 
 * Adding new exports is minor; breaking `openrar_archive_entry_t` or removing an export is major (bump `SOVERSION`).
+* **Negotiating additive exports.** `OPENRAR_DLL_API_VERSION` does *not* change when exports are added (`docs/versioning.md`) — strict-equality probes keep working across versions. Detect a capability at runtime instead:
+  * `openrar_abi_features()` returns a `uint64_t` bitmask (e.g. `OPENRAR_ABI_FEATURE_LIST_PROGRESS`) once the DLL is loaded;
+  * or resolve the symbol directly: `GetProcAddress(hmod, "openrar_archive_list_file_ex")` / `dlsym`.
+  * **Do not reference new exports through the import lib if you must keep running against older DLLs** — the process fails to *load* before any version check runs. Either resolve dynamically as above or link with `/DELAYLOAD:openrar.dll`.
 
 ---
 
@@ -88,7 +92,9 @@ if (openrar_archive_version() != 1) abort();
 
 | Op | Peak | Notes |
 |---|---|---:|
-| `list` | `~rar.byteLength` | scan only |
+| `list` / `list_ex` | `~rar.byteLength` | buffer must be resident; scan only |
+| `list_file` | `~rar.byteLength` | slurps the file into memory, then scans |
+| `list_file_ex` | `~Σ(entries + paths)` | **streams from disk** — header walk reads only headers, no whole-file buffer |
 | `extractFile` | `~rar + per-file` | per-file |
 | `extractAll` | `~rar + Σ(unp)` | single alloc, re-used |
 | `create` | `Σ(data_len) + archive` | per-file compressed freed before next |
@@ -110,7 +116,8 @@ enum RarError {
     RAR_ERR_IO = -6,
     RAR_ERR_BAD_PASSWORD = -7,
     RAR_ERR_INVALID_ARG = -9,
-    RAR_ERR_ABORTED = -11
+    RAR_ERR_ABORTED = -11,
+    RAR_ERR_ENCRYPTED = -12
 };
 ```
 
@@ -124,7 +131,8 @@ enum RarError {
 | `CRC_MISMATCH` | `FHEXTRA_HASH` BLAKE2 / `FHFL_CRC32` mismatch on extract |
 | `UNSUPPORTED_FEATURE` | encrypted entry, multivolume `MHFL_VOLUME`, solid `FCI_SOLID`, method ∉ {0,3,5} |
 | `INVALID_ARG` | `window_log2 ∉ [1,4]`, `method ∉ {0,3,5}`, path empty / >2048 B / contains `\` or `..`, `nullptr` |
-| `ABORTED` | `openrar_cancel_cb` returned non-zero during `feed` / `extract` |
+| `ABORTED` | `openrar_cancel_cb` returned non-zero during `feed` / `extract` / `_ex` listing |
+| `ENCRYPTED` | `_ex` listing on a header-encrypted archive (`HEAD_CRYPT`) — dedicated early password signal; the non-`_ex` listing calls keep `UNSUPPORTED_FEATURE` for this condition |
 
 ---
 
@@ -233,13 +241,35 @@ void     openrar_stream_free(uint32_t handle);
 ```c
 typedef void (OPENRAR_DLL_CALL *openrar_progress_cb)(void* user, uint64_t done, uint64_t total);
 typedef int  (OPENRAR_DLL_CALL *openrar_cancel_cb)(void* user); // non-zero => abort
-int openrar_set_progress(uint32_t handle, openrar_progress_cb cb, void* user); // no-op, kept for compat
-int openrar_set_cancel(uint32_t handle, openrar_cancel_cb cb, void* user);
 int openrar_stream_set_progress(uint32_t handle, openrar_progress_cb cb, void* user);
 int openrar_stream_set_cancel(uint32_t handle, openrar_cancel_cb cb, void* user);
 ```
 
-Polled between blocks (`feed` / `finish` / `extract_all`). `done` is monotonic.
+Polled between blocks (`feed` / `finish` / `extract_all`). `done` is monotonic. (`openrar_set_progress` / `openrar_set_cancel` were removed — they were silent no-ops; callbacks are wired per-call or per-handle as above.)
+
+### 6.9 Listing with progress / cancel (_ex, additive)
+
+```c
+#define OPENRAR_ABI_FEATURE_LIST_PROGRESS (1ull << 0)
+uint64_t openrar_abi_features(void); // bit set <=> these exports exist
+
+int openrar_archive_list_file_ex(const char* arc_path,
+                                 uint32_t* count, void** entries_out,
+                                 void** paths_out, size_t* paths_size_out,
+                                 openrar_progress_cb progress,
+                                 openrar_cancel_cb cancel, void* user);
+int openrar_archive_list_ex(const uint8_t* data, size_t size,
+                            uint32_t* count, void** entries_out,
+                            void** paths_out, size_t* paths_size_out,
+                            openrar_progress_cb progress,
+                            openrar_cancel_cb cancel, void* user);
+```
+
+* **Byte-based progress.** RAR has no central directory, so the entry count is unknown until the walk completes — there is no entry-index denominator. `done` = archive bytes consumed (includes any SFX prefix), `total` = archive size; cumulative, monotonic, and exactly one `(total, total)` callback fires on success. Callbacks may fire before a failing return (e.g. mid-SFX-scan). The file variant walks the archive **on disk** — it does not slurp the file — so it also avoids materialising multi-GB archives in RAM.
+* **Cancel** is polled between header blocks (and per 64 KiB chunk during the SFX scan). A non-zero return aborts with `RAR_ERR_ABORTED`; all outputs stay null/zero and nothing partial is ever allocated (packing happens only after a successful walk).
+* Both callbacks run on the calling thread with **no DLL-internal lock held** and receive the same `user` pointer. Either may be `NULL`; with both `NULL` the calls are equivalent to `openrar_archive_list_file` / `openrar_archive_list`.
+* **Header-encrypted archives** return `RAR_ERR_ENCRYPTED` (-12) as soon as the `HEAD_CRYPT` block is reached — prompt the user immediately instead of waiting out a walk that could never succeed. Listing itself never needs a password; header-encrypted archives cannot be listed without one.
+* All other semantics (entry layout, error mapping, `UNSUPPORTED_FEATURE` for encrypted/solid/multi-volume/recovery) are identical to the non-`_ex` calls.
 
 ---
 
@@ -265,6 +295,11 @@ struct CreateOptions { int method=3; uint32_t window_log2=4; };
 std::vector<Entry> list_archive(const std::vector<uint8_t>& rar);
 std::vector<Entry> list_archive(const uint8_t* data, size_t size);
 std::vector<Entry> list_archive_file(const std::filesystem::path& arc);
+// _ex overloads: byte progress + cancel (either callback may be nullptr).
+std::vector<Entry> list_archive(const std::vector<uint8_t>& rar, openrar_progress_cb progress,
+                                openrar_cancel_cb cancel = nullptr, void* user = nullptr);
+std::vector<Entry> list_archive_file(const std::filesystem::path& arc, openrar_progress_cb progress,
+                                     openrar_cancel_cb cancel = nullptr, void* user = nullptr);
 std::vector<uint8_t> extract_file(const std::vector<uint8_t>& rar, uint32_t index);
 std::map<std::string, std::vector<uint8_t>> extract_all(const std::vector<uint8_t>& rar);
 
@@ -362,7 +397,30 @@ openrar_stream_free(h);
 // out is block-codec payload — decompress with openrar_decompress
 ```
 
-### 8.5 C++ — RAII
+### 8.5 C — listing a large archive with progress + cancel
+
+```c
+struct Ctx { int aborted; uint64_t ui_total; };
+static void OPENRAR_DLL_CALL my_progress(void* user, uint64_t done, uint64_t total) {
+    // done/total are bytes of archive consumed — an honest percentage.
+    ((Ctx*)user)->ui_total = total;
+    set_percent((int)(100.0 * done / total));
+}
+static int OPENRAR_DLL_CALL my_cancel(void* user) {
+    return ((Ctx*)user)->aborted; // polled between header blocks
+}
+
+// Header-encrypted archive => RAR_ERR_ENCRYPTED immediately; prompt, then
+// report. Listing streams from disk; no whole-file buffer.
+uint32_t n; void *e, *p; size_t ps;
+Ctx ctx = {0, 0};
+int rc = openrar_archive_list_file_ex("big.rar", &n, &e, &p, &ps, my_progress, my_cancel, &ctx);
+if (rc == RAR_ERR_ENCRYPTED) { /* headers need a password */ }
+else if (rc == RAR_ERR_ABORTED) { /* user cancelled; outputs untouched */ }
+else openrar_archive_list_free(e, p, ps);
+```
+
+### 8.6 C++ — RAII
 
 ```cpp
 #include "openrar/openrar.hpp"
@@ -382,7 +440,7 @@ auto comp = enc.finish();
 auto dec = decompress_block(comp);
 ```
 
-### 8.6 C# — P/Invoke
+### 8.7 C# — P/Invoke
 
 ```csharp
 using System.Runtime.InteropServices;
@@ -406,7 +464,7 @@ class OpenRar {
 
 Marshal `paths` as `byte*` via `Marshal.StringToHGlobalAnsi` + `openrar_alloc` for output.
 
-### 8.7 Python — ctypes
+### 8.8 Python — ctypes
 
 ```python
 import ctypes, pathlib
@@ -420,7 +478,7 @@ paths = [b"hello.txt"]
 # ... allocate c_void_p arrays, call, then lib.openrar_free(out_ptr) ...
 ```
 
-### 8.8 Rust — FFI
+### 8.9 Rust — FFI
 
 ```rust
 #[link(name="openrar")]
@@ -459,7 +517,7 @@ openrar_stream_set_cancel(h, my_cancel, &ctx);
 openrar_stream_set_progress(h, my_progress, &ctx); // void(*)(void*, uint64_t done, uint64_t total)
 ```
 
-Polled between blocks; abort returns `RAR_ERR_ABORTED`.
+Polled between blocks; abort returns `RAR_ERR_ABORTED`. The `_ex` listing exports (§6.9) take the same callbacks per call, run them on the calling thread with no internal lock held, and are safe to call from any single thread — different threads may list different archives concurrently.
 
 ---
 
@@ -485,7 +543,7 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 
 ## 12. Deployment
 
-* **Windows:** place `openrar.dll` (or suffixed `openrar_x64.dll`/`openrar_arm64.dll`) beside `.exe` or on `PATH`. Import lib `openrar.lib` (or `openrar_x64.lib`) for link. `dumpbin /EXPORTS` lists 35 exports. Do not mix x64 DLL into arm64 process — OS will reject.
+* **Windows:** place `openrar.dll` (or suffixed `openrar_x64.dll`/`openrar_arm64.dll`) beside `.exe` or on `PATH`. Import lib `openrar.lib` (or `openrar_x64.lib`) for link. `dumpbin /EXPORTS` lists 36 exports (the declarations in `openrar_dll.h` are the source of truth). Do not mix x64 DLL into arm64 process — OS will reject.
 * **Linux:** `libopenrar.so` (`SOVERSION 1`) or `libopenrar_x64.so`/`libopenrar_arm64.so`, `rpath $ORIGIN` or `LD_LIBRARY_PATH`.
 * **macOS:** `libopenrar.dylib` (or universal2 via `lipo`), `install_name @rpath/libopenrar.dylib`.
 * No `SharedArrayBuffer` / `COOP/COEP` requirement (WASM-only).
@@ -502,7 +560,8 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 
 ## 14. Limitations (v1)
 
-* `UNSUPPORTED_FEATURE` for: encrypted entries (`FHEXTRA_CRYPT`), multivolume `MHFL_VOLUME`, solid `FCI_SOLID`, recovery `MHFL_PROTECT`, `method ∉ {0,3,5}`.
+* `UNSUPPORTED_FEATURE` for: encrypted entries (`FHEXTRA_CRYPT`), multivolume `MHFL_VOLUME`, solid `FCI_SOLID`, recovery `MHFL_PROTECT`, `method ∉ {0,3,5}`. The `_ex` listing exports keep these codes (§6.9); only the header-encrypted case maps to `RAR_ERR_ENCRYPTED` there.
+* No password input on any list/extract export: header-encrypted archives cannot be listed or extracted through the DLL (the `_ex` listing detects this immediately via `RAR_ERR_ENCRYPTED`).
 * No NTFS ACL/STM, no `FHEXTRA_HTIME` ns, no symlinks — stored entries still list but extract skips with `OK`.
 * `window_log2 5` (4M) only for stream; buffer `create` clamps `[1,4]`.
 
@@ -523,4 +582,5 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 ## 16. Version History
 
 * **1.0 (2026-09):** Initial Hybrid D — block + buffer archive + handle + file helpers + streaming + C++ wrapper. Exports 35.
+* **1.0.x (2026-09):** Additive — `openrar_archive_list_file_ex` / `openrar_archive_list_ex` (byte progress + cancel; file variant streams from disk), `openrar_abi_features` (`OPENRAR_ABI_FEATURE_LIST_PROGRESS`), `RAR_ERR_ENCRYPTED` (-12). Exports 36. `OPENRAR_DLL_API_VERSION` unchanged (§3).
 

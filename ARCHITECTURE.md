@@ -176,6 +176,17 @@ surfaces sit on is gated by the `OPENRAR_INMEM_ARCHIVE` CMake option — it is
 excluded from the CLI binary and the lean block-codec wasm build; the DLL
 always compiles it directly.
 
+**Listing walk.** The per-block header classification lives once, in
+`buffer_archive.cpp` (`walk_headers`), behind two source adapters: the
+in-memory `BufferArchive::list` and the file-streaming `list_file_stream`.
+The boundaries map the shared internal status to public codes and
+deliberately differ on `CryptHeader`: the historical surfaces keep
+`RAR_ERR_UNSUPPORTED_FEATURE`, while the DLL's `_ex` listing exports return
+the dedicated `RAR_ERR_ENCRYPTED` (-12) as an early password signal. The `_ex`
+exports are additive and negotiate via `openrar_abi_features()`;
+`OPENRAR_DLL_API_VERSION` does not move for new exports (see
+`docs/versioning.md`).
+
 These exemptions are also encoded in `.clang-tidy` (`RAR_` enum-constant
 ignore rule) and documented in CONTRIBUTING.md.
 
