@@ -9,6 +9,10 @@
 #include <crtdbg.h>
 #endif
 
+#ifndef OPENRAR_SOURCE_DIR
+#define OPENRAR_SOURCE_DIR "."
+#endif
+
 static void test_version() {
     assert(openrar_version() == OPENRAR_DLL_API_VERSION);
     assert(openrar_archive_version() == 1);
@@ -262,6 +266,200 @@ static void test_stream_progress() {
     std::cout << "PASS test_stream_progress\n";
 }
 
+// ── Listing with progress / cancel (_ex) ─────────────────────────────────────
+
+static void test_abi_features() {
+    // Additive exports do not bump the ABI version; the feature bit is set.
+    assert(openrar_version() == OPENRAR_DLL_API_VERSION);
+    assert(openrar_version() == 1);
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_LIST_PROGRESS) != 0);
+    std::cout << "PASS test_abi_features\n";
+}
+
+struct ExProgressLog {
+    std::vector<uint64_t> dones;
+    std::vector<uint64_t> totals;
+};
+
+static void OPENRAR_DLL_CALL ex_progress_cb(void* user, uint64_t done, uint64_t total) {
+    auto* log = static_cast<ExProgressLog*>(user);
+    log->dones.push_back(done);
+    log->totals.push_back(total);
+}
+
+static int OPENRAR_DLL_CALL ex_cancel_after_two(void* user) {
+    return ++(*static_cast<int*>(user)) >= 2 ? 1 : 0;
+}
+
+// Build a two-entry archive in memory and persist it for the file API.
+static std::vector<uint8_t> make_two_entry_rar() {
+    const char* paths[] = {"hello.txt", "dir/nested.txt"};
+    const uint8_t data1[] = "hello world";
+    const uint8_t data2[] = "nested content here";
+    const uint8_t* datas[] = {data1, data2};
+    size_t sizes[] = {sizeof(data1) - 1, sizeof(data2) - 1};
+    const uint8_t* path_ptrs[] = {reinterpret_cast<const uint8_t*>(paths[0]),
+                                  reinterpret_cast<const uint8_t*>(paths[1])};
+    uint8_t* rar = nullptr;
+    size_t rar_len = 0;
+    int rc = openrar_archive_create(path_ptrs, datas, sizes, 2, 3, 4, &rar, &rar_len);
+    assert(rc == 0 && rar && rar_len > 0);
+    std::vector<uint8_t> out(rar, rar + rar_len);
+    openrar_free(rar);
+    return out;
+}
+
+static void test_list_file_ex_progress() {
+    auto temp_dir = std::filesystem::temp_directory_path() / "openrar_dll_test_ex";
+    std::error_code ec;
+    std::filesystem::create_directories(temp_dir, ec);
+    auto out_rar_path = (temp_dir / "ex_progress.rar").string();
+    std::vector<uint8_t> rar = make_two_entry_rar();
+    {
+        FILE* f = std::fopen(out_rar_path.c_str(), "wb");
+        assert(f);
+        std::fwrite(rar.data(), 1, rar.size(), f);
+        std::fclose(f);
+    }
+
+    // Null callbacks: _ex is equivalent to the non-_ex export.
+    uint32_t c_ex = 0;
+    void *e_ex = nullptr, *p_ex = nullptr;
+    size_t ps_ex = 0;
+    int rc = openrar_archive_list_file_ex(out_rar_path.c_str(), &c_ex, &e_ex, &p_ex, &ps_ex,
+                                          nullptr, nullptr, nullptr);
+    assert(rc == 0 && c_ex == 2);
+    uint32_t c_plain = 0;
+    void *e_plain = nullptr, *p_plain = nullptr;
+    size_t ps_plain = 0;
+    rc = openrar_archive_list_file(out_rar_path.c_str(), &c_plain, &e_plain, &p_plain, &ps_plain);
+    assert(rc == 0 && c_plain == 2);
+    assert(ps_ex == ps_plain);
+    {
+        const auto* a = static_cast<const openrar_archive_entry_t*>(e_ex);
+        const auto* b = static_cast<const openrar_archive_entry_t*>(e_plain);
+        for (uint32_t i = 0; i < c_ex; ++i) {
+            assert(a[i].path_len == b[i].path_len && a[i].path_offset == b[i].path_offset);
+            assert(std::memcmp(static_cast<const char*>(p_ex) + a[i].path_offset,
+                               static_cast<const char*>(p_plain) + b[i].path_offset,
+                               a[i].path_len) == 0);
+        }
+    }
+    openrar_archive_list_free(e_ex, p_ex, ps_ex);
+    openrar_archive_list_free(e_plain, p_plain, ps_plain);
+
+    // Progress: byte-based, monotonic, one final (file_size, file_size).
+    ExProgressLog log;
+    uint32_t c2 = 0;
+    void *e2 = nullptr, *p2 = nullptr;
+    size_t ps2 = 0;
+    rc = openrar_archive_list_file_ex(out_rar_path.c_str(), &c2, &e2, &p2, &ps2, ex_progress_cb,
+                                      nullptr, &log);
+    assert(rc == 0 && c2 == 2);
+    openrar_archive_list_free(e2, p2, ps2);
+    assert(log.dones.size() >= 2);
+    for (size_t i = 1; i < log.dones.size(); ++i) {
+        assert(log.dones[i] >= log.dones[i - 1]);
+        assert(log.dones[i] <= log.totals[i]);
+    }
+    for (uint64_t t : log.totals) assert(t == rar.size());
+    assert(log.dones.back() == rar.size() && log.totals.back() == rar.size());
+
+    std::filesystem::remove_all(temp_dir, ec);
+    std::cout << "PASS test_list_file_ex_progress\n";
+}
+
+static void test_list_ex_buffer() {
+    std::vector<uint8_t> rar = make_two_entry_rar();
+
+    // Buffer variant: progress parity with the file variant.
+    ExProgressLog log;
+    uint32_t count = 0;
+    void* e = nullptr;
+    void* p = nullptr;
+    size_t ps = 0;
+    int rc = openrar_archive_list_ex(rar.data(), rar.size(), &count, &e, &p, &ps, ex_progress_cb,
+                                     nullptr, &log);
+    assert(rc == 0 && count == 2);
+    openrar_archive_list_free(e, p, ps);
+    assert(log.dones.back() == rar.size() && log.totals.back() == rar.size());
+    for (size_t i = 1; i < log.dones.size(); ++i) assert(log.dones[i] >= log.dones[i - 1]);
+
+    // Cancel on the second poll: RAR_ERR_ABORTED, outputs untouched.
+    int polls = 0;
+    count = 99;
+    e = nullptr;
+    p = nullptr;
+    ps = 42;
+    rc = openrar_archive_list_ex(rar.data(), rar.size(), &count, &e, &p, &ps, nullptr,
+                                 ex_cancel_after_two, &polls);
+    assert(rc == RAR_ERR_ABORTED);
+    assert(count == 0 && e == nullptr && p == nullptr && ps == 0);
+    std::cout << "PASS test_list_ex_buffer\n";
+}
+
+static void test_list_file_ex_cancel() {
+    auto temp_dir = std::filesystem::temp_directory_path() / "openrar_dll_test_ex";
+    std::error_code ec;
+    std::filesystem::create_directories(temp_dir, ec);
+    auto out_rar_path = (temp_dir / "ex_cancel.rar").string();
+    std::vector<uint8_t> rar = make_two_entry_rar();
+    {
+        FILE* f = std::fopen(out_rar_path.c_str(), "wb");
+        assert(f);
+        std::fwrite(rar.data(), 1, rar.size(), f);
+        std::fclose(f);
+    }
+
+    // Cancel on the second poll: RAR_ERR_ABORTED (-11), outputs left
+    // unallocated/untouched.
+    int polls = 0;
+    uint32_t count = 99;
+    void* e = nullptr;
+    void* p = nullptr;
+    size_t ps = 42;
+    int rc = openrar_archive_list_file_ex(out_rar_path.c_str(), &count, &e, &p, &ps, nullptr,
+                                          ex_cancel_after_two, &polls);
+    assert(rc == RAR_ERR_ABORTED);
+    assert(polls == 2);
+    assert(count == 0 && e == nullptr && p == nullptr && ps == 0);
+    std::filesystem::remove_all(temp_dir, ec);
+    std::cout << "PASS test_list_file_ex_cancel\n";
+}
+
+static void test_list_file_ex_encrypted() {
+    const std::filesystem::path fixtures = std::filesystem::path(OPENRAR_SOURCE_DIR) / "tests";
+
+    // hello5_hp.rar (-hp secret): header-encrypted. The _ex listing returns
+    // the dedicated early password signal; outputs stay untouched.
+    auto hp = (fixtures / "hello5_hp.rar").string();
+    uint32_t count = 0;
+    void* e = nullptr;
+    void* p = nullptr;
+    size_t ps = 0;
+    int rc =
+        openrar_archive_list_file_ex(hp.c_str(), &count, &e, &p, &ps, nullptr, nullptr, nullptr);
+    assert(rc == RAR_ERR_ENCRYPTED);
+    assert(count == 0 && e == nullptr && p == nullptr && ps == 0);
+    char msg[256] = {};
+    openrar_archive_get_error(msg, sizeof(msg));
+    assert(msg[0] != '\0');
+
+    // Parity: the non-_ex export keeps its historical code for the same
+    // archive.
+    rc = openrar_archive_list_file(hp.c_str(), &count, &e, &p, &ps);
+    assert(rc == RAR_ERR_UNSUPPORTED_FEATURE);
+
+    // hello5_p.rar (-p secret): file-data encrypted, headers in clear —
+    // rejected by both paths (no semantics relaxation in the _ex export).
+    auto pp = (fixtures / "hello5_p.rar").string();
+    rc = openrar_archive_list_file_ex(pp.c_str(), &count, &e, &p, &ps, nullptr, nullptr, nullptr);
+    assert(rc == RAR_ERR_UNSUPPORTED_FEATURE);
+    rc = openrar_archive_list_file(pp.c_str(), &count, &e, &p, &ps);
+    assert(rc == RAR_ERR_UNSUPPORTED_FEATURE);
+    std::cout << "PASS test_list_file_ex_encrypted\n";
+}
+
 static void test_file_helpers() {
     // Create a temp source file and use create_from_paths
     auto temp_dir = std::filesystem::temp_directory_path() / "openrar_dll_test";
@@ -320,6 +518,11 @@ int main() {
     test_stream_cancel();
     test_stream_cancel_reentrant();
     test_stream_progress();
+    test_abi_features();
+    test_list_file_ex_progress();
+    test_list_ex_buffer();
+    test_list_file_ex_cancel();
+    test_list_file_ex_encrypted();
     test_file_helpers();
     std::cout << "ALL DLL TESTS PASSED\n";
     return 0;

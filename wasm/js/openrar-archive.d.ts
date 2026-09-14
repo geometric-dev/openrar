@@ -19,7 +19,8 @@ export type RarErrorCode =
   | 'IO'
   | 'NOMEM'
   | 'ABORTED'
-  | 'INVALID_ARG';
+  | 'INVALID_ARG'
+  | 'ENCRYPTED';
 
 export class RarError extends Error {
   readonly code: RarErrorCode;

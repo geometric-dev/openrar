@@ -80,13 +80,9 @@ inline std::vector<uint8_t> decompress_block(const std::vector<uint8_t>& src,
 }
 
 // ── Archive helpers ──────────────────────────────────────────────────────────
-inline std::vector<Entry> list_archive(const uint8_t* data, size_t size) {
-    uint32_t count = 0;
-    void* entries = nullptr;
-    void* paths = nullptr;
-    size_t paths_sz = 0;
-    int rc = openrar_archive_list(data, size, &count, &entries, &paths, &paths_sz);
-    check(rc);
+// Unpack a malloc'd entries array + contiguous paths blob (as returned by the
+// list exports) into Entry values. Pair with openrar_archive_list_free.
+inline std::vector<Entry> unpack_entries(uint32_t count, void* entries, void* paths) {
     auto* ents = static_cast<openrar_archive_entry_t*>(entries);
     const char* pstr = static_cast<const char*>(paths);
     std::vector<Entry> out;
@@ -104,6 +100,17 @@ inline std::vector<Entry> list_archive(const uint8_t* data, size_t size) {
         e.index = i;
         out.push_back(std::move(e));
     }
+    return out;
+}
+
+inline std::vector<Entry> list_archive(const uint8_t* data, size_t size) {
+    uint32_t count = 0;
+    void* entries = nullptr;
+    void* paths = nullptr;
+    size_t paths_sz = 0;
+    int rc = openrar_archive_list(data, size, &count, &entries, &paths, &paths_sz);
+    check(rc);
+    std::vector<Entry> out = unpack_entries(count, entries, paths);
     openrar_archive_list_free(entries, paths, paths_sz);
     return out;
 }
@@ -119,23 +126,49 @@ inline std::vector<Entry> list_archive_file(const std::filesystem::path& arc) {
     std::string u8 = arc.u8string();
     int rc = openrar_archive_list_file(u8.c_str(), &count, &entries, &paths, &paths_sz);
     check(rc);
-    auto* ents = static_cast<openrar_archive_entry_t*>(entries);
-    const char* pstr = static_cast<const char*>(paths);
-    std::vector<Entry> out;
-    out.reserve(count);
-    for (uint32_t i = 0; i < count; ++i) {
-        Entry e;
-        e.path = std::string(pstr + ents[i].path_offset, ents[i].path_len);
-        e.is_dir = ents[i].is_dir != 0;
-        e.method = ents[i].method;
-        e.is_encrypted = ents[i].is_encrypted != 0;
-        e.crc32 = ents[i].crc32;
-        e.size = ents[i].size;
-        e.packed_size = ents[i].packed_size;
-        e.mtime = ents[i].mtime;
-        e.index = i;
-        out.push_back(std::move(e));
-    }
+    std::vector<Entry> out = unpack_entries(count, entries, paths);
+    openrar_archive_list_free(entries, paths, paths_sz);
+    return out;
+}
+
+// ── Listing with progress / cancel (_ex ABI; callbacks may be null) ──────────
+// Byte-based progress (done = archive bytes consumed, total = archive size)
+// and a cancel poll between header blocks; the file variant streams from disk
+// instead of slurping. See openrar_dll.h for the full contract. RAR_ERR_
+// ENCRYPTED (header-encrypted archive) and RAR_ERR_ABORTED throw via check()
+// like any other non-OK code.
+inline std::vector<Entry> list_archive(const uint8_t* data, size_t size,
+                                       openrar_progress_cb progress, openrar_cancel_cb cancel,
+                                       void* user) {
+    uint32_t count = 0;
+    void* entries = nullptr;
+    void* paths = nullptr;
+    size_t paths_sz = 0;
+    int rc = openrar_archive_list_ex(data, size, &count, &entries, &paths, &paths_sz, progress,
+                                     cancel, user);
+    check(rc);
+    std::vector<Entry> out = unpack_entries(count, entries, paths);
+    openrar_archive_list_free(entries, paths, paths_sz);
+    return out;
+}
+inline std::vector<Entry> list_archive(const std::vector<uint8_t>& rar,
+                                       openrar_progress_cb progress,
+                                       openrar_cancel_cb cancel = nullptr, void* user = nullptr) {
+    return list_archive(rar.data(), rar.size(), progress, cancel, user);
+}
+inline std::vector<Entry> list_archive_file(const std::filesystem::path& arc,
+                                            openrar_progress_cb progress,
+                                            openrar_cancel_cb cancel = nullptr,
+                                            void* user = nullptr) {
+    uint32_t count = 0;
+    void* entries = nullptr;
+    void* paths = nullptr;
+    size_t paths_sz = 0;
+    std::string u8 = arc.u8string();
+    int rc = openrar_archive_list_file_ex(u8.c_str(), &count, &entries, &paths, &paths_sz, progress,
+                                          cancel, user);
+    check(rc);
+    std::vector<Entry> out = unpack_entries(count, entries, paths);
     openrar_archive_list_free(entries, paths, paths_sz);
     return out;
 }
@@ -239,23 +272,7 @@ public:
         size_t ps = 0;
         int rc = openrar_archive_handle_list(h_, &count, &e, &p, &ps);
         check(rc);
-        auto* ents = static_cast<openrar_archive_entry_t*>(e);
-        const char* pstr = static_cast<const char*>(p);
-        std::vector<Entry> out;
-        out.reserve(count);
-        for (uint32_t i = 0; i < count; ++i) {
-            Entry en;
-            en.path = std::string(pstr + ents[i].path_offset, ents[i].path_len);
-            en.is_dir = ents[i].is_dir != 0;
-            en.method = ents[i].method;
-            en.is_encrypted = ents[i].is_encrypted != 0;
-            en.crc32 = ents[i].crc32;
-            en.size = ents[i].size;
-            en.packed_size = ents[i].packed_size;
-            en.mtime = ents[i].mtime;
-            en.index = i;
-            out.push_back(std::move(en));
-        }
+        std::vector<Entry> out = unpack_entries(count, e, p);
         openrar_archive_list_free(e, p, ps);
         return out;
     }
