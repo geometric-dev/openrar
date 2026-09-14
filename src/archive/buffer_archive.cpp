@@ -8,6 +8,7 @@
 #include "../format/header_reader.hpp"
 #include "../format/header_writer.hpp"
 #include "../format/headers.hpp"
+#include "../io/file_stream.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -270,6 +271,147 @@ struct ProgressTracker {
     }
 };
 
+// ── Shared header-walk state machine ─────────────────────────────────────────
+// The per-block classification is shared by BufferArchive::list (memory
+// source) and list_file_stream (stream source) so the two listing paths can
+// never drift apart. Boundary layers map the internal status to public error
+// codes; they deliberately differ on CryptHeader (see list_file_stream).
+enum class WalkStatus {
+    Ok,            // reached ENDARC or EOF cleanly
+    Aborted,       // cancel callback returned non-zero
+    Truncated,     // malformed / short header or data area
+    CryptHeader,   // HEAD_CRYPT reached — headers are encrypted
+    EncryptedFile, // file/service header with the encrypted-data flag
+    SolidHeader,   // file/service header with the solid flag
+};
+
+// Hook plumbing for the walk. Core callback convention: progress(done, total,
+// user) cumulative and monotonic; cancel(user) polled between header blocks,
+// non-zero aborts. Never invoked under a lock (the walk holds none).
+struct WalkHooks {
+    progress_cb on_progress{nullptr};
+    void* progress_user{nullptr};
+    cancel_cb on_cancel{nullptr};
+    void* cancel_user{nullptr};
+
+    bool cancelled() const { return on_cancel && on_cancel(cancel_user) != 0; }
+    void emit(uint64_t done, uint64_t total) const {
+        if (on_progress) on_progress(done, total, progress_user);
+    }
+};
+
+// Source adapters for walk_headers(): tell() is the absolute byte offset of
+// the next header, limit() the end of the byte range, read_block() consumes
+// one raw header at the current position, skip() jumps a data area with the
+// same past-the-end guard the memory walk has always applied.
+struct MemSource {
+    const uint8_t* data;
+    size_t size;
+    size_t pos;
+    uint64_t tell() const { return static_cast<uint64_t>(pos); }
+    uint64_t limit() const { return static_cast<uint64_t>(size); }
+    format::HeaderResult read_block(core::uint64& type, core::uint64& flags,
+                                    std::vector<core::byte>& body, core::uint64& data_size) {
+        return format::HeaderReader::read_block_raw_mem(data, size, pos, type, flags, body,
+                                                        data_size);
+    }
+    bool skip(core::uint64 data_size, core::uint64 head_end) {
+        if (head_end > limit() || data_size > limit() - head_end) return false;
+        pos = static_cast<size_t>(head_end + data_size);
+        return true;
+    }
+};
+
+struct StreamSource {
+    io::FileStream& stream;
+    core::uint64 size;
+    core::uint64 tell() const { return stream.tell(); }
+    core::uint64 limit() const { return size; }
+    format::HeaderResult read_block(core::uint64& type, core::uint64& flags,
+                                    std::vector<core::byte>& body, core::uint64& data_size) {
+        return format::HeaderReader::read_block_raw(stream, type, flags, body, data_size);
+    }
+    bool skip(core::uint64 data_size, core::uint64 head_end) {
+        if (head_end > size || data_size > size - head_end) return false;
+        if (data_size == 0) return true;
+        return stream.seek(static_cast<core::int64>(head_end + data_size), io::SeekOrigin::Begin);
+    }
+};
+
+template <typename Source>
+WalkStatus walk_headers(Source& src, const WalkHooks& hooks,
+                        std::vector<BufferArchiveEntry>& out_entries, bool& seen_volume,
+                        bool& seen_protect) {
+    bool saw_end = false;
+    while (src.tell() < src.limit() && !saw_end) {
+        if (hooks.cancelled()) return WalkStatus::Aborted;
+        hooks.emit(src.tell(), src.limit());
+
+        const uint64_t head_start = src.tell();
+        core::uint64 type = 0, flags = 0, data_size = 0;
+        std::vector<core::byte> body;
+        if (src.read_block(type, flags, body, data_size) != format::HeaderResult::Ok) {
+            return WalkStatus::Truncated;
+        }
+        const uint64_t head_end = src.tell();
+
+        if (type == format::HEAD_MAIN) {
+            format::MainBlock mb;
+            if (!format::HeaderReader::parse_main_header(body.data(), body.size(), mb)) {
+                return WalkStatus::Truncated;
+            }
+            seen_volume = (mb.arc_flags & format::MHFL_VOLUME) != 0;
+            seen_protect = (mb.arc_flags & format::MHFL_PROTECT) != 0;
+        } else if (type == format::HEAD_FILE || type == format::HEAD_SERVICE) {
+            format::FileBlock fb;
+            if (!format::HeaderReader::parse_file_header(body.data(), body.size(), fb)) {
+                return WalkStatus::Truncated;
+            }
+
+            if (fb.is_encrypted) {
+                // Skip ahead past the encrypted payload.
+                if (!src.skip(data_size, head_end)) return WalkStatus::Truncated;
+                return WalkStatus::EncryptedFile;
+            }
+            if (fb.is_solid) {
+                if (!src.skip(data_size, head_end)) return WalkStatus::Truncated;
+                return WalkStatus::SolidHeader;
+            }
+
+            BufferArchiveEntry e;
+            e.path = fb.file_name;
+            e.is_dir = (fb.file_flags & format::FHFL_DIRECTORY) != 0;
+            e.size = fb.unp_size;
+            e.packed_size = fb.pack_size < 0 ? 0 : static_cast<uint64_t>(fb.pack_size);
+            e.method = static_cast<int>(fb.method);
+            e.win_size = fb.win_size;
+            e.is_encrypted = fb.is_encrypted;
+            e.header_offset = head_start;
+            e.data_offset = head_end;
+            e.data_size = e.packed_size;
+            e.crc32 = fb.has_crc32 ? fb.data_crc32 : 0;
+            e.mtime = dos_time_to_unix(fb.utime_unix);
+            out_entries.push_back(std::move(e));
+
+            if (!src.skip(data_size, head_end)) return WalkStatus::Truncated;
+        } else if (type == format::HEAD_ENDARC) {
+            format::EndArcBlock eb;
+            if (!format::HeaderReader::parse_end_header(body.data(), body.size(), eb)) {
+                return WalkStatus::Truncated;
+            }
+            if ((eb.end_flags & 0x0001) == 0) {
+                saw_end = true;
+            }
+        } else if (type == format::HEAD_CRYPT) {
+            return WalkStatus::CryptHeader;
+        } else {
+            // Unknown block: skip its data area.
+            if (!src.skip(data_size, head_end)) return WalkStatus::Truncated;
+        }
+    }
+    return WalkStatus::Ok;
+}
+
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -332,7 +474,8 @@ bool validate_archive_path(const std::string& path, bool is_dir, std::string& er
 // BufferArchive::list
 // ─────────────────────────────────────────────────────────────────────────────
 int BufferArchive::list(const uint8_t* data, size_t size,
-                        std::vector<BufferArchiveEntry>& out_entries) {
+                        std::vector<BufferArchiveEntry>& out_entries, progress_cb on_progress,
+                        void* progress_user, cancel_cb on_cancel, void* cancel_user) {
     out_entries.clear();
     cached_entries_.clear();
 
@@ -343,96 +486,132 @@ int BufferArchive::list(const uint8_t* data, size_t size,
         return RAR_ERR_NOT_RAR;
     }
 
-    size_t off = sig_off + 8;
-    bool saw_end = false;
+    WalkHooks hooks{on_progress, progress_user, on_cancel, cancel_user};
+    hooks.emit(static_cast<uint64_t>(sig_off), static_cast<uint64_t>(size));
+
+    MemSource src{data, size, sig_off + 8};
     bool seen_volume = false;
     bool seen_protect = false;
-    bool seen_crypt_header = false;
-
-    while (off < size && !saw_end) {
-        size_t head_start = off;
-        core::uint64 type = 0, flags = 0, data_size = 0;
-        std::vector<core::byte> body;
-        if (format::HeaderReader::read_block_raw_mem(data, size, off, type, flags, body,
-                                                     data_size) != format::HeaderResult::Ok) {
-            return RAR_ERR_TRUNCATED;
-        }
-        size_t head_end = off;
-
-        if (type == format::HEAD_MAIN) {
-            format::MainBlock mb;
-            if (!format::HeaderReader::parse_main_header(body.data(), body.size(), mb)) {
-                return RAR_ERR_TRUNCATED;
-            }
-            seen_volume = (mb.arc_flags & format::MHFL_VOLUME) != 0;
-            seen_protect = (mb.arc_flags & format::MHFL_PROTECT) != 0;
-        } else if (type == format::HEAD_FILE || type == format::HEAD_SERVICE) {
-            format::FileBlock fb;
-            if (!format::HeaderReader::parse_file_header(body.data(), body.size(), fb)) {
-                return RAR_ERR_TRUNCATED;
-            }
-
-            if (fb.is_encrypted) {
-                // Skip ahead past the encrypted payload.
-                if (data_size > size - head_end) return RAR_ERR_TRUNCATED;
-                off = head_end + data_size;
-                return RAR_ERR_UNSUPPORTED_FEATURE;
-            }
-            if (fb.is_solid) {
-                if (data_size > size - head_end) return RAR_ERR_TRUNCATED;
-                off = head_end + data_size;
-                return RAR_ERR_UNSUPPORTED_FEATURE;
-            }
-
-            BufferArchiveEntry e;
-            e.path = fb.file_name;
-            e.is_dir = (fb.file_flags & format::FHFL_DIRECTORY) != 0;
-            e.size = fb.unp_size;
-            e.packed_size = fb.pack_size < 0 ? 0 : static_cast<uint64_t>(fb.pack_size);
-            e.method = static_cast<int>(fb.method);
-            e.win_size = fb.win_size;
-            e.is_encrypted = fb.is_encrypted;
-            e.header_offset = head_start;
-            e.data_offset = head_end;
-            e.data_size = e.packed_size;
-            e.crc32 = fb.has_crc32 ? fb.data_crc32 : 0;
-            e.mtime = dos_time_to_unix(fb.utime_unix);
-            out_entries.push_back(std::move(e));
-
-            if (data_size > size - head_end) return RAR_ERR_TRUNCATED;
-            off = head_end + data_size;
-        } else if (type == format::HEAD_ENDARC) {
-            format::EndArcBlock eb;
-            if (!format::HeaderReader::parse_end_header(body.data(), body.size(), eb)) {
-                return RAR_ERR_TRUNCATED;
-            }
-            if ((eb.end_flags & 0x0001) == 0) {
-                saw_end = true;
-            }
-        } else if (type == format::HEAD_CRYPT) {
-            seen_crypt_header = true;
-            return RAR_ERR_UNSUPPORTED_FEATURE;
-        } else {
-            // Unknown block: skip its data area.
-            if (data_size > size - head_end) return RAR_ERR_TRUNCATED;
-            off = head_end + data_size;
-        }
-    }
-
-    if (seen_volume || seen_protect) {
+    WalkStatus st = walk_headers(src, hooks, out_entries, seen_volume, seen_protect);
+    switch (st) {
+    case WalkStatus::Aborted:
+        out_entries.clear();
+        return RAR_ERR_ABORTED;
+    case WalkStatus::CryptHeader:
+    case WalkStatus::EncryptedFile:
+    case WalkStatus::SolidHeader:
         out_entries.clear();
         return RAR_ERR_UNSUPPORTED_FEATURE;
+    case WalkStatus::Truncated:
+        out_entries.clear();
+        return RAR_ERR_TRUNCATED;
+    case WalkStatus::Ok:
+        break;
     }
-    if (seen_crypt_header) {
+    if (seen_volume || seen_protect) {
         out_entries.clear();
         return RAR_ERR_UNSUPPORTED_FEATURE;
     }
     // Main-header presence is informational; we don't require it (permissive parse).
 
+    hooks.emit(static_cast<uint64_t>(size), static_cast<uint64_t>(size));
     cached_entries_ = out_entries;
     cached_signature_offset_ = sig_off;
     cached_buffer_size_ = size;
     cached_buffer_ = data;
+    return RAR_OK;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// list_file_stream
+// ─────────────────────────────────────────────────────────────────────────────
+int list_file_stream(const std::filesystem::path& arc_path,
+                     std::vector<BufferArchiveEntry>& out_entries, progress_cb on_progress,
+                     void* progress_user, cancel_cb on_cancel, void* cancel_user) {
+    out_entries.clear();
+
+    io::FileStream stream;
+    if (!stream.open(arc_path, io::FileMode::ReadOnly)) return RAR_ERR_IO;
+    const core::uint64 file_size = stream.size();
+    if (file_size == 0) return RAR_ERR_TRUNCATED;
+    if (file_size < 8) return RAR_ERR_NOT_RAR;
+
+    WalkHooks hooks{on_progress, progress_user, on_cancel, cancel_user};
+
+    // ── Locate the RAR5 signature (SFX-aware, streaming) ─────────────────────
+    // Mirrors find_rar5_signature(): offset 0 first, then a scan of the first
+    // 4 MiB where each candidate must be followed by a parseable MAIN/CRYPT
+    // header. Chunked with cancel/progress hooks so aborting a listing on
+    // slow storage does not require a whole-file slurp first. Short reads end
+    // the scan as "not found" (parity with ArchiveReader's SFX scan).
+    core::uint64 sig_off = 0;
+    core::byte sig_buf[8];
+    if (stream.read(sig_buf, 8) != 8) return RAR_ERR_TRUNCATED;
+    if (std::memcmp(sig_buf, format::rar5_signature(), 8) != 0) {
+        constexpr core::uint64 SFX_SCAN = 4ULL * 1024 * 1024;
+        const core::uint64 scan_limit = std::min(file_size, SFX_SCAN);
+        std::vector<core::byte> scan_buf(65536);
+        bool found = false;
+        core::uint64 pos = 0;
+        while (pos < scan_limit) {
+            if (hooks.cancelled()) return RAR_ERR_ABORTED;
+            hooks.emit(pos, file_size);
+            stream.seek(static_cast<core::int64>(pos), io::SeekOrigin::Begin);
+            size_t bytes_to_read =
+                static_cast<size_t>(std::min<core::uint64>(scan_buf.size(), scan_limit - pos));
+            size_t got = stream.read(scan_buf.data(), bytes_to_read);
+            if (got < 8) break;
+            for (size_t i = 0; i + 8 <= got; ++i) {
+                if (std::memcmp(scan_buf.data() + i, format::rar5_signature(), 8) != 0) continue;
+                stream.seek(static_cast<core::int64>(pos + i + 8), io::SeekOrigin::Begin);
+                core::uint64 type = 0, flags = 0, data_size = 0;
+                std::vector<core::byte> body;
+                if (format::HeaderReader::read_block_raw(stream, type, flags, body, data_size) ==
+                        format::HeaderResult::Ok &&
+                    (type == format::HEAD_MAIN || type == format::HEAD_CRYPT)) {
+                    sig_off = pos + i;
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+            pos += (got > 8) ? (got - 7) : 1;
+        }
+        if (!found) return RAR_ERR_NOT_RAR;
+    }
+
+    hooks.emit(sig_off, file_size);
+    stream.seek(static_cast<core::int64>(sig_off + 8), io::SeekOrigin::Begin);
+
+    StreamSource src{stream, file_size};
+    bool seen_volume = false;
+    bool seen_protect = false;
+    WalkStatus st = walk_headers(src, hooks, out_entries, seen_volume, seen_protect);
+    switch (st) {
+    case WalkStatus::Aborted:
+        out_entries.clear();
+        return RAR_ERR_ABORTED;
+    case WalkStatus::CryptHeader:
+        // Early password signal: headers are unreadable without a password,
+        // so a longer walk could never succeed.
+        out_entries.clear();
+        return RAR_ERR_ENCRYPTED;
+    case WalkStatus::EncryptedFile:
+    case WalkStatus::SolidHeader:
+        out_entries.clear();
+        return RAR_ERR_UNSUPPORTED_FEATURE;
+    case WalkStatus::Truncated:
+        out_entries.clear();
+        return RAR_ERR_TRUNCATED;
+    case WalkStatus::Ok:
+        break;
+    }
+    if (seen_volume || seen_protect) {
+        out_entries.clear();
+        return RAR_ERR_UNSUPPORTED_FEATURE;
+    }
+
+    hooks.emit(file_size, file_size);
     return RAR_OK;
 }
 

@@ -354,6 +354,10 @@ if(NOT EMSCRIPTEN)
     # native test suite lean and avoids linker errors when the feature is off.
     if(OPENRAR_INMEM_ARCHIVE)
         add_openrar_test(buffer_archive_tests tests/unit/buffer_archive_tests.cpp)
+        # The suite reads the checked-in fixtures under tests/ (hello5_hp.rar,
+        # hello5_p.rar) for the encrypted-listing coverage.
+        target_compile_definitions(buffer_archive_tests PRIVATE
+            OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     endif()
 
     # WASM ABI surface test (C exports are linkable on every platform).
@@ -385,6 +389,8 @@ if(NOT EMSCRIPTEN)
     add_executable(dll_tests tests/unit/dll_tests.cpp)
     target_link_libraries(dll_tests PRIVATE openrar_dll)
     target_include_directories(dll_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
+    # Encrypted-listing coverage reads the fixtures under tests/.
+    target_compile_definitions(dll_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     openrar_enable_test_asserts(dll_tests)
     add_test(NAME dll_tests COMMAND dll_tests)
 

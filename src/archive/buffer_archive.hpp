@@ -4,6 +4,7 @@
 #include "../core/types.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +26,11 @@ enum BufferArchiveError : int {
     RAR_ERR_BAD_PASSWORD = -7,
     RAR_ERR_INVALID_ARG = -9,
     RAR_ERR_ABORTED = -11,
+    // Archive headers are encrypted (HEAD_CRYPT): a password is required
+    // before any header can be read. Emitted only by list_file_stream and the
+    // DLL _ex listing exports; BufferArchive::list keeps its historical
+    // RAR_ERR_UNSUPPORTED_FEATURE for the same condition.
+    RAR_ERR_ENCRYPTED = -12,
 };
 
 // ── Callback conventions (mirror src/dll/openrar_dll.h) ─────────────────────
@@ -73,7 +79,12 @@ public:
     // Returns RAR_ERR_NOT_RAR if no RAR5 signature is found (incl. SFX scan up
     // to 4 MiB), RAR_ERR_TRUNCATED on premature EOF, RAR_ERR_UNSUPPORTED_FEATURE
     // on multi-volume / recovery / encrypted headers, RAR_ERR_IO on read fail.
-    int list(const uint8_t* data, size_t size, std::vector<BufferArchiveEntry>& out_entries);
+    // The optional hooks follow the progress_cb / cancel_cb convention above,
+    // with byte semantics: (done, total) = (walk offset, buffer size), polled
+    // between header blocks. Defaults keep the 3-argument form unchanged.
+    int list(const uint8_t* data, size_t size, std::vector<BufferArchiveEntry>& out_entries,
+             progress_cb on_progress = nullptr, void* progress_user = nullptr,
+             cancel_cb on_cancel = nullptr, void* cancel_user = nullptr);
 
     // Decompress a single entry to `out`. `entry_index` is into the most
     // recent list() result on this instance. Returns RAR_ERR_INVALID_ARG
@@ -100,6 +111,27 @@ private:
     // size must not silently reuse stale offsets.
     const uint8_t* cached_buffer_{nullptr};
 };
+
+// ── Streaming list of a RAR5 archive directly from a file ────────────────────
+// Sequential header walk over the file (no whole-file buffering), so listing
+// multi-GB archives does not materialise them in RAM and progress/cancel stay
+// responsive while the walk seeks across slow (e.g. network) storage. Shares
+// the per-block state machine with BufferArchive::list, so entry output and
+// error mapping match — with two documented deltas:
+//   - RAR_ERR_ENCRYPTED as soon as a HEAD_CRYPT block is reached (headers
+//     encrypted; a password would be required to read them) instead of the
+//     historical RAR_ERR_UNSUPPORTED_FEATURE;
+//   - RAR_ERR_IO when the file cannot be opened.
+// Progress is byte-based: (done, total) = (absolute walk offset incl. any SFX
+// prefix, file size), monotonic, emitted per SFX-scan chunk and between
+// header blocks, with exactly one final (total, total) on success. Callbacks
+// may fire before a failing return (e.g. mid-SFX-scan). Cancel is polled per
+// scan chunk and between header blocks; a non-zero return produces
+// RAR_ERR_ABORTED. out_entries is cleared on every non-OK return.
+int list_file_stream(const std::filesystem::path& arc_path,
+                     std::vector<BufferArchiveEntry>& out_entries,
+                     progress_cb on_progress = nullptr, void* progress_user = nullptr,
+                     cancel_cb on_cancel = nullptr, void* cancel_user = nullptr);
 
 // ── Write a single-volume RAR5 archive to `out` ──────────────────────────────
 // `method` ∈ {0, 3, 5}. `window_log2` ∈ {1, 2, 3, 4} → win_size 128KB..1MB
