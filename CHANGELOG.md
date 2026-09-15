@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-15
+
+### Added
+
+- **Extended entry metadata** (`OPENRAR_ABI_FEATURE_ENTRY_EX`, bit 5):
+  `openrar_archive_handle_entry_ex` returns the fields the frozen 64-byte
+  entry struct drops — host attributes, host OS, mtime/ctime/atime as
+  FILETIMEs (UTC, 100 ns; both FHEXTRA_HTIME encodings supported —
+  FILETIME-format passes through, unix-format converts), solid / encrypted /
+  redirection / split / directory flags, dictionary size and the format
+  version — with the redirection target as a malloc'd NUL-terminated string
+  when present (`openrar_archive_entry_ex_free` frees it; `openrar_free`
+  works too). File-mode handles only; buffer handles return
+  `RAR_ERR_UNSUPPORTED_FEATURE`.
+- **Archive-level info**: `openrar_archive_handle_info` reports main-header
+  flags, volume index/count (always determinable — the file-mode open is
+  strict), recovery record size, and the archive comment, which is read
+  lazily at query time: stored-compressed comments decompress, and a
+  payload failing its CRC or decode reports as absent with `RAR_OK` (a
+  filesystem read failure is `RAR_ERR_IO`).
+- **Refinements** (enhancement plan §4.3, all four): named window-size
+  constants `OPENRAR_WINDOW_128K` … `OPENRAR_WINDOW_1M` with the
+  bytes-vs-log2 unit difference documented;
+  `RAR_ERR_PARTIAL_OK` documented verbatim (returned solely by
+  `extract_all`); the thread-local error state documented on
+  `openrar_last_error` / `openrar_archive_get_error`; the feature-bit
+  registry now lists bits 0–5 and pins the reserve convention (future
+  open-time options ship as `openrar_archive_open_file_ex` behind a new
+  bit, never as signature changes).
+- C++ wrapper: `ArchiveHandle::entry_ex(idx)` / `ArchiveHandle::info()` with
+  `EntryEx` / `ArchiveInfo` value types (buffer handles throw
+  `UNSUPPORTED_FEATURE`).
+- Tests: `metadata_tests` (18th ctest target) — both htime encodings,
+  flag coverage, redirection extra lifetime, lazy comment read, RR size,
+  volume provenance, buffer-handle refusals.
+
+### Notes
+
+- All additive: `OPENRAR_DLL_API_VERSION` stays 1. Exports 43 → 46; feature
+  bit 5 reserved and shipped. This completes the Crate request catalog —
+  #6 (extended metadata) lands here; #1–#5 and #7 shipped in v1.2.0–v1.4.0.
+
 ## [1.4.0] - 2026-09-15
 
 ### Added

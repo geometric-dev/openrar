@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 # commit counter since the current MAJOR.MINOR line's anchor tag - see
 # docs/versioning.md).
 # wasm/js/package.json and CHANGELOG.md are synced at release time.
-project(openrar VERSION 1.4.0 LANGUAGES CXX)
+project(openrar VERSION 1.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -418,6 +418,18 @@ if(NOT EMSCRIPTEN)
     target_compile_definitions(mutation_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     openrar_enable_test_asserts(mutation_tests)
     add_test(NAME mutation_tests COMMAND mutation_tests)
+
+    # Metadata tests (v1.5.0): entry_ex / handle_info over the file-mode
+    # surface — FILETIME timestamps from both htime encodings, solid/
+    # encrypted/redir/directory flags, lazily-read CMT payload, RR size,
+    # volume provenance, buffer-handle refusals. Needs openrar_core for
+    # engine-side fixtures (ArchiveMutator / RecoveryWriter / HeaderWriter).
+    add_executable(metadata_tests tests/unit/metadata_tests.cpp)
+    target_link_libraries(metadata_tests PRIVATE openrar_dll openrar_core)
+    target_include_directories(metadata_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
+    target_compile_definitions(metadata_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    openrar_enable_test_asserts(metadata_tests)
+    add_test(NAME metadata_tests COMMAND metadata_tests)
 
     add_executable(dll_cpp_tests tests/unit/dll_cpp_tests.cpp)
     target_link_libraries(dll_cpp_tests PRIVATE openrar_dll)
