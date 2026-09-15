@@ -269,10 +269,12 @@ static void test_stream_progress() {
 // ── Listing with progress / cancel (_ex) ─────────────────────────────────────
 
 static void test_abi_features() {
-    // Additive exports do not bump the ABI version; the feature bit is set.
+    // Additive exports do not bump the ABI version; every feature bit is set.
     assert(openrar_version() == OPENRAR_DLL_API_VERSION);
     assert(openrar_version() == 1);
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_LIST_PROGRESS) != 0);
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_LIST_PASSWORD) != 0);
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS) != 0);
     std::cout << "PASS test_abi_features\n";
 }
 
@@ -460,6 +462,111 @@ static void test_list_file_ex_encrypted() {
     std::cout << "PASS test_list_file_ex_encrypted\n";
 }
 
+static void test_list_file_pw() {
+    const std::filesystem::path fixtures = std::filesystem::path(OPENRAR_SOURCE_DIR) / "tests";
+    auto hp = (fixtures / "hello5_hp.rar").string(); // -hp secret
+    auto pp = (fixtures / "hello5_p.rar").string();  // -p secret, headers clear
+
+    // Correct password: headers decrypt, entries reported with is_encrypted
+    // (the -hp contract), byte progress ends at (file_size, file_size).
+    ExProgressLog log;
+    uint32_t count = 0;
+    void* e = nullptr;
+    void* p = nullptr;
+    size_t ps = 0;
+    int rc = openrar_archive_list_file_pw(hp.c_str(), "secret", &count, &e, &p, &ps, ex_progress_cb,
+                                          nullptr, &log);
+    assert(rc == RAR_OK && count >= 1);
+    {
+        const auto* ents = static_cast<const openrar_archive_entry_t*>(e);
+        uint32_t encrypted_files = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (ents[i].is_dir) continue;
+            assert(ents[i].is_encrypted == 1);
+            ++encrypted_files;
+        }
+        assert(encrypted_files >= 1);
+    }
+    openrar_archive_list_free(e, p, ps);
+    assert(log.dones.size() >= 2);
+    for (size_t i = 1; i < log.dones.size(); ++i) assert(log.dones[i] >= log.dones[i - 1]);
+    assert(log.dones.back() == log.totals.back());
+
+    // Wrong password: RAR_ERR_BAD_PASSWORD, outputs untouched.
+    count = 99;
+    e = nullptr;
+    p = nullptr;
+    ps = 42;
+    rc = openrar_archive_list_file_pw(hp.c_str(), "nope", &count, &e, &p, &ps, nullptr, nullptr,
+                                      nullptr);
+    assert(rc == RAR_ERR_BAD_PASSWORD);
+    assert(count == 0 && e == nullptr && p == nullptr && ps == 0);
+
+    // No password: the early RAR_ERR_ENCRYPTED signal (null and empty alike).
+    rc = openrar_archive_list_file_pw(hp.c_str(), nullptr, &count, &e, &p, &ps, nullptr, nullptr,
+                                      nullptr);
+    assert(rc == RAR_ERR_ENCRYPTED && count == 0 && e == nullptr);
+    rc = openrar_archive_list_file_pw(hp.c_str(), "", &count, &e, &p, &ps, nullptr, nullptr,
+                                      nullptr);
+    assert(rc == RAR_ERR_ENCRYPTED && count == 0 && e == nullptr);
+
+    // -p archive (headers clear, mixed data): lists even without a password,
+    // flagging the encrypted entries; the frozen list_file_ex still rejects
+    // it for parity.
+    rc = openrar_archive_list_file_pw(pp.c_str(), nullptr, &count, &e, &p, &ps, nullptr, nullptr,
+                                      nullptr);
+    assert(rc == RAR_OK && count >= 2);
+    {
+        const auto* ents = static_cast<const openrar_archive_entry_t*>(e);
+        uint32_t encrypted = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (ents[i].is_dir) continue;
+            encrypted += ents[i].is_encrypted ? 1u : 0u;
+        }
+        assert(encrypted >= 1);
+    }
+    openrar_archive_list_free(e, p, ps);
+    rc = openrar_archive_list_file_ex(pp.c_str(), &count, &e, &p, &ps, nullptr, nullptr, nullptr);
+    assert(rc == RAR_ERR_UNSUPPORTED_FEATURE);
+    std::cout << "PASS test_list_file_pw\n";
+}
+
+static void test_open_ex() {
+    std::vector<uint8_t> rar = make_two_entry_rar();
+
+    // Progress over the open-time scan; the handle then lists normally.
+    ExProgressLog log;
+    uint32_t h = openrar_archive_open_ex(rar.data(), rar.size(), ex_progress_cb, nullptr, &log);
+    assert(h != 0);
+    assert(log.dones.size() >= 2);
+    assert(log.dones.back() == log.totals.back());
+    for (size_t i = 1; i < log.dones.size(); ++i) assert(log.dones[i] >= log.dones[i - 1]);
+    uint32_t count = 0;
+    void* e = nullptr;
+    void* p = nullptr;
+    size_t ps = 0;
+    int rc = openrar_archive_handle_list(h, &count, &e, &p, &ps);
+    assert(rc == 0 && count == 2);
+    openrar_archive_list_free(e, p, ps);
+    openrar_archive_close(h);
+
+    // Null callbacks: equivalent to openrar_archive_open.
+    uint32_t h0 = openrar_archive_open(rar.data(), rar.size());
+    uint32_t h1 = openrar_archive_open_ex(rar.data(), rar.size(), nullptr, nullptr, nullptr);
+    assert(h0 != 0 && h1 != 0);
+    openrar_archive_close(h0);
+    openrar_archive_close(h1);
+
+    // Cancel on the second poll: handle is 0, error string explains.
+    int polls = 0;
+    h = openrar_archive_open_ex(rar.data(), rar.size(), nullptr, ex_cancel_after_two, &polls);
+    assert(h == 0 && polls == 2);
+    char msg[256] = {};
+    openrar_archive_get_error(msg, sizeof(msg));
+    assert(std::string(msg).find("aborted") != std::string::npos);
+    std::cout << "PASS test_open_ex\n";
+}
+
 static void test_file_helpers() {
     // Create a temp source file and use create_from_paths
     auto temp_dir = std::filesystem::temp_directory_path() / "openrar_dll_test";
@@ -523,6 +630,8 @@ int main() {
     test_list_ex_buffer();
     test_list_file_ex_cancel();
     test_list_file_ex_encrypted();
+    test_list_file_pw();
+    test_open_ex();
     test_file_helpers();
     std::cout << "ALL DLL TESTS PASSED\n";
     return 0;

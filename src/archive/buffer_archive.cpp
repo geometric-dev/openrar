@@ -277,12 +277,14 @@ struct ProgressTracker {
 // never drift apart. Boundary layers map the internal status to public error
 // codes; they deliberately differ on CryptHeader (see list_file_stream).
 enum class WalkStatus {
-    Ok,            // reached ENDARC or EOF cleanly
-    Aborted,       // cancel callback returned non-zero
-    Truncated,     // malformed / short header or data area
-    CryptHeader,   // HEAD_CRYPT reached — headers are encrypted
-    EncryptedFile, // file/service header with the encrypted-data flag
-    SolidHeader,   // file/service header with the solid flag
+    Ok,               // reached ENDARC or EOF cleanly
+    Aborted,          // cancel callback returned non-zero
+    Truncated,        // malformed / short header or data area
+    CryptHeader,      // HEAD_CRYPT reached and no password was supplied
+    EncryptedFile,    // file/service header with the encrypted-data flag
+    SolidHeader,      // file/service header with the solid flag
+    BadPassword,      // supplied password fails to decrypt the headers
+    CryptUnsupported, // HEAD_CRYPT with an unknown crypto version
 };
 
 // Hook plumbing for the walk. Core callback convention: progress(done, total,
@@ -310,6 +312,7 @@ struct MemSource {
     size_t pos;
     uint64_t tell() const { return static_cast<uint64_t>(pos); }
     uint64_t limit() const { return static_cast<uint64_t>(size); }
+    bool bad_password() const { return false; }
     format::HeaderResult read_block(core::uint64& type, core::uint64& flags,
                                     std::vector<core::byte>& body, core::uint64& data_size) {
         return format::HeaderReader::read_block_raw_mem(data, size, pos, type, flags, body,
@@ -325,11 +328,13 @@ struct MemSource {
 struct StreamSource {
     io::FileStream& stream;
     core::uint64 size;
+    format::HeaderCryptReader* crypt; // may be null; activated by walk_headers on HEAD_CRYPT
     core::uint64 tell() const { return stream.tell(); }
     core::uint64 limit() const { return size; }
+    bool bad_password() const { return crypt != nullptr && crypt->bad_password; }
     format::HeaderResult read_block(core::uint64& type, core::uint64& flags,
                                     std::vector<core::byte>& body, core::uint64& data_size) {
-        return format::HeaderReader::read_block_raw(stream, type, flags, body, data_size);
+        return format::HeaderReader::read_block_raw(stream, type, flags, body, data_size, crypt);
     }
     bool skip(core::uint64 data_size, core::uint64 head_end) {
         if (head_end > size || data_size > size - head_end) return false;
@@ -338,10 +343,18 @@ struct StreamSource {
     }
 };
 
+// `password` (null = none) enables header decryption via `crypt` — only the
+// streaming source supports it; the memory walk never receives one.
+// `emit_encrypted`: false keeps the frozen early-return at the first
+// encrypted-data header; true reports such entries (is_encrypted = 1) and
+// continues. Solid entries stay a hard stop in both modes: the 64-byte
+// entry layout cannot express solidness, so reporting them would silently
+// promise extraction that cannot work.
 template <typename Source>
 WalkStatus walk_headers(Source& src, const WalkHooks& hooks,
                         std::vector<BufferArchiveEntry>& out_entries, bool& seen_volume,
-                        bool& seen_protect) {
+                        bool& seen_protect, const char* password, bool emit_encrypted,
+                        format::HeaderCryptReader* crypt) {
     bool saw_end = false;
     while (src.tell() < src.limit() && !saw_end) {
         if (hooks.cancelled()) return WalkStatus::Aborted;
@@ -351,7 +364,7 @@ WalkStatus walk_headers(Source& src, const WalkHooks& hooks,
         core::uint64 type = 0, flags = 0, data_size = 0;
         std::vector<core::byte> body;
         if (src.read_block(type, flags, body, data_size) != format::HeaderResult::Ok) {
-            return WalkStatus::Truncated;
+            return src.bad_password() ? WalkStatus::BadPassword : WalkStatus::Truncated;
         }
         const uint64_t head_end = src.tell();
 
@@ -368,14 +381,14 @@ WalkStatus walk_headers(Source& src, const WalkHooks& hooks,
                 return WalkStatus::Truncated;
             }
 
-            if (fb.is_encrypted) {
-                // Skip ahead past the encrypted payload.
-                if (!src.skip(data_size, head_end)) return WalkStatus::Truncated;
-                return WalkStatus::EncryptedFile;
-            }
             if (fb.is_solid) {
                 if (!src.skip(data_size, head_end)) return WalkStatus::Truncated;
                 return WalkStatus::SolidHeader;
+            }
+            if (fb.is_encrypted && !emit_encrypted) {
+                // Frozen mode: stop here, past the encrypted payload.
+                if (!src.skip(data_size, head_end)) return WalkStatus::Truncated;
+                return WalkStatus::EncryptedFile;
             }
 
             BufferArchiveEntry e;
@@ -403,7 +416,23 @@ WalkStatus walk_headers(Source& src, const WalkHooks& hooks,
                 saw_end = true;
             }
         } else if (type == format::HEAD_CRYPT) {
-            return WalkStatus::CryptHeader;
+            if (crypt != nullptr && crypt->active) {
+                // Duplicate HEAD_CRYPT: corrupt (mirrors ArchiveReader's scan).
+                return WalkStatus::Truncated;
+            }
+            if (password == nullptr || crypt == nullptr) {
+                // No password: headers after this block are unreadable.
+                return WalkStatus::CryptHeader;
+            }
+            format::CryptBlock cb;
+            if (!format::HeaderReader::parse_crypt_header(body.data(), body.size(), cb)) {
+                return WalkStatus::Truncated;
+            }
+            // HEAD_CRYPT itself is clear; init activates decryption for
+            // every following header through src.read_block.
+            if (!crypt->init(password, cb)) {
+                return crypt->bad_password ? WalkStatus::BadPassword : WalkStatus::CryptUnsupported;
+            }
         } else {
             // Unknown block: skip its data area.
             if (!src.skip(data_size, head_end)) return WalkStatus::Truncated;
@@ -492,7 +521,8 @@ int BufferArchive::list(const uint8_t* data, size_t size,
     MemSource src{data, size, sig_off + 8};
     bool seen_volume = false;
     bool seen_protect = false;
-    WalkStatus st = walk_headers(src, hooks, out_entries, seen_volume, seen_protect);
+    WalkStatus st = walk_headers(src, hooks, out_entries, seen_volume, seen_protect,
+                                 /*password=*/nullptr, /*emit_encrypted=*/false, /*crypt=*/nullptr);
     switch (st) {
     case WalkStatus::Aborted:
         out_entries.clear();
@@ -526,9 +556,13 @@ int BufferArchive::list(const uint8_t* data, size_t size,
 // list_file_stream
 // ─────────────────────────────────────────────────────────────────────────────
 int list_file_stream(const std::filesystem::path& arc_path,
-                     std::vector<BufferArchiveEntry>& out_entries, progress_cb on_progress,
-                     void* progress_user, cancel_cb on_cancel, void* cancel_user) {
+                     std::vector<BufferArchiveEntry>& out_entries, const char* password,
+                     bool emit_encrypted_entries, progress_cb on_progress, void* progress_user,
+                     cancel_cb on_cancel, void* cancel_user) {
     out_entries.clear();
+
+    // Empty password = none (RAR5 never uses the empty password for -hp).
+    const char* pw = (password != nullptr && *password != '\0') ? password : nullptr;
 
     io::FileStream stream;
     if (!stream.open(arc_path, io::FileMode::ReadOnly)) return RAR_ERR_IO;
@@ -583,10 +617,12 @@ int list_file_stream(const std::filesystem::path& arc_path,
     hooks.emit(sig_off, file_size);
     stream.seek(static_cast<core::int64>(sig_off + 8), io::SeekOrigin::Begin);
 
-    StreamSource src{stream, file_size};
+    format::HeaderCryptReader hcrypt;
+    StreamSource src{stream, file_size, &hcrypt};
     bool seen_volume = false;
     bool seen_protect = false;
-    WalkStatus st = walk_headers(src, hooks, out_entries, seen_volume, seen_protect);
+    WalkStatus st = walk_headers(src, hooks, out_entries, seen_volume, seen_protect, pw,
+                                 emit_encrypted_entries, &hcrypt);
     switch (st) {
     case WalkStatus::Aborted:
         out_entries.clear();
@@ -596,6 +632,10 @@ int list_file_stream(const std::filesystem::path& arc_path,
         // so a longer walk could never succeed.
         out_entries.clear();
         return RAR_ERR_ENCRYPTED;
+    case WalkStatus::BadPassword:
+        out_entries.clear();
+        return RAR_ERR_BAD_PASSWORD;
+    case WalkStatus::CryptUnsupported:
     case WalkStatus::EncryptedFile:
     case WalkStatus::SolidHeader:
         out_entries.clear();

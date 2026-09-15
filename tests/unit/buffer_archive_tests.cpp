@@ -3,6 +3,7 @@
 #include "../../src/core/types.hpp"
 #include "test_support.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <filesystem>
@@ -554,7 +555,7 @@ void test_list_file_stream_roundtrip() {
 
     ProgressRecorder rec;
     std::vector<BufferArchiveEntry> entries;
-    rc = list_file_stream(arc_path, entries, record_progress, &rec);
+    rc = list_file_stream(arc_path, entries, nullptr, false, record_progress, &rec);
     assert(rc == RAR_OK);
     assert_same_entries(buf_entries, entries);
     assert_monotonic(rec, arc_buf.size());
@@ -589,7 +590,7 @@ void test_list_file_stream_sfx_prefix() {
 
     ProgressRecorder rec;
     std::vector<BufferArchiveEntry> entries;
-    rc = list_file_stream(arc_path, entries, record_progress, &rec);
+    rc = list_file_stream(arc_path, entries, nullptr, false, record_progress, &rec);
     assert(rc == RAR_OK);
     assert_same_entries(buf_entries, entries);
     assert_monotonic(rec, prefixed.size());
@@ -616,13 +617,15 @@ void test_list_file_stream_cancel() {
     // Abort on the first poll — nothing surfaces.
     CancelCounter cancel{0, 1};
     std::vector<BufferArchiveEntry> entries;
-    rc = list_file_stream(arc_path, entries, nullptr, nullptr, CancelCounter::cb, &cancel);
+    rc = list_file_stream(arc_path, entries, nullptr, false, nullptr, nullptr, CancelCounter::cb,
+                          &cancel);
     assert(rc == RAR_ERR_ABORTED);
     assert(entries.empty());
 
     // Never-abort control: polls happen (scan + per-block) but return 0.
     CancelCounter observe{0, 0};
-    rc = list_file_stream(arc_path, entries, nullptr, nullptr, CancelCounter::cb, &observe);
+    rc = list_file_stream(arc_path, entries, nullptr, false, nullptr, nullptr, CancelCounter::cb,
+                          &observe);
     assert(rc == RAR_OK);
     assert(entries.size() == 2);
     assert(observe.polls >= 3);
@@ -634,7 +637,7 @@ void test_list_file_stream_encrypted() {
     // hello5_hp.rar (-hp secret): HEAD_CRYPT sits right after the signature.
     // The streaming walk reports the dedicated early password signal.
     std::vector<BufferArchiveEntry> entries;
-    int rc = list_file_stream(kFixturesDir / "hello5_hp.rar", entries);
+    int rc = list_file_stream(kFixturesDir / "hello5_hp.rar", entries, nullptr, false);
     assert(rc == RAR_ERR_ENCRYPTED);
     assert(entries.empty());
 
@@ -649,10 +652,86 @@ void test_list_file_stream_encrypted() {
 
     // hello5_p.rar (-p secret): file-data encrypted, headers in clear —
     // rejected by both paths with the historical code (no relaxation).
-    rc = list_file_stream(kFixturesDir / "hello5_p.rar", entries);
+    rc = list_file_stream(kFixturesDir / "hello5_p.rar", entries, nullptr, false);
     assert(rc == RAR_ERR_UNSUPPORTED_FEATURE);
     assert(entries.empty());
     std::cout << "[PASS] list_file_stream_encrypted\n";
+}
+
+void test_list_file_stream_password() {
+    std::cout << "Starting test_list_file_stream_password...\n" << std::flush;
+    const auto hp = kFixturesDir / "hello5_hp.rar"; // -hp secret: headers + data encrypted
+
+    // Correct password: headers decrypt, entries surface flagged is_encrypted
+    // (-hp implies encrypted file data for every entry), progress contract
+    // holds.
+    ProgressRecorder rec;
+    std::vector<BufferArchiveEntry> entries;
+    int rc = list_file_stream(hp, entries, "secret", true, record_progress, &rec);
+    assert(rc == RAR_OK);
+    assert(!entries.empty());
+    size_t encrypted_files = 0;
+    for (const auto& e : entries) {
+        if (e.is_dir) continue;
+        assert(e.is_encrypted);
+        ++encrypted_files;
+    }
+    assert(encrypted_files >= 1);
+    assert(std::any_of(entries.begin(), entries.end(),
+                       [](const BufferArchiveEntry& e) { return e.path == "data.bin"; }));
+    std::error_code ec;
+    const uint64_t file_size = std::filesystem::file_size(hp, ec);
+    assert_monotonic(rec, file_size);
+    assert(rec.dones.back() == file_size);
+
+    // Wrong password: dedicated code, no partial output.
+    entries.clear();
+    rc = list_file_stream(hp, entries, "wrong", true, nullptr, nullptr);
+    assert(rc == RAR_ERR_BAD_PASSWORD);
+    assert(entries.empty());
+
+    // No password (null or empty): the early ENCRYPTED signal, not BAD_PASSWORD.
+    rc = list_file_stream(hp, entries, nullptr, true, nullptr, nullptr);
+    assert(rc == RAR_ERR_ENCRYPTED);
+    assert(entries.empty());
+    rc = list_file_stream(hp, entries, "", true, nullptr, nullptr);
+    assert(rc == RAR_ERR_ENCRYPTED);
+
+    // Password on an archive without header encryption is ignored.
+    auto dir = openrar::test::scratch_dir("buffer_archive_list_file");
+    auto plain_path = dir / "plain_pw.rar";
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> plain_files = {
+        {"a.txt", repeat_byte(0x31, 128)},
+    };
+    std::vector<uint8_t> arc_buf;
+    rc = create_archive(plain_files, arc_buf, /*method=*/0);
+    assert(rc == RAR_OK);
+    write_file(plain_path, arc_buf);
+    rc = list_file_stream(plain_path, entries, "ignored", true, nullptr, nullptr);
+    assert(rc == RAR_OK);
+    assert(entries.size() == 1 && !entries[0].is_encrypted);
+    std::cout << "[PASS] list_file_stream_password\n";
+}
+
+void test_list_file_stream_emit_encrypted() {
+    std::cout << "Starting test_list_file_stream_emit_encrypted...\n" << std::flush;
+    // hello5_p.rar (-p secret): headers in clear, mixed encrypted/unencrypted
+    // file data. In emit mode (the password-export mode) it lists, flagging
+    // the encrypted entries; the frozen-mode rejection is covered by
+    // test_list_file_stream_encrypted.
+    std::vector<BufferArchiveEntry> entries;
+    int rc = list_file_stream(kFixturesDir / "hello5_p.rar", entries, nullptr, true);
+    assert(rc == RAR_OK);
+    assert(entries.size() >= 2);
+    size_t encrypted = 0;
+    size_t plain = 0;
+    for (const auto& e : entries) {
+        if (e.is_dir) continue;
+        e.is_encrypted ? ++encrypted : ++plain;
+    }
+    assert(encrypted >= 1);
+    assert(plain >= 1);
+    std::cout << "[PASS] list_file_stream_emit_encrypted\n";
 }
 
 int main() {
@@ -681,6 +760,8 @@ int main() {
     test_list_file_stream_sfx_prefix();
     test_list_file_stream_cancel();
     test_list_file_stream_encrypted();
+    test_list_file_stream_password();
+    test_list_file_stream_emit_encrypted();
     std::cout << "All buffer_archive tests PASSED!\n";
     return 0;
 }

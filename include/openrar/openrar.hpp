@@ -173,6 +173,31 @@ inline std::vector<Entry> list_archive_file(const std::filesystem::path& arc,
     return out;
 }
 
+// ── Password listing (_pw ABI) ───────────────────────────────────────────────
+// Streams the archive from disk, decrypting a header-encrypted (-hp) archive
+// with `password`; file entries with encrypted payloads are reported with
+// is_encrypted = 1 and the walk continues. Wrong password throws with
+// RAR_ERR_BAD_PASSWORD; NULL/empty password on a header-encrypted archive
+// throws with RAR_ERR_ENCRYPTED. See openrar_dll.h for the full contract.
+// (Passing nullptr as the second argument is ambiguous with the callback
+// overload above — pass "" for "no password" or use the callback overload.)
+inline std::vector<Entry> list_archive_file(const std::filesystem::path& arc, const char* password,
+                                            openrar_progress_cb progress = nullptr,
+                                            openrar_cancel_cb cancel = nullptr,
+                                            void* user = nullptr) {
+    uint32_t count = 0;
+    void* entries = nullptr;
+    void* paths = nullptr;
+    size_t paths_sz = 0;
+    std::string u8 = arc.u8string();
+    int rc = openrar_archive_list_file_pw(u8.c_str(), password, &count, &entries, &paths, &paths_sz,
+                                          progress, cancel, user);
+    check(rc);
+    std::vector<Entry> out = unpack_entries(count, entries, paths);
+    openrar_archive_list_free(entries, paths, paths_sz);
+    return out;
+}
+
 inline std::vector<uint8_t> extract_file(const uint8_t* data, size_t size, uint32_t index) {
     uint8_t* out = nullptr;
     size_t len = 0;
@@ -245,12 +270,18 @@ public:
         : ArchiveHandle(rar.data(), rar.size()) {}
     ArchiveHandle(const uint8_t* data, size_t size) {
         h_ = openrar_archive_open(data, size);
-        if (h_ == 0) {
-            char b[512] = {};
-            openrar_archive_get_error(b, sizeof(b));
-            throw std::runtime_error(b[0] ? b : "open failed");
-        }
+        fail_if_null();
     }
+    // Progress/cancel over the scan that happens at open time (open_ex ABI).
+    // A cancelled scan throws with the "open aborted" detail.
+    ArchiveHandle(const uint8_t* data, size_t size, openrar_progress_cb progress,
+                  openrar_cancel_cb cancel, void* user = nullptr) {
+        h_ = openrar_archive_open_ex(data, size, progress, cancel, user);
+        fail_if_null();
+    }
+    ArchiveHandle(const std::vector<uint8_t>& rar, openrar_progress_cb progress,
+                  openrar_cancel_cb cancel = nullptr, void* user = nullptr)
+        : ArchiveHandle(rar.data(), rar.size(), progress, cancel, user) {}
     ~ArchiveHandle() {
         if (h_) openrar_archive_close(h_);
     }
@@ -289,6 +320,13 @@ public:
     uint32_t native_handle() const { return h_; }
 
 private:
+    void fail_if_null() {
+        if (h_ == 0) {
+            char b[512] = {};
+            openrar_archive_get_error(b, sizeof(b));
+            throw std::runtime_error(b[0] ? b : "open failed");
+        }
+    }
     uint32_t h_{0};
 };
 

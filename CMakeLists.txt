@@ -397,6 +397,8 @@ if(NOT EMSCRIPTEN)
     add_executable(dll_cpp_tests tests/unit/dll_cpp_tests.cpp)
     target_link_libraries(dll_cpp_tests PRIVATE openrar_dll)
     target_include_directories(dll_cpp_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
+    # Password-listing coverage reads the fixtures under tests/.
+    target_compile_definitions(dll_cpp_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     openrar_enable_test_asserts(dll_cpp_tests)
     add_test(NAME dll_cpp_tests COMMAND dll_cpp_tests)
 

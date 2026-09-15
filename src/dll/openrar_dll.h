@@ -57,7 +57,9 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_version(void);
 // Bit flags for openrar_abi_features(). Hosts must not assume an export
 // exists before the corresponding bit is set (or the symbol resolves via
 // GetProcAddress / dlsym).
-#define OPENRAR_ABI_FEATURE_LIST_PROGRESS (1ull << 0) // list_file_ex / list_ex below
+#define OPENRAR_ABI_FEATURE_LIST_PROGRESS (1ull << 0)        // list_file_ex / list_ex below
+#define OPENRAR_ABI_FEATURE_LIST_PASSWORD (1ull << 1)        // list_file_pw below
+#define OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS (1ull << 2) // archive_open_ex below
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -145,8 +147,25 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create(
     const uint8_t* const* paths_arr, const uint8_t* const* data_arr, const size_t* sizes_arr,
     uint32_t file_count, int method, uint32_t window_log2, uint8_t** out_ptr, size_t* out_len);
 
+// ── Progress / cancel callbacks ──────────────────────────────────────────────
+// Declared here because the handle-API and listing exports below take them;
+// wired per-call (listing/open exports) or per-handle (stream setters).
+typedef void(OPENRAR_DLL_CALL* openrar_progress_cb)(void* user, uint64_t done, uint64_t total);
+typedef int(OPENRAR_DLL_CALL* openrar_cancel_cb)(void* user);
+
 // ── Handle API (scan-once; avoids double scan for list → extract) ───────────
 OPENRAR_DLL_API uint32_t OPENRAR_DLL_CALL openrar_archive_open(const uint8_t* data, size_t size);
+// openrar_archive_open with progress/cancel over the scan that happens at
+// open time. Same handle semantics and failure behavior as
+// openrar_archive_open (0 on failure, detail via openrar_archive_get_error);
+// a cancelled scan also returns 0 with an "open aborted" detail. The entry
+// semantics are those of openrar_archive_list (rejects encrypted, solid,
+// multi-volume and recovery archives). NULL callbacks are allowed and make
+// the call equivalent to openrar_archive_open.
+OPENRAR_DLL_API uint32_t OPENRAR_DLL_CALL openrar_archive_open_ex(const uint8_t* data, size_t size,
+                                                                  openrar_progress_cb progress,
+                                                                  openrar_cancel_cb cancel,
+                                                                  void* user);
 OPENRAR_DLL_API void OPENRAR_DLL_CALL openrar_archive_close(uint32_t handle);
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_list(uint32_t handle, uint32_t* count,
                                                                  void** entries_out,
@@ -182,8 +201,7 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_to_file(const char* 
                                                                     const char* out_path);
 
 // ── Progress / cancel (handle-based; polled between blocks) ──────────────────
-typedef void(OPENRAR_DLL_CALL* openrar_progress_cb)(void* user, uint64_t done, uint64_t total);
-typedef int(OPENRAR_DLL_CALL* openrar_cancel_cb)(void* user);
+// (the callback typedefs live above the handle API; see comment there)
 // openrar_set_progress/openrar_set_cancel were removed (report L12/I19): they
 // accepted a callback, returned RAR_OK and did nothing. Callbacks are only
 // wired at the streaming layer — use openrar_stream_set_progress /
@@ -221,6 +239,36 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_list_file_ex(
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_list_ex(
     const uint8_t* data, size_t size, uint32_t* count, void** entries_out, void** paths_out,
     size_t* paths_size_out, openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
+
+// ── Listing with a password (_pw; additive) ──────────────────────────────────
+// Streams the archive from disk like list_file_ex and decrypts header-
+// encrypted archives (RAR5 -hp): the clear HEAD_CRYPT block after the
+// signature selects the KDF parameters, keys derive from `password` via
+// PBKDF2, and every following header is read through AES-256-CBC. A password
+// on an archive without header encryption is ignored; an empty or NULL
+// password counts as none.
+//
+// Error mapping:
+//   RAR_ERR_ENCRYPTED        - NULL/empty password and HEAD_CRYPT present
+//                              (the early password signal; prompt and retry).
+//   RAR_ERR_BAD_PASSWORD     - password supplied but wrong (PswCheck mismatch
+//                              or decrypted-header CRC failure).
+//   RAR_ERR_UNSUPPORTED_FEATURE - unknown HEAD_CRYPT crypto version, solid,
+//                              multi-volume or recovery archives.
+//
+// Unlike the frozen list/list_ex/list_file_ex semantics, file entries whose
+// payload is encrypted are REPORTED (is_encrypted = 1) and the walk
+// continues: -hp implies encrypted file data for every entry, so rejecting
+// them would make password listing useless. Extraction of encrypted entries
+// is still not supported by this DLL. There is deliberately no password
+// variant of the in-memory openrar_archive_list: decrypting headers in the
+// memory walker would duplicate the CBC/size-recovery crypto path in
+// read_block_raw_mem for a case no host has identified; the streaming export
+// covers the real-world flow.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_list_file_pw(const char* arc_path, const char* password, uint32_t* count,
+                             void** entries_out, void** paths_out, size_t* paths_size_out,
+                             openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
 
 #ifdef __cplusplus
 } // extern "C"
