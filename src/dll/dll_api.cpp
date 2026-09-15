@@ -97,6 +97,8 @@ const char* list_error_message(int rc) {
     switch (rc) {
     case RAR_ERR_ENCRYPTED:
         return "archive headers are encrypted (password required to list)";
+    case RAR_ERR_BAD_PASSWORD:
+        return "wrong password for encrypted headers";
     case RAR_ERR_ABORTED:
         return "listing aborted";
     default:
@@ -145,7 +147,8 @@ int OPENRAR_DLL_CALL openrar_archive_version(void) {
     return 1;
 }
 uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
-    return OPENRAR_ABI_FEATURE_LIST_PROGRESS;
+    return OPENRAR_ABI_FEATURE_LIST_PROGRESS | OPENRAR_ABI_FEATURE_LIST_PASSWORD |
+           OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -466,6 +469,34 @@ uint32_t OPENRAR_DLL_CALL openrar_archive_open(const uint8_t* data, size_t size)
 }
 void OPENRAR_DLL_CALL openrar_archive_close(uint32_t handle) {
     g_handles.erase(handle);
+}
+uint32_t OPENRAR_DLL_CALL openrar_archive_open_ex(const uint8_t* data, size_t size,
+                                                  openrar_progress_cb progress,
+                                                  openrar_cancel_cb cancel, void* user) {
+    try {
+        if (!data || size == 0) {
+            set_error("null argument");
+            return 0;
+        }
+        auto h = std::make_shared<ArchiveHandle>();
+        h->data.assign(data, data + size);
+        ListCallbackCtx ctx{progress, cancel, user};
+        std::vector<openrar::archive::BufferArchiveEntry> parsed;
+        int rc = h->ba.list(h->data.data(), h->data.size(), parsed, list_progress_thunk, &ctx,
+                            list_cancel_thunk, &ctx);
+        if (rc != RAR_OK) {
+            set_error(rc == RAR_ERR_ABORTED ? "open aborted" : "open failed");
+            return 0;
+        }
+        h->entries = std::move(parsed);
+        return g_handles.insert(h);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return 0;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return 0;
+    }
 }
 int OPENRAR_DLL_CALL openrar_archive_handle_list(uint32_t handle, uint32_t* count,
                                                  void** entries_out, void** paths_out,
@@ -921,9 +952,45 @@ int OPENRAR_DLL_CALL openrar_archive_list_file_ex(const char* arc_path, uint32_t
         *paths_size_out = 0;
         ListCallbackCtx ctx{progress, cancel, user};
         std::vector<openrar::archive::BufferArchiveEntry> parsed;
-        int rc =
-            openrar::archive::list_file_stream(std::filesystem::u8path(arc_path), parsed,
-                                               list_progress_thunk, &ctx, list_cancel_thunk, &ctx);
+        int rc = openrar::archive::list_file_stream(
+            std::filesystem::u8path(arc_path), parsed,
+            /*password=*/nullptr,
+            /*emit_encrypted_entries=*/false, list_progress_thunk, &ctx, list_cancel_thunk, &ctx);
+        if (rc != RAR_OK) {
+            set_error(list_error_message(rc));
+            return rc;
+        }
+        return pack_list_outputs(parsed, count, entries_out, paths_out, paths_size_out);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+int OPENRAR_DLL_CALL openrar_archive_list_file_pw(const char* arc_path, const char* password,
+                                                  uint32_t* count, void** entries_out,
+                                                  void** paths_out, size_t* paths_size_out,
+                                                  openrar_progress_cb progress,
+                                                  openrar_cancel_cb cancel, void* user) {
+    try {
+        if (!arc_path || !count || !entries_out || !paths_out || !paths_size_out) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *count = 0;
+        *entries_out = nullptr;
+        *paths_out = nullptr;
+        *paths_size_out = 0;
+        ListCallbackCtx ctx{progress, cancel, user};
+        std::vector<openrar::archive::BufferArchiveEntry> parsed;
+        // The streaming path owns header decryption; encrypted file entries
+        // are reported with is_encrypted = 1 (this is what makes -hp listing
+        // useful — see the header contract).
+        int rc = openrar::archive::list_file_stream(
+            std::filesystem::u8path(arc_path), parsed, password, /*emit_encrypted_entries=*/true,
+            list_progress_thunk, &ctx, list_cancel_thunk, &ctx);
         if (rc != RAR_OK) {
             set_error(list_error_message(rc));
             return rc;

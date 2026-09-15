@@ -181,11 +181,14 @@ always compiles it directly.
 in-memory `BufferArchive::list` and the file-streaming `list_file_stream`.
 The boundaries map the shared internal status to public codes and
 deliberately differ on `CryptHeader`: the historical surfaces keep
-`RAR_ERR_UNSUPPORTED_FEATURE`, while the DLL's `_ex` listing exports return
-the dedicated `RAR_ERR_ENCRYPTED` (-12) as an early password signal. The `_ex`
-exports are additive and negotiate via `openrar_abi_features()`;
-`OPENRAR_DLL_API_VERSION` does not move for new exports (see
-`docs/versioning.md`).
+`RAR_ERR_UNSUPPORTED_FEATURE`, while the DLL's `_ex`/`_pw` listing exports
+return the dedicated `RAR_ERR_ENCRYPTED` (-12) as an early password signal.
+Only the streaming path accepts a password (the CBC/size-recovery crypto
+lives in the stream `read_block_raw`); its password mode also reports
+encrypted file entries (`is_encrypted = 1`) instead of stopping, because
+`-hp` implies encrypted file data for every entry. The additive exports
+negotiate via `openrar_abi_features()`; `OPENRAR_DLL_API_VERSION` does not
+move for new exports (see `docs/versioning.md`).
 
 These exemptions are also encoded in `.clang-tidy` (`RAR_` enum-constant
 ignore rule) and documented in CONTRIBUTING.md.

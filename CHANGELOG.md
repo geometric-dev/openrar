@@ -5,6 +5,28 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Password listing of header-encrypted archives**:
+  `openrar_archive_list_file_pw` streams an archive from disk and, when it
+  carries a `HEAD_CRYPT` block, derives keys from the supplied password
+  (PBKDF2) and decrypts every following header (AES-256-CBC). Wrong password
+  → `RAR_ERR_BAD_PASSWORD`; no password on a header-encrypted archive → the
+  existing `RAR_ERR_ENCRYPTED` early signal. In this mode file entries with
+  encrypted payloads are reported (`is_encrypted = 1`) and the walk
+  continues — `-hp` implies encrypted file data, so rejecting them would
+  defeat the purpose. Negotiated via `OPENRAR_ABI_FEATURE_LIST_PASSWORD`;
+  the frozen v1.1.0 listing semantics are untouched. There is deliberately
+  no password variant of the in-memory listing (documented in the header).
+- **Callbacks on the handle-API scan**: `openrar_archive_open_ex` runs the
+  scan that happens at open time with byte progress and cancel (cancelled →
+  handle 0 with an "open aborted" detail). Negotiated via
+  `OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS`.
+- C++ wrapper: `list_archive_file(path, password, ...)` overload and
+  `ArchiveHandle(data, size, progress, cancel, user)` constructors.
+
 ## [1.1.0] - 2026-09-14
 
 ### Added

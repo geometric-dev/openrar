@@ -2,8 +2,13 @@
 #include <cassert>
 #include <fstream>
 #include <iostream>
+#include <string>
 #ifdef _MSC_VER
 #include <crtdbg.h>
+#endif
+
+#ifndef OPENRAR_SOURCE_DIR
+#define OPENRAR_SOURCE_DIR "."
 #endif
 
 static void test_cpp_wrapper() {
@@ -88,6 +93,37 @@ static void test_cpp_wrapper_list_callbacks() {
     std::cout << "PASS test_cpp_wrapper_list_callbacks\n";
 }
 
+// ── Password listing + handle open with callbacks ────────────────────────────
+static void test_cpp_wrapper_password_and_open() {
+    using namespace openrar;
+    const std::filesystem::path fixtures = std::filesystem::path(OPENRAR_SOURCE_DIR) / "tests";
+
+    // Password listing: the -hp fixture lists with is_encrypted entries.
+    auto entries = list_archive_file(fixtures / "hello5_hp.rar", "secret");
+    assert(!entries.empty());
+    for (const auto& e : entries) {
+        if (!e.is_dir) assert(e.is_encrypted);
+    }
+
+    // Wrong password throws with the RAR_ERR_BAD_PASSWORD code.
+    bool threw_bad_password = false;
+    try {
+        list_archive_file(fixtures / "hello5_hp.rar", "nope");
+    } catch (const std::runtime_error& ex) {
+        threw_bad_password = std::string(ex.what()).find("code -7") != std::string::npos;
+    }
+    assert(threw_bad_password);
+
+    // ArchiveHandle with callbacks over the open-time scan.
+    std::vector<InputFile> files = {{"a.txt", {'h', 'i'}, 0}};
+    auto rar = create_archive(files, {0, 4});
+    CbLog log;
+    ArchiveHandle h(rar, CbLog::progress, CbLog::cancel, &log);
+    assert(h.list().size() == 1);
+    assert(!log.calls.empty());
+    std::cout << "PASS test_cpp_wrapper_password_and_open\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -98,6 +134,7 @@ int main() {
 #endif
     test_cpp_wrapper();
     test_cpp_wrapper_list_callbacks();
+    test_cpp_wrapper_password_and_open();
     std::cout << "ALL CPP WRAPPER TESTS PASSED\n";
     return 0;
 }

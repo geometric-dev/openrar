@@ -117,11 +117,29 @@ private:
 // multi-GB archives does not materialise them in RAM and progress/cancel stay
 // responsive while the walk seeks across slow (e.g. network) storage. Shares
 // the per-block state machine with BufferArchive::list, so entry output and
-// error mapping match — with two documented deltas:
-//   - RAR_ERR_ENCRYPTED as soon as a HEAD_CRYPT block is reached (headers
-//     encrypted; a password would be required to read them) instead of the
-//     historical RAR_ERR_UNSUPPORTED_FEATURE;
+// error mapping match — with documented deltas:
+//   - RAR_ERR_ENCRYPTED as soon as a HEAD_CRYPT block is reached without a
+//     password (headers encrypted; a password would be required to read them)
+//     instead of the historical RAR_ERR_UNSUPPORTED_FEATURE;
+//   - RAR_ERR_BAD_PASSWORD when a password was supplied but does not decrypt
+//     the headers (PswCheck mismatch or header CRC failure);
+//   - RAR_ERR_UNSUPPORTED_FEATURE for an unknown HEAD_CRYPT crypto version;
 //   - RAR_ERR_IO when the file cannot be opened.
+//
+// `password` (empty or null = none) decrypts header-encrypted archives
+// (RAR5 -hp): the HEAD_CRYPT block is read in the clear, keys are derived via
+// PBKDF2, and every following header is read through AES-256-CBC. A password
+// on an archive without header encryption is ignored.
+//
+// `emit_encrypted_entries`: when false (frozen v1.1.0 semantics), the walk
+// stops with RAR_ERR_UNSUPPORTED_FEATURE at the first file header carrying
+// the encrypted-data flag, like the historical paths. When true, such
+// entries are reported with is_encrypted = 1 and the walk continues — the
+// password-listing path depends on this, because -hp implies encrypted file
+// data for every entry. Only the DLL's password export opts in; solid,
+// multi-volume and recovery archives remain rejected in every mode (the
+// 64-byte entry layout cannot represent them).
+//
 // Progress is byte-based: (done, total) = (absolute walk offset incl. any SFX
 // prefix, file size), monotonic, emitted per SFX-scan chunk and between
 // header blocks, with exactly one final (total, total) on success. Callbacks
@@ -129,9 +147,10 @@ private:
 // scan chunk and between header blocks; a non-zero return produces
 // RAR_ERR_ABORTED. out_entries is cleared on every non-OK return.
 int list_file_stream(const std::filesystem::path& arc_path,
-                     std::vector<BufferArchiveEntry>& out_entries,
-                     progress_cb on_progress = nullptr, void* progress_user = nullptr,
-                     cancel_cb on_cancel = nullptr, void* cancel_user = nullptr);
+                     std::vector<BufferArchiveEntry>& out_entries, const char* password,
+                     bool emit_encrypted_entries, progress_cb on_progress = nullptr,
+                     void* progress_user = nullptr, cancel_cb on_cancel = nullptr,
+                     void* cancel_user = nullptr);
 
 // ── Write a single-volume RAR5 archive to `out` ──────────────────────────────
 // `method` ∈ {0, 3, 5}. `window_log2` ∈ {1, 2, 3, 4} → win_size 128KB..1MB
