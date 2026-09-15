@@ -33,6 +33,11 @@ enum BufferArchiveError : int {
     // DLL file-mode handle exports only (ArchiveReader::scan_archive keeps
     // its tolerant CLI behavior of stopping the walk at the missing volume).
     RAR_ERR_MISSING_VOLUME = -13,
+    // The target archive is held open by a file-mode handle in this process
+    // (open_file keeps the volume open with FILE_SHARE_READ, so a rewrite
+    // under it would fail opaquely on Windows). Emitted by the DLL mutation
+    // exports only, up front before any temp file is created.
+    RAR_ERR_BUSY = -14,
 };
 
 } // namespace openrar::archive

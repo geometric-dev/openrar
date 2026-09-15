@@ -24,10 +24,18 @@ names the test that pins it in `tests/unit/file_handle_tests.cpp`.
   catch-up cleanly; the handle stays usable after every abort or error.
 - Out-of-order and repeated extraction are correct but pay
   O(solid-run-prefix) decode; hosts extract in ascending index order for
-  speed. Suffix-only delete: mutation exports (Phase 2) must refuse deleting
-  members of a solid run rather than orphan later entries.
+  speed. Suffix-only delete (enforced since v1.4.0): the mutation exports
+  refuse deleting a member of a solid run while any later member of that
+  run is retained — the allowed shapes per run are untouched, suffix
+  deletion, and whole-run deletion. Replacement is stricter still: any
+  solid-block member (run head included) is refused as a 'u'-replace
+  target; independent non-solid entries replace freely. The check runs
+  over the union of everything an operation removes (explicit delete
+  indices and name-matched replacements) against every retained solid
+  entry's chain [H(S), S).
 - Pinned by: `solid_out_of_order_identity`, `solid_cancel_catchup_reusable`,
-  `solid_repeat_extract`.
+  `solid_repeat_extract` (reader); `tests/unit/mutation_tests.cpp`
+  (delete/replace guard).
 
 ## 2. RAM ceiling invariant
 

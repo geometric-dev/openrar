@@ -3,6 +3,7 @@
 #include "../api/abi_contract.hpp"
 #include "../archive/buffer_archive.hpp"
 #include "../archive/archive_reader.hpp"
+#include "../archive/archive_mutator.hpp"
 #include "../compress/compressor50.hpp"
 #include "../compress/decompressor50.hpp"
 #include "../compress/stream_encoder.hpp"
@@ -18,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <string>
 
@@ -52,6 +54,7 @@ static_assert(static_cast<int>(RAR_ERR_ENCRYPTED) ==
               static_cast<int>(openrar::api::RAR_ERR_ENCRYPTED));
 static_assert(static_cast<int>(RAR_ERR_MISSING_VOLUME) ==
               static_cast<int>(openrar::api::RAR_ERR_MISSING_VOLUME));
+static_assert(static_cast<int>(RAR_ERR_BUSY) == static_cast<int>(openrar::api::RAR_ERR_BUSY));
 static_assert(sizeof(openrar_archive_entry_t) == sizeof(openrar::api::ArchiveEntryOut),
               "openrar_archive_entry_t layout drifted from api::ArchiveEntryOut");
 #define OPENRAR_DLL_ENTRY_FIELD(field)                                                             \
@@ -84,6 +87,10 @@ void set_error(const std::string& msg) {
 // handles").
 struct ArchiveHandleBase {
     virtual ~ArchiveHandleBase() = default;
+    // Path of the archive this handle holds open, empty for buffer handles
+    // (which hold no file). The mutation exports' RAR_ERR_BUSY pre-check
+    // compares mutation targets against these.
+    virtual std::filesystem::path path() const { return {}; }
     virtual int list(uint32_t* count, void** entries_out, void** paths_out,
                      size_t* paths_size_out) = 0;
     virtual int extract(uint32_t entry_index, uint8_t** out_ptr, size_t* out_len) = 0;
@@ -344,6 +351,8 @@ struct FileArchiveHandle : ArchiveHandleBase {
     // DLL entry index → reader entries() index.
     std::vector<size_t> reader_index;
 
+    std::filesystem::path path() const override { return reader->path(); }
+
     void build_entry_map() {
         entries.clear();
         reader_index.clear();
@@ -470,7 +479,8 @@ int OPENRAR_DLL_CALL openrar_archive_version(void) {
 }
 uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
     return OPENRAR_ABI_FEATURE_LIST_PROGRESS | OPENRAR_ABI_FEATURE_LIST_PASSWORD |
-           OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS | OPENRAR_ABI_FEATURE_FILE_HANDLE;
+           OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS | OPENRAR_ABI_FEATURE_FILE_HANDLE |
+           OPENRAR_ABI_FEATURE_MUTATION;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -980,6 +990,215 @@ int OPENRAR_DLL_CALL openrar_archive_handle_test(uint32_t handle, uint32_t entry
 }
 
 } // extern "C" helpers C++ linkage
+
+// ── Archive mutation (v1.4.0; free functions over ArchiveMutator) ────────────
+// (docs/dll-integration-spec.md §6.12)
+namespace {
+
+// Pre-check shared by both mutation exports: the archive must exist on disk
+// (RAR_ERR_IO) and no open file-mode handle in this process may hold it
+// (RAR_ERR_BUSY — open_file keeps the volume open with FILE_SHARE_READ, so
+// the mutator's atomic replace over it fails opaquely on Windows; failing
+// up front beats a sharing violation mid-rename).
+int mutation_precheck(const char* arc_path) {
+    std::error_code ec;
+    const std::filesystem::path arc = std::filesystem::u8path(arc_path);
+    if (!std::filesystem::exists(arc, ec) || ec) {
+        set_error("archive not found");
+        return RAR_ERR_IO;
+    }
+    for (const auto& h : g_handles.snapshot()) {
+        const std::filesystem::path p = h->path();
+        if (p.empty()) continue; // buffer handles hold no file
+        if (paths_same_file(p, arc)) {
+            set_error("archive is open in a handle; close it before mutating");
+            return RAR_ERR_BUSY;
+        }
+    }
+    return RAR_OK;
+}
+
+// Open + classify for the mutation exports: locked, multi-volume and
+// header-encrypted archives are refused with RAR_ERR_UNSUPPORTED_FEATURE
+// (the mutation surface takes no password); anything else that fails the
+// walk is RAR_ERR_IO. On RAR_OK `reader` is left OPEN for the caller's
+// index translation — close it before invoking the mutator, whose final
+// rename must not face our own open stream.
+int mutation_open(const std::filesystem::path& arc,
+                  std::unique_ptr<openrar::archive::ArchiveReader>& reader,
+                  std::string& detail) {
+    auto r = std::make_unique<openrar::archive::ArchiveReader>();
+    int status = RAR_OK;
+    std::string open_detail;
+    // A failed close()s the reader and resets its per-archive flags, so the
+    // -hp verdict arrives as the status code, not via saw_crypt_header().
+    // With the empty password used here, BAD_PASSWORD can only mean a
+    // header-encrypted archive (the derived keys garbage out on HEAD_CRYPT),
+    // so both that and ENCRYPTED map to the pinned refusal below.
+    if (!r->open_ex(arc, /*password=*/"", status, open_detail)) {
+        if (status == RAR_ERR_ENCRYPTED || status == RAR_ERR_BAD_PASSWORD) {
+            detail = "mutating header-encrypted archive requires password";
+            return RAR_ERR_UNSUPPORTED_FEATURE;
+        }
+        if (status == RAR_ERR_UNSUPPORTED_FEATURE) {
+            detail = open_detail; // e.g. unsupported HEAD_CRYPT crypto version
+            return RAR_ERR_UNSUPPORTED_FEATURE;
+        }
+        detail = "cannot open archive";
+        return RAR_ERR_IO;
+    }
+    if (r->is_locked()) {
+        detail = "archive is locked";
+        return RAR_ERR_UNSUPPORTED_FEATURE;
+    }
+    if (r->is_volume()) {
+        detail = "cannot mutate a multi-volume archive";
+        return RAR_ERR_UNSUPPORTED_FEATURE;
+    }
+    reader = std::move(r);
+    return RAR_OK;
+}
+
+} // namespace
+
+extern "C" {
+
+int OPENRAR_DLL_CALL openrar_archive_delete_entries_file(const char* arc_path,
+                                                         const uint32_t* entry_indices,
+                                                         uint32_t count) {
+    try {
+        if (!arc_path || !entry_indices || count == 0) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        int pre = mutation_precheck(arc_path);
+        if (pre != RAR_OK) return pre;
+
+        const std::filesystem::path arc = std::filesystem::u8path(arc_path);
+        std::unique_ptr<openrar::archive::ArchiveReader> reader;
+        std::string detail;
+        int cls = mutation_open(arc, reader, detail);
+        if (cls != RAR_OK) {
+            set_error(detail);
+            return cls;
+        }
+
+        // Translate handle-listing indices to header offsets with our own
+        // walk (docs/dll-integration-spec.md §6.12): file entries only, in
+        // listing order — the same mapping openrar_archive_handle_list
+        // exposes on a file handle. Deletion matches by header offset,
+        // never by name, so names containing '*'/'?' are safe.
+        const std::vector<openrar::archive::ArchiveEntry>& entries = reader->entries();
+        std::vector<size_t> file_indices;
+        file_indices.reserve(entries.size());
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (!entries[i].header.is_service) file_indices.push_back(i);
+        }
+        std::vector<openrar::core::uint64> offsets;
+        offsets.reserve(count);
+        std::unordered_set<uint32_t> seen;
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t idx = entry_indices[i];
+            if (idx >= file_indices.size()) {
+                set_error("entry index " + std::to_string(idx) + " out of range (archive has " +
+                          std::to_string(file_indices.size()) + " entries)");
+                return RAR_ERR_INVALID_ARG;
+            }
+            if (seen.insert(idx).second) offsets.push_back(entries[file_indices[idx]].header_offset);
+        }
+        reader.reset(); // close the walk before the mutator's rename
+
+        int rc = openrar::archive::ArchiveMutator::delete_entries_by_index(arc, offsets, detail);
+        if (rc != RAR_OK) set_error(detail.empty() ? "delete failed" : detail);
+        return rc;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+
+int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
+                                                    const char* const* src_paths,
+                                                    const char* const* arc_names,
+                                                    uint32_t file_count, int method,
+                                                    uint32_t window_log2) {
+    try {
+        if (!arc_path || !src_paths || !arc_names || file_count == 0) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        if (method != 0 && method != 3 && method != 5) {
+            set_error("method must be 0,3,5");
+            return RAR_ERR_INVALID_ARG;
+        }
+        if (window_log2 < 1 || window_log2 > 4) {
+            set_error("window_log2 must be 1..4");
+            return RAR_ERR_INVALID_ARG;
+        }
+        int pre = mutation_precheck(arc_path);
+        if (pre != RAR_OK) return pre;
+
+        const std::filesystem::path arc = std::filesystem::u8path(arc_path);
+        {
+            std::unique_ptr<openrar::archive::ArchiveReader> reader;
+            std::string detail;
+            int cls = mutation_open(arc, reader, detail);
+            if (cls != RAR_OK) {
+                set_error(detail);
+                return cls;
+            }
+            // reader closes here — before the mutator's temp/replace dance.
+        }
+
+        // Build the batch (pure per-file computation, no disk effect on the
+        // archive). Directory sources become directory records
+        // (non-recursive); arc_names are normalized '\' → '/' per §6.12.
+        std::vector<openrar::archive::ArchiveMutator::PreparedAdd> batch;
+        batch.reserve(file_count);
+        for (uint32_t i = 0; i < file_count; ++i) {
+            if (!src_paths[i] || !arc_names[i] || arc_names[i][0] == '\0') {
+                set_error("null argument");
+                return RAR_ERR_INVALID_ARG;
+            }
+            std::string name(arc_names[i]);
+            std::replace(name.begin(), name.end(), '\\', '/');
+            openrar::archive::ArchiveMutator::PreparedAdd p;
+            p.entry_name = name;
+            p.src_path = std::filesystem::u8path(src_paths[i]);
+            std::error_code ec;
+            if (std::filesystem::is_directory(p.src_path, ec)) {
+                if (!openrar::archive::ArchiveMutator::prepare_add_dir(p.src_path, name, p)) {
+                    set_error("cannot add directory " + std::string(src_paths[i]));
+                    return RAR_ERR_IO;
+                }
+            } else if (!openrar::archive::ArchiveMutator::prepare_add_file(
+                           p.src_path, name, method, /*password=*/"", p,
+                           openrar::archive::time_flags::MTIME, window_log2)) {
+                set_error("cannot read " + std::string(src_paths[i]));
+                return RAR_ERR_IO;
+            }
+            batch.push_back(std::move(p));
+        }
+
+        std::string detail;
+        int rc = openrar::archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, /*password=*/"",
+                                                                      /*encrypt_headers=*/false, {},
+                                                                      /*solid=*/false, {}, detail);
+        if (rc != RAR_OK) set_error(detail.empty() ? "add failed" : detail);
+        return rc;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+
+} // extern "C"
 
 static std::vector<uint8_t> read_file_bytes(const char* path, bool& ok) {
     ok = false;

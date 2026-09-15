@@ -41,6 +41,7 @@ namespace openrar::api {
 using RarError = openrar::archive::BufferArchiveError;
 using openrar::archive::RAR_ERR_ABORTED;
 using openrar::archive::RAR_ERR_BAD_PASSWORD;
+using openrar::archive::RAR_ERR_BUSY;
 using openrar::archive::RAR_ERR_CRC_MISMATCH;
 using openrar::archive::RAR_ERR_ENCRYPTED;
 using openrar::archive::RAR_ERR_MISSING_VOLUME;
@@ -175,6 +176,17 @@ public:
     void erase(uint32_t id) {
         std::lock_guard<std::mutex> lk(m_);
         map_.erase(id);
+    }
+    // Snapshot of every live handle (shared_ptrs pin lifetimes). Callers may
+    // then inspect the entries with the lock released — the mutation
+    // exports' RAR_ERR_BUSY pre-check sweeps this to find archives an open
+    // file-mode handle still holds.
+    std::vector<std::shared_ptr<T>> snapshot() {
+        std::lock_guard<std::mutex> lk(m_);
+        std::vector<std::shared_ptr<T>> out;
+        out.reserve(map_.size());
+        for (auto& [id, h] : map_) out.push_back(h);
+        return out;
     }
 
 private:

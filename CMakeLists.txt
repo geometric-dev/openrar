@@ -407,6 +407,18 @@ if(NOT EMSCRIPTEN)
     openrar_enable_test_asserts(file_handle_tests)
     add_test(NAME file_handle_tests COMMAND file_handle_tests)
 
+    # Mutation tests (v1.4.0): delete/add exports over the atomic mutator
+    # engine — file-handle listing index space, suffix-only solid delete,
+    # 'u' replacement semantics, atomicity, RAR_ERR_BUSY handle collision,
+    # CMT preservation and QO stripping. Engine-side fixtures need
+    # openrar_core (ArchiveMutator / HeaderWriter).
+    add_executable(mutation_tests tests/unit/mutation_tests.cpp)
+    target_link_libraries(mutation_tests PRIVATE openrar_dll openrar_core)
+    target_include_directories(mutation_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
+    target_compile_definitions(mutation_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    openrar_enable_test_asserts(mutation_tests)
+    add_test(NAME mutation_tests COMMAND mutation_tests)
+
     add_executable(dll_cpp_tests tests/unit/dll_cpp_tests.cpp)
     target_link_libraries(dll_cpp_tests PRIVATE openrar_dll)
     target_include_directories(dll_cpp_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)

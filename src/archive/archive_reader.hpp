@@ -64,6 +64,9 @@ public:
     bool saw_crypt_header() const { return saw_crypt_header_; }
     bool crypt_version_unsupported() const { return crypt_unsupported_; }
     core::uint64 sfx_offset() const { return sfx_offset_; }
+    // Path this reader was opened from (the first volume for multi-volume
+    // sets) — collision-check input for the DLL mutation surface.
+    const std::filesystem::path& path() const { return path_; }
 
     // For testing: get the window size of the active solid chain (returns 0 if none)
     size_t test_get_solid_window_size() const;
