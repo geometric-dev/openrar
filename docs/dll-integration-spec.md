@@ -77,7 +77,7 @@ if (openrar_archive_version() != 1) abort();
 
 * Adding new exports is minor; breaking `openrar_archive_entry_t` or removing an export is major (bump `SOVERSION`).
 * **Negotiating additive exports.** `OPENRAR_DLL_API_VERSION` does *not* change when exports are added (`docs/versioning.md`) — strict-equality probes keep working across versions. Detect a capability at runtime instead:
-  * `openrar_abi_features()` returns a `uint64_t` bitmask — `OPENRAR_ABI_FEATURE_LIST_PROGRESS` (0x1), `OPENRAR_ABI_FEATURE_LIST_PASSWORD` (0x2), `OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS` (0x4), `OPENRAR_ABI_FEATURE_FILE_HANDLE` (0x8), `OPENRAR_ABI_FEATURE_MUTATION` (0x10) — once the DLL is loaded;
+  * `openrar_abi_features()` returns a `uint64_t` bitmask — `OPENRAR_ABI_FEATURE_LIST_PROGRESS` (0x1), `OPENRAR_ABI_FEATURE_LIST_PASSWORD` (0x2), `OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS` (0x4), `OPENRAR_ABI_FEATURE_FILE_HANDLE` (0x8), `OPENRAR_ABI_FEATURE_MUTATION` (0x10), `OPENRAR_ABI_FEATURE_ENTRY_EX` (0x20) — once the DLL is loaded;
   * or resolve the symbol directly: `GetProcAddress(hmod, "openrar_archive_list_file_ex")` / `dlsym`.
   * **Do not reference new exports through the import lib if you must keep running against older DLLs** — the process fails to *load* before any version check runs. Either resolve dynamically as above or link with `/DELAYLOAD:openrar.dll`.
 
@@ -453,6 +453,62 @@ writers are outside the check (their mutation makes open handles fail reads
 with `RAR_ERR_IO` — hosts re-open). Concurrent handle creation during a
 mutation is a host protocol violation.
 
+### 6.13 Extended metadata (v1.5.0; additive)
+
+```c
+#define OPENRAR_ABI_FEATURE_ENTRY_EX (1ull << 5)
+
+typedef struct {                    // 48 bytes, pack(1)
+    uint32_t attrs;                 // host-OS attributes
+    uint32_t host_os;               // 0 = Windows, 1 = Unix
+    uint64_t mtime_ft, ctime_ft, atime_ft;  // FILETIME (UTC, 100ns); 0 = absent
+    uint32_t flags;                 // OPENRAR_ENTRY_FLAG_* bitmask
+    uint32_t win_size;              // dictionary bytes
+    uint32_t redir_type;            // 0 none / 1 unixsymlink / 2 winsymlink /
+                                    // 3 junction / 4 hardlink / 5 filecopy
+    uint32_t version_needed;        // 0 = RAR5, 1 = RAR7
+} openrar_entry_ex_t;
+
+typedef struct {                    // 24 bytes, pack(1)
+    uint32_t flags;                 // main-header MHFL_* flags
+    uint32_t volume_index;          // 0-based volume number
+    uint32_t volume_count;          // volumes of the set (1 = single-volume)
+    uint64_t recovery_size;         // RR service payload bytes, 0 if none
+    uint32_t comment_len;           // archive comment bytes, 0 if none
+} openrar_archive_info_t;
+
+int openrar_archive_handle_entry_ex(uint32_t handle, uint32_t entry_index,
+                                    openrar_entry_ex_t* out,
+                                    void** extra_out, size_t* extra_size_out);
+void openrar_archive_entry_ex_free(void* extra);
+int openrar_archive_handle_info(uint32_t handle, openrar_archive_info_t* out,
+                                void** comment_out, size_t* comment_size_out);
+```
+
+The 64-byte `openrar_archive_entry_t` is frozen (shared WASM contract);
+these queries surface what it drops, straight from the cached walk's
+headers. **File-mode handles only** — buffer handles return
+`RAR_ERR_UNSUPPORTED_FEATURE`.
+
+*entry_ex.* `entry_index` is the same handle-listing index space as
+`handle_list`. Timestamps come from the archive's FHEXTRA_HTIME records: a
+FILETIME-format record passes through; a unix-format record is converted
+(seconds since 1601, nanoseconds at 100 ns granularity). A timestamp absent
+from the archive is 0 with its HAS_* flag clear — the 32-bit DOS-time mtime
+of the frozen entry is not repeated here. SPLIT_BEFORE/AFTER describe the
+logical merged entry on multi-volume sets. `extra_out` carries the
+redirection target (NUL-terminated UTF-8; `*extra_size_out` excludes the
+NUL) iff `redir_type != 0`; free it with `openrar_archive_entry_ex_free` or
+`openrar_free`. Out-of-range `entry_index` is `RAR_ERR_INVALID_ARG`.
+
+*info.* Main-header flags, volume index/number, RR payload size and the
+archive comment. The CMT payload is read lazily at query time — comments
+stored compressed are decompressed, and a payload failing its CRC or decode
+is reported as absent with `RAR_OK` (a filesystem read failure is
+`RAR_ERR_IO`; free a returned comment with `openrar_free`). `volume_count`
+is always determinable on this surface: the file-mode open is strict, so a
+successfully opened set has every volume scanned (1 for single-volume).
+
 ---
 
 ## 7. C++ Wrapper (`include/openrar/openrar.hpp`)
@@ -503,6 +559,15 @@ struct AddOptions { int method=3; uint32_t window_log2=4; };
 void add_files(const std::filesystem::path& arc,
                const std::vector<std::pair<std::filesystem::path, std::string>>& files,
                AddOptions opts={});
+
+// Extended metadata (v1.5.0; file-mode handles only, others throw
+// UNSUPPORTED_FEATURE). FILETIMEs are UTC 100ns; 0 = not stored.
+struct EntryEx { uint32_t attrs, host_os, flags, win_size, redir_type, version_needed;
+                 uint64_t mtime_ft, ctime_ft, atime_ft; std::string redir_target; };
+struct ArchiveInfo { uint32_t flags, volume_index, volume_count;
+                     uint64_t recovery_size; std::string comment; };
+EntryEx ArchiveHandle::entry_ex(uint32_t idx) const;
+ArchiveInfo ArchiveHandle::info() const;
 
 class ArchiveHandle { // RAII, move-only
   ArchiveHandle(const std::vector<uint8_t>& rar);
@@ -753,7 +818,7 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 
 ## 12. Deployment
 
-* **Windows:** place `openrar.dll` (or suffixed `openrar_x64.dll`/`openrar_arm64.dll`) beside `.exe` or on `PATH`. Import lib `openrar.lib` (or `openrar_x64.lib`) for link. `dumpbin /EXPORTS` lists 43 exports (the declarations in `openrar_dll.h` are the source of truth). Do not mix x64 DLL into arm64 process — OS will reject.
+* **Windows:** place `openrar.dll` (or suffixed `openrar_x64.dll`/`openrar_arm64.dll`) beside `.exe` or on `PATH`. Import lib `openrar.lib` (or `openrar_x64.lib`) for link. `dumpbin /EXPORTS` lists 46 exports (the declarations in `openrar_dll.h` are the source of truth). Do not mix x64 DLL into arm64 process — OS will reject.
 * **Linux:** `libopenrar.so` (`SOVERSION 1`) or `libopenrar_x64.so`/`libopenrar_arm64.so`, `rpath $ORIGIN` or `LD_LIBRARY_PATH`.
 * **macOS:** `libopenrar.dylib` (or universal2 via `lipo`), `install_name @rpath/libopenrar.dylib`.
 * No `SharedArrayBuffer` / `COOP/COEP` requirement (WASM-only).
@@ -773,7 +838,7 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 * `UNSUPPORTED_FEATURE` for: encrypted entries (`FHEXTRA_CRYPT`), multivolume `MHFL_VOLUME`, solid `FCI_SOLID`, recovery `MHFL_PROTECT`, `method ∉ {0,3,5}`. The `_ex` listing exports keep these codes (§6.9); only the header-encrypted case maps to `RAR_ERR_ENCRYPTED` there. `list_file_pw` (§6.10) additionally reports encrypted file entries (`is_encrypted = 1`).
 * **Password support is listing + file-handle only**: `openrar_archive_list_file_pw` (§6.10) lists `-hp` archives, and the file-mode handles (§6.11) extract/test encrypted entries with passwords. The in-memory buffer surface and the frozen file helpers take no password by design (§6.10). The mutation exports (§6.12) take no password either — header-encrypted archives refuse mutation (`UNSUPPORTED_FEATURE`), and added files are written unencrypted.
 * The frozen file helpers (`list_file` / `extract_file` / `extract_file_to_path`) slurp the archive into RAM per call — accepted debt; use the file-mode handles (§6.11) for anything large.
-* No NTFS ACL/STM, no `FHEXTRA_HTIME` ns in the 64-byte entry (extended metadata is a planned `entry_ex` query); symlink/junction entries extract per the reader's safe-link rules on the file-handle surface.
+* No NTFS ACL/STM, no `FHEXTRA_HTIME` ns in the 64-byte entry (extended metadata ships as the `entry_ex` query, §6.13); symlink/junction entries extract per the reader's safe-link rules on the file-handle surface.
 * `window_log2 5` (4M) only for stream; buffer `create` clamps `[1,4]`.
 
 ---
@@ -797,4 +862,5 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 * **1.1.x (2026-09):** Additive — `openrar_archive_list_file_pw` (password listing of header-encrypted archives; encrypted file entries reported), `openrar_archive_open_ex` (progress/cancel over the open-time scan), feature bits `OPENRAR_ABI_FEATURE_LIST_PASSWORD` / `OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS`. Exports 38. `OPENRAR_DLL_API_VERSION` unchanged (§3).
 * **1.2.x (2026-09, shipped as v1.3.0):** Additive — file-mode handles (`openrar_archive_open_file`, `openrar_archive_handle_extract_to_path`, `openrar_archive_handle_test`; `OPENRAR_ABI_FEATURE_FILE_HANDLE`), `RAR_ERR_MISSING_VOLUME` (-13). Exports 41. `OPENRAR_DLL_API_VERSION` unchanged (§3).
 * **1.3.x (2026-09, shipped as v1.4.0):** Additive — mutation exports (`openrar_archive_delete_entries_file`, `openrar_archive_add_files_file`; `OPENRAR_ABI_FEATURE_MUTATION`), `RAR_ERR_BUSY` (-14). Exports 43. `OPENRAR_DLL_API_VERSION` unchanged (§3).
+* **1.4.x (2026-09, shipped as v1.5.0):** Additive — extended metadata (`openrar_archive_handle_entry_ex`, `openrar_archive_entry_ex_free`, `openrar_archive_handle_info`; `OPENRAR_ABI_FEATURE_ENTRY_EX`), window-size constants and documentation refinements. Exports 46. `OPENRAR_DLL_API_VERSION` unchanged (§3).
 

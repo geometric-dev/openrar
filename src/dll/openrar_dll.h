@@ -65,11 +65,16 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_version(void);
 //                                 handle_test                       (v1.3.0)
 //   bit 4  MUTATION               archive_delete_entries_file /
 //                                 archive_add_files_file            (v1.4.0)
+//   bit 5  ENTRY_EX               handle_entry_ex / handle_info     (v1.5.0)
+// Reserve convention: future open-time options (e.g. codepage override,
+// custom volume search callbacks) ship as openrar_archive_open_file_ex
+// behind a new bit, never as signature changes to open_file.
 #define OPENRAR_ABI_FEATURE_LIST_PROGRESS (1ull << 0)        // list_file_ex / list_ex below
 #define OPENRAR_ABI_FEATURE_LIST_PASSWORD (1ull << 1)        // list_file_pw below
 #define OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS (1ull << 2) // archive_open_ex below
 #define OPENRAR_ABI_FEATURE_FILE_HANDLE (1ull << 3)          // file-mode handles below
 #define OPENRAR_ABI_FEATURE_MUTATION (1ull << 4)             // mutation exports below
+#define OPENRAR_ABI_FEATURE_ENTRY_EX (1ull << 5)             // metadata exports below
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -82,6 +87,11 @@ OPENRAR_DLL_API void OPENRAR_DLL_CALL openrar_archive_free(void* ptr);
 // ── Error model (mirrors src/archive/buffer_archive.hpp + wasm/archive_api.hpp) ─
 enum RarError {
     RAR_OK = 0,
+    // Returned solely by openrar_archive_extract_all when some entries
+    // succeeded and others failed (per-entry results are in the offsets
+    // table). No other export can return it: single-entry extraction and
+    // every other operation reports exactly one code, so a nonzero single
+    // result is always an error, never a partial success.
     RAR_ERR_PARTIAL_OK = 1,
     RAR_ERR_NOT_RAR = -1,
     RAR_ERR_UNSUPPORTED_FEATURE = -2,
@@ -110,10 +120,22 @@ enum RarError {
     RAR_ERR_BUSY = -14
 };
 
+// Error details are thread_local state: openrar_last_error and
+// openrar_archive_get_error report the message of the most recent call ON
+// THE CALLING THREAD, valid until the next archive call on that thread.
+// Call them on the same thread as the failing call.
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_last_error(char* buf, int buf_len);
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_get_error(char* buf, int buf_len);
 
 // ── Block codec (reuses wasm_api.hpp contract) ───────────────────────────────
+// Window-size units differ by surface, deliberately: compress_block /
+// compress2 / decompress2 take `win_size` in BYTES (values below), while
+// CreateOptions-style options and openrar_stream_create take `window_log2`
+// as log2 (1 -> 128 KiB ... 4 -> 1 MiB, 5 -> 4 MiB stream-only).
+#define OPENRAR_WINDOW_128K (128u * 1024)
+#define OPENRAR_WINDOW_256K (256u * 1024)
+#define OPENRAR_WINDOW_512K (512u * 1024)
+#define OPENRAR_WINDOW_1M (1024u * 1024)
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_compress(const uint8_t* src, size_t src_len,
                                                       uint8_t** out_ptr, size_t* out_len,
                                                       int method);
@@ -474,6 +496,83 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL
 openrar_archive_add_files_file(const char* arc_path, const char* const* src_paths,
                                const char* const* arc_names, uint32_t file_count, int method,
                                uint32_t window_log2);
+
+// ── Extended metadata (file-mode handles; additive) ─────────────────────────
+// The 64-byte entry struct is frozen (shared WASM contract); these queries
+// surface what it drops, straight from the archive headers. File-mode
+// handles only — buffer handles return RAR_ERR_UNSUPPORTED_FEATURE.
+
+// Bit flags for openrar_entry_ex_t.flags.
+#define OPENRAR_ENTRY_FLAG_SOLID (1u << 0)
+#define OPENRAR_ENTRY_FLAG_ENCRYPTED (1u << 1)
+#define OPENRAR_ENTRY_FLAG_REDIR (1u << 2)
+#define OPENRAR_ENTRY_FLAG_SPLIT_BEFORE (1u << 3)
+#define OPENRAR_ENTRY_FLAG_SPLIT_AFTER (1u << 4)
+#define OPENRAR_ENTRY_FLAG_HAS_MTIME (1u << 5)
+#define OPENRAR_ENTRY_FLAG_HAS_CTIME (1u << 6)
+#define OPENRAR_ENTRY_FLAG_HAS_ATIME (1u << 7)
+#define OPENRAR_ENTRY_FLAG_DIRECTORY (1u << 8)
+
+#pragma pack(push, 1)
+typedef struct {
+    uint32_t attrs;          // host-OS attributes (FILE_ATTRIBUTE_* when host_os == 0)
+    uint32_t host_os;        // 0 = Windows, 1 = Unix
+    uint64_t mtime_ft;       // FILETIME (UTC, 100ns); 0 = not stored (check HAS_MTIME)
+    uint64_t ctime_ft;       // FILETIME (UTC, 100ns); 0 = not stored (check HAS_CTIME)
+    uint64_t atime_ft;       // FILETIME (UTC, 100ns); 0 = not stored (check HAS_ATIME)
+    uint32_t flags;          // Bitmask of OPENRAR_ENTRY_FLAG_*
+    uint32_t win_size;       // dictionary bytes, 0 if n/a
+    uint32_t redir_type;     // 0 none / 1 unixsymlink / 2 winsymlink / 3 junction /
+                             // 4 hardlink / 5 filecopy
+    uint32_t version_needed; // unp_ver format level (0 = RAR5, 1 = RAR7)
+} openrar_entry_ex_t;        // 48 bytes, fixed size
+#pragma pack(pop)
+
+// Query extended metadata for entry_index (same index space as
+// openrar_archive_handle_list). Timestamps come from FHEXTRA_HTIME records:
+// a FILETIME-format record is reported as stored; a unix-format record is
+// converted (seconds since 1601 + nanoseconds*100). A timestamp absent from
+// the archive is 0 with its HAS_* flag clear — the 32-bit DOS-time mtime of
+// the frozen 64-byte entry is NOT repeated here. SPLIT_BEFORE/AFTER refer
+// to the logical merged entry on multi-volume sets.
+//
+// extra_out receives a malloc'd NUL-terminated UTF-8 string containing the
+// redirection target path when redir_type != 0 (*extra_size_out is the byte
+// length excluding the NUL); free it with openrar_archive_entry_ex_free or
+// openrar_free. If the entry has no redirection, *extra_out is NULL and
+// *extra_size_out is 0. On failure (including RAR_ERR_UNSUPPORTED_FEATURE
+// on a buffer handle) nothing is allocated.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_handle_entry_ex(uint32_t handle, uint32_t entry_index, openrar_entry_ex_t* out,
+                                void** extra_out, size_t* extra_size_out);
+
+// Free helper for extra_out (openrar_free is also valid).
+OPENRAR_DLL_API void OPENRAR_DLL_CALL openrar_archive_entry_ex_free(void* extra);
+
+// Archive-level properties of the handle's volume set.
+#pragma pack(push, 1)
+typedef struct {
+    uint32_t flags;          // main-header flags (MHFL_VOLUME, MHFL_SOLID, MHFL_LOCK, ...)
+    uint32_t volume_index;   // 0-based volume number (0 if not multi-volume)
+    uint32_t volume_count;   // total volumes of the set; the file-mode open is
+                             // strict, so a successfully opened set always has
+                             // every volume scanned (1 for single-volume)
+    uint64_t recovery_size;  // recovery record (RR service) size in bytes, 0 if none
+    uint32_t comment_len;    // archive comment length in bytes, 0 if none
+} openrar_archive_info_t;    // 24 bytes, fixed size
+#pragma pack(pop)
+
+// Query archive-level properties. If comment_len > 0, comment_out receives a
+// malloc'd UTF-8 string with the archive comment payload (read lazily from
+// the CMT service header at query time — stored compressed comments are
+// decompressed, and a payload that fails its CRC or decode is reported as
+// absent with RAR_OK). If the archive has no comment, *comment_out is NULL
+// and *comment_size_out is 0; free a returned comment with openrar_free.
+// RAR_ERR_IO when the lazy payload read hits a filesystem error. Buffer
+// handles return RAR_ERR_UNSUPPORTED_FEATURE.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_handle_info(uint32_t handle, openrar_archive_info_t* out, void** comment_out,
+                            size_t* comment_size_out);
 
 #ifdef __cplusplus
 } // extern "C"

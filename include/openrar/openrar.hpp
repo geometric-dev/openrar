@@ -320,6 +320,32 @@ inline void add_files(const std::filesystem::path& arc,
     check(rc);
 }
 
+// ── Extended metadata (v1.5.0; file-mode handles only) ──────────────────────
+// Fields the frozen 64-byte entry struct drops. Timestamps are Windows
+// FILETIMEs (UTC, 100ns); 0 = not stored — cross-check the HAS_* bits of
+// flags. Buffer handles throw UNSUPPORTED_FEATURE.
+struct EntryEx {
+    uint32_t attrs{0};
+    uint32_t host_os{0}; // 0 = Windows, 1 = Unix
+    uint32_t flags{0};   // OPENRAR_ENTRY_FLAG_* bitmask
+    uint32_t win_size{0};
+    uint32_t redir_type{0}; // 0 none / 1 unixsymlink / 2 winsymlink / 3 junction /
+                            // 4 hardlink / 5 filecopy
+    uint32_t version_needed{0};
+    uint64_t mtime_ft{0};
+    uint64_t ctime_ft{0};
+    uint64_t atime_ft{0};
+    std::string redir_target; // empty when redir_type == 0
+};
+
+struct ArchiveInfo {
+    uint32_t flags{0};        // main-header MHFL_* flags
+    uint32_t volume_index{0}; // 0-based volume number
+    uint32_t volume_count{0}; // 1 for single-volume (file-mode opens are strict)
+    uint64_t recovery_size{0};
+    std::string comment; // empty when the archive has none
+};
+
 // Archive handle RAII
 class ArchiveHandle {
 public:
@@ -404,6 +430,44 @@ public:
               openrar_cancel_cb cancel = nullptr, void* user = nullptr) const {
         int rc = openrar_archive_handle_test(h_, idx, progress, cancel, user);
         check(rc);
+    }
+    // Extended metadata query (file handles only; buffer handles throw
+    // UNSUPPORTED_FEATURE). extra_out lands in redir_target.
+    EntryEx entry_ex(uint32_t idx) const {
+        openrar_entry_ex_t raw{};
+        void* extra = nullptr;
+        size_t extra_sz = 0;
+        int rc = openrar_archive_handle_entry_ex(h_, idx, &raw, &extra, &extra_sz);
+        check(rc);
+        EntryEx e;
+        e.attrs = raw.attrs;
+        e.host_os = raw.host_os;
+        e.flags = raw.flags;
+        e.win_size = raw.win_size;
+        e.redir_type = raw.redir_type;
+        e.version_needed = raw.version_needed;
+        e.mtime_ft = raw.mtime_ft;
+        e.ctime_ft = raw.ctime_ft;
+        e.atime_ft = raw.atime_ft;
+        if (extra && extra_sz) e.redir_target.assign(static_cast<const char*>(extra), extra_sz);
+        openrar_archive_entry_ex_free(extra);
+        return e;
+    }
+    // Archive-level properties (file handles only; buffer handles throw).
+    ArchiveInfo info() const {
+        openrar_archive_info_t raw{};
+        void* cmt = nullptr;
+        size_t cmt_sz = 0;
+        int rc = openrar_archive_handle_info(h_, &raw, &cmt, &cmt_sz);
+        check(rc);
+        ArchiveInfo ai;
+        ai.flags = raw.flags;
+        ai.volume_index = raw.volume_index;
+        ai.volume_count = raw.volume_count;
+        ai.recovery_size = raw.recovery_size;
+        if (cmt && cmt_sz) ai.comment.assign(static_cast<const char*>(cmt), cmt_sz);
+        openrar_free(cmt);
+        return ai;
     }
     uint32_t native_handle() const { return h_; }
 
