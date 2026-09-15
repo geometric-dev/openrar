@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-15
+
+### Added
+
+- **File-mode handles** (`OPENRAR_ABI_FEATURE_FILE_HANDLE`, bit 3): the
+  streaming reader is now reachable from the DLL. `openrar_archive_open_file`
+  opens a scan-once handle over an archive **on disk** — the file stays open
+  for the handle's lifetime, headers are walked exactly once, and
+  encrypted/solid/multi-volume archives are supported (the buffer handle
+  surface keeps its frozen MVP semantics). Passwords enter at open (required
+  up front for `-hp`, verified lazily per entry via constant-time PswCheck
+  for `-p`); progress/cancel cover the open-time scan; middle-volume paths
+  rewind to the derived first volume. The existing handle exports dispatch
+  on handle kind: in-memory extract on file handles is capped at 256 MiB
+  (`RAR_ERR_NOMEM` above), `extract_all` is `UNSUPPORTED_FEATURE` on file
+  handles, and `handle_list` exposes file entries only (service headers are
+  internal blocks).
+- **Streaming extraction with progress/cancel/durability**:
+  `openrar_archive_handle_extract_to_path` writes straight to disk with byte
+  progress (uncompressed produced vs `entry.size`), cancel per output chunk,
+  and DLL-owned durability — `dest.openrar-tmp.<pid>.<seq>` opened
+  CREATE_NEW, flushed (FlushFileBuffers/fsync), atomically renamed; abort or
+  failure deletes the temp and never leaves a partial destination. Extracting
+  onto the archive (or any volume of its set) is rejected up front.
+- **Streaming integrity test**: `openrar_archive_handle_test` verifies
+  CRC32 / BLAKE2sp without retaining output — fixed small RAM regardless of
+  entry size (stored entries stream in 64 KiB chunks). Encrypted entries are
+  verified through chunked AES-256-CBC decrypt (CBC IV carried across
+  slices) via PswCheck/MAC — wrong password is `RAR_ERR_BAD_PASSWORD`, never
+  `CRC_MISMATCH`, and plaintext is never surfaced.
+- **Solid archives**: out-of-order and repeated extraction are correct — the
+  reader transparently decodes the solid run prefix through a discard sink
+  (catch-up); in-order extraction remains the fast path. Progress stays at
+  (0, entry.size) during catch-up; the handle stays usable after any abort.
+- **Multi-volume sets**: transparent extent stitching across `.partNN.rar`
+  volumes (primary held open, secondaries opened per access); missing
+  volumes fail the open or the extraction with the new
+  `RAR_ERR_MISSING_VOLUME` (-13) and the offending path in the error detail.
+- C++ wrapper: `ArchiveHandle(path, password, progress, cancel, user)`
+  constructor plus `extract_to_path` / `test` methods.
+- `docs/invariants.md`: the pinned engineering contracts (solid block, RAM
+  ceiling, volume lifetime, callback/cancel, durability, key hygiene).
+- Fuzzing: new `fuzz_file_handle` harness (file surface, hostile volume
+  naming, password variants, decompression-bomb cancel guard) wired into the
+  nightly fuzz job with the checked-in fixtures as seeds.
+
+### Notes
+
+- All additive: `OPENRAR_DLL_API_VERSION` stays 1; no frozen export changed
+  behavior (the CLI's tolerant missing-volume open behavior is preserved;
+  only the strict file-handle surface enforces complete sets). Exports
+  38 → 41. See `docs/dll-integration-spec.md` §6.11.
+
 ## [1.2.0] - 2026-09-15
 
 ### Added
