@@ -47,9 +47,19 @@ jobs:
         # clang build defines OPENRAR_USE_LIBFUZZER and links -fsanitize=fuzzer
         # (see CMakeLists.txt), so this is a real 30-minute libFuzzer run over
         # the accumulated corpus, saving new inputs back into tests/fuzz/seeds/.
-        run: ./build_fuzz/fuzz_decompress -max_total_time=1800 tests/fuzz/seeds/
+        # tests/*.rar fixtures are passed as read-only extra seeds (valid RAR5
+        # header shapes; libFuzzer writes new units only into the first dir).
+        # -timeout=60 tolerates hostile lg2_count=24 PBKDF2 derivations (~seconds)
+        # in the file-handle harness without flagging them as timeouts.
+        run: ./build_fuzz/fuzz_decompress -max_total_time=1800 tests/fuzz/seeds/ tests/*.rar
       - name: Fuzz archive + block C ABI (30 min)
-        run: ./build_fuzz/fuzz_archive -max_total_time=1800 tests/fuzz/seeds/
+        run: ./build_fuzz/fuzz_archive -max_total_time=1800 tests/fuzz/seeds/ tests/*.rar
+      - name: Fuzz file-based surface (30 min)
+        # open_file / handle_extract_to_path / handle_test / list_file_pw over
+        # the streaming reader: volume scan, extent stitching, chunked decrypt,
+        # solid catch-up. Archives are materialised to disk with hostile
+        # naming variants per input (see tests/fuzz/fuzz_file_handle.cpp).
+        run: ./build_fuzz/fuzz_file_handle -max_total_time=1800 -timeout=60 tests/fuzz/seeds/ tests/*.rar
 
       - name: Upload new seeds (if any crashes or coverage expanded)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -282,6 +282,18 @@ public:
     ArchiveHandle(const std::vector<uint8_t>& rar, openrar_progress_cb progress,
                   openrar_cancel_cb cancel = nullptr, void* user = nullptr)
         : ArchiveHandle(rar.data(), rar.size(), progress, cancel, user) {}
+    // File-mode handle (openrar_archive_open_file): scan-once handle over an
+    // archive on disk, with password (NULL/"" = none; required up front for
+    // -hp archives), progress/cancel over the open-time scan, extract_to_path
+    // and test below. Encrypted/solid/multi-volume archives are supported on
+    // this handle kind (rejected by the buffer constructors).
+    ArchiveHandle(const std::filesystem::path& arc, const char* password = nullptr,
+                  openrar_progress_cb progress = nullptr, openrar_cancel_cb cancel = nullptr,
+                  void* user = nullptr) {
+        std::string u8 = arc.u8string();
+        h_ = openrar_archive_open_file(u8.c_str(), password, progress, cancel, user);
+        fail_if_null();
+    }
     ~ArchiveHandle() {
         if (h_) openrar_archive_close(h_);
     }
@@ -316,6 +328,25 @@ public:
         if (out && len) ret.assign(out, out + len);
         if (out) openrar_free(out);
         return ret;
+    }
+    // Direct-to-disk extraction with the DLL-owned durability contract (temp
+    // file + atomic rename; no partial destination on abort/failure) and
+    // byte progress against entry.size. File handles: streaming; buffer
+    // handles: in-memory extract then write.
+    void extract_to_path(uint32_t idx, const std::filesystem::path& dest,
+                         openrar_progress_cb progress = nullptr,
+                         openrar_cancel_cb cancel = nullptr, void* user = nullptr) const {
+        std::string u8 = dest.u8string();
+        int rc = openrar_archive_handle_extract_to_path(h_, idx, u8.c_str(), progress, cancel,
+                                                        user);
+        check(rc);
+    }
+    // Streaming integrity test (file handles; buffer handles throw
+    // UNSUPPORTED_FEATURE). Verifies CRC32 / BLAKE2sp without retaining output.
+    void test(uint32_t idx, openrar_progress_cb progress = nullptr,
+              openrar_cancel_cb cancel = nullptr, void* user = nullptr) const {
+        int rc = openrar_archive_handle_test(h_, idx, progress, cancel, user);
+        check(rc);
     }
     uint32_t native_handle() const { return h_; }
 

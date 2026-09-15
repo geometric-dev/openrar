@@ -2,21 +2,30 @@
 
 #include "../api/abi_contract.hpp"
 #include "../archive/buffer_archive.hpp"
+#include "../archive/archive_reader.hpp"
 #include "../compress/compressor50.hpp"
 #include "../compress/decompressor50.hpp"
 #include "../compress/stream_encoder.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <cstdlib>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
 #include <string>
+
+#ifdef _WIN32
+#include <process.h> // _getpid (temp-file naming)
+#else
+#include <unistd.h> // getpid
+#endif
 
 // ── Compile-time equivalence against the shared ABI contract ────────────────
 // openrar_dll.h re-declares the contract in C-compatible form for C hosts;
@@ -41,6 +50,8 @@ static_assert(static_cast<int>(RAR_ERR_INVALID_ARG) ==
 static_assert(static_cast<int>(RAR_ERR_ABORTED) == static_cast<int>(openrar::api::RAR_ERR_ABORTED));
 static_assert(static_cast<int>(RAR_ERR_ENCRYPTED) ==
               static_cast<int>(openrar::api::RAR_ERR_ENCRYPTED));
+static_assert(static_cast<int>(RAR_ERR_MISSING_VOLUME) ==
+              static_cast<int>(openrar::api::RAR_ERR_MISSING_VOLUME));
 static_assert(sizeof(openrar_archive_entry_t) == sizeof(openrar::api::ArchiveEntryOut),
               "openrar_archive_entry_t layout drifted from api::ArchiveEntryOut");
 #define OPENRAR_DLL_ENTRY_FIELD(field)                                                             \
@@ -67,12 +78,24 @@ void set_error(const std::string& msg) {
 }
 
 // Archive handle map — shared contract table (shared_ptr pinning, report L12).
-struct ArchiveHandle {
-    std::vector<uint8_t> data;
-    openrar::archive::BufferArchive ba;
-    std::vector<openrar::archive::BufferArchiveEntry> entries;
+// Polymorphic since v1.3.0: buffer-backed handles keep the frozen in-memory
+// MVP behavior; file-backed handles (open_file) run on the streaming reader
+// and unlock encrypted/solid/multi-volume archives (openrar_dll.h "File-mode
+// handles").
+struct ArchiveHandleBase {
+    virtual ~ArchiveHandleBase() = default;
+    virtual int list(uint32_t* count, void** entries_out, void** paths_out,
+                     size_t* paths_size_out) = 0;
+    virtual int extract(uint32_t entry_index, uint8_t** out_ptr, size_t* out_len) = 0;
+    virtual int extract_all(uint8_t** buf_out_ptr, size_t* buf_size_out,
+                            uint64_t** offsets_out_ptr, uint32_t* offsets_count_out) = 0;
+    virtual int extract_to_path(uint32_t entry_index, const char* dest_path,
+                                openrar_progress_cb progress, openrar_cancel_cb cancel,
+                                void* user) = 0;
+    virtual int test(uint32_t entry_index, openrar_progress_cb progress,
+                     openrar_cancel_cb cancel, void* user) = 0;
 };
-openrar::api::HandleTable<ArchiveHandle> g_handles;
+openrar::api::HandleTable<ArchiveHandleBase> g_handles;
 
 // Adapter between the DLL callback convention (user, done, total) and the
 // core convention (done, total, user). One shared user pointer for both
@@ -99,6 +122,8 @@ const char* list_error_message(int rc) {
         return "archive headers are encrypted (password required to list)";
     case RAR_ERR_BAD_PASSWORD:
         return "wrong password for encrypted headers";
+    case RAR_ERR_MISSING_VOLUME:
+        return "a volume of the multi-volume set is missing";
     case RAR_ERR_ABORTED:
         return "listing aborted";
     default:
@@ -136,6 +161,303 @@ int pack_list_outputs(const std::vector<openrar::archive::BufferArchiveEntry>& p
     *paths_size_out = paths.size();
     return RAR_OK;
 }
+
+// Adapter for the file-handle streaming APIs: same ListCallbackCtx thunks the
+// listing exports use, wrapped in the reader's hook shape.
+openrar::archive::ReaderHooks make_reader_hooks(ListCallbackCtx& ctx) {
+    openrar::archive::ReaderHooks h;
+    h.progress = list_progress_thunk;
+    h.progress_user = &ctx;
+    h.cancel = list_cancel_thunk;
+    h.cancel_user = &ctx;
+    return h;
+}
+
+unsigned long current_pid() {
+#ifdef _WIN32
+    return static_cast<unsigned long>(_getpid());
+#else
+    return static_cast<unsigned long>(getpid());
+#endif
+}
+
+// Destination guard (docs/invariants.md §5): true when a and b refer to the
+// same file. exact/strong equivalence when both exist, else a normalized
+// (case-insensitive on Windows) path comparison.
+bool paths_same_file(const std::filesystem::path& a, const std::filesystem::path& b) {
+    std::error_code ec;
+    if (std::filesystem::exists(a, ec) && std::filesystem::exists(b, ec) &&
+        std::filesystem::equivalent(a, b, ec)) {
+        return true;
+    }
+    auto norm = [](const std::filesystem::path& p) {
+        std::error_code ec2;
+        std::filesystem::path c = std::filesystem::weakly_canonical(p, ec2);
+        std::wstring s = c.wstring();
+#ifdef _WIN32
+        std::transform(s.begin(), s.end(), s.begin(), ::towlower);
+#endif
+        return s;
+    };
+    return norm(a) == norm(b);
+}
+
+// Durability wrapper (docs/invariants.md §5): opens dest +
+// ".openrar-tmp.<pid>.<seq>" CREATE_NEW (<= 10 collision retries), runs
+// `body` against the temp stream, and on RAR_OK flushes (FlushFileBuffers /
+// fsync) and atomically renames over dest. Any other rc — or a rename
+// failure — closes and deletes the temp, leaving dest untouched. The caller
+// owns the destination guard.
+int durable_write_to(const std::filesystem::path& dest,
+                     const std::function<int(openrar::io::FileStream&)>& body) {
+    std::error_code ec;
+    if (dest.has_parent_path() && !dest.parent_path().empty())
+        std::filesystem::create_directories(dest.parent_path(), ec);
+    const std::string suffix =
+        ".openrar-tmp." + std::to_string(current_pid()) + ".";
+    for (unsigned seq = 0; seq < 10; ++seq) {
+        std::filesystem::path tmp = dest;
+        tmp += suffix + std::to_string(seq);
+        if (std::filesystem::exists(tmp, ec)) continue; // orphan/collision → next seq
+        openrar::io::FileStream f;
+        if (!f.open(tmp, openrar::io::FileMode::CreateNew)) return RAR_ERR_IO;
+        int rc = body(f);
+        if (rc != RAR_OK) {
+            f.close();
+            std::filesystem::remove(tmp, ec);
+            return rc;
+        }
+        f.flush(); // FlushFileBuffers (Windows) / fsync (POSIX)
+        f.close();
+        std::error_code ren_ec;
+        // MSVC: MoveFileExW(MOVEFILE_REPLACE_EXISTING); POSIX: atomic rename().
+        std::filesystem::rename(tmp, dest, ren_ec);
+        if (!ren_ec) return RAR_OK;
+        std::filesystem::remove(tmp, ec);
+        return RAR_ERR_IO;
+    }
+    return RAR_ERR_IO;
+}
+
+// ── Buffer-backed handle: the frozen in-memory MVP behavior ─────────────────
+struct BufferArchiveHandle : ArchiveHandleBase {
+    std::vector<uint8_t> data;
+    openrar::archive::BufferArchive ba;
+    std::vector<openrar::archive::BufferArchiveEntry> entries;
+
+    int list(uint32_t* count, void** entries_out, void** paths_out,
+             size_t* paths_size_out) override {
+        return pack_list_outputs(entries, count, entries_out, paths_out, paths_size_out);
+    }
+    int extract(uint32_t entry_index, uint8_t** out_ptr, size_t* out_len) override {
+        if (entry_index >= entries.size()) {
+            set_error("entry_index OOR");
+            return RAR_ERR_INVALID_ARG;
+        }
+        std::vector<uint8_t> out;
+        int rc = ba.extract(data.data(), data.size(), entry_index, out);
+        if (rc != RAR_OK) return rc;
+        *out_ptr = openrar::api::heap_dup(out.data(), out.size());
+        if (!*out_ptr && !out.empty()) {
+            set_error("oom");
+            return RAR_ERR_NOMEM;
+        }
+        *out_len = out.size();
+        return RAR_OK;
+    }
+    int extract_all(uint8_t** buf_out_ptr, size_t* buf_size_out, uint64_t** offsets_out_ptr,
+                    uint32_t* offsets_count_out) override {
+        std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
+        int rc = ba.extract_all(data.data(), data.size(), files);
+        if (rc != RAR_OK) return rc;
+        size_t total = 0;
+        for (auto& f : files) total += f.second.size();
+        uint8_t* buf = static_cast<uint8_t*>(std::malloc(total ? total : 1));
+        if (!buf) {
+            set_error("oom");
+            return RAR_ERR_NOMEM;
+        }
+        uint64_t* offs =
+            static_cast<uint64_t*>(std::malloc(files.size() * sizeof(uint64_t) * 2));
+        if (!offs) {
+            std::free(buf);
+            set_error("oom");
+            return RAR_ERR_NOMEM;
+        }
+        size_t off = 0;
+        for (size_t i = 0; i < files.size(); ++i) {
+            auto& p = files[i].second;
+            if (!p.empty()) std::memcpy(buf + off, p.data(), p.size());
+            offs[i * 2] = off;
+            offs[i * 2 + 1] = p.size();
+            off += p.size();
+        }
+        *buf_out_ptr = buf;
+        *buf_size_out = total;
+        *offsets_out_ptr = offs;
+        *offsets_count_out = static_cast<uint32_t>(files.size());
+        return RAR_OK;
+    }
+    int extract_to_path(uint32_t entry_index, const char* dest_path, openrar_progress_cb progress,
+                        openrar_cancel_cb cancel, void* user) override {
+        if (entry_index >= entries.size()) {
+            set_error("entry_index OOR");
+            return RAR_ERR_INVALID_ARG;
+        }
+        ListCallbackCtx ctx{progress, cancel, user};
+        if (ctx.cancel && ctx.cancel(ctx.user)) return RAR_ERR_ABORTED;
+        const auto& e = entries[entry_index];
+        const uint64_t total = e.is_dir ? 0 : e.size;
+        if (e.is_dir) {
+            std::error_code ec;
+            std::filesystem::create_directories(std::filesystem::u8path(dest_path), ec);
+            if (ctx.progress) ctx.progress(ctx.user, 0, 0);
+            return RAR_OK;
+        }
+        std::vector<uint8_t> out;
+        int rc = ba.extract(data.data(), data.size(), entry_index, out);
+        if (rc != RAR_OK) return rc;
+        if (ctx.progress) ctx.progress(ctx.user, 0, total);
+        rc = durable_write_to(std::filesystem::u8path(dest_path), [&](openrar::io::FileStream& f) {
+            if (!out.empty() && f.write(out.data(), out.size()) != out.size())
+                return RAR_ERR_IO;
+            return RAR_OK;
+        });
+        if (rc != RAR_OK) return rc;
+        if (ctx.progress) ctx.progress(ctx.user, total, total);
+        return RAR_OK;
+    }
+    int test(uint32_t, openrar_progress_cb, openrar_cancel_cb, void*) override {
+        // No streaming test exists for the buffer surface (extraction
+        // materializes the entry anyway; BufferArchive has no verify-only path).
+        set_error("test is not supported on buffer handles");
+        return RAR_ERR_UNSUPPORTED_FEATURE;
+    }
+};
+
+// ── File-backed handle: streaming reader, encrypted/solid/volume capable ────
+struct FileArchiveHandle : ArchiveHandleBase {
+    std::unique_ptr<openrar::archive::ArchiveReader> reader;
+    // DLL-visible entries: file entries only (service headers are internal
+    // blocks), mapped to the 64-byte contract shape.
+    std::vector<openrar::archive::BufferArchiveEntry> entries;
+    // DLL entry index → reader entries() index.
+    std::vector<size_t> reader_index;
+
+    void build_entry_map() {
+        entries.clear();
+        reader_index.clear();
+        for (size_t i = 0; i < reader->entries().size(); ++i) {
+            const auto& re = reader->entries()[i];
+            if (re.header.is_service) continue;
+            openrar::archive::BufferArchiveEntry e;
+            e.path = re.header.file_name;
+            e.is_dir = (re.header.file_flags & openrar::format::FHFL_DIRECTORY) != 0;
+            e.size = re.header.unp_size;
+            e.packed_size = re.data_size; // extent sum (merged across volumes)
+            e.method = static_cast<int>(re.header.method);
+            e.win_size = re.header.win_size;
+            e.is_encrypted = re.header.is_encrypted;
+            e.crc32 = re.header.has_crc32 ? re.header.data_crc32 : 0;
+            e.mtime = openrar::archive::dos_time_to_unix(re.header.utime_unix);
+            entries.push_back(std::move(e));
+            reader_index.push_back(i);
+        }
+    }
+
+    int list(uint32_t* count, void** entries_out, void** paths_out,
+             size_t* paths_size_out) override {
+        return pack_list_outputs(entries, count, entries_out, paths_out, paths_size_out);
+    }
+    int extract(uint32_t entry_index, uint8_t** out_ptr, size_t* out_len) override {
+        if (entry_index >= entries.size()) {
+            set_error("entry_index OOR");
+            return RAR_ERR_INVALID_ARG;
+        }
+        std::vector<uint8_t> out;
+        int rc = reader->extract_entry_to_memory(reader_index[entry_index], out,
+                                                 OPENRAR_MAX_HEAP_EXTRACT_SIZE, {});
+        if (rc != RAR_OK) {
+            set_error(rc == RAR_ERR_NOMEM
+                          ? "entry exceeds the 256 MiB in-memory extract cap; use "
+                            "openrar_archive_handle_extract_to_path"
+                          : "extract failed");
+            return rc;
+        }
+        *out_ptr = openrar::api::heap_dup(out.data(), out.size());
+        if (!*out_ptr && !out.empty()) {
+            set_error("oom");
+            return RAR_ERR_NOMEM;
+        }
+        *out_len = out.size();
+        return RAR_OK;
+    }
+    int extract_all(uint8_t**, size_t*, uint64_t**, uint32_t*) override {
+        set_error("extract_all is not supported on file handles; extract per entry with "
+                  "openrar_archive_handle_extract_to_path");
+        return RAR_ERR_UNSUPPORTED_FEATURE;
+    }
+    int extract_to_path(uint32_t entry_index, const char* dest_path, openrar_progress_cb progress,
+                        openrar_cancel_cb cancel, void* user) override {
+        if (entry_index >= entries.size()) {
+            set_error("entry_index OOR");
+            return RAR_ERR_INVALID_ARG;
+        }
+        ListCallbackCtx ctx{progress, cancel, user};
+        openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
+        const auto& re = reader->entries()[reader_index[entry_index]];
+
+        // Directory: materialize it, single (0, 0) progress callback.
+        if (re.header.file_flags & openrar::format::FHFL_DIRECTORY) {
+            std::error_code ec;
+            std::filesystem::create_directories(std::filesystem::u8path(dest_path), ec);
+            if (ctx.progress) ctx.progress(ctx.user, 0, 0);
+            return RAR_OK;
+        }
+        // Links: delegate to the reader's safe-link rules (no bulk payload).
+        if (re.header.redir_type != 0) {
+            int rc = reader->extract_entry(re, std::filesystem::u8path(dest_path), "") ? RAR_OK
+                                                                                       : RAR_ERR_IO;
+            if (rc == RAR_OK && ctx.progress) ctx.progress(ctx.user, 0, 0);
+            return rc;
+        }
+
+        // Destination guard: never clobber the archive (or any volume of its set).
+        const std::filesystem::path dest = std::filesystem::u8path(dest_path);
+        for (const auto& vol : reader->volume_paths()) {
+            if (paths_same_file(dest, vol)) {
+                set_error("destination path cannot be the archive file");
+                return RAR_ERR_INVALID_ARG;
+            }
+        }
+        return durable_write_to(dest, [&](openrar::io::FileStream& f) {
+            return reader->extract_entry_stream(reader_index[entry_index], f, hooks);
+        });
+    }
+    int test(uint32_t entry_index, openrar_progress_cb progress, openrar_cancel_cb cancel,
+             void* user) override {
+        if (entry_index >= entries.size()) {
+            set_error("entry_index OOR");
+            return RAR_ERR_INVALID_ARG;
+        }
+        ListCallbackCtx ctx{progress, cancel, user};
+        openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
+        int rc = reader->test_entry_stream(reader_index[entry_index], hooks);
+        if (rc == RAR_ERR_MISSING_VOLUME)
+            set_error("missing volume: " + reader->missing_volume_path().u8string());
+        else if (rc == RAR_ERR_BAD_PASSWORD)
+            set_error("wrong password for encrypted entry");
+        else if (rc == RAR_ERR_ENCRYPTED)
+            set_error("entry is encrypted (no password supplied at open)");
+        else if (rc == RAR_ERR_CRC_MISMATCH)
+            set_error("checksum mismatch");
+        else if (rc == RAR_ERR_TRUNCATED)
+            set_error("packed stream ended early");
+        else if (rc == RAR_ERR_ABORTED)
+            set_error("test aborted");
+        return rc;
+    }
+};
 } // namespace
 
 extern "C" {
@@ -148,7 +470,7 @@ int OPENRAR_DLL_CALL openrar_archive_version(void) {
 }
 uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
     return OPENRAR_ABI_FEATURE_LIST_PROGRESS | OPENRAR_ABI_FEATURE_LIST_PASSWORD |
-           OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS;
+           OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS | OPENRAR_ABI_FEATURE_FILE_HANDLE;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -449,7 +771,7 @@ uint32_t OPENRAR_DLL_CALL openrar_archive_open(const uint8_t* data, size_t size)
             set_error("null argument");
             return 0;
         }
-        auto h = std::make_shared<ArchiveHandle>();
+        auto h = std::make_shared<BufferArchiveHandle>();
         h->data.assign(data, data + size);
         std::vector<openrar::archive::BufferArchiveEntry> parsed;
         int rc = h->ba.list(h->data.data(), h->data.size(), parsed);
@@ -458,7 +780,7 @@ uint32_t OPENRAR_DLL_CALL openrar_archive_open(const uint8_t* data, size_t size)
             return 0;
         }
         h->entries = std::move(parsed);
-        return g_handles.insert(h);
+        return g_handles.insert(std::move(h));
     } catch (const std::exception& e) {
         set_error(e.what());
         return 0;
@@ -478,7 +800,7 @@ uint32_t OPENRAR_DLL_CALL openrar_archive_open_ex(const uint8_t* data, size_t si
             set_error("null argument");
             return 0;
         }
-        auto h = std::make_shared<ArchiveHandle>();
+        auto h = std::make_shared<BufferArchiveHandle>();
         h->data.assign(data, data + size);
         ListCallbackCtx ctx{progress, cancel, user};
         std::vector<openrar::archive::BufferArchiveEntry> parsed;
@@ -489,7 +811,7 @@ uint32_t OPENRAR_DLL_CALL openrar_archive_open_ex(const uint8_t* data, size_t si
             return 0;
         }
         h->entries = std::move(parsed);
-        return g_handles.insert(h);
+        return g_handles.insert(std::move(h));
     } catch (const std::exception& e) {
         set_error(e.what());
         return 0;
@@ -515,29 +837,7 @@ int OPENRAR_DLL_CALL openrar_archive_handle_list(uint32_t handle, uint32_t* coun
         *entries_out = nullptr;
         *paths_out = nullptr;
         *paths_size_out = 0;
-        std::vector<uint8_t> entries, paths;
-        if (!openrar::api::pack_entries(h->entries, entries, paths)) {
-            set_error("pack failed");
-            return RAR_ERR_NOMEM;
-        }
-        uint8_t* he = static_cast<uint8_t*>(std::malloc(entries.size() ? entries.size() : 1));
-        if (!he) {
-            set_error("oom");
-            return RAR_ERR_NOMEM;
-        }
-        if (!entries.empty()) std::memcpy(he, entries.data(), entries.size());
-        uint8_t* hp = static_cast<uint8_t*>(std::malloc(paths.size() ? paths.size() : 1));
-        if (!hp) {
-            std::free(he);
-            set_error("oom");
-            return RAR_ERR_NOMEM;
-        }
-        if (!paths.empty()) std::memcpy(hp, paths.data(), paths.size());
-        *count = static_cast<uint32_t>(h->entries.size());
-        *entries_out = he;
-        *paths_out = hp;
-        *paths_size_out = paths.size();
-        return RAR_OK;
+        return h->list(count, entries_out, paths_out, paths_size_out);
     } catch (const std::exception& e) {
         set_error(e.what());
         return RAR_ERR_NOMEM;
@@ -560,20 +860,7 @@ int OPENRAR_DLL_CALL openrar_archive_handle_extract(uint32_t handle, uint32_t en
             set_error("invalid handle");
             return RAR_ERR_INVALID_ARG;
         }
-        if (entry_index >= h->entries.size()) {
-            set_error("entry_index OOR");
-            return RAR_ERR_INVALID_ARG;
-        }
-        std::vector<uint8_t> out;
-        int rc = h->ba.extract(h->data.data(), h->data.size(), entry_index, out);
-        if (rc != RAR_OK) return rc;
-        *out_ptr = openrar::api::heap_dup(out.data(), out.size());
-        if (!*out_ptr && !out.empty()) {
-            set_error("oom");
-            return RAR_ERR_NOMEM;
-        }
-        *out_len = out.size();
-        return RAR_OK;
+        return h->extract(entry_index, out_ptr, out_len);
     } catch (const std::exception& e) {
         set_error(e.what());
         return RAR_ERR_NOMEM;
@@ -600,41 +887,95 @@ int OPENRAR_DLL_CALL openrar_archive_handle_extract_all(uint32_t handle, uint8_t
             set_error("invalid handle");
             return RAR_ERR_INVALID_ARG;
         }
-        std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
-        int rc = h->ba.extract_all(h->data.data(), h->data.size(), files);
-        if (rc != RAR_OK) return rc;
-        size_t total = 0;
-        for (auto& f : files) total += f.second.size();
-        uint8_t* buf = static_cast<uint8_t*>(std::malloc(total ? total : 1));
-        if (!buf) {
-            set_error("oom");
-            return RAR_ERR_NOMEM;
-        }
-        uint64_t* offs = static_cast<uint64_t*>(std::malloc(files.size() * sizeof(uint64_t) * 2));
-        if (!offs) {
-            std::free(buf);
-            set_error("oom");
-            return RAR_ERR_NOMEM;
-        }
-        size_t off = 0;
-        for (size_t i = 0; i < files.size(); ++i) {
-            auto& p = files[i].second;
-            if (!p.empty()) std::memcpy(buf + off, p.data(), p.size());
-            offs[i * 2] = off;
-            offs[i * 2 + 1] = p.size();
-            off += p.size();
-        }
-        *buf_out_ptr = buf;
-        *buf_size_out = total;
-        *offsets_out_ptr = offs;
-        *offsets_count_out = static_cast<uint32_t>(files.size());
-        return RAR_OK;
+        return h->extract_all(buf_out_ptr, buf_size_out, offsets_out_ptr, offsets_count_out);
     } catch (const std::exception& e) {
         set_error(e.what());
         return RAR_ERR_NOMEM;
     } catch (...) {
         set_error("unknown C++ exception");
         return RAR_ERR_NOMEM;
+    }
+}
+
+// ── File-mode handles (v1.3.0) ───────────────────────────────────────────────
+uint32_t OPENRAR_DLL_CALL openrar_archive_open_file(const char* arc_path,
+                                                    const char* password_utf8,
+                                                    openrar_progress_cb progress,
+                                                    openrar_cancel_cb cancel, void* user) {
+    try {
+        if (!arc_path) {
+            set_error("null argument");
+            return 0;
+        }
+        auto h = std::make_shared<FileArchiveHandle>();
+        h->reader = std::make_unique<openrar::archive::ArchiveReader>();
+        ListCallbackCtx ctx{progress, cancel, user};
+        int status = RAR_OK;
+        std::string detail;
+        const bool ok = h->reader->open_ex(
+            std::filesystem::u8path(arc_path),
+            password_utf8 ? std::string(password_utf8) : std::string(), status, detail,
+            make_reader_hooks(ctx), /*strict_volumes=*/true);
+        if (!ok) {
+            if (detail.empty()) {
+                detail = "open failed";
+                if (status == RAR_ERR_BAD_PASSWORD)
+                    detail = "wrong password for encrypted headers";
+                else if (status == RAR_ERR_ENCRYPTED)
+                    detail = "archive headers are encrypted (password required to list)";
+            }
+            set_error(detail);
+            return 0;
+        }
+        h->build_entry_map();
+        return g_handles.insert(std::move(h));
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return 0;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return 0;
+    }
+}
+int OPENRAR_DLL_CALL openrar_archive_handle_extract_to_path(uint32_t handle, uint32_t entry_index,
+                                                            const char* dest_path,
+                                                            openrar_progress_cb progress,
+                                                            openrar_cancel_cb cancel, void* user) {
+    try {
+        if (!dest_path) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        auto h = g_handles.pin(handle);
+        if (!h) {
+            set_error("invalid handle");
+            return RAR_ERR_INVALID_ARG;
+        }
+        return h->extract_to_path(entry_index, dest_path, progress, cancel, user);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+int OPENRAR_DLL_CALL openrar_archive_handle_test(uint32_t handle, uint32_t entry_index,
+                                                 openrar_progress_cb progress,
+                                                 openrar_cancel_cb cancel, void* user) {
+    try {
+        auto h = g_handles.pin(handle);
+        if (!h) {
+            set_error("invalid handle");
+            return RAR_ERR_INVALID_ARG;
+        }
+        return h->test(entry_index, progress, cancel, user);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
     }
 }
 

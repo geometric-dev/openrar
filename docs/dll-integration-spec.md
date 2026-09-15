@@ -77,7 +77,7 @@ if (openrar_archive_version() != 1) abort();
 
 * Adding new exports is minor; breaking `openrar_archive_entry_t` or removing an export is major (bump `SOVERSION`).
 * **Negotiating additive exports.** `OPENRAR_DLL_API_VERSION` does *not* change when exports are added (`docs/versioning.md`) — strict-equality probes keep working across versions. Detect a capability at runtime instead:
-  * `openrar_abi_features()` returns a `uint64_t` bitmask — `OPENRAR_ABI_FEATURE_LIST_PROGRESS` (0x1), `OPENRAR_ABI_FEATURE_LIST_PASSWORD` (0x2), `OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS` (0x4) — once the DLL is loaded;
+  * `openrar_abi_features()` returns a `uint64_t` bitmask — `OPENRAR_ABI_FEATURE_LIST_PROGRESS` (0x1), `OPENRAR_ABI_FEATURE_LIST_PASSWORD` (0x2), `OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS` (0x4), `OPENRAR_ABI_FEATURE_FILE_HANDLE` (0x8) — once the DLL is loaded;
   * or resolve the symbol directly: `GetProcAddress(hmod, "openrar_archive_list_file_ex")` / `dlsym`.
   * **Do not reference new exports through the import lib if you must keep running against older DLLs** — the process fails to *load* before any version check runs. Either resolve dynamically as above or link with `/DELAYLOAD:openrar.dll`.
 
@@ -131,9 +131,10 @@ enum RarError {
 | `CRC_MISMATCH` | `FHEXTRA_HASH` BLAKE2 / `FHFL_CRC32` mismatch on extract |
 | `UNSUPPORTED_FEATURE` | encrypted entry, multivolume `MHFL_VOLUME`, solid `FCI_SOLID`, method ∉ {0,3,5} |
 | `INVALID_ARG` | `window_log2 ∉ [1,4]`, `method ∉ {0,3,5}`, path empty / >2048 B / contains `\` or `..`, `nullptr` |
-| `BAD_PASSWORD` | `list_file_pw` with a password that does not decrypt the headers (PswCheck mismatch / header CRC) |
-| `ABORTED` | `openrar_cancel_cb` returned non-zero during `feed` / `extract` / `_ex` listing / `open_ex` |
+| `BAD_PASSWORD` | `list_file_pw` with a password that does not decrypt the headers (PswCheck mismatch / header CRC); file-handle extract/test with a wrong `-p` password |
+| `ABORTED` | `openrar_cancel_cb` returned non-zero during `feed` / `extract` / `_ex` listing / `open_ex` / file-handle extract/test |
 | `ENCRYPTED` | header-encrypted archive (`HEAD_CRYPT`) reached with no password — `_ex` and `_pw` listing; the non-`_ex` listing calls keep `UNSUPPORTED_FEATURE` for this condition |
+| `MISSING_VOLUME` | a volume of a multi-volume set required by the split flags / extent chain cannot be opened — file-handle open or extract/test (v1.3.0); path in the error detail |
 
 ---
 
@@ -302,6 +303,79 @@ Completes the flow `list_file_ex` starts: list → `RAR_ERR_ENCRYPTED` → promp
 | Unknown `HEAD_CRYPT` crypto version | `RAR_ERR_UNSUPPORTED_FEATURE` |
 
 Unlike the frozen list/list_ex/list_file_ex semantics, file entries whose payload is encrypted are **reported** (`is_encrypted = 1`) and the walk continues: `-hp` implies encrypted file data for every entry, so rejecting them would make password listing useless. Solid, multi-volume and recovery archives stay rejected. Extraction of encrypted entries is still not supported by this DLL, and there is deliberately no password variant of the in-memory `openrar_archive_list` (see `openrar_dll.h`).
+
+### 6.11 File-mode handles (v1.3.0; additive)
+
+```c
+#define OPENRAR_ABI_FEATURE_FILE_HANDLE (1ull << 3)
+#define OPENRAR_MAX_HEAP_EXTRACT_SIZE (256ull * 1024 * 1024)
+
+uint32_t openrar_archive_open_file(const char* arc_path, const char* password_utf8,
+                                   openrar_progress_cb progress, openrar_cancel_cb cancel,
+                                   void* user);
+int openrar_archive_handle_extract_to_path(uint32_t handle, uint32_t entry_index,
+                                           const char* dest_path,
+                                           openrar_progress_cb progress,
+                                           openrar_cancel_cb cancel, void* user);
+int openrar_archive_handle_test(uint32_t handle, uint32_t entry_index,
+                                openrar_progress_cb progress, openrar_cancel_cb cancel,
+                                void* user);
+```
+
+A scan-once handle over an archive **on disk**, backed by the streaming
+reader. The file stays open for the handle's lifetime; headers are walked
+exactly once at open; per-entry extraction/test reuse the cached walk — no
+re-scan, no slurp. This is the surface for multi-GB archives, solid sets and
+encrypted payloads. `openrar_archive_handle_list` /
+`handle_extract` / `handle_extract_all` / `close` dispatch on the handle
+kind with these behavior splits:
+
+| Export | Buffer handle (unchanged) | File handle |
+|---|---|---|
+| `handle_list` | frozen buffer listing | cached walk; **file entries only** (service headers like CMT/RR are never exposed as entries here) |
+| `handle_extract` | uncapped heap extract | capped at `OPENRAR_MAX_HEAP_EXTRACT_SIZE` (256 MiB); over cap returns `RAR_ERR_NOMEM`; no cancel callback (frozen ABI), so solid catch-up runs uncancellably — use `extract_to_path` for cancellation |
+| `handle_extract_all` | frozen flat-buffer extract | `RAR_ERR_UNSUPPORTED_FEATURE` |
+| `handle_extract_to_path` | extract-in-memory then write (same durability contract) | streaming to disk, O(window) RAM |
+| `handle_test` | `RAR_ERR_UNSUPPORTED_FEATURE` | streaming CRC32/BLAKE2sp verify, encrypted included |
+
+*Open.* `password_utf8` is required up front for `-hp` archives (headers are
+unreadable without it) and silently ignored otherwise; `-p` file-data
+passwords verify lazily at extract/test (constant-time PswCheck before any
+decrypt — wrong password is `RAR_ERR_BAD_PASSWORD`, never silent garbage).
+Progress/cancel cover the open-time scan with byte semantics (done =
+archive bytes consumed across the volume set, total = bytes of volumes
+opened so far). Multi-volume sets: a middle volume path is rewound to the
+derived first volume; unlocatable first volume → 0 with
+`RAR_ERR_MISSING_VOLUME` ("cannot open first volume: <path>"); a missing
+middle volume fails the open ("missing volume: <path>"). On Windows the file
+opens `FILE_SHARE_READ` — writers are excluded while a handle is live.
+
+*Extract to path.* Progress `(done, total)` = (uncompressed bytes produced,
+`entry.size`), exactly one final `(total, total)` on success, none on
+abort/failure; directory entries create the directory and fire one `(0, 0)`.
+Entries may be requested in any order — a solid entry whose run predecessors
+were not yet decoded on this handle transparently decodes the prefix first
+(progress stays `(0, entry.size)` during catch-up; ascending order is the
+fast path). Durability is DLL-owned: temp `dest_path +
+".openrar-tmp.<pid>.<seq>"` (CREATE_NEW, ≤ 10 retries), flushed, atomically
+renamed over `dest_path`; abort/failure deletes the temp and leaves
+`dest_path` untouched; `dest_path` resolving to the archive (or any volume
+of its set) is rejected up front with `RAR_ERR_INVALID_ARG`. Hosts may sweep
+orphaned `.openrar-tmp.*` files after killed processes.
+
+*Test.* Verifies CRC32 / BLAKE2sp streaming (stored entries in 64 KiB
+chunks; compressed through the dictionary window; encrypted via chunked
+AES-256-CBC — fixed small RAM regardless of entry size). Directory and link
+entries verify trivially. `RAR_ERR_TRUNCATED` = packed stream ended early;
+`RAR_ERR_CRC_MISMATCH` = checksum failure; `RAR_ERR_BAD_PASSWORD` /
+`RAR_ERR_ENCRYPTED` / `RAR_ERR_ABORTED` / `RAR_ERR_MISSING_VOLUME` as above.
+
+*Lifetime & threading.* Hosts close all handles on a set before
+renaming/deleting any volume. A file changed on disk under an open handle
+makes further reads fail with `RAR_ERR_IO` — close and re-open. One thread
+per handle at a time; callbacks run on the calling thread with no DLL lock
+held and must not re-enter the same handle. See `docs/invariants.md` for the
+pinned engineering contracts.
 
 ---
 
@@ -609,8 +683,9 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 ## 14. Limitations (v1)
 
 * `UNSUPPORTED_FEATURE` for: encrypted entries (`FHEXTRA_CRYPT`), multivolume `MHFL_VOLUME`, solid `FCI_SOLID`, recovery `MHFL_PROTECT`, `method ∉ {0,3,5}`. The `_ex` listing exports keep these codes (§6.9); only the header-encrypted case maps to `RAR_ERR_ENCRYPTED` there. `list_file_pw` (§6.10) additionally reports encrypted file entries (`is_encrypted = 1`).
-* **Password support is listing-only**: header-encrypted archives can be listed with `openrar_archive_list_file_pw`, but extraction of encrypted entries (file data) is not supported by any DLL export. The in-memory listing exports take no password by design (§6.10).
-* No NTFS ACL/STM, no `FHEXTRA_HTIME` ns, no symlinks — stored entries still list but extract skips with `OK`.
+* **Password support is listing + file-handle only**: `openrar_archive_list_file_pw` (§6.10) lists `-hp` archives, and the file-mode handles (§6.11) extract/test encrypted entries with passwords. The in-memory buffer surface and the frozen file helpers take no password by design (§6.10).
+* The frozen file helpers (`list_file` / `extract_file` / `extract_file_to_path`) slurp the archive into RAM per call — accepted debt; use the file-mode handles (§6.11) for anything large.
+* No NTFS ACL/STM, no `FHEXTRA_HTIME` ns in the 64-byte entry (extended metadata is a planned `entry_ex` query); symlink/junction entries extract per the reader's safe-link rules on the file-handle surface.
 * `window_log2 5` (4M) only for stream; buffer `create` clamps `[1,4]`.
 
 ---

@@ -394,6 +394,19 @@ if(NOT EMSCRIPTEN)
     openrar_enable_test_asserts(dll_tests)
     add_test(NAME dll_tests COMMAND dll_tests)
 
+    # File-mode handle tests (v1.3.0): the C ABI surface plus engine-side
+    # fixture building (solid / encrypted / multi-volume sets via
+    # ArchiveMutator, which lives in openrar_core on every configuration).
+    add_executable(file_handle_tests tests/unit/file_handle_tests.cpp)
+    target_link_libraries(file_handle_tests PRIVATE openrar_dll openrar_core)
+    if(WIN32)
+        target_link_libraries(file_handle_tests PRIVATE psapi) # GetProcessMemoryInfo
+    endif()
+    target_include_directories(file_handle_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
+    target_compile_definitions(file_handle_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    openrar_enable_test_asserts(file_handle_tests)
+    add_test(NAME file_handle_tests COMMAND file_handle_tests)
+
     add_executable(dll_cpp_tests tests/unit/dll_cpp_tests.cpp)
     target_link_libraries(dll_cpp_tests PRIVATE openrar_dll)
     target_include_directories(dll_cpp_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
@@ -440,6 +453,23 @@ if(NOT EMSCRIPTEN)
         # Real libFuzzer on clang: define the harness switch and link the
         # fuzzing engine (nightly job then actually fuzzes for max_total_time).
         # MSVC has no libFuzzer driver and keeps the standalone sweep.
+        # File-based surface (v1.3.0): open_file / handle_extract_to_path /
+        # handle_extract / handle_test / list_file_pw over the streaming
+        # reader. dll_api.cpp is compiled directly into the harness (like the
+        # wasm sources above) with OPENRAR_DLL_STATIC; requires
+        # OPENRAR_INMEM_ARCHIVE=OFF (the default) so buffer_archive.cpp is not
+        # also in openrar_core.
+        add_executable(fuzz_file_handle tests/fuzz/fuzz_file_handle.cpp
+                                        src/dll/dll_api.cpp
+                                        ${OPENRAR_INMEM_ARCHIVE_SOURCES})
+        target_compile_definitions(fuzz_file_handle PRIVATE OPENRAR_DLL_STATIC)
+        target_link_libraries(fuzz_file_handle PRIVATE openrar_core)
+        target_include_directories(fuzz_file_handle PRIVATE ${OPENRAR_INCLUDES} src/dll include)
+        openrar_enable_test_asserts(fuzz_file_handle)
+        if(OPENRAR_THREAD_LIB)
+            target_link_libraries(fuzz_file_handle PRIVATE ${OPENRAR_THREAD_LIB})
+        endif()
+
         if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT WIN32)
             target_compile_definitions(fuzz_decompress PRIVATE OPENRAR_USE_LIBFUZZER)
             target_compile_options(fuzz_decompress PRIVATE -fsanitize=fuzzer-no-link)
@@ -447,10 +477,15 @@ if(NOT EMSCRIPTEN)
             target_compile_definitions(fuzz_archive PRIVATE OPENRAR_USE_LIBFUZZER)
             target_compile_options(fuzz_archive PRIVATE -fsanitize=fuzzer-no-link)
             target_link_options(fuzz_archive PRIVATE -fsanitize=fuzzer)
+            target_compile_definitions(fuzz_file_handle PRIVATE OPENRAR_USE_LIBFUZZER)
+            target_compile_options(fuzz_file_handle PRIVATE -fsanitize=fuzzer-no-link)
+            target_link_options(fuzz_file_handle PRIVATE -fsanitize=fuzzer)
         endif()
 
-        # Both sweeps are cheap — run them under ctest so every PR exercises
-        # them, not just the nightly job. In libFuzzer mode cap the run so
+        # The sweeps are cheap deterministic loops. They are only built and
+        # registered with -DOPENRAR_FUZZ=ON (build.yml does not set it — the
+        # nightly fuzz.yml job owns fuzzing; add the flag to build.yml if
+        # per-PR sweeps are wanted). libFuzzer mode (clang) caps the run so
         # ctest stays fast; the nightly job owns the long -max_total_time run.
         add_test(NAME fuzz_roundtrip COMMAND fuzz_roundtrip)
         if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT WIN32)
@@ -460,5 +495,6 @@ if(NOT EMSCRIPTEN)
             add_test(NAME fuzz_decompress COMMAND fuzz_decompress)
             add_test(NAME fuzz_archive COMMAND fuzz_archive)
         endif()
+        add_test(NAME fuzz_file_handle COMMAND fuzz_file_handle)
     endif()
 endif()

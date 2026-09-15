@@ -2,6 +2,7 @@
 #define OPENRAR_ARCHIVE_BUFFER_ARCHIVE_HPP
 
 #include "../core/types.hpp"
+#include "rar_errors.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -11,27 +12,7 @@
 
 namespace openrar::archive {
 
-// ── Error codes — canonical definition of the shared ABI contract ──────────
-// Re-exported by src/api/abi_contract.hpp to the DLL and WASM surfaces; JS
-// mirrors it as RarErrorCode (wasm/js/openrar-archive.d.ts).
-enum BufferArchiveError : int {
-    RAR_OK = 0,
-    RAR_ERR_PARTIAL_OK = 1,
-    RAR_ERR_NOT_RAR = -1,
-    RAR_ERR_UNSUPPORTED_FEATURE = -2,
-    RAR_ERR_TRUNCATED = -3,
-    RAR_ERR_CRC_MISMATCH = -4,
-    RAR_ERR_NOMEM = -5,
-    RAR_ERR_IO = -6,
-    RAR_ERR_BAD_PASSWORD = -7,
-    RAR_ERR_INVALID_ARG = -9,
-    RAR_ERR_ABORTED = -11,
-    // Archive headers are encrypted (HEAD_CRYPT): a password is required
-    // before any header can be read. Emitted only by list_file_stream and the
-    // DLL _ex listing exports; BufferArchive::list keeps its historical
-    // RAR_ERR_UNSUPPORTED_FEATURE for the same condition.
-    RAR_ERR_ENCRYPTED = -12,
-};
+// (Error codes live in rar_errors.hpp — canonical shared ABI contract.)
 
 // ── Callback conventions (mirror src/dll/openrar_dll.h) ─────────────────────
 // progress: (done, total) cumulative and monotonic; total never negative.
@@ -65,6 +46,12 @@ struct BufferArchiveEntry {
 //   - For directories: trailing '/' required.
 //   - For files: trailing '/' forbidden.
 bool validate_archive_path(const std::string& path, bool is_dir, std::string& err_out);
+
+// DOS-time (as stored in the 32-bit file-header mtime field) → UNIX seconds,
+// UTC-based. 0 maps to 0 (no FHFL_UTIME field). Shared by the buffer walk and
+// the DLL's file-handle entry mapping so both surfaces report identical
+// mtimes for the same archive.
+uint64_t dos_time_to_unix(uint32_t dos);
 
 // ── In-memory RAR5 archive reader ────────────────────────────────────────────
 class BufferArchive {

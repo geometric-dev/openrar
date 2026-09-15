@@ -104,31 +104,6 @@ uint32_t unix_to_dos_time(uint64_t unix_sec) {
     return (y << 25) | (mo << 21) | (d << 16) | (h << 11) | (mi << 5) | s;
 }
 
-uint64_t dos_time_to_unix(uint32_t dos) {
-    if (dos == 0) return 0;
-    unsigned y = (dos >> 25) & 0x7F;
-    unsigned mo = (dos >> 21) & 0x0F;
-    unsigned d = (dos >> 16) & 0x1F;
-    unsigned h = (dos >> 11) & 0x1F;
-    unsigned mi = (dos >> 5) & 0x3F;
-    unsigned s = (dos) & 0x1F;
-    if (mo == 0 || mo > 12) mo = 1;
-    if (d == 0 || d > 31) d = 1;
-    std::tm tm_buf{};
-    tm_buf.tm_year = static_cast<int>(y) + 1980 - 1900;
-    tm_buf.tm_mon = static_cast<int>(mo) - 1;
-    tm_buf.tm_mday = static_cast<int>(d);
-    tm_buf.tm_hour = static_cast<int>(h);
-    tm_buf.tm_min = static_cast<int>(mi);
-    tm_buf.tm_sec = static_cast<int>(s) * 2;
-#if defined(_WIN32)
-    std::time_t t = _mkgmtime(&tm_buf);
-#else
-    std::time_t t = timegm(&tm_buf);
-#endif
-    if (t < 0) return 0;
-    return static_cast<uint64_t>(t);
-}
 
 // ── Window size from log2 ∈ {1, 2, 3, 4} (doubling from 128 KiB) ────────────
 size_t window_size_from_log2(unsigned window_log2) {
@@ -442,6 +417,33 @@ WalkStatus walk_headers(Source& src, const WalkHooks& hooks,
 }
 
 } // namespace
+
+uint64_t dos_time_to_unix(uint32_t dos) {
+    if (dos == 0) return 0;
+    unsigned y = (dos >> 25) & 0x7F;
+    unsigned mo = (dos >> 21) & 0x0F;
+    unsigned d = (dos >> 16) & 0x1F;
+    unsigned h = (dos >> 11) & 0x1F;
+    unsigned mi = (dos >> 5) & 0x3F;
+    unsigned s = (dos) & 0x1F;
+    if (mo == 0 || mo > 12) mo = 1;
+    if (d == 0 || d > 31) d = 1;
+    std::tm tm_buf{};
+    tm_buf.tm_year = static_cast<int>(y) + 1980 - 1900;
+    tm_buf.tm_mon = static_cast<int>(mo) - 1;
+    tm_buf.tm_mday = static_cast<int>(d);
+    tm_buf.tm_hour = static_cast<int>(h);
+    tm_buf.tm_min = static_cast<int>(mi);
+    tm_buf.tm_sec = static_cast<int>(s) * 2;
+#if defined(_WIN32)
+    std::time_t t = _mkgmtime(&tm_buf);
+#else
+    std::time_t t = timegm(&tm_buf);
+#endif
+    if (t < 0) return 0;
+    return static_cast<uint64_t>(t);
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // validate_archive_path
