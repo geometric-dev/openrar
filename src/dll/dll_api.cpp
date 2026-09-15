@@ -57,6 +57,8 @@ static_assert(static_cast<int>(RAR_ERR_MISSING_VOLUME) ==
 static_assert(static_cast<int>(RAR_ERR_BUSY) == static_cast<int>(openrar::api::RAR_ERR_BUSY));
 static_assert(sizeof(openrar_archive_entry_t) == sizeof(openrar::api::ArchiveEntryOut),
               "openrar_archive_entry_t layout drifted from api::ArchiveEntryOut");
+static_assert(sizeof(openrar_entry_ex_t) == 48, "openrar_entry_ex_t must stay 48 bytes");
+static_assert(sizeof(openrar_archive_info_t) == 24, "openrar_archive_info_t must stay 24 bytes");
 #define OPENRAR_DLL_ENTRY_FIELD(field)                                                             \
     static_assert(offsetof(openrar_archive_entry_t, field) ==                                      \
                       offsetof(openrar::api::ArchiveEntryOut, field),                              \
@@ -101,6 +103,17 @@ struct ArchiveHandleBase {
                                 void* user) = 0;
     virtual int test(uint32_t entry_index, openrar_progress_cb progress,
                      openrar_cancel_cb cancel, void* user) = 0;
+    // Extended metadata (v1.5.0): file-mode handles only — the buffer MVP
+    // has no streaming reader behind it, so the default refuses.
+    virtual int entry_ex(uint32_t entry_index, openrar_entry_ex_t* out, void** extra_out,
+                         size_t* extra_size_out) {
+        set_error("extended metadata requires a file-mode handle");
+        return RAR_ERR_UNSUPPORTED_FEATURE;
+    }
+    virtual int info(openrar_archive_info_t* out, void** comment_out, size_t* comment_size_out) {
+        set_error("archive info requires a file-mode handle");
+        return RAR_ERR_UNSUPPORTED_FEATURE;
+    }
 };
 openrar::api::HandleTable<ArchiveHandleBase> g_handles;
 
@@ -353,6 +366,18 @@ struct FileArchiveHandle : ArchiveHandleBase {
 
     std::filesystem::path path() const override { return reader->path(); }
 
+    // Unix seconds (+ optional ns) / FILETIME → FILETIME (UTC, 100ns).
+    // 0 when the field is absent from the archive.
+    static uint64_t to_filetime(uint64_t win, uint32_t unix_sec, uint32_t ns, bool has_ns) {
+        if (win != 0) return win;
+        if (unix_sec != 0) {
+            uint64_t ft = (static_cast<uint64_t>(unix_sec) + 11644473600ULL) * 10000000ULL;
+            if (has_ns) ft += ns / 100;
+            return ft;
+        }
+        return 0;
+    }
+
     void build_entry_map() {
         entries.clear();
         reader_index.clear();
@@ -466,6 +491,131 @@ struct FileArchiveHandle : ArchiveHandleBase {
             set_error("test aborted");
         return rc;
     }
+
+    // Extended metadata (v1.5.0): straight from the cached walk's headers.
+    int entry_ex(uint32_t entry_index, openrar_entry_ex_t* out, void** extra_out,
+                 size_t* extra_size_out) override {
+        if (!out || !extra_out || !extra_size_out) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *out = openrar_entry_ex_t{};
+        *extra_out = nullptr;
+        *extra_size_out = 0;
+        if (entry_index >= entries.size()) {
+            set_error("entry_index OOR");
+            return RAR_ERR_INVALID_ARG;
+        }
+        const auto& re = reader->entries()[reader_index[entry_index]];
+        const auto& h = re.header;
+        out->attrs = static_cast<uint32_t>(h.attributes);
+        out->host_os = h.host_os;
+        out->mtime_ft = to_filetime(h.mtime_win, h.htime_mtime_unix, h.mtime_ns, h.has_mtime_ns);
+        out->ctime_ft = to_filetime(h.ctime_win, h.htime_ctime_unix, h.ctime_ns, h.has_ctime_ns);
+        out->atime_ft = to_filetime(h.atime_win, h.htime_atime_unix, h.atime_ns, h.has_atime_ns);
+        uint32_t flags = 0;
+        if (h.is_solid) flags |= OPENRAR_ENTRY_FLAG_SOLID;
+        if (h.is_encrypted) flags |= OPENRAR_ENTRY_FLAG_ENCRYPTED;
+        if (h.redir_type != 0) flags |= OPENRAR_ENTRY_FLAG_REDIR;
+        if (re.split_before) flags |= OPENRAR_ENTRY_FLAG_SPLIT_BEFORE;
+        if (re.split_after) flags |= OPENRAR_ENTRY_FLAG_SPLIT_AFTER;
+        if (out->mtime_ft) flags |= OPENRAR_ENTRY_FLAG_HAS_MTIME;
+        if (out->ctime_ft) flags |= OPENRAR_ENTRY_FLAG_HAS_CTIME;
+        if (out->atime_ft) flags |= OPENRAR_ENTRY_FLAG_HAS_ATIME;
+        if (h.file_flags & openrar::format::FHFL_DIRECTORY) flags |= OPENRAR_ENTRY_FLAG_DIRECTORY;
+        out->flags = flags;
+        out->win_size = h.win_size > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(h.win_size);
+        out->redir_type = h.redir_type;
+        out->version_needed = h.unp_ver;
+        if (h.redir_type != 0) {
+            const std::string& target = h.redir_target;
+            uint8_t* buf = static_cast<uint8_t*>(std::malloc(target.size() + 1));
+            if (!buf) {
+                set_error("oom");
+                return RAR_ERR_NOMEM;
+            }
+            std::memcpy(buf, target.c_str(), target.size() + 1);
+            *extra_out = buf;
+            *extra_size_out = target.size();
+        }
+        return RAR_OK;
+    }
+
+    // Archive-level properties: main-header flags, volume provenance and
+    // RR size come from the cached walk; the CMT payload is read lazily.
+    int info(openrar_archive_info_t* out, void** comment_out, size_t* comment_size_out) override {
+        if (!out || !comment_out || !comment_size_out) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *out = openrar_archive_info_t{};
+        *comment_out = nullptr;
+        *comment_size_out = 0;
+        const auto& mb = reader->main_block();
+        out->flags = static_cast<uint32_t>(mb.arc_flags);
+        out->volume_index = static_cast<uint32_t>(mb.vol_number);
+        // The file-mode open is strict (a successfully opened set had every
+        // volume of the chain present), so the count is always determinable.
+        out->volume_count = static_cast<uint32_t>(reader->volume_paths().size());
+        for (const auto& e : reader->entries()) {
+            if (e.header.is_service && e.header.service_type == "RR" && e.data_size > 0) {
+                out->recovery_size = e.data_size;
+                break;
+            }
+        }
+        // Archive comment: find the CMT service, read its payload on demand.
+        for (const auto& e : reader->entries()) {
+            if (!(e.header.is_service && e.header.service_type == "CMT")) continue;
+            std::vector<uint8_t> payload;
+            if (!e.header.sub_data.empty()) {
+                payload.assign(e.header.sub_data.begin(), e.header.sub_data.end());
+            } else if (e.data_size > 0) {
+                std::vector<uint8_t> packed(static_cast<size_t>(e.data_size));
+                {
+                    auto& s = reader->stream();
+                    if (!s.seek(static_cast<openrar::core::int64>(e.data_offset),
+                                openrar::io::SeekOrigin::Begin)) {
+                        set_error("cannot read archive comment");
+                        return RAR_ERR_IO;
+                    }
+                    if (s.read(packed.data(), packed.size()) != packed.size()) {
+                        set_error("cannot read archive comment");
+                        return RAR_ERR_IO;
+                    }
+                }
+                if (e.header.method > 0) {
+                    std::vector<openrar::core::byte> out_bytes;
+                    openrar::compress::Decompressor50 dec(
+                        e.header.win_size ? static_cast<size_t>(e.header.win_size)
+                                          : (1024u * 1024));
+                    if (!dec.decompress_to_vector(packed.data(), packed.size(), out_bytes)) {
+                        return RAR_OK; // undecodable comment reported as absent
+                    }
+                    payload.assign(out_bytes.begin(), out_bytes.end());
+                } else {
+                    payload = std::move(packed); // stored comment
+                }
+            } else {
+                continue; // zero-length comment slot
+            }
+            if (e.header.has_crc32) {
+                openrar::crypto::Crc32 crc;
+                crc.update(payload.data(), payload.size());
+                if (crc.get() != e.header.data_crc32) return RAR_OK; // absent, not IO
+            }
+            uint8_t* buf = static_cast<uint8_t*>(std::malloc(payload.size() ? payload.size() : 1));
+            if (!buf) {
+                set_error("oom");
+                return RAR_ERR_NOMEM;
+            }
+            if (!payload.empty()) std::memcpy(buf, payload.data(), payload.size());
+            out->comment_len = static_cast<uint32_t>(payload.size());
+            *comment_out = buf;
+            *comment_size_out = payload.size();
+            return RAR_OK;
+        }
+        return RAR_OK; // no CMT service
+    }
 };
 } // namespace
 
@@ -480,7 +630,7 @@ int OPENRAR_DLL_CALL openrar_archive_version(void) {
 uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
     return OPENRAR_ABI_FEATURE_LIST_PROGRESS | OPENRAR_ABI_FEATURE_LIST_PASSWORD |
            OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS | OPENRAR_ABI_FEATURE_FILE_HANDLE |
-           OPENRAR_ABI_FEATURE_MUTATION;
+           OPENRAR_ABI_FEATURE_MUTATION | OPENRAR_ABI_FEATURE_ENTRY_EX;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1189,6 +1339,66 @@ int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
                                                                       /*solid=*/false, {}, detail);
         if (rc != RAR_OK) set_error(detail.empty() ? "add failed" : detail);
         return rc;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+
+} // extern "C"
+
+extern "C" {
+
+// ── Extended metadata (v1.5.0) ───────────────────────────────────────────────
+int OPENRAR_DLL_CALL openrar_archive_handle_entry_ex(uint32_t handle, uint32_t entry_index,
+                                                     openrar_entry_ex_t* out, void** extra_out,
+                                                     size_t* extra_size_out) {
+    try {
+        if (!out || !extra_out || !extra_size_out) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *out = openrar_entry_ex_t{};
+        *extra_out = nullptr;
+        *extra_size_out = 0;
+        auto h = g_handles.pin(handle);
+        if (!h) {
+            set_error("invalid handle");
+            return RAR_ERR_INVALID_ARG;
+        }
+        return h->entry_ex(entry_index, out, extra_out, extra_size_out);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+
+void OPENRAR_DLL_CALL openrar_archive_entry_ex_free(void* extra) {
+    std::free(extra);
+}
+
+int OPENRAR_DLL_CALL openrar_archive_handle_info(uint32_t handle, openrar_archive_info_t* out,
+                                                 void** comment_out, size_t* comment_size_out) {
+    try {
+        if (!out || !comment_out || !comment_size_out) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *out = openrar_archive_info_t{};
+        *comment_out = nullptr;
+        *comment_size_out = 0;
+        auto h = g_handles.pin(handle);
+        if (!h) {
+            set_error("invalid handle");
+            return RAR_ERR_INVALID_ARG;
+        }
+        return h->info(out, comment_out, comment_size_out);
     } catch (const std::exception& e) {
         set_error(e.what());
         return RAR_ERR_IO;
