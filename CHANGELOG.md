@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-15
+
+### Added
+
+- **Atomic deletion** (`OPENRAR_ABI_FEATURE_MUTATION`, bit 4):
+  `openrar_archive_delete_entries_file` deletes entries from an existing
+  archive **by index** — indices are in the file-handle listing order (the
+  sequence `openrar_archive_handle_list` reports on an `open_file` handle;
+  file entries only, service headers never exposed). The DLL translates each
+  index to the entry's header offset with its own strict reader and deletes
+  by that identity, never by name, so entry names containing `*` / `?` are
+  safe. The rewrite lands in a temp file, is flushed, and atomically
+  replaces the original — untouched on any failure.
+- **Batch add/replace**: `openrar_archive_add_files_file` appends files to an
+  existing archive with 'u' semantics — incoming names override same-name
+  entries (byte-exact UTF-8 compare after normalizing `\` to `/`; all prior
+  instances stripped). `method ∈ {0,3,5}`, `window_log2 ∈ [1,4]` (create
+  parity; ignored by stored entries). Directory sources become directory
+  records (non-recursive). Added files are written unencrypted — password /
+  `encrypt_headers` parameters are deliberately deferred.
+- **Solid archives — suffix-only delete** (docs/invariants.md §1, now
+  enforced): deleting a member of a solid run while a later member of that
+  run is retained fails with `RAR_ERR_UNSUPPORTED_FEATURE` instead of
+  silently orphaning the LZ chain — the same guard now backs the CLI's
+  mask-based delete. Allowed shapes per run: untouched, suffix deletion,
+  whole-run deletion. Replacement of any solid-block member (head included)
+  is refused; replace the tail of a run via delete + add. Adding new names
+  to a solid archive continues its stream.
+- **`RAR_ERR_BUSY` (-14)**: the mutation exports pre-check every open
+  file-mode handle in the process and fail up front when the target (or any
+  volume of its set) is still held open — instead of an opaque Windows
+  sharing violation during the final rename. Close handles, then mutate;
+  hosts re-open after every mutation.
+- **Refusals, all `RAR_ERR_UNSUPPORTED_FEATURE`**: locked (`MHFL_LOCK`),
+  multi-volume (`MHFL_VOLUME`) and header-encrypted (`-hp`) archives (the
+  mutation surface takes no password; "mutating header-encrypted archive
+  requires password").
+- Comment (CMT) preserved by both operations; QuickOpen locators stripped;
+  recovery records copied verbatim (not recomputed — treat as absent after a
+  mutation).
+- C++ wrapper: `delete_entries(path, indices)` and `add_files(path, files,
+  AddOptions)` free functions mirroring `create_archive`'s ergonomics.
+- Tests: `mutation_tests` (17th ctest target) pins the index-space identity,
+  solid delete/replace guards, 'u' semantics, atomicity on failed batches,
+  the `RAR_ERR_BUSY` handle collision, validation parity and CMT/QO
+  behavior. `fuzz_file_handle` gained a mutation leg (delete/add/re-open
+  against arbitrary bytes).
+
+### Notes
+
+- All additive: `OPENRAR_DLL_API_VERSION` stays 1; no frozen export changed
+  behavior. Exports 41 → 43; feature bit 4 reserved and shipped.
+- The frozen `list_file` / `list_file_ex` walks surface comment/recovery
+  service blocks as entries and are therefore NOT the delete index space on
+  such archives — hosts must list via a file handle (docs/dll-integration-spec.md
+  §6.12).
+
 ## [1.3.0] - 2026-09-15
 
 ### Added
