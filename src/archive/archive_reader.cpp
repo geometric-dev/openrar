@@ -1,4 +1,5 @@
 #include "archive_reader.hpp"
+#include "rar_errors.hpp"
 #include "volume.hpp"
 #include "../format/header_reader.hpp"
 #include "../core/vint.hpp"
@@ -25,6 +26,37 @@ ArchiveReader::~ArchiveReader() {
     close();
 }
 
+namespace {
+// Best-effort key-material hygiene (docs/invariants.md §6): volatile stores
+// the optimizer cannot elide. std::string may have reallocated during
+// assignment, so this covers the current buffer only — documented as
+// best-effort.
+void secure_zero(void* p, size_t n) {
+    volatile core::byte* v = static_cast<volatile core::byte*>(p);
+    while (n--) *v++ = 0;
+}
+
+// Filename pattern check for RAR5 new-numbering sets: ".partNN." with NN
+// parsing to a volume number > 1 (i.e. NOT the first volume). Legacy
+// numbering (.rar/.r00) is deliberately not matched — its first-member
+// derivation is ambiguous, so it keeps the reader's historical
+// open-exactly-what-was-passed behavior.
+bool parse_part_number(const std::filesystem::path& p, long& num) {
+    std::string f = p.filename().string();
+    for (auto& c : f) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const size_t pos = f.find(".part");
+    if (pos == std::string::npos) return false;
+    const size_t d = pos + 5;
+    size_t e = d;
+    while (e < f.size() && std::isdigit(static_cast<unsigned char>(f[e]))) ++e;
+    if (e == d || e >= f.size() || f[e] != '.') return false;
+    num = std::atol(f.substr(d, e - d).c_str());
+    return true;
+}
+
+constexpr size_t kStreamChunk = 64 * 1024; // stored/decrypt slice (multiple of 16)
+} // namespace
+
 size_t ArchiveReader::test_get_solid_window_size() const {
     if (solid_unpacker_) return solid_unpacker_->win_size();
     return 0;
@@ -35,11 +67,19 @@ void ArchiveReader::close() {
     entries_.clear();
     sfx_offset_ = 0;
     bad_password_ = false;
+    saw_crypt_header_ = false;
+    crypt_unsupported_ = false;
     header_encrypted_ = false;
     header_crypt_ = format::CryptBlock{};
     links_created_.clear();
     solid_unpacker_.reset();
     solid_chain_ok_ = false;
+    last_decoded_index_ = -1;
+    missing_volume_path_.clear();
+    if (!password_.empty()) {
+        secure_zero(password_.data(), password_.size());
+        password_.clear();
+    }
 }
 
 bool ArchiveReader::is_open() const {
@@ -59,20 +99,56 @@ bool ArchiveReader::is_solid() const {
 }
 
 bool ArchiveReader::open(const std::filesystem::path& arc_path, const std::string& password) {
+    int status = RAR_OK;
+    std::string detail;
+    return open_ex(arc_path, password, status, detail, ReaderHooks{}, /*strict_volumes=*/false);
+}
+
+bool ArchiveReader::open_ex(const std::filesystem::path& arc_path, const std::string& password,
+                            int& status_out, std::string& detail_out,
+                            const ReaderHooks& hooks, bool strict_volumes) {
     close();
+    status_out = RAR_OK;
+    detail_out.clear();
     path_ = arc_path;
     password_ = password;
 
-    if (!stream_.open(arc_path, io::FileMode::ReadOnly)) {
+    // Multi-volume rewind: a middle volume path (.partNN.rar, NN > 1) opens
+    // the derived first volume instead. The rewind only fires when the
+    // derived name exists, except that a missing first volume of a genuine
+    // .partNN set is a hard MISSING_VOLUME error (the host asked to open a
+    // set it can't locate the head of).
+    long part_num = 0;
+    if (parse_part_number(arc_path, part_num) && part_num > 1) {
+        std::filesystem::path first = volume::vol_name_to_first_name(arc_path, false);
+        std::error_code ec;
+        if (std::filesystem::exists(first, ec)) {
+            path_ = first;
+        } else {
+            status_out = RAR_ERR_MISSING_VOLUME;
+            detail_out = "cannot open first volume: " + first.u8string();
+            missing_volume_path_ = first;
+            close();
+            missing_volume_path_ = first; // survive close()'s state reset
+            return false;
+        }
+    }
+
+    if (!stream_.open(path_, io::FileMode::ReadOnly)) {
+        status_out = RAR_ERR_IO;
+        detail_out = "cannot open " + path_.u8string();
+        close();
         return false;
     }
 
-    if (!scan_archive()) {
+    if (!scan_archive(hooks, strict_volumes, status_out, detail_out)) {
         // Preserve the wrong-password verdict for the caller: close()
         // resets all per-archive state.
         bool bad = bad_password_;
+        std::filesystem::path missing = missing_volume_path_;
         close();
         bad_password_ = bad;
+        missing_volume_path_ = missing;
         return false;
     }
 
@@ -89,16 +165,22 @@ std::filesystem::path ArchiveReader::derive_first_volume_name(const std::filesys
     return volume::vol_name_to_first_name(cur, old_numbering);
 }
 
-bool ArchiveReader::scan_archive() {
+bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, int& status_out,
+                                 std::string& detail_out) {
+    auto fail = [&](int status, std::string detail) {
+        status_out = status;
+        detail_out = std::move(detail);
+        return false;
+    };
     // Preserve original stream for single-volume compat, but multivolume scan uses per-volume streams
     core::uint64 file_size = stream_.size();
     if (file_size < format::RAR5_SIGNATURE_SIZE) {
-        return false;
+        return fail(RAR_ERR_NOT_RAR, "not a RAR5 archive");
     }
 
     // Check offset 0 first on first volume
     core::byte sig_buf[8];
-    if (stream_.read(sig_buf, 8) != 8) return false;
+    if (stream_.read(sig_buf, 8) != 8) return fail(RAR_ERR_IO, "short read");
 
     if (std::memcmp(sig_buf, format::rar5_signature(), 8) == 0) {
         sfx_offset_ = 0;
@@ -110,11 +192,13 @@ bool ArchiveReader::scan_archive() {
 
         core::uint64 pos = 0;
         while (pos < scan_limit) {
+            if (hooks.cancelled()) return fail(RAR_ERR_ABORTED, "open aborted");
             stream_.seek(static_cast<core::int64>(pos), io::SeekOrigin::Begin);
             size_t bytes_to_read = static_cast<size_t>(
                 std::min(static_cast<core::uint64>(scan_buf.size()), scan_limit - pos));
             size_t read_bytes = stream_.read(scan_buf.data(), bytes_to_read);
             if (read_bytes < 8) break;
+            hooks.emit(pos + read_bytes, scan_limit);
 
             for (size_t i = 0; i <= read_bytes - 8; ++i) {
                 if (std::memcmp(scan_buf.data() + i, format::rar5_signature(), 8) == 0) {
@@ -135,7 +219,7 @@ bool ArchiveReader::scan_archive() {
             pos += (read_bytes > 8) ? (read_bytes - 7) : 1;
         }
 
-        if (!found) return false;
+        if (!found) return fail(RAR_ERR_NOT_RAR, "not a RAR5 archive (no signature in SFX scan)");
     }
 
     // Multipass volume scan: stitch split files across volumes
@@ -149,11 +233,18 @@ bool ArchiveReader::scan_archive() {
     bool saw_end = false;
     std::filesystem::path current_vol_path = path_;
 
+    // Cumulative progress bases for the volume walk: done counts bytes
+    // consumed across volumes already processed, total counts bytes of
+    // volumes opened so far (both monotonic; the walk grows the set).
+    core::uint64 vol_done_base = 0;
+    core::uint64 vol_total_base = 0;
+
     // Helper to process a single volume file
     auto process_volume = [&](const std::filesystem::path& vpath, bool is_first, io::FileStream& vs,
                               std::vector<ArchiveEntry>& raw_out, format::MainBlock& vol_main,
                               bool& vol_saw_end) -> bool {
         core::uint64 vsz = vs.size();
+        vol_total_base = vol_done_base + vsz;
         core::uint64 start_off = 0;
         if (is_first) {
             start_off = sfx_offset_ + 8;
@@ -171,6 +262,8 @@ bool ArchiveReader::scan_archive() {
         // the volume is then read through it.
         format::HeaderCryptReader hcrypt;
         while (vs.tell() < vsz) {
+            if (hooks.cancelled()) return false;
+            hooks.emit(vol_done_base + (vs.tell() - start_off), vol_total_base);
             core::uint64 head_start = vs.tell();
             core::uint64 type = 0, flags = 0, data_size = 0;
             std::vector<core::byte> body;
@@ -189,8 +282,12 @@ bool ArchiveReader::scan_archive() {
                     break;
                 }
                 if (hcrypt.active) break; // duplicate HEAD_CRYPT: corrupt
+                saw_crypt_header_ = true;
                 if (!hcrypt.init(password_, cb)) {
-                    if (hcrypt.bad_password) bad_password_ = true;
+                    if (hcrypt.bad_password)
+                        bad_password_ = true;
+                    else
+                        crypt_unsupported_ = true; // unknown crypto version
                     break;
                 }
                 header_encrypted_ = true;
@@ -256,7 +353,13 @@ bool ArchiveReader::scan_archive() {
     // allowing legitimate archives to span thousands of parts.
     constexpr size_t MAX_VOLUME_CHAIN = 65535;
     std::vector<ArchiveEntry> raw_all;
+    bool scan_aborted = false;
+    bool missing_required = false;
     while (vol_idx < vol_chain.size() && vol_idx < MAX_VOLUME_CHAIN) {
+        if (hooks.cancelled()) {
+            scan_aborted = true;
+            break;
+        }
         std::filesystem::path vpath = vol_chain[vol_idx];
         io::FileStream vs;
         if (!vs.open(vpath, io::FileMode::ReadOnly)) {
@@ -267,15 +370,23 @@ bool ArchiveReader::scan_archive() {
                     vs.open(alt, io::FileMode::ReadOnly)) {
                     vpath = alt;
                     vol_chain[vol_idx] = vpath;
-                } else
+                } else {
+                    // The chain (split flags / probing) required this volume.
+                    missing_required = true;
+                    missing_volume_path_ = vpath;
                     break;
+                }
             } else
                 break;
         }
         bool vol_saw_end = false;
         format::MainBlock vol_main;
         std::vector<ArchiveEntry> vol_raw;
-        if (!process_volume(vpath, vol_idx == 0, vs, vol_raw, vol_main, vol_saw_end)) break;
+        if (!process_volume(vpath, vol_idx == 0, vs, vol_raw, vol_main, vol_saw_end)) {
+            if (hooks.cancelled()) scan_aborted = true;
+            break;
+        }
+        vol_done_base = vol_total_base;
         // Append vol_raw to raw_all with split merging across boundary
         for (auto& re : vol_raw) {
             if (re.header.is_service && re.header.service_type == "QO") {
@@ -350,8 +461,14 @@ bool ArchiveReader::scan_archive() {
                     auto nxt_old = derive_next_volume_name(vpath, true);
                     if (nxt_old != vpath && std::filesystem::exists(nxt_old))
                         vol_chain.push_back(nxt_old);
-                    else
+                    else {
+                        // need_next came from split_after / ENDARC NEXTVOL
+                        // flags (the probe path already proved the file
+                        // exists), so the set is genuinely incomplete.
+                        missing_required = true;
+                        missing_volume_path_ = nxt;
                         break;
+                    }
                 }
             }
         } else {
@@ -361,7 +478,28 @@ bool ArchiveReader::scan_archive() {
         if (vol_idx >= vol_chain.size()) break;
     }
 
-    if (!first_main_read) return false;
+    if (scan_aborted) return fail(RAR_ERR_ABORTED, "open aborted");
+    if (missing_required && strict_volumes)
+        return fail(RAR_ERR_MISSING_VOLUME,
+                    "missing volume: " + missing_volume_path_.u8string());
+    if (!first_main_read) {
+        // A HEAD_CRYPT block that could not be passed (no password, wrong
+        // password, unknown crypto version) dies before the main header —
+        // map those to the dedicated codes instead of NOT_RAR. On -hp
+        // archives structural corruption also presents as BAD_PASSWORD
+        // (header CRC / PswCheck failure), per the documented contract.
+        if (saw_crypt_header_) {
+            if (crypt_unsupported_)
+                return fail(RAR_ERR_UNSUPPORTED_FEATURE,
+                            "unsupported HEAD_CRYPT crypto version");
+            if (bad_password_)
+                return fail(RAR_ERR_BAD_PASSWORD, "wrong password for encrypted headers");
+            if (password_.empty())
+                return fail(RAR_ERR_ENCRYPTED,
+                            "archive headers are encrypted (password required to list)");
+        }
+        return fail(RAR_ERR_NOT_RAR, "not a RAR5 archive (no main header)");
+    }
     main_block_ = first_main;
     entries_.clear();
     for (auto& e : raw_all) {
@@ -377,8 +515,422 @@ bool ArchiveReader::scan_archive() {
     stream_.open(path_, io::FileMode::ReadOnly);
     stream_.seek(static_cast<core::int64>(sfx_offset_ + 8), io::SeekOrigin::Begin);
     (void)saw_end;
+    hooks.emit(vol_done_base, vol_done_base); // exactly one final (total, total)
     return true;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Streaming file-handle APIs (v1.3.0)
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::vector<std::filesystem::path> ArchiveReader::volume_paths() const {
+    std::vector<std::filesystem::path> out;
+    if (!path_.empty()) out.push_back(path_);
+    for (const auto& e : entries_) {
+        for (const auto& ext : e.extents) {
+            bool seen = false;
+            for (const auto& p : out) {
+                std::error_code ec;
+                if (p == ext.volume_path ||
+                    (!ec && std::filesystem::equivalent(p, ext.volume_path, ec))) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) out.push_back(ext.volume_path);
+        }
+    }
+    return out;
+}
+
+size_t ArchiveReader::prev_chain_index(size_t idx) const {
+    for (size_t j = idx; j-- > 0;) {
+        const auto& h = entries_[j].header;
+        if (h.is_service || (h.file_flags & format::FHFL_DIRECTORY) || h.method == 0) continue;
+        return j;
+    }
+    return static_cast<size_t>(-1);
+}
+
+size_t ArchiveReader::solid_run_head(size_t idx) const {
+    size_t h = idx;
+    while (h > 0) {
+        const auto& hd = entries_[h].header;
+        if (hd.is_service || (hd.file_flags & format::FHFL_DIRECTORY) || hd.method == 0 ||
+            hd.is_solid) {
+            --h;
+            continue;
+        }
+        break;
+    }
+    return h;
+}
+
+int ArchiveReader::derive_entry_keys(const ArchiveEntry& entry, crypto::Rar5Keys& keys) {
+    if (!entry.header.is_encrypted) return RAR_OK;
+    if (password_.empty()) return RAR_ERR_ENCRYPTED;
+    if (entry.header.lg2_count >= 25) return RAR_ERR_UNSUPPORTED_FEATURE;
+    crypto::Pbkdf2Rar5::derive_keys(password_, entry.header.salt.data(), 16,
+                                    1U << entry.header.lg2_count, keys);
+    if (entry.header.has_psw_check &&
+        !crypto::Pbkdf2Rar5::constant_time_equal(keys.psw_check, entry.header.psw_check.data(),
+                                                 8)) {
+        bad_password_ = true;
+        return RAR_ERR_BAD_PASSWORD;
+    }
+    return RAR_OK;
+}
+
+int ArchiveReader::ensure_solid_position(size_t idx, const ReaderHooks& hooks) {
+    const ArchiveEntry& entry = entries_[idx];
+    const bool chain = is_solid() || entry.header.is_solid;
+    if (!chain || entry.header.method == 0) return RAR_OK;
+
+    // Fast path: the chain state reflects this entry's immediate compressed
+    // predecessor (docs/invariants.md §1).
+    const size_t prev = prev_chain_index(idx);
+    if (prev != static_cast<size_t>(-1) && solid_chain_ok_ &&
+        last_decoded_index_ == static_cast<long long>(prev)) {
+        return RAR_OK;
+    }
+
+    // Rewind path: decode the run prefix [head, idx) through a discard sink.
+    const size_t head = solid_run_head(idx);
+    ReaderHooks silent = hooks; // catch-up cancels but stays progress-silent
+    silent.progress = nullptr;
+    silent.progress_user = nullptr;
+    const uint64_t total = entry.header.unp_size;
+    for (size_t i = head; i < idx; ++i) {
+        const ArchiveEntry& mid = entries_[i];
+        if (mid.header.is_service || (mid.header.file_flags & format::FHFL_DIRECTORY) ||
+            mid.header.method == 0)
+            continue;
+        hooks.emit(0, total); // heartbeat: catch-up running, target not started
+        crypto::Rar5Keys mid_keys{};
+        crypto::Rar5Keys* mk = nullptr;
+        if (mid.header.is_encrypted) {
+            int rc = derive_entry_keys(mid, mid_keys);
+            if (rc != RAR_OK) return rc;
+            mk = &mid_keys;
+        }
+        SinkStatus st;
+        int rc = stream_payload(i, mk, [](const core::byte*, size_t) { return true; }, st, silent);
+        if (mk) secure_zero(mid_keys.aes_key, sizeof(mid_keys.aes_key));
+        if (rc != RAR_OK) {
+            solid_chain_ok_ = false;
+            return rc;
+        }
+        // stream_payload advanced last_decoded_index_ to i on success.
+    }
+    return RAR_OK;
+}
+
+namespace {
+// Pull source over an entry's extents feeding the decompressor's src_cb
+// contract: fill dest with up to `want` bytes, return the count (0 = end).
+// Volumes open on demand per extent and close when exhausted
+// (docs/invariants.md §3); decryption happens in 64 KiB slices with the CBC
+// IV carried across them (§2), so memory stays bounded regardless of size.
+class ExtentPullSource {
+public:
+    ExtentPullSource(const ArchiveEntry& entry, const std::filesystem::path& fallback_path,
+                     const crypto::Rar5Keys* keys)
+        : keys_(keys) {
+        if (entry.extents.empty())
+            exts_.push_back({fallback_path, entry.data_offset, entry.data_size});
+        else
+            exts_ = entry.extents;
+        if (keys_) std::memcpy(iv_, entry.header.init_v.data(), 16);
+        staging_.resize(kStreamChunk);
+    }
+
+    size_t pull(core::byte* dest, size_t want) {
+        size_t got = 0;
+        while (got < want) {
+            if (plain_pos_ < plain_len_) {
+                const size_t n = std::min(want - got, plain_len_ - plain_pos_);
+                std::memcpy(dest + got, staging_.data() + plain_pos_, n);
+                plain_pos_ += n;
+                got += n;
+                continue;
+            }
+            if (eof_ || error_ || !refill()) break;
+        }
+        return got;
+    }
+
+    bool error() const { return error_; }
+    bool missing() const { return missing_; }
+    const std::filesystem::path& missing_path() const { return missing_path_; }
+
+private:
+    bool refill() {
+        for (;;) {
+            if (ext_idx_ >= exts_.size()) {
+                stream_.close();
+                eof_ = true;
+                return false;
+            }
+            if (!stream_.is_open()) {
+                const auto& ext = exts_[ext_idx_];
+                if (!stream_.open(ext.volume_path, io::FileMode::ReadOnly)) {
+                    error_ = missing_ = true;
+                    missing_path_ = ext.volume_path;
+                    return false;
+                }
+                ext_remain_ = ext.size;
+                if (!stream_.seek(static_cast<core::int64>(ext.offset), io::SeekOrigin::Begin)) {
+                    error_ = true;
+                    return false;
+                }
+            }
+            const size_t take =
+                static_cast<size_t>(std::min<core::uint64>(ext_remain_, staging_.size()));
+            if (take == 0) {
+                stream_.close();
+                ++ext_idx_;
+                continue;
+            }
+            if (stream_.read(staging_.data(), take) != take) {
+                error_ = true;
+                return false;
+            }
+            size_t plain = take;
+            if (keys_) {
+                // Encrypted payload length is a multiple of the AES block
+                // size and 64 KiB slices keep every boundary aligned, so a
+                // short tail cannot occur in a well-formed archive.
+                // decrypt_cbc leaves the slice's last ciphertext block in
+                // iv_ — exactly the next slice's IV.
+                plain = take - (take % 16);
+                if (plain != take) {
+                    error_ = true;
+                    return false;
+                }
+                crypto::Aes256 aes(keys_->aes_key);
+                aes.decrypt_cbc(staging_.data(), plain, iv_);
+            }
+            plain_len_ = plain;
+            plain_pos_ = 0;
+            ext_remain_ -= take;
+            return true;
+        }
+    }
+
+    std::vector<VolumeExtent> exts_;
+    size_t ext_idx_{0};
+    io::FileStream stream_;
+    core::uint64 ext_remain_{0};
+    const crypto::Rar5Keys* keys_;
+    core::byte iv_[16]{};
+    std::vector<core::byte> staging_;
+    size_t plain_pos_{0};
+    size_t plain_len_{0};
+    bool eof_{false};
+    bool error_{false};
+    bool missing_{false};
+    std::filesystem::path missing_path_;
+};
+} // namespace
+
+int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
+                                  const std::function<bool(const core::byte*, size_t)>& out_sink,
+                                  SinkStatus& status, const ReaderHooks& hooks) {
+    const ArchiveEntry& entry = entries_[idx];
+    const uint64_t total = entry.header.unp_size;
+
+    // Hash selection mirrors test_entry: a present BLAKE2sp record is
+    // authoritative; the header CRC32 beside it is not evaluated.
+    const bool use_blake = entry.header.has_blake2sp;
+    const bool use_crc = !use_blake && entry.header.has_crc32;
+    crypto::Blake2sp b2;
+    crypto::Crc32 crc;
+    uint64_t produced = 0;
+
+    auto core_sink = [&](const core::byte* p, size_t n) -> bool {
+        if (hooks.cancelled()) {
+            status.aborted = true;
+            return false;
+        }
+        if (use_blake) b2.update(p, n);
+        if (use_crc) crc.update(p, n);
+        if (!out_sink(p, n)) return false;
+        produced += n;
+        hooks.emit(produced, total);
+        return true;
+    };
+
+    int rc = RAR_OK;
+    if (entry.header.method == 0) {
+        // Stored: stream extents in 64 KiB chunks, decrypting in place.
+        std::vector<VolumeExtent> exts;
+        if (entry.extents.empty())
+            exts.push_back({path_, entry.data_offset, entry.data_size});
+        else
+            exts = entry.extents;
+        core::byte iv[16];
+        std::unique_ptr<crypto::Aes256> aes;
+        if (keys) {
+            std::memcpy(iv, entry.header.init_v.data(), 16);
+            aes = std::make_unique<crypto::Aes256>(keys->aes_key);
+        }
+        std::vector<core::byte> buf(kStreamChunk);
+        for (const auto& ext : exts) {
+            io::FileStream vs;
+            if (!vs.open(ext.volume_path, io::FileMode::ReadOnly)) {
+                missing_volume_path_ = ext.volume_path;
+                return RAR_ERR_MISSING_VOLUME;
+            }
+            if (!vs.seek(static_cast<core::int64>(ext.offset), io::SeekOrigin::Begin))
+                return RAR_ERR_IO;
+            core::uint64 remain = ext.size;
+            while (remain > 0) {
+                const size_t take =
+                    static_cast<size_t>(std::min<core::uint64>(remain, buf.size()));
+                if (hooks.cancelled()) {
+                    status.aborted = true;
+                    return RAR_ERR_ABORTED;
+                }
+                if (vs.read(buf.data(), take) != take) return RAR_ERR_TRUNCATED;
+                if (aes) {
+                    // Payload length is a multiple of the AES block size and
+                    // 64 KiB slices keep every boundary aligned; a short tail
+                    // means a corrupt set, not decryptable data.
+                    if (take % 16 != 0) return RAR_ERR_TRUNCATED;
+                    aes->decrypt_cbc(buf.data(), take, iv);
+                }
+                // Encrypted payloads are block-padded: the final slice may
+                // decrypt past unp_size — emit only the real bytes (mirrors
+                // extract_store_entry's write_len cap).
+                size_t emit = take;
+                if (aes && produced + emit > total) emit = static_cast<size_t>(total - produced);
+                if (!core_sink(buf.data(), emit)) {
+                    return status.aborted ? RAR_ERR_ABORTED : RAR_ERR_IO;
+                }
+                remain -= take;
+            }
+        }
+    } else {
+        ExtentPullSource src(entry, path_, keys);
+        bool ok = decode_compressed(
+            entry,
+            [&src](core::byte* buf, size_t want) -> size_t { return src.pull(buf, want); },
+            static_cast<size_t>(entry.data_size), core_sink);
+        if (!ok) {
+            if (status.aborted)
+                rc = RAR_ERR_ABORTED;
+            else if (status.failed)
+                rc = RAR_ERR_IO;
+            else if (src.missing()) {
+                missing_volume_path_ = src.missing_path();
+                rc = RAR_ERR_MISSING_VOLUME;
+            } else if (src.error())
+                rc = RAR_ERR_IO;
+            else
+                rc = RAR_ERR_TRUNCATED;
+        }
+    }
+    if (rc != RAR_OK) return rc;
+    if (status.aborted) return RAR_ERR_ABORTED;
+    if (status.failed) return RAR_ERR_IO;
+    if (produced != total) return RAR_ERR_TRUNCATED;
+
+    if (use_blake) {
+        core::byte digest[32];
+        b2.finish(digest);
+        if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0)
+            return RAR_ERR_CRC_MISMATCH;
+    }
+    if (use_crc && crc.get() != entry.header.data_crc32) return RAR_ERR_CRC_MISMATCH;
+
+    // The shared window state now reflects this entry (docs/invariants.md §1).
+    if (is_solid() || entry.header.is_solid) last_decoded_index_ = static_cast<long long>(idx);
+    return RAR_OK;
+}
+
+int ArchiveReader::extract_entry_stream(size_t entry_index, io::FileStream& out,
+                                        const ReaderHooks& hooks) {
+    bad_password_ = false;
+    if (entry_index >= entries_.size()) return RAR_ERR_INVALID_ARG;
+    const ArchiveEntry& entry = entries_[entry_index];
+
+    crypto::Rar5Keys keys{};
+    int rc = derive_entry_keys(entry, keys);
+    if (rc == RAR_OK) rc = ensure_solid_position(entry_index, hooks);
+    if (rc != RAR_OK) {
+        secure_zero(&keys, sizeof(keys));
+        return rc;
+    }
+
+    const uint64_t total = entry.header.unp_size;
+    if (total > 0) hooks.emit(0, total);
+
+    SinkStatus st;
+    rc = stream_payload(entry_index, entry.header.is_encrypted ? &keys : nullptr,
+                        [&](const core::byte* p, size_t n) -> bool {
+                            return out.write(p, n) == n;
+                        },
+                        st, hooks);
+    secure_zero(&keys, sizeof(keys));
+    if (rc == RAR_OK && total == 0) hooks.emit(0, 0);
+    return rc;
+}
+
+int ArchiveReader::extract_entry_to_memory(size_t entry_index, std::vector<core::byte>& out,
+                                           uint64_t max_bytes, const ReaderHooks& hooks) {
+    bad_password_ = false;
+    if (entry_index >= entries_.size()) return RAR_ERR_INVALID_ARG;
+    const ArchiveEntry& entry = entries_[entry_index];
+    if (entry.header.unp_size > max_bytes) return RAR_ERR_NOMEM;
+
+    crypto::Rar5Keys keys{};
+    int rc = derive_entry_keys(entry, keys);
+    if (rc == RAR_OK) rc = ensure_solid_position(entry_index, hooks);
+    if (rc != RAR_OK) {
+        secure_zero(&keys, sizeof(keys));
+        return rc;
+    }
+
+    const uint64_t total = entry.header.unp_size;
+    if (total > 0) hooks.emit(0, total);
+
+    SinkStatus st;
+    rc = stream_payload(entry_index, entry.header.is_encrypted ? &keys : nullptr,
+                        [&](const core::byte* p, size_t n) -> bool {
+                            out.insert(out.end(), p, p + n);
+                            return true;
+                        },
+                        st, hooks);
+    secure_zero(&keys, sizeof(keys));
+    if (rc == RAR_OK && total == 0) hooks.emit(0, 0);
+    return rc;
+}
+
+int ArchiveReader::test_entry_stream(size_t entry_index, const ReaderHooks& hooks) {
+    bad_password_ = false;
+    if (entry_index >= entries_.size()) return RAR_ERR_INVALID_ARG;
+    const ArchiveEntry& entry = entries_[entry_index];
+    // Directory and link entries carry no verifiable payload (and links must
+    // not be followed — the target may not exist yet).
+    if ((entry.header.file_flags & format::FHFL_DIRECTORY) || entry.header.redir_type != 0)
+        return RAR_OK;
+
+    crypto::Rar5Keys keys{};
+    int rc = derive_entry_keys(entry, keys);
+    if (rc == RAR_OK) rc = ensure_solid_position(entry_index, hooks);
+    if (rc != RAR_OK) {
+        secure_zero(&keys, sizeof(keys));
+        return rc;
+    }
+
+    SinkStatus st;
+    rc = stream_payload(entry_index, entry.header.is_encrypted ? &keys : nullptr,
+                        [](const core::byte*, size_t) { return true; }, st, hooks);
+    secure_zero(&keys, sizeof(keys));
+    if (rc == RAR_OK && entry.header.unp_size == 0) hooks.emit(0, 0);
+    return rc;
+}
+
 
 bool ArchiveReader::read_packed_data(const ArchiveEntry& entry,
                                      std::vector<core::byte>& out) const {

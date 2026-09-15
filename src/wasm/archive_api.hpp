@@ -43,6 +43,7 @@ using openrar::api::RAR_ERR_ABORTED;
 using openrar::api::RAR_ERR_BAD_PASSWORD;
 using openrar::api::RAR_ERR_CRC_MISMATCH;
 using openrar::api::RAR_ERR_ENCRYPTED;
+using openrar::api::RAR_ERR_MISSING_VOLUME;
 using openrar::api::RAR_ERR_INVALID_ARG;
 using openrar::api::RAR_ERR_IO;
 using openrar::api::RAR_ERR_NOMEM;

@@ -57,9 +57,16 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_version(void);
 // Bit flags for openrar_abi_features(). Hosts must not assume an export
 // exists before the corresponding bit is set (or the symbol resolves via
 // GetProcAddress / dlsym).
+// Feature-bit registry (assigned only when the gated exports ship):
+//   bit 0  LIST_PROGRESS          list_file_ex / list_ex            (v1.1.0)
+//   bit 1  LIST_PASSWORD          list_file_pw                      (v1.2.0)
+//   bit 2  HANDLE_OPEN_PROGRESS   archive_open_ex                   (v1.2.0)
+//   bit 3  FILE_HANDLE            open_file / handle_extract_to_path /
+//                                 handle_test                       (v1.3.0)
 #define OPENRAR_ABI_FEATURE_LIST_PROGRESS (1ull << 0)        // list_file_ex / list_ex below
 #define OPENRAR_ABI_FEATURE_LIST_PASSWORD (1ull << 1)        // list_file_pw below
 #define OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS (1ull << 2) // archive_open_ex below
+#define OPENRAR_ABI_FEATURE_FILE_HANDLE (1ull << 3)          // file-mode handles below
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -86,7 +93,12 @@ enum RarError {
     // before any header can be read. Returned only by the _ex listing exports
     // below, as soon as the block is reached; the non-_ex listing calls keep
     // their historical RAR_ERR_UNSUPPORTED_FEATURE for the same condition.
-    RAR_ERR_ENCRYPTED = -12
+    RAR_ERR_ENCRYPTED = -12,
+    // A volume of a multi-volume set (.partNN.rar) is missing. Returned by the
+    // file-mode handle exports (open_file when the first volume cannot be
+    // located, extraction/test when a split entry's extent volume is absent);
+    // openrar_archive_get_error carries the missing volume's path.
+    RAR_ERR_MISSING_VOLUME = -13
 };
 
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_last_error(char* buf, int buf_len);
@@ -269,6 +281,111 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL
 openrar_archive_list_file_pw(const char* arc_path, const char* password, uint32_t* count,
                              void** entries_out, void** paths_out, size_t* paths_size_out,
                              openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
+
+// ── File-mode handles (open by path; additive) ───────────────────────────────
+// A scan-once handle over an archive on disk, backed by the streaming reader:
+// the file stays open for the handle's lifetime, headers are walked exactly
+// once at open, and per-entry extraction/test reuse the cached walk. This is
+// the surface for multi-GB archives, solid sets and encrypted payloads — the
+// in-memory handle API above remains the buffer MVP (encrypted/solid/
+// multi-volume archives are rejected there and only listed here).
+//
+// The existing handle exports dispatch on the handle kind:
+//   openrar_archive_handle_list    — packs the cached walk (file entries only;
+//                                    service headers such as CMT/RR are not
+//                                    exposed as entries, unlike the frozen
+//                                    buffer listing which has always surfaced
+//                                    them in comment/recovery archives)
+//   openrar_archive_handle_extract — entry to a heap buffer (preview path).
+//       On file-backed handles ONLY this is capped at
+//       OPENRAR_MAX_HEAP_EXTRACT_SIZE (256 MiB) of uncompressed output; larger
+//       entries return RAR_ERR_NOMEM — hosts should check entry.size and use
+//       openrar_archive_handle_extract_to_path for large entries. Buffer
+//       handles keep their historical uncapped behavior. This export has no
+//       cancel callback (frozen ABI), so on file handles solid catch-up runs
+//       uncancellably to completion; hosts that need cancellation during
+//       solid decompression must use openrar_archive_handle_extract_to_path.
+//   openrar_archive_handle_extract_all — RAR_ERR_UNSUPPORTED_FEATURE on file
+//       handles (slurping a multi-GB archive into one flat buffer is
+//       prohibited); extract per entry instead.
+//   openrar_archive_close          — closes the reader and the file. The host
+//       must close all handles on a set before renaming/deleting any volume.
+
+// In-memory extract cap for file-backed handles (openrar_archive_handle_extract).
+#define OPENRAR_MAX_HEAP_EXTRACT_SIZE (256ull * 1024 * 1024)
+
+// Scan-once open of an archive on disk; returns a handle or 0 (detail via
+// openrar_archive_get_error). password_utf8 is required up front for
+// header-encrypted (-hp) archives — headers are unreadable without it — and
+// is silently ignored on archives without header encryption; file-data
+// passwords (-p) are verified lazily at extract/test time. Progress/cancel
+// cover the open-time scan with byte semantics like open_ex (done = archive
+// bytes consumed across the volume set, total = bytes of the volumes opened
+// so far; cumulative, monotonic, exactly one final (total, total) on
+// success). Either callback may be NULL. A cancelled scan returns 0 with an
+// "open aborted" detail. On Windows the file is opened with FILE_SHARE_READ
+// (write sharing denied): concurrent handles on the same path are fine, an
+// external writer is not. Multi-volume sets: if a middle volume
+// (.partNN.rar, NN > 01) is passed, the first volume is derived and used
+// instead; when it cannot be found or opened the call fails with the detail
+// "cannot open first volume: <path>". A missing middle volume fails the open
+// with a "missing volume: <path>" detail. Wrong password on a -hp archive
+// fails with a "wrong password for encrypted headers" detail; header-
+// encrypted archives with no password fail with an "archive headers are
+// encrypted" detail (prompt, then re-open with the password — one cheap
+// header walk).
+OPENRAR_DLL_API uint32_t OPENRAR_DLL_CALL
+openrar_archive_open_file(const char* arc_path, const char* password_utf8,
+                          openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
+
+// Extract one entry directly to disk with byte progress + cancel (the
+// file-mode handle's main extraction path; the same-name operation on a
+// buffer handle extracts in memory and writes the result — both kinds own
+// the same durability contract).
+//
+// Progress: (done, total) = (uncompressed bytes produced, entry.size).
+// Cumulative, monotonic, exactly one final (total, total) callback on
+// success; no final callback on abort or failure. Cancel is polled per
+// output chunk (dictionary-window granularity for compressed entries,
+// <= 64 KiB for stored ones) and during solid catch-up. Directory entries
+// create the directory and fire exactly one final (0, 0) callback on success.
+// Entries may be requested in any order; a solid entry whose predecessors in
+// the solid run were not decoded on this handle transparently decodes the
+// run prefix first (progress stays at (0, entry.size) during catch-up, so
+// hosts should extract in ascending index order for best performance).
+//
+// Durability: the DLL writes dest_path + ".openrar-tmp.<pid>.<seq>"
+// (CREATE_NEW; up to 10 name collisions retried), flushes it to disk, and
+// atomically renames over dest_path on success. On abort/failure the temp is
+// deleted and dest_path is untouched. dest_path resolving to the archive
+// itself (or any volume of its set) fails with RAR_ERR_INVALID_ARG. Orphaned
+// ".openrar-tmp.*" files from killed processes can be swept by hosts.
+//
+// Errors: RAR_ERR_BAD_PASSWORD on PswCheck mismatch (never CRC_MISMATCH for a
+// wrong password; headers without a PswCheck record can only surface wrong
+// passwords as decode/CRC failures), RAR_ERR_ENCRYPTED when an encrypted
+// entry is extracted with no password supplied, RAR_ERR_CRC_MISMATCH on
+// genuine checksum failure, RAR_ERR_TRUNCATED when the packed stream ends
+// early, RAR_ERR_ABORTED on cancel, RAR_ERR_MISSING_VOLUME when an extent
+// volume is absent (path in the error detail), RAR_ERR_IO on write failure.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_extract_to_path(
+    uint32_t handle, uint32_t entry_index, const char* dest_path,
+    openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
+
+// Streaming integrity test: verifies CRC32 (or BLAKE2sp when present)
+// without retaining decompressed output — fixed, small memory footprint
+// (dictionary window + slice buffers, independent of entry size; stored
+// entries stream in 64 KiB chunks). Encrypted entries are verified through
+// chunked AES-256-CBC decrypt + PswCheck/MAC with the password supplied at
+// open_file. Directory and link entries verify trivially (RAR_OK, no
+// callbacks). Progress/cancel follow the extract_to_path contract above.
+// RAR_OK on verify; RAR_ERR_CRC_MISMATCH on checksum failure;
+// RAR_ERR_TRUNCATED on a short decode; RAR_ERR_BAD_PASSWORD /
+// RAR_ERR_ENCRYPTED as above; RAR_ERR_ABORTED on cancel. Buffer handles
+// return RAR_ERR_UNSUPPORTED_FEATURE (no streaming test exists there).
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_handle_test(uint32_t handle, uint32_t entry_index,
+                            openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
 
 #ifdef __cplusplus
 } // extern "C"

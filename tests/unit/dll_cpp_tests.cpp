@@ -124,6 +124,42 @@ static void test_cpp_wrapper_password_and_open() {
     std::cout << "PASS test_cpp_wrapper_password_and_open\n";
 }
 
+// ── File-mode handle wrapper (open_file / extract_to_path / test) ────────────
+static void test_cpp_wrapper_file_handle() {
+    using namespace openrar;
+    const std::filesystem::path fixtures =
+        std::filesystem::path(OPENRAR_SOURCE_DIR) / "tests";
+    auto scratch = fixtures / "wrapper_file_handle_scratch";
+    std::filesystem::create_directories(scratch);
+
+    // Plain fixture: open by path, extract to disk, test.
+    ArchiveHandle h(fixtures / "hello5.rar");
+    auto entries = h.list();
+    assert(!entries.empty());
+    h.test(0);
+    auto dest = scratch / "hello_out.txt";
+    h.extract_to_path(0, dest);
+    assert(std::filesystem::file_size(dest) == entries[0].size);
+
+    // -hp fixture: no password fails with the ENCRYPTED code, password opens.
+    bool threw_encrypted = false;
+    try {
+        ArchiveHandle bad(fixtures / "hello5_hp.rar", nullptr);
+    } catch (const std::runtime_error& ex) {
+        threw_encrypted = std::string(ex.what()).find("encrypted") != std::string::npos;
+    }
+    assert(threw_encrypted);
+    ArchiveHandle hp(fixtures / "hello5_hp.rar", "secret");
+    hp.test(0);
+    auto dest2 = scratch / "hello_hp_out.txt";
+    hp.extract_to_path(0, dest2);
+    assert(std::filesystem::file_size(dest2) > 0);
+
+    std::error_code ec;
+    std::filesystem::remove_all(scratch, ec);
+    std::cout << "PASS test_cpp_wrapper_file_handle" << std::endl;
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -135,6 +171,7 @@ int main() {
     test_cpp_wrapper();
     test_cpp_wrapper_list_callbacks();
     test_cpp_wrapper_password_and_open();
+    test_cpp_wrapper_file_handle();
     std::cout << "ALL CPP WRAPPER TESTS PASSED\n";
     return 0;
 }
