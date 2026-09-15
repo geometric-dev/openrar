@@ -63,10 +63,13 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_version(void);
 //   bit 2  HANDLE_OPEN_PROGRESS   archive_open_ex                   (v1.2.0)
 //   bit 3  FILE_HANDLE            open_file / handle_extract_to_path /
 //                                 handle_test                       (v1.3.0)
+//   bit 4  MUTATION               archive_delete_entries_file /
+//                                 archive_add_files_file            (v1.4.0)
 #define OPENRAR_ABI_FEATURE_LIST_PROGRESS (1ull << 0)        // list_file_ex / list_ex below
 #define OPENRAR_ABI_FEATURE_LIST_PASSWORD (1ull << 1)        // list_file_pw below
 #define OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS (1ull << 2) // archive_open_ex below
 #define OPENRAR_ABI_FEATURE_FILE_HANDLE (1ull << 3)          // file-mode handles below
+#define OPENRAR_ABI_FEATURE_MUTATION (1ull << 4)             // mutation exports below
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -98,7 +101,13 @@ enum RarError {
     // file-mode handle exports (open_file when the first volume cannot be
     // located, extraction/test when a split entry's extent volume is absent);
     // openrar_archive_get_error carries the missing volume's path.
-    RAR_ERR_MISSING_VOLUME = -13
+    RAR_ERR_MISSING_VOLUME = -13,
+    // The target archive is currently held open by a file-mode handle in this
+    // process (open_file keeps the volume open with FILE_SHARE_READ, so the
+    // mutator's atomic replace would fail opaquely on Windows). Returned up
+    // front by the mutation exports below, before any temp file exists;
+    // close every handle on the archive, then retry.
+    RAR_ERR_BUSY = -14
 };
 
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_last_error(char* buf, int buf_len);
@@ -386,6 +395,85 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_extract_to_path(
 OPENRAR_DLL_API int OPENRAR_DLL_CALL
 openrar_archive_handle_test(uint32_t handle, uint32_t entry_index,
                             openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
+
+// ── Archive mutation (free functions; additive) ─────────────────────────────
+// Atomic write-path operations over an existing archive on disk, backed by
+// the same engine the CLI uses: the rewrite lands in a temp file in the
+// archive's directory, is flushed to disk, and atomically replaces the
+// original — the archive on disk is untouched on any failure. Deliberately
+// NOT handle methods: a mutation rewrites the archive and invalidates every
+// cached walk, so these are free functions and hosts re-open afterwards.
+//
+// Index space (delete): indices refer to the FILE-HANDLE LISTING ORDER — the
+// sequence openrar_archive_handle_list reports on an open_file handle: file
+// entries only, service headers (CMT/RR/QO) never exposed. The frozen
+// one-shot list_file* walk surfaces comment/recovery service blocks as
+// entries, so on archives carrying those it is NOT the same index space.
+// The DLL translates each index to the entry's header offset with its own
+// strict reader and deletes by that identity — never by name, so entry
+// names containing '*' or '?' are safe. Indices shift after every
+// mutation; re-list.
+//
+// Handle collision: before touching the archive, both exports check every
+// open file-mode handle in this process — if any holds the target (or a
+// volume of its set) open, the call fails up front with RAR_ERR_BUSY (-14)
+// instead of a sharing violation mid-rename. Cross-process writers are
+// outside this check: a file mutated under an open handle makes that
+// handle's reads fail with RAR_ERR_IO — close and re-open.
+
+// Delete entries by index. count must be > 0 and every index < the
+// handle-listing entry count (out of range: RAR_ERR_INVALID_ARG, detail
+// "entry index N out of range (archive has M entries)").
+//
+// Solid archives allow suffix-shaped deletes only (docs/invariants.md §1):
+// deleting a member of a solid run while any later member of that run is
+// retained would silently corrupt the LZ chain and fails with
+// RAR_ERR_UNSUPPORTED_FEATURE — detail "cannot delete head of solid block
+// without recompressing chain" for a run head, "cannot delete entries from
+// solid archive without recompressing chain" for a mid-run member.
+// Untouched runs, tail (suffix) deletions and whole-run deletions are
+// allowed, and the archive stays loadable after every refusal.
+//
+// Refused up front with RAR_ERR_UNSUPPORTED_FEATURE: locked archives
+// (MHFL_LOCK), multi-volume sets (MHFL_VOLUME) and header-encrypted (-hp)
+// archives (detail "mutating header-encrypted archive requires password" —
+// the mutation surface takes no password). The archive comment (CMT) is
+// preserved; QuickOpen locators are stripped; a recovery record (RR) is
+// copied verbatim and NOT recomputed — treat it as absent after a
+// mutation. RAR_ERR_IO when arc_path cannot be read or rewritten.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_delete_entries_file(const char* arc_path, const uint32_t* entry_indices,
+                                    uint32_t count);
+
+// Batch add/replace with 'u' semantics: incoming entries are appended at
+// the end in src_paths order, and every existing entry whose name equals an
+// incoming arc_name is replaced by it — byte-exact UTF-8 compare after
+// normalizing '\' to '/' in arc_names, with ALL prior instances of the name
+// stripped. method ∈ {0,3,5}; window_log2 ∈ [1,4] (create parity; ignored
+// by method 0). A src_path that names a directory becomes a directory
+// record (non-recursive — enumerate contents yourself; empty directories
+// are preserved). Added files are written unencrypted: password /
+// encrypt_headers parameters are deliberately not exposed yet.
+//
+// Replacing an entry that belongs to a solid block — including its head —
+// is rejected with RAR_ERR_UNSUPPORTED_FEATURE ("cannot replace entry in
+// solid archive without recompressing chain"); replace the tail of a run
+// via delete + add instead (this asymmetry is intentional: replacement
+// strips historical entries by name, deletion verifies index boundaries).
+// Adding NEW names to a solid archive continues its stream. The existing
+// archive comment (CMT) is kept; QuickOpen locators are stripped.
+//
+// Errors: RAR_ERR_INVALID_ARG (null arc_path/src_paths/arc_names,
+// file_count == 0, method ∉ {0,3,5}, window_log2 ∉ [1,4]); RAR_ERR_IO
+// (arc_path or a src_path missing/unreadable, write failure); RAR_ERR_BUSY
+// (open file-mode handle on the archive); RAR_ERR_UNSUPPORTED_FEATURE
+// (locked, multi-volume, header-encrypted, or solid replacement as above).
+// Atomic like delete: the archive on disk is replaced only after every
+// file in the batch has been written.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_add_files_file(const char* arc_path, const char* const* src_paths,
+                               const char* const* arc_names, uint32_t file_count, int method,
+                               uint32_t window_log2);
 
 #ifdef __cplusplus
 } // extern "C"

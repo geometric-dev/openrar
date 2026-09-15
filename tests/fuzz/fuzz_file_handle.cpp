@@ -181,6 +181,36 @@ int one_input(const uint8_t* data, size_t size) {
         }
     }
 
+    // Mutation leg (v1.4.0): the delete/add exports face arbitrary bytes.
+    // Everything must be crash-free with any result code; a successful
+    // mutation must leave a loadable archive (the re-open below parses the
+    // rewrite, covering the header-offset rewrite path against garbage).
+    if (size > 8) {
+        const uint32_t del_idx[2] = {0u, static_cast<uint32_t>(data[4])};
+        openrar_archive_delete_entries_file(primary.u8string().c_str(), del_idx, 2);
+        const fs::path add_src = dir / "fuzz_add.bin";
+        write_file(add_src, data, size / 2);
+        const std::string add_src_u8 = add_src.u8string();
+        const char* srcs[1] = {add_src_u8.c_str()};
+        const char* names[1] = {"fuzz.bin"};
+        const int method = static_cast<int>(data[5] % 6u); // includes invalid → must refuse
+        openrar_archive_add_files_file(primary.u8string().c_str(), srcs, names, 1, method,
+                                       static_cast<uint32_t>(data[6] % 6u));
+        uint32_t h3 = openrar_archive_open_file(primary.u8string().c_str(), password, nullptr,
+                                                nullptr, nullptr);
+        if (h3 != 0) {
+            uint32_t count = 0;
+            void* entries = nullptr;
+            void* paths = nullptr;
+            size_t paths_size = 0;
+            if (openrar_archive_handle_list(h3, &count, &entries, &paths, &paths_size) ==
+                RAR_OK) {
+                openrar_archive_list_free(entries, paths, paths_size);
+            }
+            openrar_archive_close(h3);
+        }
+    }
+
     fs::remove_all(dir, ec);
     return 0;
 }

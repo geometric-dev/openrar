@@ -263,6 +263,63 @@ inline std::vector<uint8_t> create_archive(const std::vector<InputFile>& files,
     return ret;
 }
 
+// ── Archive mutation (v1.4.0; atomic write-path over an existing archive) ───
+// Free functions over the same engine the CLI uses (temp + flush + atomic
+// replace; the original is untouched on any failure). Deliberately not
+// ArchiveHandle methods: a mutation rewrites the archive and invalidates
+// every cached walk, so re-open afterwards (indices shift, handles go
+// stale). Both refuse to run while a file-mode ArchiveHandle still holds
+// the archive open (RAR_ERR_BUSY) — close it first.
+
+// Delete entries by index. Indices are in the FILE-HANDLE LISTING ORDER —
+// the sequence ArchiveHandle::list() reports on a file-mode archive (file
+// entries only; service headers like CMT/RR are never exposed). Deleting a
+// member of a solid run while a later member is retained throws
+// UNSUPPORTED_FEATURE (suffix-only delete).
+inline void delete_entries(const std::filesystem::path& arc,
+                           const std::vector<uint32_t>& indices) {
+    std::string u8 = arc.u8string();
+    int rc = openrar_archive_delete_entries_file(u8.c_str(), indices.data(),
+                                                 static_cast<uint32_t>(indices.size()));
+    check(rc);
+}
+
+// Batch add/replace with 'u' semantics: every existing entry whose name
+// equals an incoming archive name is replaced by it. files pairs a source
+// path on disk with the archive name it should get ('/' separators;
+// '\' is normalized). Directory sources become directory records
+// (non-recursive). Added files are written unencrypted.
+struct AddOptions {
+    int method{3};
+    uint32_t window_log2{4};
+};
+
+inline void add_files(const std::filesystem::path& arc,
+                      const std::vector<std::pair<std::filesystem::path, std::string>>& files,
+                      AddOptions opts = {}) {
+    std::vector<std::string> srcs;
+    std::vector<std::string> names;
+    srcs.reserve(files.size());
+    names.reserve(files.size());
+    for (const auto& f : files) {
+        srcs.push_back(f.first.u8string());
+        names.push_back(f.second);
+    }
+    std::vector<const char*> src_ptrs;
+    std::vector<const char*> name_ptrs;
+    src_ptrs.reserve(files.size());
+    name_ptrs.reserve(files.size());
+    for (size_t i = 0; i < files.size(); ++i) {
+        src_ptrs.push_back(srcs[i].c_str());
+        name_ptrs.push_back(names[i].c_str());
+    }
+    std::string u8 = arc.u8string();
+    int rc = openrar_archive_add_files_file(u8.c_str(), src_ptrs.data(), name_ptrs.data(),
+                                            static_cast<uint32_t>(files.size()), opts.method,
+                                            opts.window_log2);
+    check(rc);
+}
+
 // Archive handle RAII
 class ArchiveHandle {
 public:

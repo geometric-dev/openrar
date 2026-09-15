@@ -41,6 +41,7 @@ constexpr int ARCHIVE_WASM_API_VERSION = 2;
 using RarError = openrar::api::RarError;
 using openrar::api::RAR_ERR_ABORTED;
 using openrar::api::RAR_ERR_BAD_PASSWORD;
+using openrar::api::RAR_ERR_BUSY;
 using openrar::api::RAR_ERR_CRC_MISMATCH;
 using openrar::api::RAR_ERR_ENCRYPTED;
 using openrar::api::RAR_ERR_MISSING_VOLUME;

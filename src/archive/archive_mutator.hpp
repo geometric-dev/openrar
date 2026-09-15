@@ -24,6 +24,19 @@ public:
     static bool delete_entries(const std::filesystem::path& arc_path,
                                const std::vector<std::string>& masks);
 
+    // Delete entries by identity: `header_offsets` are header_offset values
+    // from a fresh ArchiveReader walk of arc_path (the DLL mutation surface
+    // translates its listing indices up front, so matching can never break
+    // on names containing '*'/'?' the way mask translation would). Refuses
+    // locked and multi-volume archives and header-encrypted archives (this
+    // surface takes no password), and — per docs/invariants.md §1 — any
+    // deletion that would orphan a retained solid entry (suffix-only
+    // delete). Returns RAR_OK or a RAR_ERR_* code with detail_out set; the
+    // archive on disk is untouched unless RAR_OK.
+    static int delete_entries_by_index(const std::filesystem::path& arc_path,
+                                       const std::vector<core::uint64>& header_offsets,
+                                       std::string& detail_out);
+
     // Lock archive against further modifications (command 'k')
     static bool lock_archive(const std::filesystem::path& arc_path);
 
@@ -71,10 +84,15 @@ public:
     // one file into `out`. method may be downgraded to 0 (store) exactly like
     // the single-file path does. On success out.entry_name == arc_entry_name.
     // times_mask selects the FHEXTRA_HTIME records (default: mtime only).
+    // window_log2 selects the dictionary window for compressed methods
+    // (1..4 → 128 KiB..1 MiB, create parity); 0 keeps the historical 2 MiB
+    // CLI default. Ignored for stored entries. The value is written into the
+    // header's win_size and must match the compressor's dictionary.
     static bool prepare_add_file(const std::filesystem::path& src_file,
                                  const std::string& arc_entry_name, int method,
                                  const std::string& password, PreparedAdd& out,
-                                 core::uint32 times_mask = time_flags::MTIME);
+                                 core::uint32 times_mask = time_flags::MTIME,
+                                 core::uint32 window_log2 = 0);
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,
     // no data area) carrying the directory's timestamps. Encryption does not
@@ -100,6 +118,21 @@ public:
                     const std::string& password = "", bool encrypt_headers = false,
                     const std::function<void(size_t, const std::string&)>& on_write = {},
                     bool solid = false, const std::vector<core::byte>& comment = {});
+
+    // Status-code variant of write_batch_add (open_ex pattern: the bool
+    // overload above delegates here and drops the detail). Same atomicity
+    // and 'u' semantics, plus the mutation guards of docs/invariants.md §1:
+    // replacing any member of a solid block — a solid entry, or the head of
+    // a run that still has retained solid members — is refused with
+    // RAR_ERR_UNSUPPORTED_FEATURE ("cannot replace entry in solid archive
+    // without recompressing chain"). Refuses locked and multi-volume
+    // archives the same way. detail_out is set for every non-OK return.
+    static int
+    write_batch_add_ex(const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
+                       const std::filesystem::path& sfx_stub_path, const std::string& password,
+                       bool encrypt_headers,
+                       const std::function<void(size_t, const std::string&)>& on_write, bool solid,
+                       const std::vector<core::byte>& comment, std::string& detail_out);
 
     // SFX stub upper bound: the reader locates the signature behind the stub
     // by scanning at most 4 MiB (10-sfx.md:15), so a larger module would

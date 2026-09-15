@@ -77,7 +77,7 @@ if (openrar_archive_version() != 1) abort();
 
 * Adding new exports is minor; breaking `openrar_archive_entry_t` or removing an export is major (bump `SOVERSION`).
 * **Negotiating additive exports.** `OPENRAR_DLL_API_VERSION` does *not* change when exports are added (`docs/versioning.md`) — strict-equality probes keep working across versions. Detect a capability at runtime instead:
-  * `openrar_abi_features()` returns a `uint64_t` bitmask — `OPENRAR_ABI_FEATURE_LIST_PROGRESS` (0x1), `OPENRAR_ABI_FEATURE_LIST_PASSWORD` (0x2), `OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS` (0x4), `OPENRAR_ABI_FEATURE_FILE_HANDLE` (0x8) — once the DLL is loaded;
+  * `openrar_abi_features()` returns a `uint64_t` bitmask — `OPENRAR_ABI_FEATURE_LIST_PROGRESS` (0x1), `OPENRAR_ABI_FEATURE_LIST_PASSWORD` (0x2), `OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS` (0x4), `OPENRAR_ABI_FEATURE_FILE_HANDLE` (0x8), `OPENRAR_ABI_FEATURE_MUTATION` (0x10) — once the DLL is loaded;
   * or resolve the symbol directly: `GetProcAddress(hmod, "openrar_archive_list_file_ex")` / `dlsym`.
   * **Do not reference new exports through the import lib if you must keep running against older DLLs** — the process fails to *load* before any version check runs. Either resolve dynamically as above or link with `/DELAYLOAD:openrar.dll`.
 
@@ -117,7 +117,9 @@ enum RarError {
     RAR_ERR_BAD_PASSWORD = -7,
     RAR_ERR_INVALID_ARG = -9,
     RAR_ERR_ABORTED = -11,
-    RAR_ERR_ENCRYPTED = -12
+    RAR_ERR_ENCRYPTED = -12,
+    RAR_ERR_MISSING_VOLUME = -13,
+    RAR_ERR_BUSY = -14
 };
 ```
 
@@ -135,6 +137,7 @@ enum RarError {
 | `ABORTED` | `openrar_cancel_cb` returned non-zero during `feed` / `extract` / `_ex` listing / `open_ex` / file-handle extract/test |
 | `ENCRYPTED` | header-encrypted archive (`HEAD_CRYPT`) reached with no password — `_ex` and `_pw` listing; the non-`_ex` listing calls keep `UNSUPPORTED_FEATURE` for this condition |
 | `MISSING_VOLUME` | a volume of a multi-volume set required by the split flags / extent chain cannot be opened — file-handle open or extract/test (v1.3.0); path in the error detail |
+| `BUSY` | an open file-mode handle in this process holds the archive — the mutation exports (§6.12) refuse up front instead of failing on a sharing violation mid-rename (v1.4.0) |
 
 ---
 
@@ -377,6 +380,79 @@ per handle at a time; callbacks run on the calling thread with no DLL lock
 held and must not re-enter the same handle. See `docs/invariants.md` for the
 pinned engineering contracts.
 
+### 6.12 Archive mutation (v1.4.0; additive)
+
+```c
+#define OPENRAR_ABI_FEATURE_MUTATION (1ull << 4)
+
+int openrar_archive_delete_entries_file(const char* arc_path,
+                                        const uint32_t* entry_indices, uint32_t count);
+int openrar_archive_add_files_file(const char* arc_path, const char* const* src_paths,
+                                   const char* const* arc_names, uint32_t file_count,
+                                   int method, uint32_t window_log2);
+```
+
+Atomic write-path operations over an existing archive **on disk**, backed by
+the CLI's mutator engine: the rewrite lands in a temp file in the archive's
+directory, is flushed (`FlushFileBuffers` / `fsync`), and atomically replaces
+the original — the archive on disk is untouched on any failure. Both are
+deliberately free functions, not handle methods: a mutation rewrites the
+archive and invalidates every cached walk, so hosts re-open afterwards.
+Core owns durability; the DLL adds no temp/rename layer of its own.
+
+**Index space (delete).** Indices are in the **file-handle listing order** —
+the sequence `openrar_archive_handle_list` reports on an `open_file` handle:
+file entries only, service headers (CMT/RR/QO) never exposed. The frozen
+one-shot `list_file*` walk historically surfaces comment/recovery service
+blocks as entries, so on archives carrying those it is **not** the same
+index space — hosts must list via a file handle. The DLL translates each
+index to the entry's header offset with its own strict reader and deletes
+by that identity, **never by name** (entry names containing `*` / `?` must
+not break). Indices shift after every mutation; re-list. `count` must be
+`> 0`; a null `entry_indices` with `count > 0` is `RAR_ERR_INVALID_ARG`.
+
+| Condition | Result |
+|---|---|
+| Out-of-range index (`>=` handle-listing entry count) | `RAR_ERR_INVALID_ARG` — "entry index N out of range (archive has M entries)" |
+| Locked (`MHFL_LOCK`) / multi-volume (`MHFL_VOLUME`) | `RAR_ERR_UNSUPPORTED_FEATURE` |
+| Header-encrypted (`-hp`) | `RAR_ERR_UNSUPPORTED_FEATURE` — "mutating header-encrypted archive requires password" (no password parameter by design; added files are written unencrypted) |
+| Solid-run member deleted/replaced with later members retained | `RAR_ERR_UNSUPPORTED_FEATURE` — suffix-only delete (below) |
+| Open file-mode handle on the archive (this process) | `RAR_ERR_BUSY` (-14) — "archive is open in a handle; close it before mutating" |
+| Missing/unreadable archive, source missing, write failure | `RAR_ERR_IO` |
+
+**Solid archives — suffix-only delete.** Deleting any member of a solid run
+while leaving a later member of that run retained would orphan the LZ chain
+(silent corruption; `docs/invariants.md` §1) and fails with
+`RAR_ERR_UNSUPPORTED_FEATURE`. Allowed shapes per run: leave untouched,
+delete a **suffix**, delete the run **entirely**. Detail strings: "cannot
+delete head of solid block without recompressing chain" (run head) /
+"cannot delete entries from solid archive without recompressing chain"
+(mid-run member). The archive stays loadable after every refusal.
+
+**Add/replace ('u' semantics).** Incoming entries append at the end in
+`src_paths` order; every existing entry whose name equals an incoming
+`arc_name` is replaced by it — byte-exact UTF-8 compare after normalizing
+`\` to `/` in `arc_names`, with all prior instances of the name stripped.
+`method ∈ {0,3,5}`; `window_log2 ∈ [1,4]` (create parity; ignored by
+method 0). A `src_path` naming a directory becomes a directory record
+(non-recursive — callers enumerate contents themselves; empty directories
+are preserved). Replacing any member of a solid block — including its head
+— is rejected ("cannot replace entry in solid archive without recompressing
+chain"): replace the tail of a run via delete + add instead. Adding **new**
+names to a solid archive continues its stream. This asymmetry is
+intentional: replacement strips historical entries by name, deletion
+verifies index boundaries.
+
+**Shared behavior.** QuickOpen locators are stripped on both paths and the
+main header's locator flags reset; the archive comment (CMT) is preserved;
+a recovery record (RR) is copied verbatim and **not** recomputed — treat it
+as absent after a mutation. The `RAR_ERR_BUSY` pre-check compares the
+canonical target against every open file-mode handle's volume set in this
+process and fails up front, before any temp file exists; cross-process
+writers are outside the check (their mutation makes open handles fail reads
+with `RAR_ERR_IO` — hosts re-open). Concurrent handle creation during a
+mutation is a host protocol violation.
+
 ---
 
 ## 7. C++ Wrapper (`include/openrar/openrar.hpp`)
@@ -415,6 +491,18 @@ std::vector<uint8_t> extract_file(const std::vector<uint8_t>& rar, uint32_t inde
 std::map<std::string, std::vector<uint8_t>> extract_all(const std::vector<uint8_t>& rar);
 
 std::vector<uint8_t> create_archive(const std::vector<InputFile>& files, CreateOptions opts={});
+
+// Mutation (v1.4.0): atomic delete/append-replace over an archive on disk.
+// Indices are in the file-handle listing order (ArchiveHandle on a file-mode
+// archive + list()); re-open after mutating. Throws RAR_ERR_BUSY while a
+// file-mode handle holds the archive open; suffix-only delete on solid runs.
+void delete_entries(const std::filesystem::path& arc, const std::vector<uint32_t>& indices);
+struct AddOptions { int method=3; uint32_t window_log2=4; };
+// 'u' semantics: {source path on disk, archive name} pairs; directories
+// become non-recursive directory records; added files are unencrypted.
+void add_files(const std::filesystem::path& arc,
+               const std::vector<std::pair<std::filesystem::path, std::string>>& files,
+               AddOptions opts={});
 
 class ArchiveHandle { // RAII, move-only
   ArchiveHandle(const std::vector<uint8_t>& rar);
@@ -665,7 +753,7 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 
 ## 12. Deployment
 
-* **Windows:** place `openrar.dll` (or suffixed `openrar_x64.dll`/`openrar_arm64.dll`) beside `.exe` or on `PATH`. Import lib `openrar.lib` (or `openrar_x64.lib`) for link. `dumpbin /EXPORTS` lists 38 exports (the declarations in `openrar_dll.h` are the source of truth). Do not mix x64 DLL into arm64 process — OS will reject.
+* **Windows:** place `openrar.dll` (or suffixed `openrar_x64.dll`/`openrar_arm64.dll`) beside `.exe` or on `PATH`. Import lib `openrar.lib` (or `openrar_x64.lib`) for link. `dumpbin /EXPORTS` lists 43 exports (the declarations in `openrar_dll.h` are the source of truth). Do not mix x64 DLL into arm64 process — OS will reject.
 * **Linux:** `libopenrar.so` (`SOVERSION 1`) or `libopenrar_x64.so`/`libopenrar_arm64.so`, `rpath $ORIGIN` or `LD_LIBRARY_PATH`.
 * **macOS:** `libopenrar.dylib` (or universal2 via `lipo`), `install_name @rpath/libopenrar.dylib`.
 * No `SharedArrayBuffer` / `COOP/COEP` requirement (WASM-only).
@@ -683,7 +771,7 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 ## 14. Limitations (v1)
 
 * `UNSUPPORTED_FEATURE` for: encrypted entries (`FHEXTRA_CRYPT`), multivolume `MHFL_VOLUME`, solid `FCI_SOLID`, recovery `MHFL_PROTECT`, `method ∉ {0,3,5}`. The `_ex` listing exports keep these codes (§6.9); only the header-encrypted case maps to `RAR_ERR_ENCRYPTED` there. `list_file_pw` (§6.10) additionally reports encrypted file entries (`is_encrypted = 1`).
-* **Password support is listing + file-handle only**: `openrar_archive_list_file_pw` (§6.10) lists `-hp` archives, and the file-mode handles (§6.11) extract/test encrypted entries with passwords. The in-memory buffer surface and the frozen file helpers take no password by design (§6.10).
+* **Password support is listing + file-handle only**: `openrar_archive_list_file_pw` (§6.10) lists `-hp` archives, and the file-mode handles (§6.11) extract/test encrypted entries with passwords. The in-memory buffer surface and the frozen file helpers take no password by design (§6.10). The mutation exports (§6.12) take no password either — header-encrypted archives refuse mutation (`UNSUPPORTED_FEATURE`), and added files are written unencrypted.
 * The frozen file helpers (`list_file` / `extract_file` / `extract_file_to_path`) slurp the archive into RAM per call — accepted debt; use the file-mode handles (§6.11) for anything large.
 * No NTFS ACL/STM, no `FHEXTRA_HTIME` ns in the 64-byte entry (extended metadata is a planned `entry_ex` query); symlink/junction entries extract per the reader's safe-link rules on the file-handle surface.
 * `window_log2 5` (4M) only for stream; buffer `create` clamps `[1,4]`.
@@ -707,4 +795,6 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 * **1.0 (2026-09):** Initial Hybrid D — block + buffer archive + handle + file helpers + streaming + C++ wrapper. Exports 35.
 * **1.0.x (2026-09):** Additive — `openrar_archive_list_file_ex` / `openrar_archive_list_ex` (byte progress + cancel; file variant streams from disk), `openrar_abi_features` (`OPENRAR_ABI_FEATURE_LIST_PROGRESS`), `RAR_ERR_ENCRYPTED` (-12). Exports 36. `OPENRAR_DLL_API_VERSION` unchanged (§3).
 * **1.1.x (2026-09):** Additive — `openrar_archive_list_file_pw` (password listing of header-encrypted archives; encrypted file entries reported), `openrar_archive_open_ex` (progress/cancel over the open-time scan), feature bits `OPENRAR_ABI_FEATURE_LIST_PASSWORD` / `OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS`. Exports 38. `OPENRAR_DLL_API_VERSION` unchanged (§3).
+* **1.2.x (2026-09, shipped as v1.3.0):** Additive — file-mode handles (`openrar_archive_open_file`, `openrar_archive_handle_extract_to_path`, `openrar_archive_handle_test`; `OPENRAR_ABI_FEATURE_FILE_HANDLE`), `RAR_ERR_MISSING_VOLUME` (-13). Exports 41. `OPENRAR_DLL_API_VERSION` unchanged (§3).
+* **1.3.x (2026-09, shipped as v1.4.0):** Additive — mutation exports (`openrar_archive_delete_entries_file`, `openrar_archive_add_files_file`; `OPENRAR_ABI_FEATURE_MUTATION`), `RAR_ERR_BUSY` (-14). Exports 43. `OPENRAR_DLL_API_VERSION` unchanged (§3).
 
