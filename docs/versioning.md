@@ -10,7 +10,7 @@ ordering and compatibility, not what a patch number counts.
 The release version lives in `CMakeLists.txt`:
 
 ```cmake
-project(openrar VERSION 1.1.0 LANGUAGES CXX)
+project(openrar VERSION 1.2.0 LANGUAGES CXX)
 ```
 
 Everything else derives from it or is synced to it in the same release commit
@@ -22,13 +22,9 @@ PATCH is not a count of bug fixes. It is the number of commits on the default
 branch since the start of the current MAJOR.MINOR line, and every commit
 advances it by one:
 
-- Anchor for the 1.1 line: the `v1.1.0` tag. On a MINOR bump the counter
-  resets; the 1.0 line it replaced anchored at `v1.0.126`, whose counter had
-  carried over from private development — the initial public commit was
-  tagged `v1.0.121` (121 commits past the original `v1.0.0` baseline of
-  2026-08-31, which is not part of the published history) — and every commit
-  on the public repository advanced it from there.
-- Current counter: `git rev-list --count v1.1.0..HEAD`
+- Anchor for the 1.2 line: the `v1.2.0` tag. On a MINOR bump the counter
+  resets; the 1.1 line it replaced anchored at `v1.1.0`.
+- Current counter: `git rev-list --count v1.2.0..HEAD`
 - Intermediate commits do **not** touch `project(VERSION)` — the stamp is
   updated only in a release commit, which freezes the counter at that moment.
   The release commit itself documents the state up to that point and is not
@@ -63,7 +59,7 @@ soname/dll file version automatically. Embedders keep probing
 
 ## Release procedure
 
-1. Read the counter: `git rev-list --count v1.1.0..HEAD` (adjust the anchor
+1. Read the counter: `git rev-list --count v1.2.0..HEAD` (adjust the anchor
    tag for newer MAJOR.MINOR lines).
 2. Draft the new `CHANGELOG.md` section for `vX.Y.<counter>` from the commit
    range since the last release tag (highlights only).
