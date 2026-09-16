@@ -157,7 +157,10 @@ private:
 // returns a shared_ptr so callers can release the table lock before running
 // work or host callbacks — a callback that re-enters any table-taking entry
 // point, or that closes the handle concurrently, must not deadlock or use a
-// freed handle (report L12).
+// freed handle (report L12). Wrap-around id reuse could only collide with a
+// live handle after ~2^32 inserts spanning the wrap point while the original
+// handle stayed open — accepted as unreachable for the open/close lifecycle
+// (audited I3).
 template <typename T> class HandleTable {
 public:
     uint32_t insert(std::shared_ptr<T> h) {
