@@ -13,6 +13,14 @@
 #include <crtdbg.h>
 #endif
 
+// Null device for output redirection: "nul" is only a device on Windows; on
+// POSIX it would silently create a regular file named "nul" in the CWD.
+#ifdef _WIN32
+#define DEVNULL "nul"
+#else
+#define DEVNULL "/dev/null"
+#endif
+
 static std::string get_cli_path() {
     // Cross-arch runs (CI's QEMU leg) cannot exec the target binary directly
     // from the host kernel; OPENRAR_RUNNER prefixes every invocation, e.g.
@@ -48,7 +56,7 @@ static std::string get_cli_path() {
 }
 
 void test_cli_help() {
-    std::string cmd = get_cli_path() + " > nul 2>&1";
+    std::string cmd = get_cli_path() + " > " DEVNULL " 2>&1";
     int res = std::system(cmd.c_str());
     assert(res == 0);
     std::cout << "[PASS] CLI Help & Banner Output\n";
@@ -67,29 +75,29 @@ void test_cli_lifecycle() {
     std::string exe = get_cli_path();
 
     // Move file into archive
-    std::string cmd_move = exe + " m build/cli_test.rar build/cli_doc.txt > nul 2>&1";
+    std::string cmd_move = exe + " m build/cli_test.rar build/cli_doc.txt > " DEVNULL " 2>&1";
     int res_move = std::system(cmd_move.c_str());
     assert(res_move == 0);
     assert(!std::filesystem::exists(f1));
     assert(std::filesystem::exists(test_arc));
 
     // Test archive
-    std::string cmd_test = exe + " t build/cli_test.rar > nul 2>&1";
+    std::string cmd_test = exe + " t build/cli_test.rar > " DEVNULL " 2>&1";
     int res_test = std::system(cmd_test.c_str());
     assert(res_test == 0);
 
     // List archive (bare)
-    std::string cmd_lb = exe + " lb build/cli_test.rar > nul 2>&1";
+    std::string cmd_lb = exe + " lb build/cli_test.rar > " DEVNULL " 2>&1";
     int res_lb = std::system(cmd_lb.c_str());
     assert(res_lb == 0);
 
     // Lock archive
-    std::string cmd_lock = exe + " k build/cli_test.rar > nul 2>&1";
+    std::string cmd_lock = exe + " k build/cli_test.rar > " DEVNULL " 2>&1";
     int res_lock = std::system(cmd_lock.c_str());
     assert(res_lock == 0);
 
     // Attempt delete on locked archive -> should fail
-    std::string cmd_del = exe + " d build/cli_test.rar cli_doc.txt > nul 2>&1";
+    std::string cmd_del = exe + " d build/cli_test.rar cli_doc.txt > " DEVNULL " 2>&1";
     int res_del = std::system(cmd_del.c_str());
     assert(res_del != 0);
 
@@ -104,7 +112,7 @@ void test_cli_quiet_list_missing_archive_fails() {
     // NOTE: switches parse after the command in this CLI, so `-q` must follow
     // the archive argument to actually reach list_archive.
     int res =
-        std::system((get_cli_path() + " l build/cli_no_such_archive.rar -q > nul 2>&1").c_str());
+        std::system((get_cli_path() + " l build/cli_no_such_archive.rar -q > " DEVNULL " 2>&1").c_str());
     assert(res != 0);
 
     // Quiet list of a VALID archive: real exit code (0), zero output printed.
@@ -219,14 +227,14 @@ void test_cli_mt_batch_equivalence() {
     std::string src_list =
         root.string() + "/a_text.txt " + root.string() + "/sub " + root.string() + "/c_empty.txt";
     int res =
-        std::system((exe + " a " + arc1.string() + " -mt1 " + src_list + " > nul 2>&1").c_str());
+        std::system((exe + " a " + arc1.string() + " -mt1 " + src_list + " > " DEVNULL " 2>&1").c_str());
     assert(res == 0);
-    res = std::system((exe + " a " + arc4.string() + " -mt4 " + src_list + " > nul 2>&1").c_str());
+    res = std::system((exe + " a " + arc4.string() + " -mt4 " + src_list + " > " DEVNULL " 2>&1").c_str());
     assert(res == 0);
 
-    res = std::system((exe + " x " + arc1.string() + " " + out1.string() + " > nul 2>&1").c_str());
+    res = std::system((exe + " x " + arc1.string() + " " + out1.string() + " > " DEVNULL " 2>&1").c_str());
     assert(res == 0);
-    res = std::system((exe + " x " + arc4.string() + " " + out4.string() + " > nul 2>&1").c_str());
+    res = std::system((exe + " x " + arc4.string() + " " + out4.string() + " > " DEVNULL " 2>&1").c_str());
     assert(res == 0);
 
     // Compare extracted trees: same file set, same bytes.
@@ -250,10 +258,10 @@ void test_cli_mt_batch_equivalence() {
     fs::path arc_auto = "build/cli_mt0.rar";
     fs::remove(arc_auto, ec);
     res = std::system(
-        (exe + " a " + arc_auto.string() + " -mt0 " + root.string() + "/a_text.txt > nul 2>&1")
+        (exe + " a " + arc_auto.string() + " -mt0 " + root.string() + "/a_text.txt > " DEVNULL " 2>&1")
             .c_str());
     assert(res == 0);
-    res = std::system((exe + " t " + arc_auto.string() + " > nul 2>&1").c_str());
+    res = std::system((exe + " t " + arc_auto.string() + " > " DEVNULL " 2>&1").c_str());
     assert(res == 0);
 
     fs::remove_all(root, ec);
@@ -290,7 +298,7 @@ void test_cli_overwrite_modes() {
 
     auto extract = [&](const char* extra_switch) {
         return std::system((get_cli_path() + " x " + arc.string() + " " + out.string() + " " +
-                            extra_switch + " > nul 2>&1")
+                            extra_switch + " > " DEVNULL " 2>&1")
                                .c_str());
     };
     auto read_target = [&]() {
