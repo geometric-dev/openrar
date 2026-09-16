@@ -34,6 +34,21 @@
 // openrar_dll.h re-declares the contract in C-compatible form for C hosts;
 // this TU pins it to the canonical definitions in src/api/abi_contract.hpp
 // so the two can never drift apart silently.
+//
+// ── ABI exception policy (audited after B2) ─────────────────────────────────
+// Every export that runs C++ logic wraps its body in try/catch and maps
+// std::exception to an error return — an exception must never cross the
+// C ABI. Consequences for new code:
+//   1. A new export is not done until it has the try/catch wrapper.
+//   2. Do not ADD throwing std::filesystem calls here or in code reachable
+//      from here (archive_mutator, recovery_writer, archive_reader) without
+//      either an ec overload or certainty that the export wrapper covers the
+//      call path; prefer the ec overload unconditionally (B2 residual sweep
+//      keeps mutator/recovery stragglers safe only because of the wrappers).
+//   3. Allocation math from archive-controlled values goes through an
+//      overflow-checked helper or SIZE_MAX pre-check (see B10 /
+//      calculate_parity_buffer_size); sizing vectors from header fields
+//      needs a cap (e.g. the comment-payload cap in handle_info).
 static_assert(static_cast<int>(RAR_OK) == static_cast<int>(openrar::api::RAR_OK));
 static_assert(static_cast<int>(RAR_ERR_PARTIAL_OK) ==
               static_cast<int>(openrar::api::RAR_ERR_PARTIAL_OK));
@@ -592,12 +607,20 @@ struct FileArchiveHandle : ArchiveHandleBase {
             }
         }
         // Archive comment: find the CMT service, read its payload on demand.
+        // data_size comes from a (possibly crafted) archive header, so the
+        // allocation is capped: a multi-GiB claimed comment would otherwise
+        // turn into a huge speculative vector before the read fails.
         for (const auto& e : reader->entries()) {
             if (!(e.header.is_service && e.header.service_type == "CMT")) continue;
+            constexpr openrar::core::uint64 MAX_COMMENT_PAYLOAD = 16ull * 1024 * 1024;
             std::vector<uint8_t> payload;
             if (!e.header.sub_data.empty()) {
                 payload.assign(e.header.sub_data.begin(), e.header.sub_data.end());
             } else if (e.data_size > 0) {
+                if (e.data_size > MAX_COMMENT_PAYLOAD) {
+                    set_error("archive comment too large");
+                    return RAR_ERR_UNSUPPORTED_FEATURE;
+                }
                 std::vector<uint8_t> packed(static_cast<size_t>(e.data_size));
                 {
                     auto& s = reader->stream();

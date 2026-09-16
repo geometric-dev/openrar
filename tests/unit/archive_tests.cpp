@@ -681,6 +681,56 @@ void test_b9_b5_corrupt_payload_fails_cleanly() {
     std::cout << "[PASS] corrupt payload: RAR_ERR_CRC_MISMATCH + no partial file (T5, B9)\n";
 }
 
+void test_b9_compressed_corrupt_fails_cleanly() {
+    // Verification-asymmetry regression (sweep finding): the bool
+    // extract_entry path used to write COMPRESSED payload with no CRC/BLAKE
+    // verification at all — corrupt data extracted "successfully" while the
+    // stored path failed. The compressed path must refuse corrupt payload
+    // and leave no partial file behind, same as stored.
+    namespace fs = std::filesystem;
+    fs::path src = "build/crc_comp_src.bin";
+    fs::path arc = "build/crc_comp.rar";
+    fs::path corrupt = "build/crc_comp_corrupt.rar";
+    fs::path dest = "build/crc_comp_out.bin";
+    std::error_code ec;
+    fs::remove(arc, ec);
+    fs::remove(corrupt, ec);
+    fs::remove(dest, ec);
+    {
+        std::ofstream f(src, std::ios::binary);
+        f << std::string(4096, 'A') << "COMPRESSED PAYLOAD TAIL";
+    }
+
+    // method 3 (default LZ): exercises decode_compressed, not the store path.
+    assert(ArchiveMutator::add_file_to_archive(arc, src, "payload.bin", 3));
+
+    {
+        ArchiveReader probe;
+        assert(probe.open(arc));
+        const auto& pe = probe.entries()[0];
+        const core::uint64 flip_off = pe.data_offset + pe.data_size / 2;
+        std::ifstream in(arc, std::ios::binary);
+        std::vector<core::byte> bytes((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+        in.close();
+        bytes[static_cast<size_t>(flip_off)] ^= 0xFF;
+        std::ofstream out(corrupt, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+    }
+
+    ArchiveReader reader;
+    assert(reader.open(corrupt));
+    assert(!reader.extract_entry(reader.entries()[0], dest));
+    assert(!fs::exists(dest, ec)); // FileUnlinker removed the partial output
+
+    fs::remove(src, ec);
+    fs::remove(arc, ec);
+    fs::remove(corrupt, ec);
+    fs::remove(dest, ec);
+    std::cout << "[PASS] corrupt compressed payload: extract fails, no partial file\n";
+}
+
 void test_b2_parent_is_file_fails_cleanly() {
     // B2 regression: extraction whose destination parent chain collides with
     // a regular FILE must fail with a clean false — via the error_code
@@ -738,6 +788,7 @@ int main() {
     test_filecopy_source_confined_to_root();
     test_links_to_dirs_leaves_preexisting_links();
     test_b9_b5_corrupt_payload_fails_cleanly();
+    test_b9_compressed_corrupt_fails_cleanly();
     test_b2_parent_is_file_fails_cleanly();
     test_solid_window_size();
     std::cout << "All Milestone 5 Archive Operations & Mutation Primitives PASSED!\n";

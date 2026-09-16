@@ -4,6 +4,7 @@
 #include "../format/headers.hpp"
 #include "../archive/archive_reader.hpp"
 #include "../archive/archive_mutator.hpp"
+#include "../archive/rar_errors.hpp"
 #include "../archive/volume.hpp"
 #include "../recovery/recovery_record.hpp"
 #include "../recovery/recovery_writer.hpp"
@@ -144,11 +145,13 @@ void print_help() {
               << "  -ep           Exclude paths from names\n"
               << "  -hp<p>        Encrypt both file data and headers\n"
               << "  -m<0..5>      Set compression level (0-store...3-default...5-maximal)\n"
+              << "  -md<size>     Accepted and validated (128k..1T); dictionary size is\n"
+              << "                auto-selected per entry\n"
               << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto)\n"
               << "  -ol           Save symbolic links as the link instead of the file\n"
               << "  -o+ / -o-     Overwrite all existing files / never overwrite (default: ask)\n"
-              << "  -os           Save NTFS Alternate Data Streams\n"
-              << "  -ow           Save file Security ACLs\n"
+              << "  -os, -ow      Save NTFS streams / Security ACLs (accepted; writer not\n"
+              << "                yet implemented — a warning notes the skip)\n"
               << "  -p<p>         Set password\n"
               << "  -plain, --plain\n"
               << "                Plain line-by-line output (disable ANSI animations)\n"
@@ -331,10 +334,20 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
     size_t error_count = 0;
     size_t idx = 0;
 
-    // Jobs = non-service entries, decoded independently.
-    std::vector<const archive::ArchiveEntry*> jobs;
-    for (const auto& entry : reader.entries()) {
-        if (!entry.header.is_service) jobs.push_back(&entry);
+    // Jobs = non-service entries, decoded independently. The vector index is
+    // kept alongside the pointer: encrypted entries verify through
+    // test_entry_stream, which is index-addressed.
+    struct TestJob {
+        const archive::ArchiveEntry* entry;
+        size_t index;
+    };
+    std::vector<TestJob> jobs;
+    {
+        size_t ei = 0;
+        for (const auto& entry : reader.entries()) {
+            if (!entry.header.is_service) jobs.push_back({&entry, ei});
+            ei++;
+        }
     }
 
     const bool want_parallel =
@@ -346,49 +359,62 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         slots.readers.clear();
     }
 
+    // test_entry cannot verify encrypted payloads (it takes no password and
+    // must not guess one), so routing encrypted entries through it reported
+    // OK without ever decoding them (fail-open). Both paths below verify
+    // encrypted entries through test_entry_stream instead, which decodes with
+    // the reader's password and applies the same hash policy as extraction
+    // (including the tweaked-checksum exception, 0x0002). Without a password
+    // there is nothing to verify against — the skip stays, but says so.
+    auto test_one = [&](archive::ArchiveReader& r, const TestJob& job) -> bool {
+        if (!job.entry->header.is_encrypted || password.empty()) return r.test_entry(*job.entry);
+        archive::ReaderHooks hooks{};
+        return r.test_entry_stream(job.index, hooks) == archive::RAR_OK;
+    };
+
     if (slots.readers.empty()) {
-        for (const auto& entry : reader.entries()) {
-            if (entry.header.is_service) continue;
+        for (const auto& job : jobs) {
             idx++;
-            Prog.start_file(entry.header.file_name, idx);
+            Prog.start_file(job.entry->header.file_name, idx);
 
             if (!g_quiet_mode && !is_vt_supported()) {
-                std::cout << "Testing     " << sanitize_for_display(entry.header.file_name)
+                std::cout << "Testing     " << sanitize_for_display(job.entry->header.file_name)
                           << "... ";
             }
 
-            if (reader.test_entry(entry)) {
+            if (test_one(reader, job)) {
                 if (!g_quiet_mode && !is_vt_supported()) std::cout << "OK\n";
             } else {
                 if (!g_quiet_mode && !is_vt_supported()) std::cout << "FAILED\n";
                 error_count++;
             }
-            Prog.update_bytes(entry.header.unp_size);
+            Prog.update_bytes(job.entry->header.unp_size);
         }
     } else {
         EntryFlags flags;
         flags.resize(jobs.size());
         ThreadPool pool(static_cast<unsigned>(slots.readers.size()));
         for (size_t i = 0; i < jobs.size(); ++i) {
-            pool.submit([&slots, &flags, &jobs, i] {
-                // test_entry decodes untrusted archive data and can throw
-                // (bad_alloc, filesystem errors); an escaping exception would
-                // skip flags.finish and hang the reporting loop, and pre-guard
-                // it also kept the process alive (sweep finding H2).
+            pool.submit([&slots, &flags, &jobs, &test_one, i] {
+                // test_entry/test_entry_stream decode untrusted archive data
+                // and can throw (bad_alloc, filesystem errors); an escaping
+                // exception would skip flags.finish and hang the reporting
+                // loop, and pre-guard it also kept the process alive (H2).
                 bool okv = false;
                 size_t s = 0;
                 bool acquired = false;
                 try {
                     s = slots.acquire();
                     acquired = true;
-                    okv = slots.readers[s]->test_entry(*jobs[i]);
+                    okv = test_one(*slots.readers[s], jobs[i]);
                 } catch (...) {
                     okv = false;
                 }
                 if (acquired) slots.release(s);
                 flags.finish(i, okv);
                 try {
-                    Prog.note_file_done(jobs[i]->header.file_name, jobs[i]->header.unp_size);
+                    Prog.note_file_done(jobs[i].entry->header.file_name,
+                                        jobs[i].entry->header.unp_size);
                 } catch (...) {
                 }
             });
@@ -397,7 +423,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         for (size_t i = 0; i < jobs.size(); ++i) {
             const bool okv = flags.wait(i);
             if (!g_quiet_mode && !is_vt_supported()) {
-                std::cout << "Testing     " << sanitize_for_display(jobs[i]->header.file_name)
+                std::cout << "Testing     " << sanitize_for_display(jobs[i].entry->header.file_name)
                           << "... " << (okv ? "OK" : "FAILED") << "\n";
             }
             if (!okv) error_count++;
@@ -1614,8 +1640,11 @@ static int cli_main(int argc, char* argv[]) {
     // SFX creation is now supported via flag-driven mutator; keep multivolume
     // edge rejection (stub only first volume)
     // Previous generic SFX rejection removed. Multivalue case already returned above via want_vol.
-    // ACL/STM are read-skipped with warning; writer path warns once
-    if ((cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m") && (want_acl || want_stm)) {
+    // ACL/STM are read-skipped with warning; writer path warns once. The
+    // warning also fires for x/e: without it the switches are silently
+    // ignored there (B8 class — advertised behavior must never fail silent).
+    if ((cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m" || cmd == "x" || cmd == "e") &&
+        (want_acl || want_stm)) {
         std::cerr << "W: ACL (-ow) / alternate streams (-os) preservation not yet supported – "
                      "files will be stored without ACL/STM\n";
         // continue but without extra handling (skip)
@@ -1704,6 +1733,17 @@ static int cli_main(int argc, char* argv[]) {
     } else if (cmd == "k") {
         return openrar::cli::lock_archive(arc_path);
     } else if (cmd == "m") {
+        // B8-class honesty: a/u/f honor -z/-s/-ts, but m's batch path does
+        // not carry them. Warn instead of silently dropping advertised
+        // behavior.
+        if (!g_quiet_mode) {
+            if (!comment_path.empty())
+                std::cerr << "W: -z is not applied by m (archive comment dropped)\n";
+            if (want_solid)
+                std::cerr << "W: -s is not applied by m (solid mode dropped)\n";
+            if (times_mask != openrar::archive::time_flags::MTIME)
+                std::cerr << "W: -ts is not applied by m (times stored with the default mask)\n";
+        }
         std::string move_arc = sfx_stub_path.empty() ? arc_path : sfx_arc_path_str;
         int rc = openrar::cli::move_to_archive(move_arc, files, method, sfx_stub_path, vol_size,
                                                password, want_header_encryption, threads);

@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Verification asymmetry sweep (bug-class audit): the bool `extract_entry`
+  path verified stored payload but wrote **compressed** payload with no
+  CRC/BLAKE2sp check at all — corrupt data extracted "successfully". All
+  extract paths (compressed, stored contiguous/extents, encrypted,
+  in-memory) now apply the same hash policy (BLAKE2sp authoritative, else
+  CRC32); encrypted entries whose writer set the tweaked-checksum flag
+  (0x0002) are accepted without a hash compare — the stored value is
+  key-dependent and not comparable, and the PswCheck already authenticates
+  the key. CLI `t` verifies encrypted entries via the streaming path when a
+  password is supplied (it previously reported OK without decoding them)
+  and fails closed on a wrong password.
+- RecoveryWriter temp files (`.rr_tmp`/`.rep_tmp`/`.rev_tmp`) used fixed,
+  predictable names opened with `CreateAlways` — the symlink-pre-plant
+  truncation pattern the mutator already fixed (L8). All recovery temps now
+  use unique pid/timestamp/counter names with `CreateNew`, the `.rev` writer
+  cleans up temps on early failure, and the mutator's delete/lock rewrite
+  loops are exception-safe (temp removed on an escaping exception).
+- `openrar_archive_handle_info` caps the comment payload allocation before
+  sizing from the (crafted) header field.
+
+### Changed
+
+- CLI honesty (B8 class): `-os`/`-ow` are marked "accepted; writer not yet
+  implemented" in the help instead of advertising unimplemented behavior,
+  the skip warning now also fires for `x`/`e`, `m` warns when `-z`/`-s`/`-ts`
+  are dropped by its batch path, and the SFX usage line no longer advertises
+  a meaningless `-y`. `find_package` consumers unaffected.
+- CI: the DLL artifact upload uses `if-no-files-found: error` — a broken
+  glob can no longer publish an empty release zip with a green build.
+
+### Added
+
+- Regression suites from the bug-class audit: help/parser switch parity
+  (every advertised switch must parse), C-ABI ↔ JS/TS error-code sync
+  (`errorsync.tests.mjs`, would have caught the I1/I2 drift), corrupted
+  compressed-payload extraction refusal, and a streaming-verify pair over
+  the tweaked-checksum golden (accept) plus a plaintext-CRC encrypted
+  archive (corrupt → `RAR_ERR_CRC_MISMATCH`).
+
 ## [1.6.0] - 2026-09-16
 
 ### Added

@@ -336,6 +336,71 @@ void test_cli_overwrite_modes() {
     std::cout << "[PASS] CLI overwrite modes: -o- keeps, -y overwrites, non-tty default overwrites\n";
 }
 
+void test_cli_help_switch_parity() {
+    // B8-class hedge: every switch advertised in --help must actually be
+    // parsed — an advertised switch that reaches the "unknown switch"
+    // fallback is a broken promise to scripts. Each entry runs `lb` (harmless
+    // read-only command) with the switch and asserts the run succeeds and
+    // never emits the unknown-switch warning.
+    namespace fs = std::filesystem;
+    fs::path src = "build/cli_parity_src.txt";
+    fs::path arc = "build/cli_parity.rar";
+    fs::path cmt = "build/cli_parity_cmt.txt";
+    fs::path captured = "build/cli_parity_out.txt";
+    std::error_code ec;
+    fs::remove(arc, ec);
+    fs::remove(captured, ec);
+    {
+        std::ofstream(src) << "parity payload";
+        std::ofstream(cmt) << "comment file";
+    }
+    assert(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "payload.txt"));
+
+    const char* switches[] = {
+        "-ed", "-ep", "-ep1", "-ep2", "-ep3", "-ol", "-ol-", "-os", "-ow", "-plain", "-q",
+        "-r",  "-r-", "-s",   "-sfx", "-y",  "-kb", "-o+", "-o-", "-vp", "-m3",  "-mt1",
+        "-md1m", "-tsm", "-v1k", "-psecret", "-hpsecret", "-rr3",
+    };
+    for (const char* sw : switches) {
+        std::string cmd = get_cli_path() + " lb " + arc.string() + " " + sw + " > " +
+                          captured.string() + " 2>&1";
+        int res = std::system(cmd.c_str());
+        if (res != 0) {
+            std::cerr << "  switch rejected: " << sw << " (exit " << res << ")\n";
+        }
+        assert(res == 0);
+        std::string data;
+        {
+            std::ifstream f(captured, std::ios::binary);
+            data.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        }
+        assert(data.find("unknown switch") == std::string::npos);
+        assert(data.find("Error:") == std::string::npos);
+    }
+
+    // -- end-of-options: everything after it is a name, even "-weird".
+    std::string cmd = get_cli_path() + " lb -- " + arc.string() + " > " + captured.string() +
+                      " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+
+    // -z takes a file argument: comment is only consumed by a/u/f/m, so lb
+    // must accept the switch without erroring on the missing file check.
+    cmd = get_cli_path() + " lb " + arc.string() + " -z" + cmt.string() + " > " +
+          captured.string() + " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+    {
+        std::ifstream f(captured, std::ios::binary);
+        std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        assert(data.find("unknown switch") == std::string::npos);
+    }
+
+    fs::remove(src, ec);
+    fs::remove(arc, ec);
+    fs::remove(cmt, ec);
+    fs::remove(captured, ec);
+    std::cout << "[PASS] CLI help/parser switch parity (every advertised switch parses)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -351,6 +416,7 @@ int main() {
     test_cli_list_sanitizes_esc_entry_name();
     test_cli_mt_batch_equivalence();
     test_cli_overwrite_modes();
+    test_cli_help_switch_parity();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
 }
