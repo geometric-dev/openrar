@@ -29,9 +29,18 @@ jobs:
           key: fuzz-corpus-${{ github.run_id }}
           restore-keys: fuzz-corpus-
 
+      - name: Install clang
+        # The libFuzzer harnesses are Clang-only (CMakeLists.txt gates
+        # OPENRAR_USE_LIBFUZZER on the compiler ID). Ubuntu's default CMake
+        # compiler is GCC, which silently skipped the libFuzzer wiring and
+        # degraded the nightly to the seconds-long standalone sweep (R1).
+        run: sudo apt-get update && sudo apt-get install -y clang
+
       - name: Configure CMake (Fuzzing enabled)
         run: |
           cmake -B build_fuzz -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_BUILD_TYPE=Release \
             -DOPENRAR_FUZZ=ON \
             -DOPENRAR_SANITIZERS=ON \
@@ -40,12 +49,27 @@ jobs:
       - name: Build Fuzzers
         run: cmake --build build_fuzz --parallel
 
+      - name: Assert libFuzzer harnesses built (not the standalone fallback)
+        # The -max_total_time flags below are libFuzzer flags; the standalone
+        # main() fallback ignores them, so a silent fallback would burn the
+        # nightly on a fixed 2000-iteration sweep while CI reported success.
+        run: |
+          for f in fuzz_decompress fuzz_archive fuzz_file_handle; do
+            if ! strings ./build_fuzz/$f | grep -q libFuzzer; then
+              echo "::error::$f was built without libFuzzer (standalone fallback — check the compiler wiring above)"
+              exit 1
+            fi
+          done
+
       - name: Run Roundtrip Fuzzer (Deterministic Sweep)
+        # fuzz_roundtrip keeps its own main(): a fixed deterministic sweep,
+        # not a libFuzzer target — safe to run without a time limit.
         run: ./build_fuzz/fuzz_roundtrip
 
       - name: Run Decoder Fuzzer (libFuzzer mode)
-        # clang build defines OPENRAR_USE_LIBFUZZER and links -fsanitize=fuzzer
-        # (see CMakeLists.txt), so this is a real 30-minute libFuzzer run over
+        # The explicit clang compilers above make CMake define
+        # OPENRAR_USE_LIBFUZZER and link -fsanitize=fuzzer (see
+        # CMakeLists.txt), so this is a real 30-minute libFuzzer run over
         # the accumulated corpus, saving new inputs back into tests/fuzz/seeds/.
         # tests/*.rar fixtures are passed as read-only extra seeds (valid RAR5
         # header shapes; libFuzzer writes new units only into the first dir).
