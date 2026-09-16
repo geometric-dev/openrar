@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-16
+
+### Added
+
+- **Installable CMake package**: `cmake --install` now ships the shared
+  library, the CLI, the public headers, and a `find_package(openrar)` config
+  exporting `openrar::openrar_dll` / `openrar::openrar` / `openrar::openrar_core`
+  (GNUInstallDirs layout; library include dirs are export-clean via
+  `BUILD_INTERFACE` generator expressions; `Threads` resolved through
+  `find_dependency`). The public C ABI header moved from `src/dll/` to
+  `include/openrar/openrar_dll.h` — consumers compiling with `-Iinclude` no
+  longer reach into the source tree; `src/dll/openrar_dll.h` remains as a
+  forwarding shim for internal translation units.
+- **CLI overwrite query**: the documented default (`Prompt`) now actually
+  asks — `existing file. Overwrite? [Y]es/[N]o/[A]lways/n[E]ver/[Q]uit` —
+  instead of silently overwriting. `-y` answers Yes on every query;
+  non-interactive stdin (pipes, CI runners) auto-answers Yes so scripted
+  callers keep their previous behavior; `-o+` / `-o-` are now advertised in
+  the help text, and `-o-` (skip existing) is applied as a pre-filter so the
+  parallel extraction path honors it too.
+- **CLI executable in release assets**: release zips now carry the CLI
+  alongside the shared library and import library.
+
+### Changed
+
+- CI: the nightly fuzz job installs clang and passes it to CMake, so the
+  `-fsanitize=fuzzer` harnesses really build in libFuzzer mode (they silently
+  degraded to the standalone sweep under GCC), with a post-build guard that
+  fails the job if any harness lacks libFuzzer. The writer-conformance job
+  runs the full 11-suite Node test set; the WinRAR-oracle asserts in the
+  volume/mutation/recovery/dictionary suites are `oracleAvailable()`-gated
+  like roundtrip, and extraction destinations are platform-aware, so every
+  suite is POSIX-clean while self-verification runs everywhere.
+
+### Fixed
+
+- **Extraction hardening**: `durable_write_to` retries the next temp suffix
+  on `CreateNew` collision instead of aborting; every extraction-path
+  filesystem call uses `error_code` overloads (including the multivolume
+  chain scan's volume probes); a per-entry pre-open gate
+  (`convert_self_links` + `has_symlink_parent` + destination-symlink removal)
+  runs before any output stream is opened, so a symlink entry followed by a
+  file entry can no longer divert the write; failed extractions remove their
+  partial output (`FileUnlinker` RAII, `keep_broken` opt-in); the
+  stored-payload file path (the CLI's extraction route) now verifies CRC32 —
+  on both the contiguous and extent-stitch variants — instead of writing
+  corrupted data successfully; encrypted entries stay unverified per the
+  RAR5 rule that their header CRC32 does not hold the plaintext CRC.
+- **Repair**: inline RR repair detects same-length payload corruption via
+  parity syndromes, localizes damaged shards (cross-shard syndromes, header
+  scan, CRC32 candidate verification) and reconstructs via Reed-Solomon,
+  refusing ambiguous damage.
+- **Format**: encrypted-header size VINT scan accepts up to 10 bytes with
+  padded-VINT support (2 MiB headers no longer trip bad_password); AES-CBC
+  primitives refuse non-block-aligned sizes instead of silently flooring
+  (a short ciphertext on extraction now fails as corruption).
+- **CLI/Windows**: wildcard arguments (`*`, `*.rar`) are expanded on Windows
+  for add/update/freshen/move, `-r`-aware; `-r`, `-ol`/`-ol-`, `-ep1..3` and
+  `--` are parsed and wired; the banner prints the project version instead of
+  a hardcoded "1.0 (x64)"; the duplicate `-ed` help entry is gone.
+- **Portability**: `openrar.hpp` compiles under C++20 (`u8_str` bridge for
+  `path::u8string()`'s `char8_t` return); `/dev/urandom` opens with
+  `O_CLOEXEC`.
+- **API**: `extract_all` on an empty archive returns `RAR_OK` (DLL, C API and
+  wasm layers) instead of a false `RAR_ERR_NOMEM`; parity buffer sizing is
+  64-bit overflow-checked with a 2 GiB cap; the wasm JS/TS error surface now
+  maps `MISSING_VOLUME` (-13) and `BUSY` (-14) instead of degrading them to
+  generic `IO`.
+- **Tests**: the golden BufferArchive verification block actually compiles
+  now (its guard macro was defined nowhere); CLI tests stop creating a
+  literal `nul` file on POSIX; new regressions for the corrupt-payload →
+  `RAR_ERR_CRC_MISMATCH` mapping, partial-file removal, parent-is-file
+  collisions, temp-collision retries, empty-archive extraction, padded VINTs,
+  and parity buffer overflow caps.
+
 ## [1.5.0] - 2026-09-15
 
 ### Added
