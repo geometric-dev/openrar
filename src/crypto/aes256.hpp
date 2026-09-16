@@ -33,9 +33,13 @@ public:
     void encrypt_block(const core::byte* in, core::byte* out) const;
     void decrypt_block(const core::byte* in, core::byte* out) const;
 
-    // CBC mode in-place (data size must be multiple of 16)
-    void encrypt_cbc(core::byte* data, size_t size, core::byte* iv) const;
-    void decrypt_cbc(core::byte* data, size_t size, core::byte* iv) const;
+    // CBC mode in-place. Returns false when size is not a multiple of the
+    // 16-byte block size (no bytes are then touched): AES-CBC has no stream
+    // mode, and silently flooring a trailing partial block would drop
+    // ciphertext without a diagnostic (Q5). On success, `iv` holds the LAST
+    // CIPHERTEXT block of the call (chaining value for the next buffer).
+    bool encrypt_cbc(core::byte* data, size_t size, core::byte* iv) const;
+    bool decrypt_cbc(core::byte* data, size_t size, core::byte* iv) const;
 
 private:
     void expand_key(const core::byte* key);

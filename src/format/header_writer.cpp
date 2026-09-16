@@ -70,7 +70,7 @@ bool HeaderCryptWriter::write_block(io::FileStream& dest, const std::vector<core
     std::memcpy(iv_copy, iv, sizeof(iv));
 
     crypto::Aes256 aes(keys_.aes_key);
-    aes.encrypt_cbc(plain.data(), padded, iv_copy);
+    if (!aes.encrypt_cbc(plain.data(), padded, iv_copy)) return false;
 
     if (dest.write(iv, sizeof(iv)) != sizeof(iv)) return false;
     return dest.write(plain.data(), padded) == padded;

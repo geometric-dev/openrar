@@ -99,7 +99,7 @@ HeaderResult HeaderReader::read_block_raw(io::FileStream& src, core::uint64& out
         std::vector<core::byte> plain_first(16);
         if (src.read(plain_first.data(), 16) != 16) return HeaderResult::Error;
         crypto::Aes256 aes(crypt->keys.aes_key);
-        aes.decrypt_cbc(plain_first.data(), plain_first.size(), iv);
+        if (!aes.decrypt_cbc(plain_first.data(), plain_first.size(), iv)) return HeaderResult::Error;
 
         core::uint32 expected_crc = core::read_le32(plain_first.data());
 
@@ -144,7 +144,7 @@ HeaderResult HeaderReader::read_block_raw(io::FileStream& src, core::uint64& out
             if (src.read(cipher_rest.data(), rest) != rest) return HeaderResult::Error;
             // `iv` now holds the previous cipher block written back by
             // decrypt_cbc, which is exactly the chaining value needed here.
-            aes.decrypt_cbc(cipher_rest.data(), rest, iv);
+            if (!aes.decrypt_cbc(cipher_rest.data(), rest, iv)) return HeaderResult::Error;
             std::memcpy(plain.data() + 16, cipher_rest.data(), total_plain - 16);
         }
 

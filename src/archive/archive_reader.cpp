@@ -396,7 +396,8 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
             // try old numbering fallback once
             if (vol_idx > 0) {
                 auto alt = derive_next_volume_name(vol_chain[vol_idx - 1], true);
-                if (alt != vpath && std::filesystem::exists(alt) &&
+                std::error_code alt_ec;
+                if (alt != vpath && std::filesystem::exists(alt, alt_ec) &&
                     vs.open(alt, io::FileMode::ReadOnly)) {
                     vpath = alt;
                     vol_chain[vol_idx] = vpath;
@@ -467,13 +468,16 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
         }
         // Also if vol_main indicates volume and end not seen, assume need next if next file exists
         if (!need_next) {
-            // Peek if next volume file exists (probing)
+            // Peek if next volume file exists (probing). error_code overloads
+            // throughout: an unreadable parent must degrade to "missing" (and
+            // eventually MISSING_VOLUME), never throw across the C ABI.
             auto nxt = derive_next_volume_name(vpath, false);
-            if (std::filesystem::exists(nxt))
+            std::error_code nxt_ec;
+            if (std::filesystem::exists(nxt, nxt_ec))
                 need_next = true;
             else {
                 auto nxt_old = derive_next_volume_name(vpath, true);
-                if (std::filesystem::exists(nxt_old)) need_next = true;
+                if (std::filesystem::exists(nxt_old, nxt_ec)) need_next = true;
             }
         }
         if (need_next) {
@@ -485,11 +489,12 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
             // and the same volume is rescanned up to MAX_VOLUME_CHAIN times.
             if (nxt == vpath) break;
             if (vol_chain.size() <= vol_idx + 1) {
-                if (std::filesystem::exists(nxt))
+                std::error_code nxt_ec;
+                if (std::filesystem::exists(nxt, nxt_ec))
                     vol_chain.push_back(nxt);
                 else {
                     auto nxt_old = derive_next_volume_name(vpath, true);
-                    if (nxt_old != vpath && std::filesystem::exists(nxt_old))
+                    if (nxt_old != vpath && std::filesystem::exists(nxt_old, nxt_ec))
                         vol_chain.push_back(nxt_old);
                     else {
                         // need_next came from split_after / ENDARC NEXTVOL
@@ -738,7 +743,10 @@ private:
                     return false;
                 }
                 crypto::Aes256 aes(keys_->aes_key);
-                aes.decrypt_cbc(staging_.data(), plain, iv_);
+                if (!aes.decrypt_cbc(staging_.data(), plain, iv_)) {
+                    error_ = true;
+                    return false;
+                }
             }
             plain_len_ = plain;
             plain_pos_ = 0;
@@ -827,7 +835,7 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
                     // 64 KiB slices keep every boundary aligned; a short tail
                     // means a corrupt set, not decryptable data.
                     if (take % 16 != 0) return RAR_ERR_TRUNCATED;
-                    aes->decrypt_cbc(buf.data(), take, iv);
+                    if (!aes->decrypt_cbc(buf.data(), take, iv)) return RAR_ERR_TRUNCATED;
                 }
                 // Encrypted payloads are block-padded: the final slice may
                 // decrypt past unp_size — emit only the real bytes (mirrors
@@ -1633,12 +1641,26 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
             solid_chain_ok_ = false;
             return false;
         }
-        size_t dec_len = (cipher.size() / 16) * 16;
+        if (cipher.size() % 16 != 0) {
+            // A trailing partial cipher block means truncated or corrupt
+            // ciphertext. AES-CBC has no stream mode: the old floor to whole
+            // blocks dropped the tail without any diagnostic (Q5).
+            solid_chain_ok_ = false;
+            return false;
+        }
         core::byte iv[16];
         std::memcpy(iv, entry.header.init_v.data(), 16);
         crypto::Aes256 aes(keys.aes_key);
-        aes.decrypt_cbc(cipher.data(), dec_len, iv);
+        if (!aes.decrypt_cbc(cipher.data(), cipher.size(), iv)) {
+            solid_chain_ok_ = false;
+            return false;
+        }
 
+        // Encrypted entries cannot be CRC-verified here: per the RAR5 spec
+        // the header CRC32 field of encrypted entries does not hold the
+        // plaintext CRC (see golden_fixtures_tests.cpp header note), so
+        // correctness is proven by the decryption itself + byte comparison
+        // upstream. Keep the write checked (B9) and move on.
         if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
         FileUnlinker unlinker(dest_path, keep_broken_);
         io::FileStream out;
@@ -1647,7 +1669,10 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         if (entry.header.method == 0) {
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > cipher.size()) write_len = cipher.size();
-            out.write(cipher.data(), write_len);
+            if (out.write(cipher.data(), write_len) != write_len) {
+                out.close();
+                return false;
+            }
         } else {
             auto cb = [&](const core::byte* data, size_t size) -> bool {
                 return out.write(data, size) == size;
@@ -1725,7 +1750,11 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
     unlinker.armed = true;
 
     if (!entry.extents.empty()) {
-        // Multivolume store: stitch extents
+        // Multivolume store: stitch extents. Same payload verification as the
+        // contiguous path below — corrupt stored data is an extraction
+        // failure, never a silent successful write of wrong bytes.
+        crypto::Crc32 crc;
+        const bool use_crc = entry.header.has_crc32;
         for (auto& e : entry.extents) {
             io::FileStream vs;
             if (!vs.open(e.volume_path, io::FileMode::ReadOnly)) {
@@ -1746,10 +1775,12 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
                     out.close();
                     return false;
                 }
+                if (use_crc) crc.update(buf, take);
                 remaining -= take;
             }
         }
         out.close();
+        if (use_crc && crc.get() != entry.header.data_crc32) return false;
         unlinker.dismissed = true;
         return true;
     }
@@ -1757,6 +1788,8 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
     stream_.seek(static_cast<core::int64>(entry.data_offset), io::SeekOrigin::Begin);
     core::byte buf[8192];
     core::uint64 remaining = entry.data_size;
+    crypto::Crc32 crc;
+    const bool use_crc = entry.header.has_crc32;
 
     while (remaining > 0) {
         size_t take =
@@ -1769,10 +1802,18 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
             out.close();
             return false;
         }
+        if (use_crc) crc.update(buf, take);
         remaining -= take;
     }
 
     out.close();
+    if (use_crc && crc.get() != entry.header.data_crc32) {
+        // Same verdict as the streaming verify path (T5): corrupt payload is
+        // an extraction failure, never a silent successful write of wrong
+        // bytes. The FileUnlinker destructor removes the partial output
+        // unless the caller opted into keep_broken.
+        return false;
+    }
     unlinker.dismissed = true;
     return true;
 }
