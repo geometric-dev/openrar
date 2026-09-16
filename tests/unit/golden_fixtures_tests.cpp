@@ -19,14 +19,14 @@
 //
 // Fixture location is injected by CMake as OPENRAR_SOURCE_DIR. The
 // buffer-archive section is active in every configuration: when
-// OPENRAR_WASM_ARCHIVE=ON the symbols come from openrar_core, otherwise
+// OPENRAR_INMEM_ARCHIVE=ON the symbols come from openrar_core, otherwise
 // CMake compiles buffer_archive.cpp directly into this target.
 
 #include "../../src/archive/archive_reader.hpp"
 #include "../../src/crypto/crc32.hpp"
 #include "../../src/core/types.hpp"
 
-#ifdef OPENRAR_WASM_ARCHIVE
+#ifdef OPENRAR_INMEM_ARCHIVE
 #include "../../src/archive/buffer_archive.hpp"
 #endif
 
@@ -139,7 +139,7 @@ void extract_and_verify_data(archive::ArchiveReader& reader, const std::string& 
     assert(data == reference);
 }
 
-#ifdef OPENRAR_WASM_ARCHIVE
+#ifdef OPENRAR_INMEM_ARCHIVE
 void buffer_archive_checks(const std::filesystem::path& fixture) {
     std::vector<core::byte> bytes = read_file(fixture);
     archive::BufferArchive ba;
@@ -169,10 +169,10 @@ void test_golden_hello5() {
     extract_and_verify_hello(reader, /*password=*/"");
     extract_and_verify_data(reader, "", reference_data_bin());
 
-#ifdef OPENRAR_WASM_ARCHIVE
+#ifdef OPENRAR_INMEM_ARCHIVE
     buffer_archive_checks(arc);
 #else
-    std::cout << "  (BufferArchive golden checks skipped: OPENRAR_WASM_ARCHIVE=OFF)\n";
+    std::cout << "  (BufferArchive golden checks skipped: OPENRAR_INMEM_ARCHIVE=OFF)\n";
 #endif
     std::cout << "[PASS] golden hello5.rar (hand-built RAR5)\n";
 }
@@ -235,7 +235,7 @@ void test_golden_hello4_rejected() {
     assert(!reader.open(arc));
     assert(reader.entries().empty());
 
-#ifdef OPENRAR_WASM_ARCHIVE
+#ifdef OPENRAR_INMEM_ARCHIVE
     std::vector<core::byte> bytes = read_file(arc);
     archive::BufferArchive ba;
     std::vector<archive::BufferArchiveEntry> entries;
