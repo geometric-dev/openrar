@@ -75,6 +75,10 @@ export const RarErrorCode = Object.freeze({
   // Contract parity with src/archive/buffer_archive.hpp: returned only by the
   // native DLL _ex listing exports; the wasm surface never emits it (yet).
   ENCRYPTED: 'ENCRYPTED',
+  // Contract parity with src/archive/rar_errors.hpp (-13/-14): a volume of a
+  // multi-volume set is absent, or the handle/worker is busy with another op.
+  MISSING_VOLUME: 'MISSING_VOLUME',
+  BUSY: 'BUSY',
 });
 
 const CODE_MAP = Object.freeze({
@@ -88,6 +92,8 @@ const CODE_MAP = Object.freeze({
   [-9]: 'INVALID_ARG',
   [-11]: 'ABORTED',
   [-12]: 'ENCRYPTED',
+  [-13]: 'MISSING_VOLUME',
+  [-14]: 'BUSY',
 });
 
 export class RarError extends Error {
