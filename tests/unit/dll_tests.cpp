@@ -608,6 +608,90 @@ static void test_file_helpers() {
     std::cout << "PASS test_file_helpers\n";
 }
 
+static void test_b4_empty_archive_extract_all() {
+    uint8_t* rar = nullptr;
+    size_t rar_len = 0;
+    int rc = openrar_archive_create(nullptr, nullptr, nullptr, 0, 3, 4, &rar, &rar_len);
+    assert(rc == 0);
+    assert(rar && rar_len > 0);
+
+    uint8_t* buf = reinterpret_cast<uint8_t*>(0x1234);
+    size_t buf_sz = 1234;
+    uint64_t* offs = reinterpret_cast<uint64_t*>(0x5678);
+    uint32_t off_cnt = 5678;
+    rc = openrar_archive_extract_all(rar, rar_len, &buf, &buf_sz, &offs, &off_cnt);
+    assert(rc == 0);
+    assert(buf == nullptr);
+    assert(buf_sz == 0);
+    assert(offs == nullptr);
+    assert(off_cnt == 0);
+
+    openrar_free(rar);
+    std::cout << "PASS test_b4_empty_archive_extract_all\n";
+}
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static unsigned test_get_pid() { return static_cast<unsigned>(GetCurrentProcessId()); }
+#else
+#include <unistd.h>
+static unsigned test_get_pid() { return static_cast<unsigned>(getpid()); }
+#endif
+
+static void test_b1_durable_write_collision() {
+    std::error_code ec;
+    std::filesystem::path temp_dir = "build/test_b1_durable";
+    std::filesystem::create_directories(temp_dir, ec);
+    std::filesystem::path src = temp_dir / "input.txt";
+    std::filesystem::path out_rar = temp_dir / "out.rar";
+
+    {
+        FILE* f = std::fopen(src.string().c_str(), "wb");
+        assert(f);
+        std::fwrite("durable test", 1, 12, f);
+        std::fclose(f);
+    }
+
+    // Pre-create collision files for seq 0, 1, 2
+    unsigned pid = test_get_pid();
+    std::string suffix = ".openrar-tmp." + std::to_string(pid) + ".";
+    for (int seq = 0; seq < 3; ++seq) {
+        std::filesystem::path coll = out_rar.string() + suffix + std::to_string(seq);
+        FILE* f = std::fopen(coll.string().c_str(), "wb");
+        assert(f);
+        std::fwrite("collision", 1, 9, f);
+        std::fclose(f);
+    }
+
+    const char* srcs[] = {src.string().c_str()};
+    const char* arcs[] = {"input.txt"};
+    int rc = openrar_archive_create_to_file(srcs, arcs, 1, 3, 4, out_rar.string().c_str());
+    assert(rc == 0);
+    assert(std::filesystem::exists(out_rar, ec));
+
+    // Verify seq 0, 1, 2 are still there (untouched by durable_write_to)
+    for (int seq = 0; seq < 3; ++seq) {
+        std::filesystem::path coll = out_rar.string() + suffix + std::to_string(seq);
+        assert(std::filesystem::exists(coll, ec));
+    }
+
+    // Fail-fast test on non-collision error (target parent is an existing file, not directory)
+    std::filesystem::path block_file = temp_dir / "block.txt";
+    {
+        FILE* bf = std::fopen(block_file.string().c_str(), "wb");
+        assert(bf);
+        std::fwrite("block", 1, 5, bf);
+        std::fclose(bf);
+    }
+    std::filesystem::path invalid_rar = block_file / "out.rar";
+    rc = openrar_archive_create_to_file(srcs, arcs, 1, 3, 4, invalid_rar.string().c_str());
+    assert(rc != 0);
+
+    std::filesystem::remove_all(temp_dir, ec);
+    std::cout << "PASS test_b1_durable_write_collision\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -633,6 +717,8 @@ int main() {
     test_list_file_pw();
     test_open_ex();
     test_file_helpers();
+    test_b4_empty_archive_extract_all();
+    test_b1_durable_write_collision();
     std::cout << "ALL DLL TESTS PASSED\n";
     return 0;
 }

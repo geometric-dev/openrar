@@ -104,13 +104,13 @@ HeaderResult HeaderReader::read_block_raw(io::FileStream& src, core::uint64& out
         core::uint32 expected_crc = core::read_le32(plain_first.data());
 
         // Recover the body-size vint from the decrypted first block. It
-        // starts at plaintext offset 4; the spec caps it at 3 bytes
-        // (2 MiB maximum header size).
+        // starts at plaintext offset 4.
+        // 10 = maximum length of a 64-bit VINT; always fits in first 16-byte AES block (bytes 4..15 = 12 bytes).
         std::vector<core::byte> size_vint_bytes;
         size_t sv_len = 0;
         core::uint64 body_size = 0;
         size_t read_bytes = 0;
-        while (sv_len < 3 && (4 + sv_len) < plain_first.size()) {
+        while (sv_len < (plain_first.size() - 4) && sv_len < 10) {
             core::byte b = plain_first[4 + sv_len];
             size_vint_bytes.push_back(b);
             sv_len++;
@@ -118,10 +118,11 @@ HeaderResult HeaderReader::read_block_raw(io::FileStream& src, core::uint64& out
         }
         if (!core::read_vint(size_vint_bytes.data(), size_vint_bytes.size(), body_size,
                              read_bytes)) {
-            crypt->bad_password = true;
+            crypt->bad_password = true; // Unterminated or garbage VINT indicates bad password
             return HeaderResult::Error;
         }
         if (body_size > 2 * 1024 * 1024) {
+            // Deliberate UX heuristic: garbage from wrong password frequently decodes to enormous body_size
             crypt->bad_password = true;
             return HeaderResult::Error;
         }

@@ -46,11 +46,14 @@ public:
     bool flush();
 
     const std::filesystem::path& path() const { return path_; }
+    int last_error() const { return last_error_; }
+    bool is_collision_error() const;
 
 private:
     void* handle_;
     std::filesystem::path path_;
     FileMode mode_;
+    int last_error_ = 0;
 };
 
 } // namespace openrar::io

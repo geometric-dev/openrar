@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <condition_variable>
 #include <iostream>
 #include <memory>
@@ -36,6 +37,60 @@ namespace openrar::cli {
 
 bool g_plain_mode = false;
 bool g_quiet_mode = false;
+bool g_assume_yes = false;
+
+enum class OverwriteMode { Prompt, Overwrite, SkipExisting };
+
+// Answer to one extraction overwrite query (B8: the query itself was never
+// implemented, so Prompt silently overwrote and -y was parsed into a flag
+// nothing read).
+enum class OverwriteAnswer { Yes, No, Always, Never, Quit };
+
+OverwriteAnswer ask_overwrite(const std::string& display_name) {
+    // -y answers every query Yes. Non-interactive stdin (pipe, closed fd,
+    // ctest) also answers Yes: batch jobs keep the pre-query behavior of
+    // overwriting in place, which scripted callers rely on.
+#ifdef _WIN32
+    if (g_assume_yes || !_isatty(_fileno(stdin))) return OverwriteAnswer::Yes;
+#else
+    if (g_assume_yes || !::isatty(STDIN_FILENO)) return OverwriteAnswer::Yes;
+#endif
+    for (;;) {
+        std::cout << "\n" << display_name << " already exists. Overwrite?\n"
+                  << "[Y]es, [N]o, [A]lways, n[E]ver, [Q]uit: " << std::flush;
+        std::string line;
+        if (!std::getline(std::cin, line)) return OverwriteAnswer::Yes; // EOF
+        if (line.empty()) return OverwriteAnswer::Yes;
+        switch (std::tolower(static_cast<unsigned char>(line[0]))) {
+            case 'y': return OverwriteAnswer::Yes;
+            case 'n': return OverwriteAnswer::No;
+            case 'a': return OverwriteAnswer::Always;
+            case 'e': return OverwriteAnswer::Never;
+            case 'q': return OverwriteAnswer::Quit;
+            default: continue;
+        }
+    }
+}
+
+inline bool sw_eq(std::string_view sw, std::string_view target) {
+    if (sw.size() != target.size()) return false;
+    for (size_t i = 0; i < sw.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(sw[i])) !=
+            std::tolower(static_cast<unsigned char>(target[i])))
+            return false;
+    }
+    return true;
+}
+
+inline bool sw_starts(std::string_view sw, std::string_view prefix) {
+    if (sw.size() < prefix.size()) return false;
+    for (size_t i = 0; i < prefix.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(sw[i])) !=
+            std::tolower(static_cast<unsigned char>(prefix[i])))
+            return false;
+    }
+    return true;
+}
 
 void print_banner() {
     if (g_quiet_mode) return;
@@ -87,6 +142,7 @@ void print_help() {
               << "  -ed           Do not store directory records\n"
               << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto)\n"
               << "  -ol           Save symbolic links as the link instead of the file\n"
+              << "  -o+ / -o-     Overwrite all existing files / never overwrite (default: ask)\n"
               << "  -os           Save NTFS Alternate Data Streams\n"
               << "  -ow           Save file Security ACLs\n"
               << "  -p<p>         Set password\n"
@@ -125,7 +181,8 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
             std::cout << "Archive: " << arc_path << "\n"
                       << "Details: RAR 5.0" << (reader.is_solid() ? ", solid" : "")
                       << (reader.is_locked() ? ", locked" : "")
-                      << (reader.is_volume() ? ", volume" : "") << "\n\n";
+                      << (reader.is_volume() ? ", volume" : "")
+                      << (reader.has_recovery_record() ? ", recovery record" : "") << "\n\n";
             if (!technical) {
                 std::cout << " Attributes      Size     Date     Time   Name\n"
                           << "-----------  --------  ---------- -----  ----\n";
@@ -373,6 +430,9 @@ struct PendingFile {
     std::string entry_name;
     core::uint64 file_size;
     bool is_dir{false};
+    bool is_symlink{false};
+    bool is_dir_target{false};
+    std::string symlink_target;
 };
 
 // Parallel batch add: prepare every file on the pool (read + CRC + compress +
@@ -410,7 +470,11 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     if (queue.size() == 1) {
         bool okv = false;
         try {
-            if (queue[0].is_dir)
+            if (queue[0].is_symlink)
+                okv = archive::ArchiveMutator::prepare_add_symlink(
+                    queue[0].src_path, queue[0].entry_name, queue[0].symlink_target,
+                    queue[0].is_dir_target, prepared[0], times_mask);
+            else if (queue[0].is_dir)
                 okv = archive::ArchiveMutator::prepare_add_dir(
                     queue[0].src_path, queue[0].entry_name, prepared[0], times_mask);
             else
@@ -484,7 +548,11 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
 
                     bool okv = false;
                     try {
-                        if (queue[i].is_dir)
+                        if (queue[i].is_symlink)
+                            okv = archive::ArchiveMutator::prepare_add_symlink(
+                                queue[i].src_path, queue[i].entry_name, queue[i].symlink_target,
+                                queue[i].is_dir_target, prepared[i], times_mask);
+                        else if (queue[i].is_dir)
                             okv = archive::ArchiveMutator::prepare_add_dir(
                                 queue[i].src_path, queue[i].entry_name, prepared[i], times_mask);
                         else
@@ -594,11 +662,38 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                    bool encrypt_headers = false, unsigned threads = 1, bool solid = false,
                    const std::vector<core::byte>& comment = {},
                    core::uint32 times_mask = archive::time_flags::MTIME,
-                   bool no_dir_records = false) {
+                   bool no_dir_records = false,
+                   io::ExcludePathMode ep_mode = io::ExcludePathMode::None,
+                   bool recurse_subdirs = true,
+                   bool want_symlinks = false,
+                   bool freshen = false) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return 1;
     }
+
+    std::unordered_map<std::string, core::uint64> existing_files;
+    if (freshen) {
+        if (!std::filesystem::exists(arc_path)) return 0;
+        archive::ArchiveReader r;
+        if (!r.open(arc_path)) return 1;
+        for (const auto& entry : r.entries()) {
+            if (!entry.header.is_service) {
+                existing_files[entry.header.file_name] = entry.header.utime_unix;
+            }
+        }
+    }
+
+    auto should_include = [&](const std::string& rel_name, const std::filesystem::path& disk_path) -> bool {
+        if (!freshen) return true;
+        auto it = existing_files.find(rel_name);
+        if (it == existing_files.end()) return false;
+        core::uint64 disk_mtime = 0;
+        if (archive::ArchiveMutator::get_file_mtime(disk_path, disk_mtime)) {
+            if (disk_mtime <= it->second) return false;
+        }
+        return true;
+    };
 
     std::vector<PendingFile> queue;
     core::uint64 total_unp = 0;
@@ -613,48 +708,214 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
 
     for (const auto& f : files) {
         std::filesystem::path p(f);
+#ifdef _WIN32
+        std::string filename_str = p.filename().string();
+        if (filename_str.find('*') != std::string::npos || filename_str.find('?') != std::string::npos) {
+            std::filesystem::path parent_dir = p.has_parent_path() ? p.parent_path() : std::filesystem::path(".");
+            std::string parent_str = parent_dir.string();
+            if (parent_str.find('*') != std::string::npos || parent_str.find('?') != std::string::npos) {
+                std::cerr << "Error: Wildcard in directory component '" << f << "' is unsupported without recursion.\n";
+                continue;
+            }
+            std::error_code it_ec;
+            if (recurse_subdirs) {
+                for (const auto& dir_entry : std::filesystem::recursive_directory_iterator(parent_dir, it_ec)) {
+                    if (it_ec) break;
+                    std::error_code stat_ec;
+                    if (dir_entry.is_symlink(stat_ec)) {
+                        if (want_symlinks) {
+                            std::error_code link_ec;
+                            std::filesystem::path target = std::filesystem::read_symlink(dir_entry.path(), link_ec);
+                            if (!link_ec) {
+                                std::string target_str = target.generic_string();
+                                bool is_dir_target = std::filesystem::is_directory(dir_entry.path(), link_ec);
+                                std::string rel = (ep_mode != io::ExcludePathMode::None)
+                                    ? io::format_archive_path(dir_entry.path().generic_string(), parent_dir.generic_string(), ep_mode)
+                                    : dir_entry.path().lexically_relative(p.parent_path()).generic_string();
+                                if (rel.rfind("./", 0) == 0) rel.erase(0, 2);
+                                if (!rel.empty() && should_include(rel, dir_entry.path())) {
+                                    PendingFile pf;
+                                    pf.src_path = dir_entry.path();
+                                    pf.entry_name = rel;
+                                    pf.file_size = 0;
+                                    pf.is_symlink = true;
+                                    pf.is_dir_target = is_dir_target;
+                                    pf.symlink_target = target_str;
+                                    queue.push_back(std::move(pf));
+                                    Prog.spin("Scanning files…", queue.size());
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    if (!dir_entry.is_regular_file(stat_ec)) continue;
+                    if (openrar::io::wildcard_match(filename_str, dir_entry.path().filename().string(), false)) {
+                        core::uint64 sz = dir_entry.file_size(stat_ec);
+                        if (stat_ec) continue;
+                        std::string rel = (ep_mode != io::ExcludePathMode::None)
+                            ? io::format_archive_path(dir_entry.path().generic_string(), parent_dir.generic_string(), ep_mode)
+                            : dir_entry.path().lexically_relative(p.parent_path()).generic_string();
+                        if (rel.rfind("./", 0) == 0) rel.erase(0, 2);
+                        if (rel.empty()) continue;
+                        if (!should_include(rel, dir_entry.path())) continue;
+                        queue.push_back({dir_entry.path(), rel, sz});
+                        total_unp += sz;
+                        Prog.spin("Scanning files…", queue.size());
+                    }
+                }
+            } else {
+                for (const auto& dir_entry : std::filesystem::directory_iterator(parent_dir, it_ec)) {
+                    if (it_ec) break;
+                    std::error_code stat_ec;
+                    if (dir_entry.is_symlink(stat_ec)) {
+                        if (want_symlinks) {
+                            std::error_code link_ec;
+                            std::filesystem::path target = std::filesystem::read_symlink(dir_entry.path(), link_ec);
+                            if (!link_ec) {
+                                std::string target_str = target.generic_string();
+                                bool is_dir_target = std::filesystem::is_directory(dir_entry.path(), link_ec);
+                                std::string rel = (ep_mode != io::ExcludePathMode::None)
+                                    ? io::format_archive_path(dir_entry.path().generic_string(), parent_dir.generic_string(), ep_mode)
+                                    : dir_entry.path().filename().generic_string();
+                                if (rel.rfind("./", 0) == 0) rel.erase(0, 2);
+                                if (!rel.empty() && should_include(rel, dir_entry.path())) {
+                                    PendingFile pf;
+                                    pf.src_path = dir_entry.path();
+                                    pf.entry_name = rel;
+                                    pf.file_size = 0;
+                                    pf.is_symlink = true;
+                                    pf.is_dir_target = is_dir_target;
+                                    pf.symlink_target = target_str;
+                                    queue.push_back(std::move(pf));
+                                    Prog.spin("Scanning files…", queue.size());
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    if (!dir_entry.is_regular_file(stat_ec)) continue;
+                    if (openrar::io::wildcard_match(filename_str, dir_entry.path().filename().string(), false)) {
+                        core::uint64 sz = dir_entry.file_size(stat_ec);
+                        if (stat_ec) continue;
+                        std::string rel = (ep_mode != io::ExcludePathMode::None)
+                            ? io::format_archive_path(dir_entry.path().generic_string(), parent_dir.generic_string(), ep_mode)
+                            : dir_entry.path().filename().generic_string();
+                        if (rel.rfind("./", 0) == 0) rel.erase(0, 2);
+                        if (rel.empty()) continue;
+                        if (!should_include(rel, dir_entry.path())) continue;
+                        queue.push_back({dir_entry.path(), rel, sz});
+                        total_unp += sz;
+                        Prog.spin("Scanning files…", queue.size());
+                    }
+                }
+            }
+            continue;
+        }
+#endif
         if (std::filesystem::is_directory(p)) {
-            for (const auto& dir_entry : std::filesystem::recursive_directory_iterator(p)) {
-                // L10: a file can vanish or become unreadable between the
-                // directory scan and these stats. Skip it gracefully instead
-                // of letting a filesystem_error abort the whole process.
+            std::error_code it_ec;
+            auto scan_dir_entry = [&](const std::filesystem::directory_entry& dir_entry) {
                 std::error_code stat_ec;
-                if (dir_entry.is_symlink(stat_ec)) continue;
+                if (dir_entry.is_symlink(stat_ec)) {
+                    if (want_symlinks) {
+                        std::error_code link_ec;
+                        std::filesystem::path target = std::filesystem::read_symlink(dir_entry.path(), link_ec);
+                        if (!link_ec) {
+                            std::string target_str = target.generic_string();
+                            bool is_dir_target = std::filesystem::is_directory(dir_entry.path(), link_ec);
+                            std::string rel = (ep_mode != io::ExcludePathMode::None)
+                                ? io::format_archive_path(dir_entry.path().generic_string(), p.parent_path().generic_string(), ep_mode)
+                                : dir_entry.path().lexically_relative(p.parent_path()).generic_string();
+                            if (rel.rfind("./", 0) == 0) rel.erase(0, 2);
+                            if (!rel.empty() && should_include(rel, dir_entry.path())) {
+                                PendingFile pf;
+                                pf.src_path = dir_entry.path();
+                                pf.entry_name = rel;
+                                pf.file_size = 0;
+                                pf.is_symlink = true;
+                                pf.is_dir_target = is_dir_target;
+                                pf.symlink_target = target_str;
+                                queue.push_back(std::move(pf));
+                                Prog.spin("Scanning files…", queue.size());
+                            }
+                        }
+                    }
+                    return;
+                }
                 bool is_dir = dir_entry.is_directory(stat_ec);
-                if (stat_ec) continue;
-                std::string rel =
-                    dir_entry.path().lexically_relative(p.parent_path()).generic_string();
-                // Names are stored without the "./" prefix (per archive path format specification);
-                // adding "." would otherwise leak it into every entry name.
+                if (stat_ec) return;
+                std::string rel = (ep_mode != io::ExcludePathMode::None)
+                    ? io::format_archive_path(dir_entry.path().generic_string(), p.parent_path().generic_string(), ep_mode)
+                    : dir_entry.path().lexically_relative(p.parent_path()).generic_string();
                 if (rel.rfind("./", 0) == 0) rel.erase(0, 2);
-                if (rel.empty()) continue;
+                if (rel.empty()) return;
+                if (!should_include(rel, dir_entry.path())) return;
                 if (is_dir) {
                     if (volume_add || no_dir_records) {
                         skipped_dirs++;
-                        continue;
+                        return;
                     }
                     queue.push_back({dir_entry.path(), rel, 0, true});
                 } else {
-                    if (!dir_entry.is_regular_file(stat_ec)) continue;
+                    if (!dir_entry.is_regular_file(stat_ec)) return;
                     core::uint64 sz = dir_entry.file_size(stat_ec);
-                    if (stat_ec) continue;
+                    if (stat_ec) return;
                     queue.push_back({dir_entry.path(), rel, sz});
                     total_unp += sz;
                 }
                 Prog.spin("Scanning files…", queue.size());
+            };
+            if (recurse_subdirs) {
+                for (const auto& dir_entry : std::filesystem::recursive_directory_iterator(p, it_ec)) {
+                    if (it_ec) break;
+                    scan_dir_entry(dir_entry);
+                }
+            } else {
+                for (const auto& dir_entry : std::filesystem::directory_iterator(p, it_ec)) {
+                    if (it_ec) break;
+                    scan_dir_entry(dir_entry);
+                }
             }
         } else if (std::filesystem::exists(p)) {
             // L10: same vanish-between-exists-and-stat race as above.
             std::error_code stat_ec;
+            if (std::filesystem::is_symlink(p, stat_ec)) {
+                if (want_symlinks) {
+                    std::filesystem::path target = std::filesystem::read_symlink(p, stat_ec);
+                    if (!stat_ec) {
+                        std::string target_str = target.generic_string();
+                        bool is_dir_target = std::filesystem::is_directory(p, stat_ec);
+                        std::string entry = (ep_mode != io::ExcludePathMode::None)
+                            ? io::format_archive_path(p.generic_string(), p.parent_path().generic_string(), ep_mode)
+                            : p.filename().generic_string();
+                        if (should_include(entry, p)) {
+                            PendingFile pf;
+                            pf.src_path = p;
+                            pf.entry_name = entry;
+                            pf.file_size = 0;
+                            pf.is_symlink = true;
+                            pf.is_dir_target = is_dir_target;
+                            pf.symlink_target = target_str;
+                            queue.push_back(std::move(pf));
+                            Prog.spin("Scanning files…", queue.size());
+                        }
+                    }
+                }
+                continue;
+            }
             core::uint64 sz = std::filesystem::file_size(p, stat_ec);
             if (stat_ec) {
                 std::cerr << "W: cannot stat " << p.string() << ", skipping\n";
                 continue;
             }
-            std::string entry = p.filename().generic_string();
-            queue.push_back({p, entry, sz});
-            total_unp += sz;
-            Prog.spin("Scanning files…", queue.size());
+            std::string entry = (ep_mode != io::ExcludePathMode::None)
+                ? io::format_archive_path(p.generic_string(), p.parent_path().generic_string(), ep_mode)
+                : p.filename().generic_string();
+            if (should_include(entry, p)) {
+                queue.push_back({p, entry, sz});
+                total_unp += sz;
+                Prog.spin("Scanning files…", queue.size());
+            }
         }
     }
     if (skipped_dirs > 0 && !g_quiet_mode) {
@@ -665,6 +926,7 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
     }
 
     if (queue.empty()) {
+        if (freshen) return 0;
         std::cerr << "No files found to add\n";
         return 1;
     }
@@ -728,8 +990,13 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
 }
 
 int extract_archive(const std::string& arc_path, const std::string& dest_dir, bool full_paths,
-                    const std::string& password = "", unsigned threads = 1) {
+                    const std::string& password = "", unsigned threads = 1,
+                    bool keep_broken = false,
+                    OverwriteMode overwrite_mode = OverwriteMode::Prompt,
+                    bool extract_symlinks = true) {
     archive::ArchiveReader reader;
+    reader.set_keep_broken(keep_broken);
+    reader.set_extract_symlinks(extract_symlinks);
     if (!reader.open(arc_path, password)) {
         if (reader.has_bad_password()) {
             std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
@@ -807,7 +1074,40 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         }
     }
 
+    // -o- pre-filter: drop existing targets up front so BOTH the sequential
+    // and the parallel path skip them. The parallel path has no per-file
+    // decision point; without the filter `-o- -mt4` would still overwrite.
+    if (overwrite_mode == OverwriteMode::SkipExisting) {
+        std::vector<ExtractJob> kept;
+        kept.reserve(extract_jobs.size());
+        for (auto& job : extract_jobs) {
+            std::error_code exists_ec;
+            if (std::filesystem::exists(job.target, exists_ec)) {
+                if (!g_quiet_mode && !is_vt_supported())
+                    std::cout << "Extracting  " << job.display_name
+                              << " ... SKIPPED (already exists)\n";
+                continue;
+            }
+            kept.push_back(std::move(job));
+        }
+        extract_jobs.swap(kept);
+    }
+
+    // Prompt mode cannot ask inside the thread pool: if any target exists and
+    // queries are not pre-answered (-y), run sequentially so each file can be
+    // asked in archive order.
+    bool needs_sequential_prompt = false;
+    if (overwrite_mode == OverwriteMode::Prompt && !g_assume_yes) {
+        std::error_code exists_ec;
+        for (const auto& job : extract_jobs) {
+            if (std::filesystem::exists(job.target, exists_ec)) {
+                needs_sequential_prompt = true;
+                break;
+            }
+        }
+    }
     const bool want_parallel = threads > 1 && extract_jobs.size() > 1 && !duplicate_targets &&
+                               !needs_sequential_prompt &&
                                entries_independently_decodable(reader);
     ReaderSlots slots;
     if (want_parallel &&
@@ -829,6 +1129,36 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                 std::cout << "Extracting  " << job.display_name << " ... ";
             }
 
+            // -o- targets were pre-filtered above; this check still fires for
+            // the rest of the run after the user answers n[E]ver to a query.
+            std::error_code ow_ec;
+            if (overwrite_mode == OverwriteMode::SkipExisting &&
+                std::filesystem::exists(job.target, ow_ec)) {
+                if (!g_quiet_mode && !is_vt_supported()) std::cout << "SKIPPED (already exists)\n";
+                continue;
+            }
+
+            if (overwrite_mode == OverwriteMode::Prompt &&
+                std::filesystem::exists(job.target, ow_ec)) {
+                switch (ask_overwrite(job.display_name)) {
+                    case OverwriteAnswer::Yes:
+                        break;
+                    case OverwriteAnswer::Always:
+                        overwrite_mode = OverwriteMode::Overwrite;
+                        break;
+                    case OverwriteAnswer::Never:
+                        overwrite_mode = OverwriteMode::SkipExisting;
+                        [[fallthrough]];
+                    case OverwriteAnswer::No:
+                        if (!g_quiet_mode && !is_vt_supported())
+                            std::cout << "SKIPPED (already exists)\n";
+                        continue;
+                    case OverwriteAnswer::Quit:
+                        std::cerr << "User break\n";
+                        return 1;
+                }
+            }
+
             if (reader.extract_entry(*job.entry, job.target, password)) {
                 if (!g_quiet_mode && !is_vt_supported()) std::cout << "OK\n";
             } else {
@@ -848,6 +1178,10 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         flags.resize(extract_jobs.size());
         std::atomic<int> badpw_flag{0};
         ThreadPool pool(static_cast<unsigned>(slots.readers.size()));
+        for (auto& r : slots.readers) {
+            r->set_keep_broken(keep_broken);
+            r->set_extract_symlinks(extract_symlinks);
+        }
         for (size_t i = 0; i < extract_jobs.size(); ++i) {
             pool.submit([&slots, &flags, &extract_jobs, &badpw_flag, i] {
                 // Same exception contract as the test path: extract_entry
@@ -977,6 +1311,7 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
 // archives). This body must not be reached by an escaping exception directly;
 // main() below wraps it. The argc<2/argv copies here cannot throw.
 static int cli_main(int argc, char* argv[]) {
+    using namespace openrar::cli;
     if (argc < 2) {
         openrar::cli::print_help();
         return 0;
@@ -987,9 +1322,14 @@ static int cli_main(int argc, char* argv[]) {
     std::vector<std::string> files;
     std::vector<std::string> switches;
 
+    bool stop_switches = false;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if (!arg.empty() && arg[0] == '-') {
+        if (!stop_switches && arg == "--") {
+            stop_switches = true;
+            continue;
+        }
+        if (!stop_switches && !arg.empty() && arg[0] == '-') {
             switches.push_back(arg);
             continue;
         }
@@ -1022,29 +1362,62 @@ static int cli_main(int argc, char* argv[]) {
     openrar::core::uint32 times_mask = openrar::archive::time_flags::MTIME; // -ts<...>
     std::string sfx_name_raw;
     openrar::core::uint32 rr_percent = 3;
+    openrar::io::ExcludePathMode ep_mode = openrar::io::ExcludePathMode::None;
+    bool recurse_subdirs = true;
+    bool want_symlinks = false;   // -ol
+    bool extract_symlinks = true; // -ol-
+    bool keep_broken = false;     // -kb
+    openrar::cli::OverwriteMode overwrite_mode = openrar::cli::OverwriteMode::Prompt;
+
     for (const auto& s : switches) {
-        if (s == "-plain" || s == "--plain" || s == "-idp" || s == "--no-color") {
+        if (sw_eq(s, "-plain") || sw_eq(s, "--plain") || sw_eq(s, "-idp") || sw_eq(s, "--no-color")) {
             openrar::cli::g_plain_mode = true;
-        } else if (s == "-q" || s == "-quiet" || s == "--quiet" || s == "-inul" || s == "-idq") {
+        } else if (sw_eq(s, "-q") || sw_eq(s, "-quiet") || sw_eq(s, "--quiet") || sw_eq(s, "-inul") || sw_eq(s, "-idq")) {
             openrar::cli::g_quiet_mode = true;
-        } else if (s.rfind("-hp", 0) == 0 && s.size() > 3) {
+        } else if (sw_eq(s, "-y")) {
+            openrar::cli::g_assume_yes = true;
+        } else if (sw_eq(s, "-r")) {
+            recurse_subdirs = true;
+        } else if (sw_eq(s, "-r-")) {
+            recurse_subdirs = false;
+        } else if (sw_eq(s, "-ol")) {
+            want_symlinks = true;
+            extract_symlinks = true;
+        } else if (sw_eq(s, "-ol-")) {
+            want_symlinks = false;
+            extract_symlinks = false;
+        } else if (sw_eq(s, "-ep")) {
+            ep_mode = openrar::io::ExcludePathMode::SkipWholePath;
+        } else if (sw_eq(s, "-ep1")) {
+            ep_mode = openrar::io::ExcludePathMode::BasePath;
+        } else if (sw_eq(s, "-ep2")) {
+            ep_mode = openrar::io::ExcludePathMode::SaveFullPathNoDrive;
+        } else if (sw_eq(s, "-ep3")) {
+            ep_mode = openrar::io::ExcludePathMode::AbsPath;
+        } else if (sw_eq(s, "-kb")) {
+            keep_broken = true;
+        } else if (sw_eq(s, "-o+")) {
+            overwrite_mode = openrar::cli::OverwriteMode::Overwrite;
+        } else if (sw_eq(s, "-o-")) {
+            overwrite_mode = openrar::cli::OverwriteMode::SkipExisting;
+        } else if (sw_starts(s, "-hp") && s.size() > 3) {
             // Header encryption. Match this BEFORE the -p prefix check.
             password = s.substr(3);
             want_header_encryption = true;
-        } else if (s == "-hp") {
+        } else if (sw_eq(s, "-hp")) {
             // A bare -hp must fail loudly: falling through silently produced
             // an UNENCRYPTED archive while the user believed headers were
             // protected (sweep finding M7).
             std::cerr << "Error: -hp requires a password (-hp<password>).\n";
             return 7;
-        } else if (s.rfind("-p", 0) == 0 && s.size() > 2) {
+        } else if (sw_starts(s, "-p") && s.size() > 2) {
             password = s.substr(2);
-        } else if (s == "-p") {
+        } else if (sw_eq(s, "-p")) {
             std::cerr << "Error: -p requires a password (-p<password>).\n";
             return 7;
-        } else if (s.rfind("-m", 0) == 0 && s.size() == 3 && s[2] >= '0' && s[2] <= '5') {
+        } else if (sw_starts(s, "-m") && s.size() == 3 && s[2] >= '0' && s[2] <= '5') {
             method = s[2] - '0';
-        } else if (s.rfind("-mt", 0) == 0) {
+        } else if (sw_starts(s, "-mt")) {
             // -mt<N> worker threads for batch add. -mt0 / bare
             // -mt / unparseable = auto-detect. Clamped to a sane ceiling;
             // file-granular work beyond this only costs thread stacks.
@@ -1058,12 +1431,48 @@ static int cli_main(int argc, char* argv[]) {
             if (v < 0) v = 0;
             if (v > 64) v = 64;
             mt_flag = static_cast<unsigned>(v);
-        } else if (s.rfind("-v", 0) == 0) {
+        } else if (sw_starts(s, "-md")) {
+            std::string tail = s.substr(3);
+            bool is_mdx = false;
+            if (!tail.empty() && (tail[0] == 'x' || tail[0] == 'X')) {
+                is_mdx = true;
+                tail = tail.substr(1);
+            }
+            if (tail.empty()) {
+                std::cerr << "Error: -md requires a size specification\n";
+                return 7;
+            }
+            char unit = tail.back();
+            uint64_t mult = 1;
+            if (unit == 'k' || unit == 'K') { mult = 1024ULL; tail.pop_back(); }
+            else if (unit == 'm' || unit == 'M') { mult = 1024ULL * 1024ULL; tail.pop_back(); }
+            else if (unit == 'g' || unit == 'G') { mult = 1024ULL * 1024ULL * 1024ULL; tail.pop_back(); }
+            else if (unit == 't' || unit == 'T') { mult = 1024ULL * 1024ULL * 1024ULL * 1024ULL; tail.pop_back(); }
+            uint64_t val = 0;
+            try {
+                val = std::stoull(tail) * mult;
+            } catch (...) {
+                std::cerr << "Error: invalid dictionary size '" << s << "'\n";
+                return 7;
+            }
+            if (val < 128ULL * 1024ULL) {
+                std::cerr << "Error: dictionary size < 128 KB not allowed\n";
+                return 7;
+            }
+            if (val > 1024ULL * 1024ULL * 1024ULL * 1024ULL) { // 1 TB
+                std::cerr << "Error: dictionary size > 1 TB not allowed\n";
+                return 7;
+            }
+            if (!is_mdx && (val & (val - 1)) != 0) {
+                std::cerr << "Error: dictionary size must be a power of 2 for -md\n";
+                return 7;
+            }
+        } else if (sw_starts(s, "-v")) {
             std::string vs = s.substr(2);
             if (vs == "p" || vs == "-") {
                 if (vs == "p") vol_pause = true;
                 if (vs == "-") vol_size = 0;
-            } else if (vs.rfind("p", 0) == 0) {
+            } else if (sw_starts(vs, "p")) {
                 vol_pause = true;
                 std::string rest = vs.substr(1);
                 if (!rest.empty()) {
@@ -1080,8 +1489,8 @@ static int cli_main(int argc, char* argv[]) {
                 else
                     vol_size = openrar::archive::volume::VOLSIZE_AUTO;
             }
-            if (s == "-vp") vol_pause = true;
-        } else if (s.rfind("-rr", 0) == 0) {
+            if (sw_eq(s, "-vp")) vol_pause = true;
+        } else if (sw_starts(s, "-rr")) {
             want_rr = true;
             // Parse -rr[N][%] where N is percent (e.g. -rr, -rr3, -rr10%, -rr100)
             std::string tail = s.substr(3);
@@ -1100,40 +1509,36 @@ static int cli_main(int argc, char* argv[]) {
             } else {
                 rr_percent = 3;
             }
-        } else if (s == "-s") {
+        } else if (sw_eq(s, "-s")) {
             want_solid = true;
-        } else if (s == "-ed") {
+        } else if (sw_eq(s, "-ed")) {
             no_dir_records = true;
-        } else if (s == "-k") {
+        } else if (sw_eq(s, "-k")) {
             want_lock = true;
-        } else if (s.rfind("-z", 0) == 0) {
+        } else if (sw_starts(s, "-z")) {
             comment_path = s.substr(2);
-        } else if (s.rfind("-ts", 0) == 0) {
-            // -ts<m|c|a>[+|-][0-4]: time types to carry in FHEXTRA_HTIME;
-            // letters accumulate across switches. Precision digits are
-            // accepted (modes 1-4) but times are stored at whole-second
-            // granularity.
+        } else if (sw_starts(s, "-ts")) {
             for (char c : s.substr(3)) {
-                if (c == 'm')
+                if (c == 'm' || c == 'M')
                     times_mask |= openrar::archive::time_flags::MTIME;
-                else if (c == 'c')
+                else if (c == 'c' || c == 'C')
                     times_mask |= openrar::archive::time_flags::CTIME;
-                else if (c == 'a')
+                else if (c == 'a' || c == 'A')
                     times_mask |= openrar::archive::time_flags::ATIME;
-                else if (c == 'p' || c == '+' || c == '-' || (c >= '0' && c <= '4')) {
+                else if (c == 'p' || c == 'P' || c == '+' || c == '-' || (c >= '0' && c <= '4')) {
                     // precision / sign accepted, second granularity
                 } else {
                     break;
                 }
             }
-        } else if (s.rfind("-sfx", 0) == 0) {
+        } else if (sw_starts(s, "-sfx")) {
             want_sfx = true;
             sfx_name_raw = s.substr(4); // may be empty -> default.sfx; strip '=' later in resolver
             if (!sfx_name_raw.empty() && sfx_name_raw[0] == '=')
                 sfx_name_raw = sfx_name_raw.substr(1);
-        } else if (s == "-ow" || s.rfind("-ow", 0) == 0) {
+        } else if (sw_eq(s, "-ow") || sw_starts(s, "-ow")) {
             want_acl = true;
-        } else if (s == "-os" || s.rfind("-os", 0) == 0) {
+        } else if (sw_eq(s, "-os") || sw_starts(s, "-os")) {
             want_stm = true;
         } else {
             // Unknown switches must not vanish silently: a mistyped
@@ -1237,7 +1642,8 @@ static int cli_main(int argc, char* argv[]) {
         std::string target_arc = want_sfx ? sfx_arc_path_str : arc_path;
         int rc = openrar::cli::add_to_archive(target_arc, files, method, sfx_stub_path, vol_size,
                                               password, want_header_encryption, threads, want_solid,
-                                              comment, times_mask, no_dir_records);
+                                              comment, times_mask, no_dir_records, ep_mode,
+                                              recurse_subdirs, want_symlinks, (cmd == "f"));
         if (rc == 0 && want_rr) {
             bool rr_ok;
             bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;
@@ -1273,10 +1679,12 @@ static int cli_main(int argc, char* argv[]) {
         return rc;
     } else if (cmd == "x") {
         std::string dest = files.empty() ? "" : files[0];
-        return openrar::cli::extract_archive(arc_path, dest, true, password, threads);
+        return openrar::cli::extract_archive(arc_path, dest, true, password, threads, keep_broken,
+                                             overwrite_mode, extract_symlinks);
     } else if (cmd == "e") {
         std::string dest = files.empty() ? "" : files[0];
-        return openrar::cli::extract_archive(arc_path, dest, false, password, threads);
+        return openrar::cli::extract_archive(arc_path, dest, false, password, threads, keep_broken,
+                                             overwrite_mode, extract_symlinks);
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
     } else if (cmd == "l" || cmd == "v") {

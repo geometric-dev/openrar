@@ -56,6 +56,7 @@ public:
     bool is_locked() const;
     bool is_volume() const;
     bool is_solid() const;
+    bool has_recovery_record() const;
     bool is_header_encrypted() const { return header_encrypted_; }
     const format::CryptBlock& header_crypt() const { return header_crypt_; }
     // Set as soon as a HEAD_CRYPT block is parsed (even when key init later
@@ -84,6 +85,11 @@ public:
     // Extract stored (method 0) entry directly to disk
     bool extract_store_entry(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
                              const std::string& password = "");
+
+    void set_keep_broken(bool kb) { keep_broken_ = kb; }
+    bool keep_broken() const { return keep_broken_; }
+    void set_extract_symlinks(bool es) { extract_symlinks_ = es; }
+    bool extract_symlinks() const { return extract_symlinks_; }
 
     io::FileStream& stream() { return stream_; }
     bool read_packed_data(const ArchiveEntry& entry, std::vector<core::byte>& out) const;
@@ -222,7 +228,11 @@ private:
     // real directories; pre-existing user links on the machine are never
     // touched (safe links-to-directories conversion semantics).
     std::vector<std::filesystem::path> links_created_;
+    bool keep_broken_{false};
+    bool extract_symlinks_{true};
     void convert_self_links(const std::filesystem::path& dest_path);
+    static bool ensure_parent_dir(const std::filesystem::path& dest_path,
+                                  const std::string& entry_name = "");
 };
 
 } // namespace openrar::archive

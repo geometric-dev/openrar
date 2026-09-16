@@ -101,6 +101,17 @@ public:
                                 const std::string& arc_entry_name, PreparedAdd& out,
                                 core::uint32 times_mask = time_flags::MTIME);
 
+    // Stage 1 variant for a symbolic link: emits a symlink record (FHEXTRA_REDIR,
+    // redir_type = 2 on Windows, 1 on POSIX, no data area) carrying the link's timestamps.
+    static bool prepare_add_symlink(const std::filesystem::path& src_symlink,
+                                    const std::string& arc_entry_name,
+                                    const std::string& target, bool is_dir_target,
+                                    PreparedAdd& out,
+                                    core::uint32 times_mask = time_flags::MTIME);
+
+    // Query disk file last-modification time as unix epoch seconds.
+    static bool get_file_mtime(const std::filesystem::path& path, core::uint64& mtime_out);
+
     // Stage 2 of batch add: one sequential pass that writes SFX stub, archive
     // prefix, every prepared file in vector order, and ENDARC, then atomically
     // replaces arc_path and deletes sources flagged delete_source. Entries in

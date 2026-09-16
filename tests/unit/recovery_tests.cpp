@@ -353,14 +353,8 @@ void test_recovery_writer_damage_roundtrip() {
 
     const bool restored_ok = restored.size() == payload.size() &&
                              std::memcmp(restored.data(), payload.data(), payload.size()) == 0;
-    if (restored_ok) {
-        std::cout << "[PASS] RecoveryWriter damage -> repair -> byte-identical extract\n";
-    } else {
-        std::cout << "[KNOWN-ISSUE] repair() returned success but did not "
-                     "restore corrupted data (damage at archive offset 100 "
-                     "survives extraction). CLI 'r' shows the same. Make this "
-                     "a hard memcmp assert when RecoveryWriter::repair is fixed.\n";
-    }
+    assert(restored_ok);
+    std::cout << "[PASS] RecoveryWriter damage -> repair -> byte-identical extract\n";
 }
 
 // Regression (report M2, splice contract): RecoveryWriter::repair() used to
@@ -513,6 +507,147 @@ void test_rr_thread_determinism() {
     std::cout << "[PASS] RR parity byte-identical across 1 vs 4 fold threads\n";
 }
 
+void test_b10_calculate_parity_buffer_size() {
+    using namespace openrar::recovery;
+    // B10 overflow test: 65536 * 1048576 = 68719476736 (64 GiB) > 2 GiB cap
+    auto overflow = calculate_parity_buffer_size(65536, 1048576);
+    assert(!overflow.has_value());
+
+    // Zero checks
+    assert(!calculate_parity_buffer_size(0, 512).has_value());
+    assert(!calculate_parity_buffer_size(512, 0).has_value());
+    assert(!calculate_parity_buffer_size(0, 0).has_value());
+
+    // Valid sizes within 2 GiB cap
+    auto valid_small = calculate_parity_buffer_size(10, 512);
+    assert(valid_small.has_value());
+    assert(valid_small.value() == 5120);
+
+    auto valid_max = calculate_parity_buffer_size(2048, 1024 * 1024); // 2 GiB exactly
+    assert(valid_max.has_value());
+    assert(valid_max.value() == 2ULL * 1024 * 1024 * 1024);
+
+    auto over_cap = calculate_parity_buffer_size(2049, 1024 * 1024); // > 2 GiB
+    assert(!over_cap.has_value());
+
+    std::cout << "[PASS] calculate_parity_buffer_size overflow and bounds checks\n";
+}
+
+void test_b5_parity_only_corruption() {
+    namespace fs = std::filesystem;
+    fs::path dir = openrar::test::scratch_dir("recovery");
+    fs::path src = dir / "p_only_src.bin";
+    fs::path arc = dir / "p_only.rar";
+    fs::path out = dir / "p_only_out.bin";
+
+    std::error_code ec;
+    fs::remove(src, ec);
+    fs::remove(arc, ec);
+    fs::remove(out, ec);
+
+    constexpr size_t PAYLOAD_SIZE = 64 * 1024;
+    std::vector<core::byte> payload(PAYLOAD_SIZE);
+    for (size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<core::byte>((i * 17 + 3) & 0xFF);
+    }
+    {
+        io::FileStream f;
+        assert(f.open(src, io::FileMode::CreateAlways));
+        assert(f.write(payload.data(), payload.size()) == payload.size());
+    }
+
+    assert(archive::ArchiveMutator::add_file_to_archive(arc, src, "p_only.bin", /*method=*/0));
+    assert(recovery::RecoveryWriter::add_recovery_record(arc, 5));
+
+    // Confirm that the newly created archive entries are completely healthy
+    {
+        archive::ArchiveReader test_r;
+        assert(test_r.open(arc));
+        assert(test_r.test_entry(test_r.entries()[0]));
+    }
+
+    // Corrupt shard 0's stored CRC64 so it fails CRC validation while file data remains untouched
+    {
+        io::FileStream f;
+        assert(f.open(arc, io::FileMode::ReadWrite));
+        std::vector<core::byte> arc_bytes(static_cast<size_t>(f.size()));
+        assert(f.read(arc_bytes.data(), arc_bytes.size()) == arc_bytes.size());
+
+        static const core::byte MAGIC[4] = {'{', 'R', 'B', '}'};
+        size_t shard_pos = std::string::npos;
+        for (size_t i = 0; i + 4 <= arc_bytes.size(); ++i) {
+            if (std::memcmp(arc_bytes.data() + i, MAGIC, 4) == 0) {
+                shard_pos = i;
+                break;
+            }
+        }
+        assert(shard_pos != std::string::npos);
+
+        f.seek(static_cast<core::int64>(shard_pos + 4), io::SeekOrigin::Begin);
+        core::byte bad_crc[8] = {0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0};
+        assert(f.write(bad_crc, 8) == 8);
+    }
+
+    // Repair should recognize that file data is 100% healthy, recompute parity, and rewrite RR
+    assert(recovery::RecoveryWriter::repair(arc));
+
+    // Verify extraction works byte-identically
+    archive::ArchiveReader reader;
+    assert(reader.open(arc));
+    assert(reader.extract_entry(reader.entries()[0], out));
+    reader.close();
+
+    io::FileStream f;
+    assert(f.open(out, io::FileMode::ReadOnly));
+    std::vector<core::byte> restored(static_cast<size_t>(f.size()));
+    assert(f.read(restored.data(), restored.size()) == restored.size());
+    assert(restored.size() == payload.size());
+    assert(std::memcmp(restored.data(), payload.data(), payload.size()) == 0);
+
+    // Verify that the repaired archive's RR is now valid
+    assert(recovery::RecoveryWriter::repair(arc));
+
+    std::cout << "[PASS] Parity-only corruption: recomputed and restored cleanly\n";
+}
+
+void test_b5_unrecoverable_inconsistent_corruption() {
+    namespace fs = std::filesystem;
+    fs::path dir = openrar::test::scratch_dir("recovery");
+    fs::path src = dir / "unrec_src.bin";
+    fs::path arc = dir / "unrec.rar";
+
+    std::error_code ec;
+    fs::remove(src, ec);
+    fs::remove(arc, ec);
+
+    constexpr size_t PAYLOAD_SIZE = 32 * 1024;
+    std::vector<core::byte> payload(PAYLOAD_SIZE, 0xAA);
+    {
+        io::FileStream f;
+        assert(f.open(src, io::FileMode::CreateAlways));
+        assert(f.write(payload.data(), payload.size()) == payload.size());
+    }
+
+    assert(archive::ArchiveMutator::add_file_to_archive(arc, src, "unrec.bin", /*method=*/0));
+    assert(recovery::RecoveryWriter::add_recovery_record(arc, 3));
+
+    // Corrupt bytes across multiple widely separated shards exceeding recovery capacity
+    {
+        io::FileStream f;
+        assert(f.open(arc, io::FileMode::ReadWrite));
+        for (int k = 0; k < 10; ++k) {
+            f.seek(100 + k * 2000, io::SeekOrigin::Begin);
+            core::byte b = 0x55;
+            (void)f.write(&b, 1);
+        }
+    }
+
+    // Repair must return false instead of misreconstructing corrupt data
+    assert(!recovery::RecoveryWriter::repair(arc));
+
+    std::cout << "[PASS] Unrecoverable damage safely rejected without corrupting archive\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -530,6 +665,9 @@ int main() {
     test_repair_reconstructs_padded_prefix();
     test_recovery_writer_damage_roundtrip();
     test_rr_thread_determinism();
+    test_b10_calculate_parity_buffer_size();
+    test_b5_parity_only_corruption();
+    test_b5_unrecoverable_inconsistent_corruption();
     std::cout << "All Milestone 4 Recovery & Reed-Solomon Primitives PASSED!\n";
     return 0;
 }

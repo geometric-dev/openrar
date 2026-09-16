@@ -231,16 +231,22 @@ bool paths_same_file(const std::filesystem::path& a, const std::filesystem::path
 int durable_write_to(const std::filesystem::path& dest,
                      const std::function<int(openrar::io::FileStream&)>& body) {
     std::error_code ec;
-    if (dest.has_parent_path() && !dest.parent_path().empty())
+    if (dest.has_parent_path() && !dest.parent_path().empty()) {
         std::filesystem::create_directories(dest.parent_path(), ec);
+        if (ec) return RAR_ERR_IO; // Fail fast if parent directory cannot be created
+    }
     const std::string suffix =
         ".openrar-tmp." + std::to_string(current_pid()) + ".";
     for (unsigned seq = 0; seq < 10; ++seq) {
         std::filesystem::path tmp = dest;
         tmp += suffix + std::to_string(seq);
-        if (std::filesystem::exists(tmp, ec)) continue; // orphan/collision → next seq
         openrar::io::FileStream f;
-        if (!f.open(tmp, openrar::io::FileMode::CreateNew)) return RAR_ERR_IO;
+        if (!f.open(tmp, openrar::io::FileMode::CreateNew)) {
+            if (f.is_collision_error()) {
+                continue; // Collision on temp file name -> retry with next sequence number
+            }
+            return RAR_ERR_IO; // Fail fast on permission denied, disk full, or other non-collision errors
+        }
         int rc = body(f);
         if (rc != RAR_OK) {
             f.close();
@@ -290,8 +296,29 @@ struct BufferArchiveHandle : ArchiveHandleBase {
         std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
         int rc = ba.extract_all(data.data(), data.size(), files);
         if (rc != RAR_OK) return rc;
+
+        if (files.empty()) {
+            *buf_out_ptr = nullptr;
+            *buf_size_out = 0;
+            *offsets_out_ptr = nullptr;
+            *offsets_count_out = 0;
+            return RAR_OK;
+        }
+
+        // Checked 64-bit multiplication to prevent integer overflow
+        if (files.size() > SIZE_MAX / (sizeof(uint64_t) * 2)) {
+            set_error("oom");
+            return RAR_ERR_NOMEM;
+        }
+
         size_t total = 0;
-        for (auto& f : files) total += f.second.size();
+        for (auto& f : files) {
+            if (f.second.size() > SIZE_MAX - total) {
+                set_error("oom");
+                return RAR_ERR_NOMEM;
+            }
+            total += f.second.size();
+        }
         uint8_t* buf = static_cast<uint8_t*>(std::malloc(total ? total : 1));
         if (!buf) {
             set_error("oom");
@@ -828,8 +855,29 @@ int OPENRAR_DLL_CALL openrar_archive_extract_all(const uint8_t* data, size_t siz
         std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
         int rc = ba.extract_all(data, size, files);
         if (rc != RAR_OK) return rc;
+
+        if (files.empty()) {
+            *buf_out_ptr = nullptr;
+            *buf_size_out = 0;
+            *offsets_out_ptr = nullptr;
+            *offsets_count_out = 0;
+            return RAR_OK;
+        }
+
+        // Checked 64-bit multiplication to prevent integer overflow
+        if (files.size() > SIZE_MAX / (sizeof(uint64_t) * 2)) {
+            set_error("oom");
+            return RAR_ERR_NOMEM;
+        }
+
         size_t total = 0;
-        for (auto& f : files) total += f.second.size();
+        for (auto& f : files) {
+            if (f.second.size() > SIZE_MAX - total) {
+                set_error("oom");
+                return RAR_ERR_NOMEM;
+            }
+            total += f.second.size();
+        }
         uint8_t* buf = static_cast<uint8_t*>(std::malloc(total ? total : 1));
         if (!buf) {
             set_error("oom");
@@ -867,7 +915,7 @@ int OPENRAR_DLL_CALL openrar_archive_create(const uint8_t* const* paths_arr,
                                             uint32_t file_count, int method, uint32_t window_log2,
                                             uint8_t** out_ptr, size_t* out_len) {
     try {
-        if (!paths_arr || !data_arr || !sizes_arr || !out_ptr || !out_len) {
+        if ((file_count > 0 && (!paths_arr || !data_arr || !sizes_arr)) || !out_ptr || !out_len) {
             set_error("null argument");
             return RAR_ERR_INVALID_ARG;
         }

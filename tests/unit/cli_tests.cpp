@@ -265,6 +265,69 @@ void test_cli_mt_batch_equivalence() {
     std::cout << "[PASS] CLI -mt1/-mt4/-mt0 batch add extracts byte-identical\n";
 }
 
+void test_cli_overwrite_modes() {
+    // B8 regression: OverwriteMode::Prompt was the documented default but no
+    // query was ever implemented, and -y was parsed into a flag nothing read.
+    // The interactive prompt needs a pty, which a batch runner cannot drive —
+    // the batch-visible behaviors are tested here: -o- keeps the existing
+    // file, -y overwrites, and the non-interactive default (stdin is not a
+    // tty under std::system) auto-answers Yes like scripted callers expect.
+    namespace fs = std::filesystem;
+    fs::path src = "build/cli_ov_src.txt";
+    fs::path arc = "build/cli_ov.rar";
+    fs::path out = "build/cli_ov_out";
+    fs::path target = out / "cli_ov_src.txt";
+    std::error_code ec;
+    fs::remove(src, ec);
+    fs::remove(arc, ec);
+    fs::remove_all(out, ec);
+    fs::create_directories(out);
+
+    // The archive is built via the mutator so the stored entry name is exactly
+    // "cli_ov_src.txt", independent of CLI path-normalization rules.
+    { std::ofstream(src) << "VERSION-ONE"; }
+    assert(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "cli_ov_src.txt"));
+
+    auto extract = [&](const char* extra_switch) {
+        return std::system((get_cli_path() + " x " + arc.string() + " " + out.string() + " " +
+                            extra_switch + " > nul 2>&1")
+                               .c_str());
+    };
+    auto read_target = [&]() {
+        std::ifstream f(target, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+
+    int res = extract("");
+    assert(res == 0);
+    assert(read_target() == "VERSION-ONE");
+
+    // Simulate a locally-edited file on disk, then check each mode.
+    { std::ofstream(target, std::ios::binary) << "LOCAL-EDIT"; }
+
+    // -o-: never overwrite — the on-disk edit must survive.
+    res = extract("-o-");
+    assert(res == 0);
+    assert(read_target() == "LOCAL-EDIT");
+
+    // -y: assume Yes on the overwrite query — the archive version must win.
+    res = extract("-y");
+    assert(res == 0);
+    assert(read_target() == "VERSION-ONE");
+
+    // Default with non-interactive stdin: auto-Yes (backward-compatible with
+    // the pre-query behavior every scripted caller relies on).
+    { std::ofstream(target, std::ios::binary) << "LOCAL-EDIT"; }
+    res = extract("");
+    assert(res == 0);
+    assert(read_target() == "VERSION-ONE");
+
+    fs::remove(src, ec);
+    fs::remove(arc, ec);
+    fs::remove_all(out, ec);
+    std::cout << "[PASS] CLI overwrite modes: -o- keeps, -y overwrites, non-tty default overwrites\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -279,6 +342,7 @@ int main() {
     test_cli_quiet_list_missing_archive_fails();
     test_cli_list_sanitizes_esc_entry_name();
     test_cli_mt_batch_equivalence();
+    test_cli_overwrite_modes();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
 }

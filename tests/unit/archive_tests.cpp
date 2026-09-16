@@ -544,14 +544,14 @@ void test_links_to_dirs_leaves_preexisting_links() {
     assert(reader.open(arc));
     assert(reader.entries().size() == 1);
 
-    // Extraction destination sits INSIDE the pre-existing link: the old code
-    // deleted the link while replacing the parent chain with real dirs.
-    assert(reader.extract_entry(reader.entries()[0], link / "x.txt"));
+    // Under B3 untrusted symlink policy, extraction into a destination inside a
+    // pre-existing symlink parent must be rejected (never followed), while leaving the link intact.
+    assert(!reader.extract_entry(reader.entries()[0], link / "x.txt"));
 
     auto st = fs::symlink_status(link, ec);
     assert(!ec);
-    assert(fs::is_symlink(st));               // user's link survived
-    assert(fs::exists(target / "x.txt", ec)); // write went through it
+    assert(fs::is_symlink(st));                // user's link survived
+    assert(!fs::exists(target / "x.txt", ec)); // write did not go through it
 
     reader.close();
     fs::remove_all(link, ec);

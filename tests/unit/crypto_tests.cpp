@@ -386,6 +386,42 @@ void test_crc64_xz() {
     std::cout << "[PASS] CRC-64/XZ known-answer + streaming\n";
 }
 
+void test_b6_padded_vint() {
+    // 4-byte VINT encoding 2 MiB (2,097,152 = 0x200000):
+    // 0x200000 in 7-bit chunks (LSB first): 0x80, 0x80, 0x80, 0x01
+    const core::byte vint_2mib[] = {0x80, 0x80, 0x80, 0x01};
+    core::uint64 val = 0;
+    size_t read_bytes = 0;
+    bool ok = core::read_vint(vint_2mib, sizeof(vint_2mib), val, read_bytes);
+    assert(ok);
+    assert(val == 2097152);
+    assert(read_bytes == 4);
+
+    // Non-canonical padded VINT (5 bytes encoding 42: 0xAA, 0x80, 0x80, 0x80, 0x00)
+    const core::byte padded_vint_5[] = {0xAA, 0x80, 0x80, 0x80, 0x00};
+    val = 0;
+    read_bytes = 0;
+    ok = core::read_vint(padded_vint_5, sizeof(padded_vint_5), val, read_bytes);
+    assert(ok);
+    assert(val == 42);
+    assert(read_bytes == 5);
+
+    // 10-byte valid VINT (max length of 64-bit VINT)
+    const core::byte max_vint_10[] = {0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01};
+    val = 0;
+    read_bytes = 0;
+    ok = core::read_vint(max_vint_10, sizeof(max_vint_10), val, read_bytes);
+    assert(ok);
+    assert(read_bytes == 10);
+
+    // 11-byte invalid VINT (exceeds 10 bytes)
+    const core::byte invalid_vint_11[] = {0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01};
+    ok = core::read_vint(invalid_vint_11, sizeof(invalid_vint_11), val, read_bytes);
+    assert(!ok);
+
+    std::cout << "[PASS] B6: 2 MiB and non-canonical padded VINTs up to 10 bytes\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -397,6 +433,7 @@ int main() {
     std::cout << "Running Clean-Room Milestone 1 Primitives Verification...\n";
     test_types_and_endian();
     test_vint();
+    test_b6_padded_vint();
     test_crc32();
     test_sha256();
     test_blake2sp();

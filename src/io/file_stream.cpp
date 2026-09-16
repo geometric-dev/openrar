@@ -84,8 +84,10 @@ bool FileStream::open(const std::filesystem::path& path, FileMode mode) {
 
     if (h == INVALID_HANDLE_VALUE) {
         handle_ = nullptr;
+        last_error_ = static_cast<int>(GetLastError());
         return false;
     }
+    last_error_ = 0;
     handle_ = h;
     return true;
 #else
@@ -116,10 +118,20 @@ bool FileStream::open(const std::filesystem::path& path, FileMode mode) {
     int fd = ::open(path.string().c_str(), flags, perm);
     if (fd < 0) {
         handle_ = nullptr;
+        last_error_ = errno;
         return false;
     }
+    last_error_ = 0;
     handle_ = reinterpret_cast<void*>(static_cast<intptr_t>(fd));
     return true;
+#endif
+}
+
+bool FileStream::is_collision_error() const {
+#ifdef _WIN32
+    return last_error_ == ERROR_FILE_EXISTS || last_error_ == ERROR_ALREADY_EXISTS;
+#else
+    return last_error_ == EEXIST;
 #endif
 }
 

@@ -3,10 +3,6 @@
 Basic data structures of the archive format introduced in RAR 5.0.
 For algorithms and format details see the RAR5 format specification documents in `docs/spec/`.
 
-> See also `docs/spec/05-recovery.md` for recovery record (RR), `.rev` file
-> formats (§4), and Reed-Solomon codecs GF(256) `0x11D` / GF(65536) `0x1100B` with
-> Cauchy+SSE (§5) and threading.
-
 ## Contents
 
 - Data types
