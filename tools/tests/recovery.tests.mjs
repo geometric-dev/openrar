@@ -15,6 +15,7 @@ import {
   freshDir,
   makeFixtureTree,
   runTool,
+  oracleAvailable,
 } from './helpers.mjs';
 import { parseArchive } from '../rar5-coverage.js';
 
@@ -45,9 +46,11 @@ describe('RAR 5.0 Recovery Records (-rr) & Repair (r)', () => {
     assert.equal(rrBlock.file.name, 'RR');
     assert.ok(rrBlock.dataSize > 64, 'RR payload must contain struct header and parity stream');
 
-    // 3. Dual-oracle test with WinRAR
-    const resWinTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-    assert.equal(resWinTest.code, 0, `WinRAR test failed: ${resWinTest.output}`);
+    // 3. Dual-oracle test with WinRAR (oracle-gated)
+    if (oracleAvailable()) {
+      const resWinTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.equal(resWinTest.code, 0, `WinRAR test failed: ${resWinTest.output}`);
+    }
 
     // 4. Listing shows recovery record
     const resList = runTool(OUR_EXE, ['lt', arc], out);
@@ -72,17 +75,22 @@ describe('RAR 5.0 Recovery Records (-rr) & Repair (r)', () => {
     corruptBuf[101] ^= 0xaa;
     writeFileSync(arc, corruptBuf);
 
-    // Verify WinRAR test fails on corrupted archive
-    const resDamaged = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-    assert.notEqual(resDamaged.code, 0, 'Damaged archive should fail WinRAR test');
+    // Verify WinRAR test fails on corrupted archive (oracle-gated; the self
+    // repair + extraction below still verify the whole path everywhere)
+    if (oracleAvailable()) {
+      const resDamaged = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.notEqual(resDamaged.code, 0, 'Damaged archive should fail WinRAR test');
+    }
 
     // 3. Run OpenRAR repair command (r)
     const resRepair = runTool(OUR_EXE, ['r', '-y', arc], out);
     assert.equal(resRepair.code, 0, `Repair failed: ${resRepair.output}`);
 
-    // 4. Verify repaired archive passes WinRAR test
-    const resRepairedTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-    assert.equal(resRepairedTest.code, 0, `Repaired archive failed WinRAR test: ${resRepairedTest.output}`);
+    // 4. Verify repaired archive passes WinRAR test (oracle-gated)
+    if (oracleAvailable()) {
+      const resRepairedTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.equal(resRepairedTest.code, 0, `Repaired archive failed WinRAR test: ${resRepairedTest.output}`);
+    }
 
     // 5. Verify byte-identical file extraction
     const extDir = freshDir('rec-rep-ext');
@@ -111,9 +119,11 @@ describe('RAR 5.0 Recovery Records (-rr) & Repair (r)', () => {
     const resRep = runTool(OUR_EXE, ['r', '-y', arc], out);
     assert.equal(resRep.code, 0, `Repair failed: ${resRep.output}`);
 
-    // 4. Verify WinRAR test passes
-    const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-    assert.equal(resWin.code, 0, `WinRAR test on repaired archive failed: ${resWin.output}`);
+    // 4. Verify WinRAR test passes (oracle-gated)
+    if (oracleAvailable()) {
+      const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.equal(resWin.code, 0, `WinRAR test on repaired archive failed: ${resWin.output}`);
+    }
 
     // 5. Extract and verify full fixture tree
     const extDir = freshDir('rec-mf-ext');
