@@ -182,6 +182,10 @@ endif()
 if(NOT EMSCRIPTEN)
     add_executable(openrar src/cli/main.cpp)
     target_link_libraries(openrar PRIVATE openrar_core)
+    # Single source of truth for the CLI banner version (Q2): the CMake
+    # project version. main.cpp has an OFF fallback for bare manual builds.
+    target_compile_definitions(openrar PRIVATE
+        OPENRAR_CLI_VERSION="${PROJECT_VERSION}")
     if(OPENRAR_THREAD_LIB)
         target_link_libraries(openrar PRIVATE ${OPENRAR_THREAD_LIB})
     endif()
@@ -330,14 +334,17 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(golden_fixtures_tests tests/unit/golden_fixtures_tests.cpp)
     target_compile_definitions(golden_fixtures_tests PRIVATE
         OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    # BufferArchive symbols are available in both configurations — compiled
+    # directly into this test when the lean build excludes them from core, or
+    # provided by openrar_core when ON. The macro gates the golden test's own
+    # BufferArchive verification block, so it is always defined here.
+    target_compile_definitions(golden_fixtures_tests PRIVATE OPENRAR_INMEM_ARCHIVE)
     if(NOT OPENRAR_INMEM_ARCHIVE)
         # Lean default build: buffer_archive.cpp is not in openrar_core, so
         # compile it directly into this test. With OPENRAR_INMEM_ARCHIVE=ON
-        # (CI) the core provides the symbols and adding it here would be a
+        # the core provides the symbols and adding it here would be a
         # duplicate-definition link error, hence the conditional.
         target_sources(golden_fixtures_tests PRIVATE src/archive/buffer_archive.cpp)
-    else()
-        target_compile_definitions(golden_fixtures_tests PRIVATE OPENRAR_INMEM_ARCHIVE)
     endif()
     add_openrar_test(cli_tests tests/unit/cli_tests.cpp)
     # cli_tests shells out to the built CLI. It used to guess the location from

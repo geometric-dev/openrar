@@ -94,7 +94,12 @@ inline bool sw_starts(std::string_view sw, std::string_view prefix) {
 
 void print_banner() {
     if (g_quiet_mode) return;
-    std::cout << "\nOpenRAR 1.0 (x64) Open Source Archiver\n"
+    // OPENRAR_CLI_VERSION comes from the CMake project version; the fallback
+    // only serves bare manual compiles that bypass the build system.
+#ifndef OPENRAR_CLI_VERSION
+#define OPENRAR_CLI_VERSION "1.5.0"
+#endif
+    std::cout << "\nOpenRAR " << OPENRAR_CLI_VERSION << " Open Source Archiver\n"
               << "Copyright (c) 2026 OpenRAR Project\n";
     // Acceleration line: shows which hardware kernels the dispatchers
     // actually selected on this machine, so speed differences between
@@ -135,11 +140,10 @@ void print_help() {
               << "  u             Update files in archive\n"
               << "  x             Extract files with full paths\n\n"
               << "<Switches>\n"
-              << "  -ed           Do not add empty directories\n"
+              << "  -ed           Do not store directory records\n"
               << "  -ep           Exclude paths from names\n"
               << "  -hp<p>        Encrypt both file data and headers\n"
               << "  -m<0..5>      Set compression level (0-store...3-default...5-maximal)\n"
-              << "  -ed           Do not store directory records\n"
               << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto)\n"
               << "  -ol           Save symbolic links as the link instead of the file\n"
               << "  -o+ / -o-     Overwrite all existing files / never overwrite (default: ask)\n"
