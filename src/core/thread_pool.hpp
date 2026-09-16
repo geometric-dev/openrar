@@ -117,6 +117,14 @@ private:
 // complete (every index is attempted exactly once). With a single-worker
 // pool this degenerates to a serial loop on the calling thread, keeping
 // -mt1 runs free of thread traffic.
+//
+// Lifetime contract (audited: no dangling-reference hazard): because this
+// call BLOCKS until every submitted task has run, the loop-scope locals
+// below (mu, done_cv, remaining, ...) and any stack data the callee captures
+// by reference provably outlive all tasks; the wait predicate rechecks the
+// atomic, so there is no lost wakeup either. The flip side: nothing that
+// outlives this call may depend on pool state mid-run, and callers must not
+// destroy the pool while a parallel_for is in flight.
 template <class F> void parallel_for(ThreadPool& pool, size_t begin, size_t end, F&& f) {
     if (begin >= end) return;
     if (pool.worker_count() <= 1) {
@@ -154,7 +162,9 @@ template <class F> void parallel_for(ThreadPool& pool, size_t begin, size_t end,
 // where the serial path held one file at a time. Callers acquire `bytes`
 // before submitting a job and release when its buffers are freed; acquires
 // larger than the total budget must never be issued (caller clamps to the
-// largest single file).
+// largest single file) — an oversized acquire blocks forever because its
+// predicate can never be satisfied. There is no counter overflow in the
+// acquire path itself: the predicate guards the subtraction (audited Q6).
 class ByteBudget {
 public:
     explicit ByteBudget(uint64 budget) : remaining_(budget) {}
