@@ -1,10 +1,9 @@
 // Runner for the OpenRAR writer test suite (node --test).
 //
 // Usage:
-//   node tools/run-tests.cjs              # full suite (Windows + WinRAR local)
+//   node tools/run-tests.cjs              # full suite (11 suites; CI runs this)
 //   node tools/run-tests.cjs format roundtrip parity
 //                                         # only suites matching these prefixes
-//                                         # (the WinRAR-independent subset CI runs)
 //
 // Environment:
 //   OPENRAR_EXE  path to the openrar binary (default: build-tree candidates)
@@ -38,6 +37,8 @@ const files = [
   path.join(repo, 'tools', 'tests', 'filters.tests.mjs'),
   // Encryption (-p / -hp)              [skip-guarded until implemented]
   path.join(repo, 'tools', 'tests', 'encryption.tests.mjs'),
+  // C ABI <-> JS/TS error-code sync (no binary needed)
+  path.join(repo, 'tools', 'tests', 'errorsync.tests.mjs'),
 ];
 
 const filters = process.argv.slice(2);

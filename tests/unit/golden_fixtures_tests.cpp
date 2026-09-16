@@ -23,6 +23,8 @@
 // CMake compiles buffer_archive.cpp directly into this target.
 
 #include "../../src/archive/archive_reader.hpp"
+#include "../../src/archive/archive_mutator.hpp"
+#include "../../src/archive/rar_errors.hpp"
 #include "../../src/crypto/crc32.hpp"
 #include "../../src/core/types.hpp"
 
@@ -227,6 +229,74 @@ void test_golden_hello5_hp() {
     std::cout << "[PASS] golden hello5_hp.rar (header encryption)\n";
 }
 
+void test_golden_hello5_p_streaming_verify() {
+    // Tweaked-checksum regression (0x0002, encryption extra): hello5_p was
+    // built with the tweaked-checksum flag set, so its header data_crc32 is
+    // key-dependent, NOT the plaintext CRC. The streaming verify path used to
+    // compare it against the decoded plaintext and failed valid archives
+    // with RAR_ERR_CRC_MISMATCH (fail-closed false failure). With the 0x0002
+    // exception it must accept the entry — the PswCheck authenticated the key.
+    std::filesystem::path arc = FIXTURES_DIR / "hello5_p.rar";
+    archive::ArchiveReader reader;
+    assert(reader.open(arc, PASSWORD));
+    const archive::ArchiveEntry* hello = find_entry(reader, "hello.txt");
+    assert(hello);
+    assert(hello->header.is_encrypted);
+    assert((hello->header.crypt_flags & 0x0002) != 0); // fixture really is tweaked
+    const size_t hello_index =
+        static_cast<size_t>(hello - reader.entries().data());
+    archive::ReaderHooks hooks{};
+    assert(reader.test_entry_stream(hello_index, hooks) == archive::RAR_OK);
+
+    // Negative control on the SAME path: an archive whose writer stored the
+    // plaintext CRC for an encrypted entry (our writer, crypt_flags 0x01)
+    // must still be fully verified — corrupting its payload yields
+    // RAR_ERR_CRC_MISMATCH, not a silent accept.
+    namespace fs = std::filesystem;
+    fs::path src = fs::temp_directory_path() / "openrar_tweak_src.bin";
+    fs::path plain = fs::temp_directory_path() / "openrar_tweak_plain.rar";
+    fs::path corrupt = fs::temp_directory_path() / "openrar_tweak_corrupt.rar";
+    std::error_code ec;
+    fs::remove(plain, ec);
+    fs::remove(corrupt, ec);
+    {
+        std::ofstream f(src, std::ios::binary);
+        f << std::string(2048, 'K') << "ENCRYPTED-CRC-CONTROL";
+    }
+    assert(archive::ArchiveMutator::add_file_to_archive(plain, src, "ctl.bin", 0, {}, 0,
+                                                        PASSWORD));
+    {
+        archive::ArchiveReader probe;
+        assert(probe.open(plain, PASSWORD));
+        const archive::ArchiveEntry* e = find_entry(probe, "ctl.bin");
+        assert(e && e->header.is_encrypted);
+        assert((e->header.crypt_flags & 0x0002) == 0); // our writer: plaintext CRC
+        std::ifstream in(plain, std::ios::binary);
+        std::vector<core::byte> bytes((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+        in.close();
+        const core::uint64 flip = e->data_offset + e->data_size / 2;
+        bytes[static_cast<size_t>(flip)] ^= 0xFF;
+        std::ofstream out(corrupt, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+    }
+    {
+        archive::ArchiveReader broken;
+        assert(broken.open(corrupt, PASSWORD));
+        const archive::ArchiveEntry* e = find_entry(broken, "ctl.bin");
+        assert(e);
+        const size_t idx = static_cast<size_t>(e - broken.entries().data());
+        archive::ReaderHooks hooks{};
+        assert(broken.test_entry_stream(idx, hooks) == archive::RAR_ERR_CRC_MISMATCH);
+    }
+    fs::remove(src, ec);
+    fs::remove(plain, ec);
+    fs::remove(corrupt, ec);
+    std::cout << "[PASS] golden hello5_p streaming verify (tweaked checksums accepted, "
+                 "plaintext CRC still enforced)\n";
+}
+
 void test_golden_hello4_rejected() {
     std::filesystem::path arc = FIXTURES_DIR / "hello4.rar";
     archive::ArchiveReader reader;
@@ -256,6 +326,7 @@ int main() {
     test_golden_hello5();
     test_golden_hello5_p();
     test_golden_hello5_hp();
+    test_golden_hello5_p_streaming_verify();
     test_golden_hello4_rejected();
     std::cout << "All golden-fixture tests PASSED!\n";
     return 0;

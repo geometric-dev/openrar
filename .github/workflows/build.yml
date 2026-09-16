@@ -176,7 +176,10 @@ jobs:
             build/openrar64/Release/openrar.exe
             build/openrar64/openrar.exe
             build/openrar
-          if-no-files-found: warn
+          # error, not warn: the release-assets job zips whatever lands in the
+          # artifact, so a silently-empty artifact would publish an empty
+          # release zip with a green build (R1 silent-degradation class).
+          if-no-files-found: error
 
   linux-arm64-qemu:
     name: linux-arm64 (gcc cross, QEMU run)

@@ -57,6 +57,11 @@ bool ReedSolomon16::init(core::uint32 data_count, core::uint32 rec_count,
             return false; // Not recoverable
         }
 
+        // B10-class sizing note: ne_/nd_/nr_ are bounded by init()'s
+        // nd_ + nr_ <= 65535 check, so these products stay far below 2^32
+        // elements — but they ARE archive-controlled (crafted .rev/RR
+        // headers). If that bound is ever loosened, route the product
+        // through an overflow-checked helper first.
         mx_.resize(ne_ * nd_);
         make_decoder_matrix();
         invert_decoder_matrix();

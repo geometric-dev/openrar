@@ -21,12 +21,43 @@
 #include <windows.h>
 #endif
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <cctype>
 #include <filesystem>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace openrar::recovery {
+
+// Unique temp name for repair/RR splicing. Same policy as the mutator's
+// mutation_temp_path (L8): a fixed, predictable temp name opened with
+// CreateAlways lets a local attacker pre-plant a symlink/hardlink at the
+// well-known path and have the open follow it and truncate an arbitrary
+// user-writable file. A pid+timestamp+counter name is unguessable, and
+// CreateNew refuses anything already there.
+std::filesystem::path recovery_temp_path(const std::filesystem::path& arc_path,
+                                         const char* tag) {
+    static std::atomic<core::uint32> counter{0};
+#ifdef _WIN32
+    const core::uint64 pid = static_cast<core::uint64>(GetCurrentProcessId());
+#else
+    const core::uint64 pid = static_cast<core::uint64>(getpid());
+#endif
+    const core::uint64 millis =
+        static_cast<core::uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::steady_clock::now().time_since_epoch())
+                                      .count());
+    std::filesystem::path p = arc_path;
+    p += std::string(".") + tag + "." + std::to_string(pid) + "-" + std::to_string(millis) + "-" +
+         std::to_string(counter.fetch_add(1));
+    return p;
+}
+
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // RAR 5.0 inline recovery-record layout.
@@ -525,10 +556,9 @@ bool splice_repair(const std::filesystem::path& arc_path,
         return false;
     }
 
-    std::filesystem::path tmp_path = arc_path;
-    tmp_path += ".rep_tmp";
+    std::filesystem::path tmp_path = recovery_temp_path(arc_path, "rep_tmp");
     io::FileStream out;
-    if (!out.open(tmp_path, io::FileMode::CreateAlways)) {
+    if (!out.open(tmp_path, io::FileMode::CreateNew)) {
         in.close();
         return false;
     }
@@ -571,10 +601,9 @@ bool splice_repair_with_rr(const std::filesystem::path& arc_path,
                            const std::vector<core::byte>& repaired_prefix,
                            const std::vector<core::byte>& new_rr_data_area,
                            core::uint32 rec_pct) {
-    std::filesystem::path tmp_path = arc_path;
-    tmp_path += ".rep_tmp";
+    std::filesystem::path tmp_path = recovery_temp_path(arc_path, "rep_tmp");
     io::FileStream out;
-    if (!out.open(tmp_path, io::FileMode::CreateAlways)) return false;
+    if (!out.open(tmp_path, io::FileMode::CreateNew)) return false;
 
     if (!repaired_prefix.empty()) {
         if (out.write(repaired_prefix.data(), repaired_prefix.size()) != repaired_prefix.size()) {
@@ -735,6 +764,16 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path, co
     };
     std::vector<RevOut> outs(static_cast<size_t>(nr));
 
+    // Early-failure cleanup for the creation loop below: iterations < up_to
+    // already created temp files, and the post-fold !ok cleanup does not run
+    // on these paths.
+    auto remove_created_rev_temps = [&outs](size_t up_to) {
+        std::error_code cec;
+        for (size_t k = 0; k <= up_to && k < outs.size(); ++k) {
+            outs[k].file.close();
+            std::filesystem::remove(outs[k].tmp_path, cec);
+        }
+    };
     for (core::uint32 j = 0; j < nr; ++j) {
         // .rev files restart the numbering: out.part01.rar -> out.part01.rev
         std::filesystem::path base = chain[0];
@@ -766,15 +805,18 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path, co
             rev_name = stem + ".r" + buf + ".rev";
         }
         outs[j].final_path = dir.empty() ? std::filesystem::path(rev_name) : dir / rev_name;
-        outs[j].tmp_path = outs[j].final_path;
-        outs[j].tmp_path += ".rev_tmp";
-        std::error_code ec;
-        std::filesystem::remove(outs[j].tmp_path, ec);
-        if (!outs[j].file.open(outs[j].tmp_path, io::FileMode::CreateAlways)) return false;
+        // Unique temp name (L8 policy, see recovery_temp_path): the old fixed
+        // ".rev_tmp" name plus CreateAlways followed a pre-planted symlink.
+        outs[j].tmp_path = recovery_temp_path(outs[j].final_path, "rev_tmp");
+        if (!outs[j].file.open(outs[j].tmp_path, io::FileMode::CreateNew)) {
+            remove_created_rev_temps(j);
+            return false;
+        }
         // Reserve the header area up front; the payload rounds append behind
         // it and the real header (with the payload CRCs) is patched in below.
         std::vector<core::byte> placeholder(16 + body_size, 0);
         if (outs[j].file.write(placeholder.data(), placeholder.size()) != placeholder.size()) {
+            remove_created_rev_temps(j);
             return false;
         }
     }
@@ -913,10 +955,9 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     // main header + all non-RR file/service entries. The current file offset
     // after that write IS the `archive_size` recorded inside each parity
     // shard's structured header.
-    std::filesystem::path tmp_path = arc_path;
-    tmp_path += ".rr_tmp";
+    std::filesystem::path tmp_path = recovery_temp_path(arc_path, "rr_tmp");
     io::FileStream out;
-    if (!out.open(tmp_path, io::FileMode::CreateAlways)) {
+    if (!out.open(tmp_path, io::FileMode::CreateNew)) {
         reader.close();
         return false;
     }

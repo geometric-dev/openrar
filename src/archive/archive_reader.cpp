@@ -779,8 +779,18 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
 
     // Hash selection mirrors test_entry: a present BLAKE2sp record is
     // authoritative; the header CRC32 beside it is not evaluated.
-    const bool use_blake = entry.header.has_blake2sp;
-    const bool use_crc = !use_blake && entry.header.has_crc32;
+    // Tweaked-checksum exception (RAR5-FORMAT.md, encryption extra 0x0002):
+    // when the writer marked the checksums as key-dependent, the stored
+    // value is NOT the plaintext hash and must not be compared here — the
+    // PswCheck embedded in the archive already authenticates the decryption
+    // key. Skipping keeps valid third-party encrypted archives from failing
+    // with a false RAR_ERR_CRC_MISMATCH (they were fail-closed before).
+    // Our own writer never sets 0x0002 — it stores the plaintext CRC — so
+    // its encrypted output stays fully verified on this path.
+    const bool tweaked_checksums =
+        entry.header.is_encrypted && (entry.header.crypt_flags & 0x0002) != 0;
+    const bool use_blake = entry.header.has_blake2sp && !tweaked_checksums;
+    const bool use_crc = !use_blake && entry.header.has_crc32 && !tweaked_checksums;
     crypto::Blake2sp b2;
     crypto::Crc32 crc;
     uint64_t produced = 0;
@@ -1589,23 +1599,49 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
     }
 
     if (entry.in_memory) {
+        // Currently unreachable (no producer sets in_memory) but kept
+        // consistent with the file paths: same write checks, same hash
+        // policy — so a future producer cannot reintroduce the
+        // verification asymmetry silently.
         if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
         FileUnlinker unlinker(dest_path, keep_broken_);
         io::FileStream out;
         if (!out.open(dest_path, io::FileMode::CreateAlways)) return false;
         unlinker.armed = true;
+        const bool m_use_blake = entry.header.has_blake2sp;
+        const bool m_use_crc = !m_use_blake && entry.header.has_crc32;
+        crypto::Blake2sp m_b2;
+        crypto::Crc32 m_crc;
         if (entry.header.method == 0) {
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > entry.memory_data.size()) write_len = entry.memory_data.size();
-            out.write(entry.memory_data.data(), write_len);
+            if (out.write(entry.memory_data.data(), write_len) != write_len) {
+                out.close();
+                return false;
+            }
+            if (m_use_blake) m_b2.update(entry.memory_data.data(), write_len);
+            if (m_use_crc) m_crc.update(entry.memory_data.data(), write_len);
         } else {
             auto cb = [&](const core::byte* data, size_t size) -> bool {
+                if (m_use_blake) m_b2.update(data, size);
+                if (m_use_crc) m_crc.update(data, size);
                 return out.write(data, size) == size;
             };
             if (!decode_compressed(entry, entry.memory_data.data(), entry.memory_data.size(), cb)) {
                 out.close();
                 return false;
             }
+        }
+        if (m_use_blake) {
+            core::byte digest[32];
+            m_b2.finish(digest);
+            if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) {
+                out.close();
+                return false;
+            }
+        } else if (m_use_crc && m_crc.get() != entry.header.data_crc32) {
+            out.close();
+            return false;
         }
         out.close();
         unlinker.dismissed = true;
@@ -1656,11 +1692,18 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
             return false;
         }
 
-        // Encrypted entries cannot be CRC-verified here: per the RAR5 spec
-        // the header CRC32 field of encrypted entries does not hold the
-        // plaintext CRC (see golden_fixtures_tests.cpp header note), so
-        // correctness is proven by the decryption itself + byte comparison
-        // upstream. Keep the write checked (B9) and move on.
+        // Encrypted-entry verification: when the writer stored the plaintext
+        // CRC (our writer does — crypt_flags without 0x0002) it is comparable
+        // and verified below. When the tweaked-checksum flag (0x0002, see
+        // RAR5-FORMAT.md) is set, the stored value is key-dependent and not
+        // comparable — the PswCheck above already authenticated the key, and
+        // stream_payload applies the same exception.
+        const bool tweaked_checksums = (entry.header.crypt_flags & 0x0002) != 0;
+        const bool v_use_blake = entry.header.has_blake2sp && !tweaked_checksums;
+        const bool v_use_crc = !v_use_blake && entry.header.has_crc32 && !tweaked_checksums;
+        crypto::Blake2sp v_b2;
+        crypto::Crc32 v_crc;
+
         if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
         FileUnlinker unlinker(dest_path, keep_broken_);
         io::FileStream out;
@@ -1673,14 +1716,29 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
                 out.close();
                 return false;
             }
+            if (v_use_blake) v_b2.update(cipher.data(), write_len);
+            if (v_use_crc) v_crc.update(cipher.data(), write_len);
         } else {
             auto cb = [&](const core::byte* data, size_t size) -> bool {
+                if (v_use_blake) v_b2.update(data, size);
+                if (v_use_crc) v_crc.update(data, size);
                 return out.write(data, size) == size;
             };
             if (!decode_compressed(entry, cipher.data(), cipher.size(), cb)) {
                 out.close();
                 return false;
             }
+        }
+        if (v_use_blake) {
+            core::byte digest[32];
+            v_b2.finish(digest);
+            if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) {
+                out.close();
+                return false;
+            }
+        } else if (v_use_crc && v_crc.get() != entry.header.data_crc32) {
+            out.close();
+            return false;
         }
         out.close();
         unlinker.dismissed = true;
@@ -1704,10 +1762,32 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
     }
     unlinker.armed = true;
 
+    // Verify the decoded stream while writing (verification-asymmetry fix):
+    // the stored path and the streaming path both refuse corrupt payload, so
+    // the compressed path must not silently write wrong bytes and report OK.
+    // Hash policy matches stream_payload/test_entry: BLAKE2sp authoritative
+    // when present, CRC32 otherwise.
+    const bool v_use_blake = entry.header.has_blake2sp;
+    const bool v_use_crc = !v_use_blake && entry.header.has_crc32;
+    crypto::Blake2sp v_b2;
+    crypto::Crc32 v_crc;
     auto cb = [&](const core::byte* data, size_t size) -> bool {
+        if (v_use_blake) v_b2.update(data, size);
+        if (v_use_crc) v_crc.update(data, size);
         return out.write(data, size) == size;
     };
     if (!decode_compressed(entry, packed.data(), packed.size(), cb)) {
+        out.close();
+        return false;
+    }
+    if (v_use_blake) {
+        core::byte digest[32];
+        v_b2.finish(digest);
+        if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) {
+            out.close();
+            return false; // FileUnlinker removes the partial output
+        }
+    } else if (v_use_crc && v_crc.get() != entry.header.data_crc32) {
         out.close();
         return false;
     }
@@ -1752,9 +1832,13 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
     if (!entry.extents.empty()) {
         // Multivolume store: stitch extents. Same payload verification as the
         // contiguous path below — corrupt stored data is an extraction
-        // failure, never a silent successful write of wrong bytes.
+        // failure, never a silent successful write of wrong bytes. BLAKE2sp
+        // is authoritative when present (some third-party writers store it
+        // instead of CRC32); CRC32 otherwise.
+        crypto::Blake2sp blake;
         crypto::Crc32 crc;
-        const bool use_crc = entry.header.has_crc32;
+        const bool use_blake = entry.header.has_blake2sp;
+        const bool use_crc = !use_blake && entry.header.has_crc32;
         for (auto& e : entry.extents) {
             io::FileStream vs;
             if (!vs.open(e.volume_path, io::FileMode::ReadOnly)) {
@@ -1775,12 +1859,19 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
                     out.close();
                     return false;
                 }
+                if (use_blake) blake.update(buf, take);
                 if (use_crc) crc.update(buf, take);
                 remaining -= take;
             }
         }
         out.close();
-        if (use_crc && crc.get() != entry.header.data_crc32) return false;
+        if (use_blake) {
+            core::byte digest[32];
+            blake.finish(digest);
+            if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) return false;
+        } else if (use_crc && crc.get() != entry.header.data_crc32) {
+            return false;
+        }
         unlinker.dismissed = true;
         return true;
     }
@@ -1788,8 +1879,10 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
     stream_.seek(static_cast<core::int64>(entry.data_offset), io::SeekOrigin::Begin);
     core::byte buf[8192];
     core::uint64 remaining = entry.data_size;
+    crypto::Blake2sp blake;
     crypto::Crc32 crc;
-    const bool use_crc = entry.header.has_crc32;
+    const bool use_blake = entry.header.has_blake2sp;
+    const bool use_crc = !use_blake && entry.header.has_crc32;
 
     while (remaining > 0) {
         size_t take =
@@ -1802,12 +1895,17 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
             out.close();
             return false;
         }
+        if (use_blake) blake.update(buf, take);
         if (use_crc) crc.update(buf, take);
         remaining -= take;
     }
 
     out.close();
-    if (use_crc && crc.get() != entry.header.data_crc32) {
+    if (use_blake) {
+        core::byte digest[32];
+        blake.finish(digest);
+        if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) return false;
+    } else if (use_crc && crc.get() != entry.header.data_crc32) {
         // Same verdict as the streaming verify path (T5): corrupt payload is
         // an extraction failure, never a silent successful write of wrong
         // bytes. The FileUnlinker destructor removes the partial output

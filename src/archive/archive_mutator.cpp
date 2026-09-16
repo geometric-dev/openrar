@@ -355,56 +355,69 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
         return RAR_ERR_IO;
     }
 
-    // Preserve SFX module if present
-    if (reader.sfx_offset() > 0) {
-        if (!copy_stream_region(reader.stream(), out, 0, reader.sfx_offset())) {
+    // Exception-safe temp (same pattern as write_batch_add_ex): an escaping
+    // exception (bad_alloc, a throwing filesystem call in a future edit)
+    // must not leave the mut_tmp file behind.
+    try {
+        // Preserve SFX module if present
+        if (reader.sfx_offset() > 0) {
+            if (!copy_stream_region(reader.stream(), out, 0, reader.sfx_offset())) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "rewrite failed";
+                return RAR_ERR_IO;
+            }
+        }
+
+        // Signature
+        format::HeaderWriter::write_signature(out);
+
+        // Main block: Strip QuickOpen locator on mutation per spec
+        format::MainBlock mb = reader.main_block();
+        mb.has_locator = false;
+        mb.locator_qo_offset = -1;
+        mb.locator_rr_offset = -1;
+        format::HeaderWriter::write_main_block(out, mb);
+
+        // Copy surviving entries
+        const std::vector<ArchiveEntry>& entries = reader.entries();
+        for (size_t i = 0; i < entries.size(); ++i) {
+            const ArchiveEntry& entry = entries[i];
+
+            // Strip QuickOpen service block on mutation
+            if (entry.header.is_service && entry.header.service_type == "QO") {
+                continue;
+            }
+            if (i < removed.size() && removed[i]) {
+                continue; // Deleted
+            }
+
+            // Retain entry and its verbatim payload
+            if (!copy_stream_region(reader.stream(), out, entry.header_offset,
+                                    entry.header_size + entry.data_size)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "rewrite failed";
+                return RAR_ERR_IO;
+            }
+        }
+
+        // End of archive block
+        format::EndArcBlock eb;
+        eb.end_flags = 0;
+        format::HeaderWriter::write_end_block(out, eb);
+
+        reader.close();
+        out.close();
+    } catch (...) {
+        try {
             out.close();
-            std::filesystem::remove(tmp_path);
-            detail_out = "rewrite failed";
-            return RAR_ERR_IO;
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp_path, rm_ec);
+        } catch (...) {
         }
+        throw;
     }
-
-    // Signature
-    format::HeaderWriter::write_signature(out);
-
-    // Main block: Strip QuickOpen locator on mutation per spec
-    format::MainBlock mb = reader.main_block();
-    mb.has_locator = false;
-    mb.locator_qo_offset = -1;
-    mb.locator_rr_offset = -1;
-    format::HeaderWriter::write_main_block(out, mb);
-
-    // Copy surviving entries
-    const std::vector<ArchiveEntry>& entries = reader.entries();
-    for (size_t i = 0; i < entries.size(); ++i) {
-        const ArchiveEntry& entry = entries[i];
-
-        // Strip QuickOpen service block on mutation
-        if (entry.header.is_service && entry.header.service_type == "QO") {
-            continue;
-        }
-        if (i < removed.size() && removed[i]) {
-            continue; // Deleted
-        }
-
-        // Retain entry and its verbatim payload
-        if (!copy_stream_region(reader.stream(), out, entry.header_offset,
-                                entry.header_size + entry.data_size)) {
-            out.close();
-            std::filesystem::remove(tmp_path);
-            detail_out = "rewrite failed";
-            return RAR_ERR_IO;
-        }
-    }
-
-    // End of archive block
-    format::EndArcBlock eb;
-    eb.end_flags = 0;
-    format::HeaderWriter::write_end_block(out, eb);
-
-    reader.close();
-    out.close();
 
     if (!atomic_replace(tmp_path, arc_path)) {
         detail_out = "atomic replace failed";
@@ -508,40 +521,52 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path) {
         return false;
     }
 
-    // SFX module
-    if (reader.sfx_offset() > 0) {
-        if (!copy_stream_region(reader.stream(), out, 0, reader.sfx_offset())) {
-            out.close();
-            std::filesystem::remove(tmp_path);
-            return false;
+    // Exception-safe temp (same pattern as write_batch_add_ex): an escaping
+    // exception must not leave the lck_tmp file behind.
+    try {
+        // SFX module
+        if (reader.sfx_offset() > 0) {
+            if (!copy_stream_region(reader.stream(), out, 0, reader.sfx_offset())) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                return false;
+            }
         }
-    }
 
-    // Signature
-    format::HeaderWriter::write_signature(out);
+        // Signature
+        format::HeaderWriter::write_signature(out);
 
-    // Main block with MHFL_LOCK set
-    format::MainBlock mb = reader.main_block();
-    mb.arc_flags |= format::MHFL_LOCK;
-    format::HeaderWriter::write_main_block(out, mb);
+        // Main block with MHFL_LOCK set
+        format::MainBlock mb = reader.main_block();
+        mb.arc_flags |= format::MHFL_LOCK;
+        format::HeaderWriter::write_main_block(out, mb);
 
-    // Copy all entries verbatim
-    for (const auto& entry : reader.entries()) {
-        if (!copy_stream_region(reader.stream(), out, entry.header_offset,
-                                entry.header_size + entry.data_size)) {
-            out.close();
-            std::filesystem::remove(tmp_path);
-            return false;
+        // Copy all entries verbatim
+        for (const auto& entry : reader.entries()) {
+            if (!copy_stream_region(reader.stream(), out, entry.header_offset,
+                                    entry.header_size + entry.data_size)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                return false;
+            }
         }
+
+        // End block
+        format::EndArcBlock eb;
+        eb.end_flags = 0;
+        format::HeaderWriter::write_end_block(out, eb);
+
+        reader.close();
+        out.close();
+    } catch (...) {
+        try {
+            out.close();
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp_path, rm_ec);
+        } catch (...) {
+        }
+        throw;
     }
-
-    // End block
-    format::EndArcBlock eb;
-    eb.end_flags = 0;
-    format::HeaderWriter::write_end_block(out, eb);
-
-    reader.close();
-    out.close();
 
     return atomic_replace(tmp_path, arc_path);
 }
