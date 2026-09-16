@@ -1,10 +1,23 @@
 #ifndef OPENRAR_IO_PATH_UTIL_HPP
 #define OPENRAR_IO_PATH_UTIL_HPP
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
 namespace openrar::io {
+
+// path::u8string() returns std::u8string (char8_t) in C++20 but std::string in
+// C++17, and only the latter converts or concatenates with std::string. All
+// internal paths crossing into std::string go through this bridge.
+inline std::string u8_str(const std::filesystem::path& p) {
+#ifdef __cpp_char8_t
+    const std::u8string u8 = p.u8string();
+    return std::string(u8.begin(), u8.end());
+#else
+    return p.u8string();
+#endif
+}
 
 enum class ExcludePathMode {
     None = 0,                // Store path relative to scan root

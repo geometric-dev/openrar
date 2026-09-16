@@ -52,7 +52,13 @@ static bool try_getentropy(core::byte* buf, size_t len) {
 }
 
 static bool try_urandom(core::byte* buf, size_t len) {
-    int fd = ::open("/dev/urandom", O_RDONLY);
+// O_CLOEXEC: the fd is short-lived, but a concurrent exec in the host
+// process would otherwise inherit it. Older platforms that predate
+// POSIX-2008 may not define the flag; fall back to plain open.
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
+    int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (fd < 0) return false;
     while (len > 0) {
         ssize_t n = ::read(fd, buf, len);
