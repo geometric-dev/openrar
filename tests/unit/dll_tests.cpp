@@ -1,4 +1,4 @@
-#include "../../src/dll/openrar_dll.h"
+#include "openrar/openrar_dll.h"
 #include <cassert>
 #include <cstring>
 #include <vector>

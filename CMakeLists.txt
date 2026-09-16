@@ -91,6 +91,14 @@ set(OPENRAR_INCLUDES
     include
 )
 
+# Same dirs wrapped for export: build-interface keeps source-tree paths out of
+# the installed CMake package (R3), which only exposes include/ to consumers.
+set(OPENRAR_EXPORT_INCLUDES "")
+foreach(_inc ${OPENRAR_INCLUDES})
+    list(APPEND OPENRAR_EXPORT_INCLUDES
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/${_inc}>")
+endforeach()
+
 # ── Native platform flags (NOT applied when targeting Emscripten) ─────────────
 if(EMSCRIPTEN)
     # Emscripten defines __EMSCRIPTEN__; keep native flags off this path.
@@ -164,7 +172,9 @@ endif()
 # ── Native library + executables ─────────────────────────────────────────────
 # Static core for reuse (tests + exe) — keeps wasm include separate.
 add_library(openrar_core STATIC ${OPENRAR_CORE_SOURCES})
-target_include_directories(openrar_core PUBLIC ${OPENRAR_INCLUDES})
+target_include_directories(openrar_core PUBLIC
+    ${OPENRAR_EXPORT_INCLUDES}
+    $<INSTALL_INTERFACE:include>)
 if(OPENRAR_THREAD_LIB)
     target_link_libraries(openrar_core PUBLIC ${OPENRAR_THREAD_LIB})
 endif()
@@ -244,7 +254,11 @@ endif()
 set(OPENRAR_DLL_SUFFIX "" CACHE STRING "Append arch suffix to DLL name (e.g. _x64, _arm64). Empty = plain openrar")
 if(NOT EMSCRIPTEN)
     add_library(openrar_dll SHARED ${OPENRAR_DLL_SOURCES})
-    target_include_directories(openrar_dll PUBLIC ${OPENRAR_INCLUDES} src/wasm include)
+    target_include_directories(openrar_dll PUBLIC
+        ${OPENRAR_EXPORT_INCLUDES}
+        $<INSTALL_INTERFACE:include>
+    )
+    target_include_directories(openrar_dll PRIVATE src/wasm)
     target_link_libraries(openrar_dll PUBLIC openrar_core)
     if(OPENRAR_THREAD_LIB)
         target_link_libraries(openrar_dll PUBLIC ${OPENRAR_THREAD_LIB})
@@ -528,4 +542,40 @@ if(NOT EMSCRIPTEN)
         endif()
         add_test(NAME fuzz_file_handle COMMAND fuzz_file_handle)
     endif()
+endif()
+
+# ── Install & package export (R3) ────────────────────────────────────────────
+# Package managers / system installs get the shared library, the CLI, the
+# public headers, and a CMake package config so find_package(openrar) provides
+# openrar::openrar_dll. Emscripten builds produce no native targets and no
+# install rules.
+if(NOT EMSCRIPTEN)
+    include(GNUInstallDirs)
+    include(CMakePackageConfigHelpers)
+
+    install(TARGETS openrar_dll openrar openrar_core
+            EXPORT openrar_targets
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(FILES include/openrar/openrar_dll.h include/openrar/openrar.hpp
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/openrar)
+
+    set(OPENRAR_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/openrar")
+    configure_package_config_file(
+        cmake/openrarConfig.cmake.in
+        "${CMAKE_CURRENT_BINARY_DIR}/openrarConfig.cmake"
+        INSTALL_DESTINATION "${OPENRAR_INSTALL_CMAKEDIR}")
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/openrarConfigVersion.cmake"
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMajorVersion)
+    install(FILES
+                "${CMAKE_CURRENT_BINARY_DIR}/openrarConfig.cmake"
+                "${CMAKE_CURRENT_BINARY_DIR}/openrarConfigVersion.cmake"
+            DESTINATION "${OPENRAR_INSTALL_CMAKEDIR}")
+    install(EXPORT openrar_targets
+            FILE openrarTargets.cmake
+            NAMESPACE openrar::
+            DESTINATION "${OPENRAR_INSTALL_CMAKEDIR}")
 endif()

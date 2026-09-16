@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+# openrar CMake package: provides openrar::openrar_dll (shared library with
+# the C ABI) and openrar::openrar (CLI executable), plus openrar::openrar_core
+# (static core, for advanced/embedded consumers). Headers live in
+# <prefix>/include/openrar (openrar_dll.h, openrar.hpp).
+
+include(CMakeFindDependencyMacro)
+# The core links Threads::Threads publicly; the exported targets reference it.
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/openrarTargets.cmake")
+
+check_required_components(openrar)
