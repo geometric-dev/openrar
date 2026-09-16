@@ -1,4 +1,6 @@
 #include "recovery_writer.hpp"
+#include <iostream>
+#include "recovery_record.hpp"
 #include "../archive/archive_reader.hpp"
 #include "../archive/archive_entry.hpp"
 #include "../archive/volume.hpp"
@@ -215,6 +217,46 @@ RrLocation find_rr(io::FileStream& stream, core::uint64 sfx_offset) {
     core::uint64 file_size = stream.size();
     core::uint64 start = sfx_offset + 8;
     if (start >= file_size) return info;
+
+    auto try_read_rr = [&](core::uint64 head_start) -> bool {
+        if (head_start >= file_size) return false;
+        stream.seek(static_cast<core::int64>(head_start), io::SeekOrigin::Begin);
+        core::uint64 type = 0, flags = 0, data_sz = 0;
+        std::vector<core::byte> body;
+        if (format::HeaderReader::read_block_raw(stream, type, flags, body, data_sz) !=
+            format::HeaderResult::Ok)
+            return false;
+        core::uint64 head_end = stream.tell();
+        if (type == format::HEAD_SERVICE) {
+            format::FileBlock fb;
+            if (format::HeaderReader::parse_file_header(body.data(), body.size(), fb) &&
+                fb.is_service && fb.service_type == "RR") {
+                info.found = true;
+                info.header_offset = head_start;
+                info.header_size = head_end - head_start;
+                info.data_offset = head_end;
+                info.data_size = data_sz;
+                if (!fb.sub_data.empty()) {
+                    core::uint64 pct = 0;
+                    size_t used = 0;
+                    if (core::read_vint(fb.sub_data.data(), fb.sub_data.size(), pct, used)) {
+                        info.rec_pct = static_cast<core::uint32>(pct);
+                    }
+                }
+                if (data_sz > 0) {
+                    core::uint64 avail = std::min<core::uint64>(data_sz, file_size - head_end);
+                    info.raw_data.resize(static_cast<size_t>(avail));
+                    if (avail > 0) {
+                        stream.seek(static_cast<core::int64>(head_end), io::SeekOrigin::Begin);
+                        stream.read(info.raw_data.data(), info.raw_data.size());
+                    }
+                }
+                return true;
+            }
+        }
+        return false;
+    };
+
     stream.seek(static_cast<core::int64>(start), io::SeekOrigin::Begin);
 
     while (stream.tell() < file_size) {
@@ -267,6 +309,46 @@ RrLocation find_rr(io::FileStream& stream, core::uint64 sfx_offset) {
         }
         if (stream.tell() <= head_start) break;
     }
+
+    // Fallback 1: Check locator in MAIN header
+    if (!info.found && start < file_size) {
+        stream.seek(static_cast<core::int64>(start), io::SeekOrigin::Begin);
+        core::uint64 mtype = 0, mflags = 0, mdata_sz = 0;
+        std::vector<core::byte> mbody;
+        if (format::HeaderReader::read_block_raw(stream, mtype, mflags, mbody, mdata_sz) == format::HeaderResult::Ok &&
+            mtype == format::HEAD_MAIN) {
+            format::MainBlock mb;
+            if (format::HeaderReader::parse_main_header(mbody.data(), mbody.size(), mb) &&
+                mb.has_locator && mb.locator_rr_offset > 0) {
+                core::uint64 cand = start + static_cast<core::uint64>(mb.locator_rr_offset);
+                if (try_read_rr(cand)) return info;
+            }
+        }
+    }
+
+    // Fallback 2: Search backwards for SHARD_MAGIC ("RAR_RR\0\0")
+    if (!info.found && file_size > SHARD_MAGIC_SIZE) {
+        const size_t CHUNK = 65536;
+        std::vector<core::byte> buf(CHUNK + SHARD_MAGIC_SIZE);
+        core::int64 cur_pos = static_cast<core::int64>(file_size);
+        while (cur_pos > static_cast<core::int64>(start) && !info.found) {
+            size_t to_read = static_cast<size_t>(std::min<core::int64>(CHUNK, cur_pos - start));
+            cur_pos -= to_read;
+            stream.seek(cur_pos, io::SeekOrigin::Begin);
+            size_t read_bytes = stream.read(buf.data(), to_read + SHARD_MAGIC_SIZE - 1);
+            if (read_bytes < SHARD_MAGIC_SIZE) break;
+            for (size_t i = 0; i + SHARD_MAGIC_SIZE <= read_bytes; ++i) {
+                if (std::memcmp(buf.data() + i, SHARD_MAGIC, SHARD_MAGIC_SIZE) == 0) {
+                    core::uint64 magic_pos = static_cast<core::uint64>(cur_pos) + i;
+                    core::uint64 scan_back = std::min<core::uint64>(magic_pos, 128);
+                    for (core::uint64 off = 1; off <= scan_back; ++off) {
+                        if (try_read_rr(magic_pos - off)) return info;
+                    }
+                }
+            }
+        }
+    }
+
     return info;
 }
 
@@ -479,6 +561,43 @@ bool splice_repair(const std::filesystem::path& arc_path,
         }
     }
     in.close();
+    out.close();
+    return atomic_replace(tmp_path, arc_path);
+}
+
+// Reassemble the archive around a newly-computed RR block, writing the
+// protected prefix, the new RR service block, and the EndArc terminator.
+bool splice_repair_with_rr(const std::filesystem::path& arc_path,
+                           const std::vector<core::byte>& repaired_prefix,
+                           const std::vector<core::byte>& new_rr_data_area,
+                           core::uint32 rec_pct) {
+    std::filesystem::path tmp_path = arc_path;
+    tmp_path += ".rep_tmp";
+    io::FileStream out;
+    if (!out.open(tmp_path, io::FileMode::CreateAlways)) return false;
+
+    if (!repaired_prefix.empty()) {
+        if (out.write(repaired_prefix.data(), repaired_prefix.size()) != repaired_prefix.size()) {
+            out.close();
+            std::filesystem::remove(tmp_path);
+            return false;
+        }
+    }
+
+    if (!write_rr_service_block(out, new_rr_data_area, rec_pct)) {
+        out.close();
+        std::filesystem::remove(tmp_path);
+        return false;
+    }
+
+    format::EndArcBlock eb;
+    eb.end_flags = 0;
+    if (!format::HeaderWriter::write_end_block(out, eb)) {
+        out.close();
+        std::filesystem::remove(tmp_path);
+        return false;
+    }
+
     out.close();
     return atomic_replace(tmp_path, arc_path);
 }
@@ -969,8 +1088,14 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     }
 
     // Serialise the shards back-to-back.
+    auto data_area_size = calculate_parity_buffer_size(g.NR, static_cast<core::uint32>(g.shard_size));
+    if (!data_area_size) {
+        out.close();
+        std::filesystem::remove(tmp_path);
+        return false;
+    }
     std::vector<core::byte> data_area;
-    data_area.reserve(static_cast<size_t>(g.NR) * static_cast<size_t>(g.shard_size));
+    data_area.reserve(static_cast<size_t>(*data_area_size));
     for (core::uint32 j = 0; j < g.NR; ++j) {
         auto s = build_shard(j, g, parity[j].data(), static_cast<size_t>(g.group_count));
         data_area.insert(data_area.end(), s.begin(), s.end());
@@ -1522,21 +1647,285 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     }
 
     core::uint32 missing_data = D - data_valid_count;
-    if (missing_data == 0) {
-        // Nothing to reconstruct. If the file is otherwise well-formed we're
-        // done; if not, we can't fix silent bit-flips without per-shard data
-        // CRCs on the data side.
-        return headers_verify(arc_path, sfx_off);
-    }
     if (missing_data > parity_valid_count) return false;
 
-    // Pad the protected prefix to prot_size only after feasibility: a hostile
-    // record must fail the missing-vs-parity check before it can drive a
-    // prot_size-sized allocation (report M2). Successful reconstruction
-    // needs at least `missing` real parity shards on disk, so the padding is
-    // bounded by the bytes the record actually occupies.
-    if (file_bytes.size() < prot_size) {
-        file_bytes.resize(static_cast<size_t>(prot_size), 0);
+    // Pad file_bytes up to D * group_count so each shard can be read contiguously.
+    auto full_data_size = calculate_parity_buffer_size(D, group_count);
+    if (!full_data_size) return false;
+    if (file_bytes.size() < *full_data_size) {
+        file_bytes.resize(static_cast<size_t>(*full_data_size), 0);
+    }
+    // Bytes past rr.header_offset (such as the RR block or EndArc on disk) must be
+    // zeroed because parity encoding treats data past the protected prefix as pure zero padding.
+    if (file_bytes.size() > rr.header_offset) {
+        std::memset(file_bytes.data() + rr.header_offset, 0,
+                    file_bytes.size() - static_cast<size_t>(rr.header_offset));
+    }
+
+    // Initialize Cauchy RS encoder to compute syndromes and evaluate parity.
+    ReedSolomon16 rs_enc;
+    if (!rs_enc.init(D, NR)) return false;
+
+    std::vector<std::vector<core::byte>> recomputed_parity(NR);
+    for (core::uint32 j = 0; j < NR; ++j) {
+        if (parity_valid[j]) {
+            recomputed_parity[j].assign(static_cast<size_t>(group_count), 0);
+        }
+    }
+    for (core::uint32 i = 0; i < D; ++i) {
+        const core::byte* data_ptr = file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
+        for (core::uint32 j = 0; j < NR; ++j) {
+            if (!parity_valid[j]) continue;
+            rs_enc.update_ecc(i, j, data_ptr, recomputed_parity[j].data(), static_cast<size_t>(group_count));
+        }
+    }
+
+    std::vector<std::vector<core::byte>> syndromes(NR);
+    core::uint32 non_zero_syndromes = 0;
+    core::int32 first_non_zero_j = -1;
+
+    for (core::uint32 j = 0; j < NR; ++j) {
+        if (!parity_valid[j]) continue;
+        syndromes[j].resize(static_cast<size_t>(group_count));
+        const core::byte* P_j = rr.raw_data.data() + static_cast<size_t>(j) * static_cast<size_t>(shard_size) + static_cast<size_t>(header_size32);
+        bool all_zero = true;
+        for (size_t b = 0; b < group_count; ++b) {
+            core::byte diff = static_cast<core::byte>(P_j[b] ^ recomputed_parity[j][b]);
+            syndromes[j][b] = diff;
+            if (diff != 0) all_zero = false;
+        }
+        if (!all_zero) {
+            ++non_zero_syndromes;
+            if (first_non_zero_j < 0) first_non_zero_j = static_cast<core::int32>(j);
+        }
+    }
+
+    if (missing_data == 0) {
+        if (non_zero_syndromes == 0 && parity_valid_count == NR) {
+            // Already completely intact
+            return headers_verify(arc_path, sfx_off);
+        }
+
+        // Check if data is completely healthy
+        bool all_data_ok = false;
+        if (headers_verify(arc_path, sfx_off)) {
+            archive::ArchiveReader reader;
+            if (reader.open(arc_path)) {
+                bool entries_ok = true;
+                for (const auto& entry : reader.entries()) {
+                    if (entry.header.is_service) continue;
+                    if (!reader.test_entry(entry)) {
+                        entries_ok = false;
+                        break;
+                    }
+                }
+                all_data_ok = entries_ok;
+            }
+        }
+
+        if (all_data_ok) {
+            // Parity-Only Corruption branch:
+            // Recompute all NR parity shards from file_bytes
+            std::vector<std::vector<core::byte>> all_new_parity(NR, std::vector<core::byte>(static_cast<size_t>(group_count), 0));
+            for (core::uint32 i = 0; i < D; ++i) {
+                const core::byte* data_ptr = file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
+                for (core::uint32 j = 0; j < NR; ++j) {
+                    rs_enc.update_ecc(i, j, data_ptr, all_new_parity[j].data(), static_cast<size_t>(group_count));
+                }
+            }
+
+            RecoveryGeometry g{};
+            g.archive_size = prot_size;
+            g.pct = rr.rec_pct > 0 ? rr.rec_pct : static_cast<core::uint32>((static_cast<core::uint64>(NR) * 100) / D);
+            g.D = D;
+            g.NR = NR;
+            g.group_count = group_count;
+            g.header_size = header_size32;
+            g.shard_size = shard_size;
+
+            auto data_area_size = calculate_parity_buffer_size(NR, static_cast<core::uint32>(shard_size));
+            if (!data_area_size) return false;
+            std::vector<core::byte> data_area;
+            data_area.reserve(static_cast<size_t>(*data_area_size));
+            for (core::uint32 j = 0; j < NR; ++j) {
+                auto s = build_shard(j, g, all_new_parity[j].data(), static_cast<size_t>(group_count));
+                data_area.insert(data_area.end(), s.begin(), s.end());
+            }
+
+            std::vector<core::byte> prefix(file_bytes.begin(), file_bytes.begin() + static_cast<size_t>(rr.header_offset));
+            if (!splice_repair_with_rr(arc_path, prefix, data_area, g.pct)) return false;
+            return headers_verify(arc_path, sfx_off);
+        }
+    }
+
+    if (non_zero_syndromes > 0) {
+        std::vector<core::uint32> matching_candidates;
+        if (parity_valid_count >= 2 && first_non_zero_j >= 0 && missing_data == 0) {
+            core::uint32 j0 = static_cast<core::uint32>(first_non_zero_j);
+            size_t num_words = static_cast<size_t>(group_count / 2);
+
+            for (core::uint32 e = 0; e < D; ++e) {
+                if (!data_valid[e]) continue;
+                core::uint32 c0 = rs_enc.gf_inv(rs_enc.gf_add(j0 + D, e));
+                bool candidate_matches = true;
+
+                for (core::uint32 j = 0; j < NR && candidate_matches; ++j) {
+                    if (!parity_valid[j] || j == j0) continue;
+                    core::uint32 cj = rs_enc.gf_inv(rs_enc.gf_add(j + D, e));
+
+                    for (size_t w = 0; w < num_words; ++w) {
+                        core::uint16 s0 = static_cast<core::uint16>(
+                            syndromes[j0][2 * w] | (syndromes[j0][2 * w + 1] << 8));
+                        core::uint16 sj = static_cast<core::uint16>(
+                            syndromes[j][2 * w] | (syndromes[j][2 * w + 1] << 8));
+                        if (rs_enc.gf_mul(sj, c0) != rs_enc.gf_mul(s0, cj)) {
+                            candidate_matches = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (candidate_matches) {
+                    matching_candidates.push_back(e);
+                }
+            }
+        }
+
+        if (matching_candidates.size() == 1) {
+            // Tier 1 Guaranteed: uniquely identified single corrupted shard
+            core::uint32 bad_shard = matching_candidates[0];
+            data_valid[bad_shard] = 0;
+            ++missing_data;
+            --data_valid_count;
+        } else {
+            // Tier 2: Route to block header / entry CRC scan fallback
+            io::FileStream stream;
+            if (stream.open(arc_path, io::FileMode::ReadOnly)) {
+                core::uint64 file_sz = stream.size();
+                if (sfx_off + 8 <= file_sz) {
+                    stream.seek(static_cast<core::int64>(sfx_off + 8), io::SeekOrigin::Begin);
+                    while (stream.tell() < file_sz) {
+                        core::uint64 head_start = stream.tell();
+                        core::uint64 type = 0, flags = 0, data_sz = 0;
+                        std::vector<core::byte> body;
+                        if (format::HeaderReader::read_block_raw(stream, type, flags, body, data_sz) !=
+                            format::HeaderResult::Ok) {
+                            core::uint64 bad_shard = head_start / group_count;
+                            if (bad_shard < D && data_valid[bad_shard]) {
+                                data_valid[bad_shard] = 0;
+                                ++missing_data;
+                                --data_valid_count;
+                            }
+                            break;
+                        }
+                        if (type == format::HEAD_ENDARC) break;
+                        if (data_sz > 0) {
+                            core::uint64 cur = stream.tell();
+                            if (data_sz > file_sz - cur) break;
+                            if (!stream.seek(static_cast<core::int64>(cur + data_sz), io::SeekOrigin::Begin)) break;
+                        }
+                        if (stream.tell() <= head_start) break;
+                    }
+                }
+                stream.close();
+            }
+
+            archive::ArchiveReader reader;
+            if (reader.open(arc_path)) {
+                for (const auto& entry : reader.entries()) {
+                    if (entry.header.is_service) continue;
+                    if (!reader.test_entry(entry)) {
+                        core::uint64 s_start = entry.header_offset / group_count;
+                        core::uint64 s_end = (entry.data_offset + entry.data_size + group_count - 1) / group_count;
+                        if (s_end <= s_start) s_end = s_start + 1;
+                        if (s_end > D) s_end = D;
+
+                        core::uint32 found_single_shard = D;
+                        if (s_end - s_start == 1) {
+                            found_single_shard = static_cast<core::uint32>(s_start);
+                        } else if (first_non_zero_j >= 0 && parity_valid_count >= 1) {
+                            core::uint32 j0 = static_cast<core::uint32>(first_non_zero_j);
+                            size_t num_words = static_cast<size_t>(group_count / 2);
+                            core::uint32 match_count = 0;
+                            core::uint32 candidate_shard = D;
+
+                            for (core::uint64 s = s_start; s < s_end; ++s) {
+                                if (!data_valid[s]) continue;
+                                core::uint32 inv_c0 = rs_enc.gf_inv(rs_enc.gf_add(j0 + D, static_cast<core::uint32>(s)));
+                                bool consistent = true;
+                                for (core::uint32 j = 0; j < NR && consistent; ++j) {
+                                    if (!parity_valid[j] || j == j0) continue;
+                                    core::uint32 cj = rs_enc.gf_inv(rs_enc.gf_add(j + D, static_cast<core::uint32>(s)));
+                                    for (size_t w = 0; w < num_words; ++w) {
+                                        core::uint16 s0 = static_cast<core::uint16>(
+                                            syndromes[j0][2 * w] | (syndromes[j0][2 * w + 1] << 8));
+                                        core::uint16 sj = static_cast<core::uint16>(
+                                            syndromes[j][2 * w] | (syndromes[j][2 * w + 1] << 8));
+                                        if (rs_enc.gf_mul(sj, inv_c0) != rs_enc.gf_mul(s0, cj)) {
+                                            consistent = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (!consistent) continue;
+
+                                if (entry.header.method == 0) {
+                                    crypto::Crc32 cand_crc;
+                                    core::uint64 s_byte_start = s * group_count;
+                                    core::uint64 s_byte_end = (s + 1) * group_count;
+                                    for (core::uint64 off = entry.data_offset; off < entry.data_offset + entry.data_size; ++off) {
+                                        core::byte b = file_bytes[off];
+                                        if (off >= s_byte_start && off < s_byte_end) {
+                                            size_t w = static_cast<size_t>((off - s_byte_start) / 2);
+                                            core::uint16 s0 = static_cast<core::uint16>(
+                                                syndromes[j0][2 * w] | (syndromes[j0][2 * w + 1] << 8));
+                                            core::uint16 err_word = static_cast<core::uint16>(
+                                                rs_enc.gf_mul(rs_enc.gf_add(j0 + D, static_cast<core::uint32>(s)), s0));
+                                            core::byte err_byte = ((off - s_byte_start) % 2 == 0)
+                                                ? static_cast<core::byte>(err_word & 0xFF)
+                                                : static_cast<core::byte>((err_word >> 8) & 0xFF);
+                                            b ^= err_byte;
+                                        }
+                                        cand_crc.update(&b, 1);
+                                    }
+                                    if (cand_crc.get() == entry.header.data_crc32) {
+                                        match_count++;
+                                        candidate_shard = static_cast<core::uint32>(s);
+                                    }
+                                } else if (parity_valid_count >= 2) {
+                                    match_count++;
+                                    candidate_shard = static_cast<core::uint32>(s);
+                                }
+                            }
+                            if (match_count == 1) {
+                                found_single_shard = candidate_shard;
+                            }
+                        }
+
+                        if (found_single_shard < D) {
+                            if (data_valid[found_single_shard]) {
+                                data_valid[found_single_shard] = 0;
+                                ++missing_data;
+                                --data_valid_count;
+                            }
+                        } else {
+                            for (core::uint64 s = s_start; s < s_end; ++s) {
+                                if (data_valid[s]) {
+                                    data_valid[s] = 0;
+                                    ++missing_data;
+                                    --data_valid_count;
+                                }
+                            }
+                        }
+                    }
+                }
+                reader.close();
+            }
+        }
+    }
+
+    if (missing_data == 0 || missing_data > parity_valid_count) {
+        return false;
     }
 
     // Combined valid_flags vector for ReedSolomon16::init(D, NR, flags).
@@ -1544,12 +1933,11 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     for (core::uint32 i = 0; i < D; ++i) valid[i] = data_valid[i];
     for (core::uint32 j = 0; j < NR; ++j) valid[D + j] = parity_valid[j];
 
-    ReedSolomon16 rs;
-    if (!rs.init(D, NR, valid.data())) return false;
+    ReedSolomon16 rs_dec;
+    if (!rs_dec.init(D, NR, valid.data())) return false;
 
-    // Map ND source rows exactly the way RecoveryManager::repair_data does:
-    // valid data shards contribute themselves, missing data shards are
-    // substituted by the next valid parity shard.
+    // Map ND source rows: valid data shards contribute themselves,
+    // missing data shards are substituted by the next valid parity shard.
     std::vector<const core::byte*> src(D, nullptr);
     core::uint32 r_idx = D;
     for (core::uint32 i = 0; i < D; ++i) {
@@ -1567,19 +1955,18 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     }
 
     // Reconstruct the missing data shards into a compact buffer.
-    std::vector<core::byte> recon(
-        static_cast<size_t>(missing_data) * static_cast<size_t>(group_count), 0);
+    auto recon_size = calculate_parity_buffer_size(missing_data, group_count);
+    if (!recon_size) return false;
+    std::vector<core::byte> recon(static_cast<size_t>(*recon_size), 0);
     for (core::uint32 j = 0; j < D; ++j) {
         for (core::uint32 e = 0; e < missing_data; ++e) {
             core::byte* dst =
                 recon.data() + static_cast<size_t>(e) * static_cast<size_t>(group_count);
-            rs.update_ecc(j, e, src[j], dst, static_cast<size_t>(group_count));
+            rs_dec.update_ecc(j, e, src[j], dst, static_cast<size_t>(group_count));
         }
     }
 
-    // Splice the reconstructed shards back into the protected prefix, being
-    // careful about the last-shard zero padding: only the bytes that lie
-    // inside prot_size are meaningful.
+    // Splice reconstructed shards back into file_bytes.
     core::uint32 cur = 0;
     for (core::uint32 i = 0; i < D; ++i) {
         if (data_valid[i]) continue;
@@ -1594,11 +1981,36 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         ++cur;
     }
 
-    // splice_repair expects exactly the protected prefix [0, rr.header_offset):
-    // its size contract rejects anything longer (report M2 — the whole-file
-    // buffer always extends past the prefix, so the reconstruction path could
-    // never succeed). Bytes above header_offset are shard padding, not part
-    // of the repaired archive.
+    // Post-repair syndrome verification: recompute parity from repaired file_bytes.
+    for (core::uint32 j = 0; j < NR; ++j) {
+        if (parity_valid[j]) {
+            std::memset(recomputed_parity[j].data(), 0, static_cast<size_t>(group_count));
+        }
+    }
+    for (core::uint32 i = 0; i < D; ++i) {
+        const core::byte* data_ptr = file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
+        for (core::uint32 j = 0; j < NR; ++j) {
+            if (!parity_valid[j]) continue;
+            rs_enc.update_ecc(i, j, data_ptr, recomputed_parity[j].data(), static_cast<size_t>(group_count));
+        }
+    }
+
+    bool post_repair_syndromes_zero = true;
+    for (core::uint32 j = 0; j < NR; ++j) {
+        if (!parity_valid[j]) continue;
+        const core::byte* P_j = rr.raw_data.data() + static_cast<size_t>(j) * static_cast<size_t>(shard_size) + static_cast<size_t>(header_size32);
+        for (size_t b = 0; b < group_count; ++b) {
+            if ((P_j[b] ^ recomputed_parity[j][b]) != 0) {
+                post_repair_syndromes_zero = false;
+                break;
+            }
+        }
+        if (!post_repair_syndromes_zero) break;
+    }
+    if (!post_repair_syndromes_zero) {
+        return false;
+    }
+
     file_bytes.resize(static_cast<size_t>(rr.header_offset));
     if (!splice_repair(arc_path, file_bytes, rr.header_offset, rr_len_on_disk)) return false;
     return headers_verify(arc_path, sfx_off);

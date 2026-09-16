@@ -258,7 +258,7 @@ function parseArchive(buf) {
           algoVersion: compInfo & 0x3f,
           solid: !!(compInfo & 0x40),
           method: (compInfo >> 7) & 7,
-          dict: dictLabel((compInfo >> 11) & 0x1f, (compInfo >> 15) & 0x1f),
+          dict: dictLabel((compInfo >> 10) & 0x1f, (compInfo >> 15) & 0x1f),
           rar5Compat: !!(compInfo & 0x100000),
           hostOs: hostOs === 0 ? 'windows' : hostOs === 1 ? 'unix' : `os${hostOs}`,
         };

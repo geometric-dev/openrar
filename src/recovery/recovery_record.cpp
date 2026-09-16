@@ -48,8 +48,9 @@ std::vector<core::byte> RecoveryManager::generate_parity(const core::byte* prote
     // uint32 wrapped to 0 near the geometry ceiling, allocating an empty
     // buffer that the ECC loop then wrote past.
     if (params.data_sectors == 0 || params.recovery_sectors == 0) return {};
-    std::vector<core::byte> parity(
-        static_cast<size_t>(params.recovery_sectors) * static_cast<size_t>(params.sector_size), 0);
+    auto parity_size = calculate_parity_buffer_size(params.recovery_sectors, params.sector_size);
+    if (!parity_size) return {};
+    std::vector<core::byte> parity(static_cast<size_t>(*parity_size), 0);
     std::vector<core::byte> temp_sector(params.sector_size, 0);
 
     ReedSolomon16 rs;
@@ -139,14 +140,19 @@ bool RecoveryManager::repair_data(core::byte* protected_data, const core::byte* 
                 return false;
             }
             core::uint32 rec_num = r_idx - params.data_sectors;
+            if (rec_num > 0) {
+                auto off = calculate_parity_buffer_size(rec_num, params.sector_size);
+                if (!off) return false;
+            }
             proc_sectors[i] = parity_data + static_cast<size_t>(rec_num) * params.sector_size;
             r_idx++;
         }
     }
 
     // Decode reconstructed sectors (outer loop j data_num, inner loop e ecc_num)
-    std::vector<core::byte> reconstructed_buf(
-        static_cast<size_t>(missing_data) * static_cast<size_t>(params.sector_size), 0);
+    auto recon_buf_size = calculate_parity_buffer_size(missing_data, params.sector_size);
+    if (!recon_buf_size) return false;
+    std::vector<core::byte> reconstructed_buf(static_cast<size_t>(*recon_buf_size), 0);
 
     for (core::uint32 j = 0; j < params.data_sectors; ++j) {
         for (core::uint32 e = 0; e < missing_data; ++e) {

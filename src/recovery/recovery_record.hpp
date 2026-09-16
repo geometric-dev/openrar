@@ -4,8 +4,23 @@
 #include "../core/types.hpp"
 #include "rs16.hpp"
 #include <vector>
+#include <optional>
+#include <limits>
 
 namespace openrar::recovery {
+
+static constexpr core::uint64 MAX_PARITY_BUFFER_CAP = 2ULL * 1024 * 1024 * 1024; // 2 GiB cap
+
+inline std::optional<core::uint64> calculate_parity_buffer_size(core::uint64 count,
+                                                                core::uint64 unit_size) {
+    if (count == 0 || unit_size == 0) return std::nullopt;
+    if (count > MAX_PARITY_BUFFER_CAP / unit_size) return std::nullopt;
+    core::uint64 total = count * unit_size;
+    if (total > std::numeric_limits<size_t>::max() || total > MAX_PARITY_BUFFER_CAP) {
+        return std::nullopt;
+    }
+    return total;
+}
 
 // RAR 5.0 Recovery Record specification
 struct RecoveryParams {

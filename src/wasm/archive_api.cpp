@@ -59,8 +59,25 @@ int openrar_archive_version(void) {
 static int pack_extract_all(const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files,
                             uint8_t** buf_out_ptr, size_t* buf_size_out, uint64_t** offsets_out_ptr,
                             uint32_t* offsets_count_out) {
+    if (files.empty()) {
+        *buf_out_ptr = nullptr;
+        *buf_size_out = 0;
+        *offsets_out_ptr = nullptr;
+        *offsets_count_out = 0;
+        return RAR_OK;
+    }
+    if (files.size() > SIZE_MAX / (sizeof(uint64_t) * 2)) {
+        set_error(RAR_ERR_NOMEM, "out of memory (offsets overflow)");
+        return RAR_ERR_NOMEM;
+    }
     size_t total = 0;
-    for (const auto& f : files) total += f.second.size();
+    for (const auto& f : files) {
+        if (f.second.size() > SIZE_MAX - total) {
+            set_error(RAR_ERR_NOMEM, "out of memory (size overflow)");
+            return RAR_ERR_NOMEM;
+        }
+        total += f.second.size();
+    }
     uint8_t* buf = static_cast<uint8_t*>(std::malloc(total > 0 ? total : 1));
     if (!buf) {
         set_error(RAR_ERR_NOMEM, "out of memory");

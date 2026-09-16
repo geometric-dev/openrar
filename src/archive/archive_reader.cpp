@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <iostream>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -55,6 +56,26 @@ bool parse_part_number(const std::filesystem::path& p, long& num) {
 }
 
 constexpr size_t kStreamChunk = 64 * 1024; // stored/decrypt slice (multiple of 16)
+
+// RAII cleaner for failed/broken file extractions (B9).
+// Reverse-declaration order ensures FileStream closes the OS file handle before
+// FileUnlinker calls std::filesystem::remove, avoiding Windows sharing violations.
+// Armed only after successful open() to guarantee pre-existing files are never deleted on open failure.
+struct FileUnlinker {
+    const std::filesystem::path& path;
+    bool armed = false;
+    bool dismissed = false;
+
+    explicit FileUnlinker(const std::filesystem::path& p, bool keep_broken = false)
+        : path(p), dismissed(keep_broken) {}
+
+    ~FileUnlinker() {
+        if (armed && !dismissed) {
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+        }
+    }
+};
 } // namespace
 
 size_t ArchiveReader::test_get_solid_window_size() const {
@@ -96,6 +117,14 @@ bool ArchiveReader::is_volume() const {
 
 bool ArchiveReader::is_solid() const {
     return (main_block_.arc_flags & format::MHFL_SOLID) != 0;
+}
+
+bool ArchiveReader::has_recovery_record() const {
+    if ((main_block_.arc_flags & format::MHFL_PROTECT) != 0) return true;
+    for (const auto& entry : entries_) {
+        if (entry.header.is_service && entry.header.service_type == "RR") return true;
+    }
+    return false;
 }
 
 bool ArchiveReader::open(const std::filesystem::path& arc_path, const std::string& password) {
@@ -1379,6 +1408,22 @@ void ArchiveReader::convert_self_links(const std::filesystem::path& dest_path) {
     }
 }
 
+bool ArchiveReader::ensure_parent_dir(const std::filesystem::path& dest_path,
+                                      const std::string& entry_name) {
+    if (!dest_path.has_parent_path() || dest_path.parent_path().empty()) {
+        return true; // Flat path in current directory
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dest_path.parent_path(), ec);
+    if (ec) {
+        // Non-throwing error reporting: ec.message() without dest_path.parent_path().string()
+        // which could throw std::system_error on Windows if the path contains non-ASCII characters
+        (void)entry_name;
+        return false;
+    }
+    return true;
+}
+
 bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
                                   const std::string& password) {
     std::string pass = password.empty() ? password_ : password;
@@ -1400,6 +1445,9 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
 
     // 07-services.md: Redirection – symlinks/junctions/hardlinks/filecopy
     if (entry.header.redir_type != 0) {
+        if (!extract_symlinks_) {
+            return true; // skipped per -ol-
+        }
         // NameSize already validated <2048 in header_reader
         const std::string& raw_target = entry.header.redir_target;
         std::string target = strip_trailing_slashes(raw_target);
@@ -1417,7 +1465,7 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         if (has_symlink_parent(dest_path)) {
             return true; // skip unsafe
         }
-        std::filesystem::create_directories(dest_path.parent_path());
+        if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
         // Remove existing file/dir if present
         std::error_code ec;
         std::filesystem::remove(dest_path, ec);
@@ -1437,8 +1485,16 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
                 std::filesystem::create_directory_symlink(p_native, dest_path, ec2);
             else
                 std::filesystem::create_symlink(p_native, dest_path, ec2);
-            if (!ec2) links_created_.push_back(dest_path);
-            return !ec2;
+            if (ec2) {
+                if (ec2.value() == 1314) { // ERROR_PRIVILEGE_NOT_HELD
+                    std::cerr << "W: symlink privilege not held; skipping link: "
+                              << dest_path.generic_string() << "\n";
+                    return true;
+                }
+                return false;
+            }
+            links_created_.push_back(dest_path);
+            return true;
 #endif
         } else if (rtype == 2 || rtype == 3) { // WINSYMLINK / JUNCTION
 #ifdef _WIN32
@@ -1452,8 +1508,16 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
                 else
                     std::filesystem::create_symlink(p_native, dest_path, ec2);
             }
-            if (!ec2) links_created_.push_back(dest_path);
-            return !ec2;
+            if (ec2) {
+                if (ec2.value() == 1314) { // ERROR_PRIVILEGE_NOT_HELD
+                    std::cerr << "W: symlink privilege not held; skipping link: "
+                              << dest_path.generic_string() << "\n";
+                    return true;
+                }
+                return false;
+            }
+            links_created_.push_back(dest_path);
+            return true;
 #else
             if (::symlink(native_target.c_str(), dest_path.c_str()) != 0) return false;
             links_created_.push_back(dest_path);
@@ -1501,10 +1565,26 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         return true;
     }
 
+    // Regular file extraction:
+    // Sanitize -> symlink checks on the sanitized path (B3).
+    // TOCTOU notice: Check-then-open has an inherent residual race window against external
+    // concurrent processes modifying symlinks on the filesystem between symlink_status() and open().
+    convert_self_links(dest_path);
+    if (has_symlink_parent(dest_path)) {
+        return false;
+    }
+    std::error_code ec_sym;
+    auto st_dest = std::filesystem::symlink_status(dest_path, ec_sym);
+    if (!ec_sym && std::filesystem::is_symlink(st_dest)) {
+        std::filesystem::remove(dest_path, ec_sym);
+    }
+
     if (entry.in_memory) {
-        std::filesystem::create_directories(dest_path.parent_path());
+        if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
+        FileUnlinker unlinker(dest_path, keep_broken_);
         io::FileStream out;
         if (!out.open(dest_path, io::FileMode::CreateAlways)) return false;
+        unlinker.armed = true;
         if (entry.header.method == 0) {
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > entry.memory_data.size()) write_len = entry.memory_data.size();
@@ -1519,7 +1599,7 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
             }
         }
         out.close();
-        if (entry.header.file_name.find("..") != std::string::npos) convert_self_links(dest_path);
+        unlinker.dismissed = true;
         return true;
     }
 
@@ -1558,9 +1638,11 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         crypto::Aes256 aes(keys.aes_key);
         aes.decrypt_cbc(cipher.data(), dec_len, iv);
 
-        std::filesystem::create_directories(dest_path.parent_path());
+        if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
+        FileUnlinker unlinker(dest_path, keep_broken_);
         io::FileStream out;
         if (!out.open(dest_path, io::FileMode::CreateAlways)) return false;
+        unlinker.armed = true;
         if (entry.header.method == 0) {
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > cipher.size()) write_len = cipher.size();
@@ -1575,27 +1657,26 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
             }
         }
         out.close();
-        if (entry.header.file_name.find("..") != std::string::npos) convert_self_links(dest_path);
+        unlinker.dismissed = true;
         return true;
     }
 
     if (entry.header.method == 0) {
-        bool ok = extract_store_entry(entry, dest_path, pass);
-        if (ok && entry.header.file_name.find("..") != std::string::npos)
-            convert_self_links(dest_path);
-        return ok;
+        return extract_store_entry(entry, dest_path, pass);
     }
 
-    std::filesystem::create_directories(dest_path.parent_path());
+    if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
     std::vector<core::byte> packed;
     if (!read_packed_data(entry, packed)) {
         solid_chain_ok_ = false;
         return false;
     }
+    FileUnlinker unlinker(dest_path, keep_broken_);
     io::FileStream out;
     if (!out.open(dest_path, io::FileMode::CreateAlways)) {
         return false;
     }
+    unlinker.armed = true;
 
     auto cb = [&](const core::byte* data, size_t size) -> bool {
         return out.write(data, size) == size;
@@ -1606,7 +1687,7 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
     }
 
     out.close();
-    if (entry.header.file_name.find("..") != std::string::npos) convert_self_links(dest_path);
+    unlinker.dismissed = true;
     return true;
 }
 
@@ -1620,31 +1701,55 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
         return extract_entry(entry, dest_path, password);
     }
 
-    std::filesystem::create_directories(dest_path.parent_path());
+    // Sanitize -> symlink checks on the sanitized path (B3).
+    // TOCTOU notice: Check-then-open has an inherent residual race window against external
+    // concurrent processes modifying symlinks on the filesystem between symlink_status() and open().
+    convert_self_links(dest_path);
+    if (has_symlink_parent(dest_path)) {
+        return false;
+    }
+    std::error_code ec_sym;
+    auto st_dest = std::filesystem::symlink_status(dest_path, ec_sym);
+    if (!ec_sym && std::filesystem::is_symlink(st_dest)) {
+        std::filesystem::remove(dest_path, ec_sym);
+    }
 
+    if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
+
+    FileUnlinker unlinker(dest_path, keep_broken_);
     io::FileStream out;
     if (!out.open(dest_path, io::FileMode::CreateAlways)) {
         return false;
     }
+    unlinker.armed = true;
 
     if (!entry.extents.empty()) {
-        // Multivvolume store: stitch extents
+        // Multivolume store: stitch extents
         for (auto& e : entry.extents) {
             io::FileStream vs;
-            if (!vs.open(e.volume_path, io::FileMode::ReadOnly)) return false;
+            if (!vs.open(e.volume_path, io::FileMode::ReadOnly)) {
+                out.close();
+                return false;
+            }
             vs.seek(static_cast<core::int64>(e.offset), io::SeekOrigin::Begin);
             core::byte buf[8192];
             core::uint64 remaining = e.size;
             while (remaining > 0) {
                 size_t take = static_cast<size_t>(
                     std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
-                if (vs.read(buf, take) != take) return false;
-                if (out.write(buf, take) != take) return false;
+                if (vs.read(buf, take) != take) {
+                    out.close();
+                    return false;
+                }
+                if (out.write(buf, take) != take) {
+                    out.close();
+                    return false;
+                }
                 remaining -= take;
             }
         }
         out.close();
-        if (entry.header.file_name.find("..") != std::string::npos) convert_self_links(dest_path);
+        unlinker.dismissed = true;
         return true;
     }
 
@@ -1655,13 +1760,19 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
     while (remaining > 0) {
         size_t take =
             static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
-        if (stream_.read(buf, take) != take) return false;
-        if (out.write(buf, take) != take) return false;
+        if (stream_.read(buf, take) != take) {
+            out.close();
+            return false;
+        }
+        if (out.write(buf, take) != take) {
+            out.close();
+            return false;
+        }
         remaining -= take;
     }
 
     out.close();
-    if (entry.header.file_name.find("..") != std::string::npos) convert_self_links(dest_path);
+    unlinker.dismissed = true;
     return true;
 }
 

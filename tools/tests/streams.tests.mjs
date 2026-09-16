@@ -8,7 +8,7 @@ import { parseArchive } from '../rar5-coverage.js';
 import { freshDir, buildOurArchive, runTool, OUR_EXE, readFileSync } from './helpers.mjs';
 
 describe('RAR 5.0 NTFS Alternate Data Streams (-os)', () => {
-  it('archives, parses, and restores NTFS streams', { skip: process.platform !== 'win32' }, () => {
+  it('archives, parses, and restores NTFS streams', { skip: process.platform !== 'win32' ? 'non-Windows' : 'STM writer support deferred per 00-overview.md' }, () => {
     const tree = freshDir('streams-test-tree');
     const testFile = join(tree, 'stream_file.txt');
     writeFileSync(testFile, 'Main data stream content.\n');

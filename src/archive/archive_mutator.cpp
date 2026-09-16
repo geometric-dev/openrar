@@ -608,7 +608,19 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
     // passed to Compressor50 and written into the header (mismatch makes
     // decoders report checksum errors even for a valid LZ stream).
     core::uint32 win_size = 0x200000u;
-    if (window_log2 >= 1 && window_log2 <= 4) win_size = 0x20000u << (window_log2 - 1);
+    if (window_log2 >= 1 && window_log2 <= 4) {
+        win_size = 0x20000u << (window_log2 - 1);
+    } else if (window_log2 == 0) {
+        switch (method) {
+            case 0: win_size = 0x20000u; break;   // 128 KB
+            case 1: win_size = 0x80000u; break;   // 512 KB
+            case 2: win_size = 0x100000u; break;  // 1 MB
+            case 3: win_size = 0x200000u; break;  // 2 MB
+            case 4: win_size = 0x400000u; break;  // 4 MB
+            case 5: win_size = 0x1000000u; break; // 16 MB
+            default: win_size = 0x200000u; break;
+        }
+    }
 
     core::uint64 file_sz = 0;
     core::uint32 crc = 0;
@@ -716,6 +728,41 @@ bool ArchiveMutator::prepare_add_dir(const std::filesystem::path& src_dir,
 
     // entry_name/src_path stay caller-owned (see prepare_add_file, M4).
     out.fb = std::move(fb);
+    return true;
+}
+
+bool ArchiveMutator::prepare_add_symlink(const std::filesystem::path& src_symlink,
+                                         const std::string& arc_entry_name,
+                                         const std::string& target, bool is_dir_target,
+                                         PreparedAdd& out,
+                                         core::uint32 times_mask) {
+    format::FileBlock fb;
+    fb.file_name = arc_entry_name;
+    fb.unp_size = 0;
+    fb.pack_size = -1;
+    fb.attributes = is_dir_target ? 0x10 : 0x20;
+    fb.method = 0;
+    fb.win_size = 0;
+    fb.unp_ver = 0;
+#ifdef _WIN32
+    fb.redir_type = 2;
+#else
+    fb.redir_type = 1;
+#endif
+    fb.redir_dir_target = is_dir_target;
+    fb.redir_target = target;
+    FileTimes times;
+    if (get_file_times(src_symlink, times)) {
+        apply_file_times(fb, times, times_mask);
+    }
+    out.fb = std::move(fb);
+    return true;
+}
+
+bool ArchiveMutator::get_file_mtime(const std::filesystem::path& path, core::uint64& mtime_out) {
+    FileTimes ft;
+    if (!get_file_times(path, ft)) return false;
+    mtime_out = ft.mtime;
     return true;
 }
 
@@ -1367,13 +1414,10 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
                 return false;
             }
             if (!final) {
-                // RAR5's Data CRC32 field is defined as the CRC of the
-                // *unpacked* data, not the packed slice bytes. Per the
-                // format specification, intermediate slices of a split file
-                // carry no FHFL_CRC32; only the final slice carries the
-                // unpacked CRC32.
-                slice_fb.data_crc32 = 0;
-                slice_fb.has_crc32 = false;
+                crypto::Crc32 slice_crc;
+                slice_crc.update(slice_buf.data(), slice_buf.size());
+                slice_fb.data_crc32 = slice_crc.get();
+                slice_fb.has_crc32 = true;
             } else {
                 slice_fb.data_crc32 = pe.unpacked_crc;
                 slice_fb.has_crc32 = true;
