@@ -12,6 +12,20 @@
 
 namespace openrar {
 
+namespace detail {
+// path::u8string() returns std::u8string (char8_t) in C++20 but std::string in
+// C++17, and only the latter converts to std::string. The C ABI takes UTF-8 in
+// char* buffers, so bridge both standards here.
+inline std::string u8_str(const std::filesystem::path& p) {
+#ifdef __cpp_char8_t
+    const std::u8string u8 = p.u8string();
+    return std::string(u8.begin(), u8.end());
+#else
+    return p.u8string();
+#endif
+}
+} // namespace detail
+
 inline void check(int rc) {
     if (rc == RAR_OK || rc == RAR_ERR_PARTIAL_OK) return;
     char buf[512] = {};
@@ -123,7 +137,7 @@ inline std::vector<Entry> list_archive_file(const std::filesystem::path& arc) {
     void* entries = nullptr;
     void* paths = nullptr;
     size_t paths_sz = 0;
-    std::string u8 = arc.u8string();
+    std::string u8 = detail::u8_str(arc);
     int rc = openrar_archive_list_file(u8.c_str(), &count, &entries, &paths, &paths_sz);
     check(rc);
     std::vector<Entry> out = unpack_entries(count, entries, paths);
@@ -164,7 +178,7 @@ inline std::vector<Entry> list_archive_file(const std::filesystem::path& arc,
     void* entries = nullptr;
     void* paths = nullptr;
     size_t paths_sz = 0;
-    std::string u8 = arc.u8string();
+    std::string u8 = detail::u8_str(arc);
     int rc = openrar_archive_list_file_ex(u8.c_str(), &count, &entries, &paths, &paths_sz, progress,
                                           cancel, user);
     check(rc);
@@ -189,7 +203,7 @@ inline std::vector<Entry> list_archive_file(const std::filesystem::path& arc, co
     void* entries = nullptr;
     void* paths = nullptr;
     size_t paths_sz = 0;
-    std::string u8 = arc.u8string();
+    std::string u8 = detail::u8_str(arc);
     int rc = openrar_archive_list_file_pw(u8.c_str(), password, &count, &entries, &paths, &paths_sz,
                                           progress, cancel, user);
     check(rc);
@@ -278,7 +292,7 @@ inline std::vector<uint8_t> create_archive(const std::vector<InputFile>& files,
 // UNSUPPORTED_FEATURE (suffix-only delete).
 inline void delete_entries(const std::filesystem::path& arc,
                            const std::vector<uint32_t>& indices) {
-    std::string u8 = arc.u8string();
+    std::string u8 = detail::u8_str(arc);
     int rc = openrar_archive_delete_entries_file(u8.c_str(), indices.data(),
                                                  static_cast<uint32_t>(indices.size()));
     check(rc);
@@ -302,7 +316,7 @@ inline void add_files(const std::filesystem::path& arc,
     srcs.reserve(files.size());
     names.reserve(files.size());
     for (const auto& f : files) {
-        srcs.push_back(f.first.u8string());
+        srcs.push_back(detail::u8_str(f.first));
         names.push_back(f.second);
     }
     std::vector<const char*> src_ptrs;
@@ -313,7 +327,7 @@ inline void add_files(const std::filesystem::path& arc,
         src_ptrs.push_back(srcs[i].c_str());
         name_ptrs.push_back(names[i].c_str());
     }
-    std::string u8 = arc.u8string();
+    std::string u8 = detail::u8_str(arc);
     int rc = openrar_archive_add_files_file(u8.c_str(), src_ptrs.data(), name_ptrs.data(),
                                             static_cast<uint32_t>(files.size()), opts.method,
                                             opts.window_log2);
@@ -373,7 +387,7 @@ public:
     ArchiveHandle(const std::filesystem::path& arc, const char* password = nullptr,
                   openrar_progress_cb progress = nullptr, openrar_cancel_cb cancel = nullptr,
                   void* user = nullptr) {
-        std::string u8 = arc.u8string();
+        std::string u8 = detail::u8_str(arc);
         h_ = openrar_archive_open_file(u8.c_str(), password, progress, cancel, user);
         fail_if_null();
     }
@@ -419,7 +433,7 @@ public:
     void extract_to_path(uint32_t idx, const std::filesystem::path& dest,
                          openrar_progress_cb progress = nullptr,
                          openrar_cancel_cb cancel = nullptr, void* user = nullptr) const {
-        std::string u8 = dest.u8string();
+        std::string u8 = detail::u8_str(dest);
         int rc = openrar_archive_handle_extract_to_path(h_, idx, u8.c_str(), progress, cancel,
                                                         user);
         check(rc);

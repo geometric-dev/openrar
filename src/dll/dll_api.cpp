@@ -4,6 +4,7 @@
 #include "../archive/buffer_archive.hpp"
 #include "../archive/archive_reader.hpp"
 #include "../archive/archive_mutator.hpp"
+#include "../io/path_util.hpp"
 #include "../compress/compressor50.hpp"
 #include "../compress/decompressor50.hpp"
 #include "../compress/stream_encoder.hpp"
@@ -505,7 +506,7 @@ struct FileArchiveHandle : ArchiveHandleBase {
         openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
         int rc = reader->test_entry_stream(reader_index[entry_index], hooks);
         if (rc == RAR_ERR_MISSING_VOLUME)
-            set_error("missing volume: " + reader->missing_volume_path().u8string());
+            set_error("missing volume: " + openrar::io::u8_str(reader->missing_volume_path()));
         else if (rc == RAR_ERR_BAD_PASSWORD)
             set_error("wrong password for encrypted entry");
         else if (rc == RAR_ERR_ENCRYPTED)

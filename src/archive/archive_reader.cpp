@@ -2,6 +2,7 @@
 #include "rar_errors.hpp"
 #include "volume.hpp"
 #include "../format/header_reader.hpp"
+#include "../io/path_util.hpp"
 #include "../core/vint.hpp"
 #include "../crypto/crc32.hpp"
 #include "../crypto/blake2sp.hpp"
@@ -155,7 +156,7 @@ bool ArchiveReader::open_ex(const std::filesystem::path& arc_path, const std::st
             path_ = first;
         } else {
             status_out = RAR_ERR_MISSING_VOLUME;
-            detail_out = "cannot open first volume: " + first.u8string();
+            detail_out = "cannot open first volume: " + io::u8_str(first);
             missing_volume_path_ = first;
             close();
             missing_volume_path_ = first; // survive close()'s state reset
@@ -165,7 +166,7 @@ bool ArchiveReader::open_ex(const std::filesystem::path& arc_path, const std::st
 
     if (!stream_.open(path_, io::FileMode::ReadOnly)) {
         status_out = RAR_ERR_IO;
-        detail_out = "cannot open " + path_.u8string();
+        detail_out = "cannot open " + io::u8_str(path_);
         close();
         return false;
     }
@@ -510,7 +511,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
     if (scan_aborted) return fail(RAR_ERR_ABORTED, "open aborted");
     if (missing_required && strict_volumes)
         return fail(RAR_ERR_MISSING_VOLUME,
-                    "missing volume: " + missing_volume_path_.u8string());
+                    "missing volume: " + io::u8_str(missing_volume_path_));
     if (!first_main_read) {
         // A HEAD_CRYPT block that could not be passed (no password, wrong
         // password, unknown crypto version) dies before the main header —
