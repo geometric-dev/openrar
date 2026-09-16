@@ -127,7 +127,7 @@ bool encrypt_file_payload(std::vector<core::byte>& payload, format::FileBlock& f
     core::byte iv_copy[IV_LEN];
     std::memcpy(iv_copy, iv, IV_LEN);
     crypto::Aes256 aes(keys.aes_key);
-    aes.encrypt_cbc(payload.data(), padded, iv_copy);
+    if (!aes.encrypt_cbc(payload.data(), padded, iv_copy)) return false;
 
     fb.is_encrypted = true;
     fb.crypt_version = 0;

@@ -584,11 +584,14 @@ void Aes256::decrypt_block(const core::byte* in, core::byte* out) const {
     }
 }
 
-void Aes256::encrypt_cbc(core::byte* data, size_t size, core::byte* iv) const {
+bool Aes256::encrypt_cbc(core::byte* data, size_t size, core::byte* iv) const {
+    // One alignment gate in front of every implementation path (scalar,
+    // AES-NI, NEON); see aes256.hpp for the contract.
+    if (size % BLOCK_SIZE != 0) return false;
 #ifdef OPENRAR_AES_NI
     if (has_ni_) {
         aesni_encrypt_cbc(data, size, iv, ni_enc_keys_);
-        return;
+        return true;
     }
 #endif
 #ifdef OPENRAR_AES_NEON
@@ -601,7 +604,7 @@ void Aes256::encrypt_cbc(core::byte* data, size_t size, core::byte* iv) const {
             vst1q_u8(p, chain);
         }
         vst1q_u8(iv, chain);
-        return;
+        return true;
     }
 #endif
 
@@ -616,19 +619,21 @@ void Aes256::encrypt_cbc(core::byte* data, size_t size, core::byte* iv) const {
         std::memcpy(iv, p, BLOCK_SIZE);
         p += BLOCK_SIZE;
     }
+    return true;
 }
 
-void Aes256::decrypt_cbc(core::byte* data, size_t size, core::byte* iv) const {
+bool Aes256::decrypt_cbc(core::byte* data, size_t size, core::byte* iv) const {
     // INTENDED (output-parameter mutation): on return `iv` holds the LAST
     // CIPHERTEXT block of this call, not the caller's original value. Every
     // implementation below (scalar, AES-NI, NEON) writes it back, and the
     // encrypted-header reader chains successive header blocks through it
     // (format/header_reader.cpp). Do not change decrypt_cbc into a
     // non-mutating take-IV-by-value API.
+    if (size % BLOCK_SIZE != 0) return false;
 #ifdef OPENRAR_AES_NI
     if (has_ni_) {
         aesni_decrypt_cbc(data, size, iv, ni_dec_keys_);
-        return;
+        return true;
     }
 #endif
 #ifdef OPENRAR_AES_NEON
@@ -642,7 +647,7 @@ void Aes256::decrypt_cbc(core::byte* data, size_t size, core::byte* iv) const {
             prev = c;
         }
         vst1q_u8(iv, prev);
-        return;
+        return true;
     }
 #endif
 
@@ -660,6 +665,7 @@ void Aes256::decrypt_cbc(core::byte* data, size_t size, core::byte* iv) const {
         std::memcpy(iv, next_iv, BLOCK_SIZE);
         p += BLOCK_SIZE;
     }
+    return true;
 }
 
 } // namespace openrar::crypto

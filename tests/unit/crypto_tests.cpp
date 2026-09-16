@@ -206,6 +206,27 @@ void test_aes256_cbc() {
     std::cout << "[PASS] AES-256 CBC Encrypt / Decrypt Roundtrip\n";
 }
 
+void test_cbc_rejects_unaligned_size() {
+    // Q5 regression: encrypt/decrypt_cbc used to silently floor to whole
+    // blocks, dropping a trailing partial block without any diagnostic. The
+    // primitive must refuse non-multiple-of-16 sizes and touch no bytes.
+    const core::byte key[32] = {0};
+    core::byte iv[16] = {0};
+    core::byte data[20];
+    for (int i = 0; i < 20; ++i) data[i] = static_cast<core::byte>(0xA0 + i);
+    core::byte snapshot[20];
+    std::memcpy(snapshot, data, 20);
+
+    crypto::Aes256 aes(key);
+    assert(aes.encrypt_cbc(data, 20, iv) == false);
+    assert(aes.decrypt_cbc(data, 20, iv) == false);
+    assert(std::memcmp(data, snapshot, 20) == 0); // buffer untouched on refusal
+    assert(aes.encrypt_cbc(data, 0, iv) == true); // zero blocks is a valid no-op
+    assert(aes.decrypt_cbc(data, 16, iv) == true); // aligned still works
+
+    std::cout << "[PASS] AES-256 CBC rejects unaligned size without touching data (Q5)\n";
+}
+
 void test_pbkdf2() {
     const char* pwd = "TestPassword";
     core::byte salt[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
@@ -438,6 +459,7 @@ int main() {
     test_sha256();
     test_blake2sp();
     test_aes256_cbc();
+    test_cbc_rejects_unaligned_size();
     test_pbkdf2();
     test_pbkdf2_zero_count_fails_cleanly();
     test_constant_time_equal();

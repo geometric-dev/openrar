@@ -6,6 +6,7 @@
 #include "../../src/format/header_writer.hpp"
 #include "../../src/archive/archive_reader.hpp"
 #include "../../src/archive/archive_mutator.hpp"
+#include "../../src/archive/rar_errors.hpp"
 
 #include <cassert>
 #include <filesystem>
@@ -607,6 +608,117 @@ void test_solid_window_size() {
     std::cout << "[PASS] solid_window_size\n";
 }
 
+void test_b9_b5_corrupt_payload_fails_cleanly() {
+    // T5 + B9 regression: (a) same-length payload corruption must surface the
+    // canonical RAR_ERR_CRC_MISMATCH code on the streaming verify path, not a
+    // generic IO; (b) a failed extract_entry must not leave a partial
+    // destination file behind (FileUnlinker), and keep_broken=false is the
+    // default.
+    namespace fs = std::filesystem;
+    fs::path src = "build/crc_payload.bin";
+    fs::path arc = "build/crc_payload.rar";
+    fs::path corrupt = "build/crc_payload_corrupt.rar";
+    fs::path dest = "build/crc_payload_out.bin";
+    std::error_code ec;
+    fs::remove(arc, ec);
+    fs::remove(corrupt, ec);
+    fs::remove(dest, ec);
+    {
+        std::ofstream f(src, std::ios::binary);
+        f << std::string(4096, 'A');
+        f << "OPENRAR CRC-MISMATCH PAYLOAD TAIL";
+    }
+
+    // method 0 (store): the corrupted byte is payload itself, so the CRC32
+    // verdict is deterministic — no LZ stream reinterpretation in between.
+    assert(ArchiveMutator::add_file_to_archive(arc, src, "payload.bin", 0));
+
+    {
+        // Flip one byte in the MIDDLE of the payload region, located from the
+        // intact archive's scan — the archive tail can carry an ENDARC block,
+        // so the last file byte is not necessarily payload.
+        ArchiveReader probe;
+        assert(probe.open(arc));
+        const auto& pe = probe.entries()[0];
+        const core::uint64 flip_off = pe.data_offset + pe.data_size / 2;
+        std::ifstream in(arc, std::ios::binary);
+        std::vector<core::byte> bytes((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+        in.close();
+        assert(flip_off < bytes.size());
+        bytes[static_cast<size_t>(flip_off)] ^= 0xFF;
+        std::ofstream out(corrupt, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+    }
+
+    {
+        ArchiveReader reader;
+        assert(reader.open(corrupt));
+        // T5: streaming verify reports the dedicated CRC code.
+        ReaderHooks hooks{};
+        assert(reader.test_entry_stream(0, hooks) == RAR_ERR_CRC_MISMATCH);
+
+        // B9: the file-path extraction fails AND removes its partial output.
+        assert(!reader.extract_entry(reader.entries()[0], dest));
+        assert(!fs::exists(dest, ec));
+    }
+
+    // keep_broken=true is the explicit opt-in to keep the partial file.
+    {
+        ArchiveReader reader;
+        reader.set_keep_broken(true);
+        assert(reader.open(corrupt));
+        assert(!reader.extract_entry(reader.entries()[0], dest));
+        assert(fs::exists(dest, ec));
+        assert(fs::file_size(dest, ec) > 0);
+    }
+
+    fs::remove(src, ec);
+    fs::remove(arc, ec);
+    fs::remove(corrupt, ec);
+    fs::remove(dest, ec);
+    std::cout << "[PASS] corrupt payload: RAR_ERR_CRC_MISMATCH + no partial file (T5, B9)\n";
+}
+
+void test_b2_parent_is_file_fails_cleanly() {
+    // B2 regression: extraction whose destination parent chain collides with
+    // a regular FILE must fail with a clean false — via the error_code
+    // overloads in ensure_parent_dir — never an uncaught filesystem_error
+    // across the C ABI, and never writing anything.
+    namespace fs = std::filesystem;
+    fs::path src = "build/b2_payload.txt";
+    fs::path arc = "build/b2_parent.rar";
+    fs::path dest_root = "build/b2_dest";
+    std::error_code ec;
+    fs::remove(arc, ec);
+    fs::remove_all(dest_root, ec);
+    fs::create_directories(dest_root);
+    {
+        std::ofstream f(src);
+        f << "B2 parent-is-file payload";
+    }
+
+    assert(ArchiveMutator::add_file_to_archive(arc, src, "blocker/child.txt", 0));
+
+    // The collision: "blocker" exists as a FILE, not a directory.
+    {
+        std::ofstream f(dest_root / "blocker");
+        f << "occupied";
+    }
+
+    ArchiveReader reader;
+    assert(reader.open(arc));
+    assert(!reader.extract_entry(reader.entries()[0], dest_root / "blocker" / "child.txt"));
+    assert(fs::is_regular_file(dest_root / "blocker", ec)); // blocker untouched
+    assert(!fs::exists(dest_root / "blocker" / "child.txt", ec));
+
+    fs::remove(src, ec);
+    fs::remove(arc, ec);
+    fs::remove_all(dest_root, ec);
+    std::cout << "[PASS] parent-is-file collision fails cleanly, no throw (B2)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -625,6 +737,8 @@ int main() {
     test_truncated_data_area_clamped();
     test_filecopy_source_confined_to_root();
     test_links_to_dirs_leaves_preexisting_links();
+    test_b9_b5_corrupt_payload_fails_cleanly();
+    test_b2_parent_is_file_fails_cleanly();
     test_solid_window_size();
     std::cout << "All Milestone 5 Archive Operations & Mutation Primitives PASSED!\n";
     return 0;
