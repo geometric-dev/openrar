@@ -173,6 +173,9 @@ jobs:
             build/openrar*.lib
             build/Release/openrar*.lib
             build/*.lib
+            build/openrar64/Release/openrar.exe
+            build/openrar64/openrar.exe
+            build/openrar
           if-no-files-found: warn
 
   linux-arm64-qemu:
@@ -244,12 +247,13 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Run structural writer tests (no WinRAR oracle)
-        # The WinRAR-independent subset: writer output is parsed and
-        # structurally asserted, self-tested and self-extracted, and
-        # determinism-checked by SHA-256. Oracle asserts are skipped
-        # automatically when no UnRAR is present.
-        run: node tools/run-tests.cjs format roundtrip parity
+      - name: Run Node writer suites (full run, R2)
+        # Full tools/tests suite: every suite self-gates what it needs — the
+        # WinRAR oracle asserts skip when no UnRAR binary exists (Linux CI),
+        # streams/links self-skip on privilege/OS limits, and the filters /
+        # encryption suites skip until implemented. Self-test, self-extraction
+        # and structural asserts run everywhere.
+        run: node tools/run-tests.cjs
 
   wasm:
     name: WASM (Emscripten) — block codec + archive API
@@ -345,10 +349,10 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VER="${TAG#v}"
 
-          # Release zips carry the shared library and its import library
-          # only — test-target static libs (openrar_core.lib, *_check.lib)
-          # are CI artifacts, not release assets.
-          find . -type f \( -name 'openrar_core.lib' -o -name 'openrar_*_check.lib' \) -delete
+          # Release zips carry the shared library, its import library, and the
+          # CLI executable (R5) — test-target static libs (openrar_core.lib,
+          # *_check.lib) are CI artifacts, not release assets.
+          find . -type f \( -name 'openrar_core.lib' -o -name 'openrar_core.a' -o -name 'openrar_*_check.lib' \) -delete
 
           for d in openrar-dll-* openrar-wasm; do
             short=$(echo "$d" | sed -e 's|^openrar-dll-|dll-|'                                    -e 's|^openrar-wasm$|wasm|'                                    -e 's|ubuntu-latest|linux|'                                    -e 's|macos-latest|macos|'                                    -e 's|windows-2022|windows|'                                    -e 's|-arm64-arm64|-arm64|')

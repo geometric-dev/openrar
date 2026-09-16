@@ -20,6 +20,9 @@ export const OUR_EXE_CANDIDATES = [
 export const OUR_EXE = OUR_EXE_CANDIDATES.find((p) => existsSync(p)) ?? OUR_EXE_CANDIDATES[0];
 export const RAR_EXE = process.env.RAR_EXE ?? 'C:\\Program Files\\WinRAR\\Rar.exe';
 export const WINRAR_UNRAR = process.env.UNRAR_EXE ?? 'C:\\Program Files\\WinRAR\\UnRAR.exe';
+// Trailing separator when handing an extraction destination to the CLI or the
+// oracle: Windows tools want the backslash, POSIX takes the forward slash.
+export const DIR_SEP = process.platform === 'win32' ? '\\' : '/';
 
 // Oracle detection: a bare command name ("unrar") is resolved against PATH
 // so the suite also works on non-Windows machines with a system unrar.

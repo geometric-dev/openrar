@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArchive } from '../rar5-coverage.js';
-import { freshDir, makeFixtureTree, buildOurArchive, runTool, OUR_EXE, WINRAR_UNRAR, treesEqual } from './helpers.mjs';
+import { freshDir, makeFixtureTree, buildOurArchive, runTool, OUR_EXE, WINRAR_UNRAR, treesEqual, oracleAvailable } from './helpers.mjs';
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -43,12 +43,15 @@ describe('RAR 5.0 Multi-Volume Archives (-v)', () => {
     assert.ok(main1, 'Main header missing in volume 1');
     assert.ok(main1.archiveFlags.includes('volume'), 'MHFL_VOLUME should be set');
 
-    // WinRAR Oracle extraction test
-    const extWin = freshDir('vol-store-ext-win');
-    const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
-    assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
-    const cmpWin = treesEqual(tree, extWin);
-    assert.equal(cmpWin.ok, true, `WinRAR extracted content mismatch: ${cmpWin.why}`);
+    // WinRAR Oracle extraction test (skipped when no UnRAR binary exists,
+    // e.g. the Linux CI job; the self extraction below still verifies fully)
+    if (oracleAvailable()) {
+      const extWin = freshDir('vol-store-ext-win');
+      const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
+      assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
+      const cmpWin = treesEqual(tree, extWin);
+      assert.equal(cmpWin.ok, true, `WinRAR extracted content mismatch: ${cmpWin.why}`);
+    }
 
     // Self extraction test
     const extOur = freshDir('vol-store-ext-our');
@@ -77,12 +80,14 @@ describe('RAR 5.0 Multi-Volume Archives (-v)', () => {
       assert.equal(crc32(slicePayload), splitFileBlock.file.dataCrc, 'Split chunk header CRC must match slice payload CRC');
     }
 
-    // WinRAR extraction
-    const extWin = freshDir('vol-m3-ext-win');
-    const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
-    assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
-    const cmpWin = treesEqual(tree, extWin);
-    assert.equal(cmpWin.ok, true, `WinRAR content mismatch: ${cmpWin.why}`);
+    // WinRAR extraction (oracle-gated; see above)
+    if (oracleAvailable()) {
+      const extWin = freshDir('vol-m3-ext-win');
+      const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
+      assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
+      const cmpWin = treesEqual(tree, extWin);
+      assert.equal(cmpWin.ok, true, `WinRAR content mismatch: ${cmpWin.why}`);
+    }
 
     // Self extraction
     const extOur = freshDir('vol-m3-ext-our');
@@ -102,11 +107,13 @@ describe('RAR 5.0 Multi-Volume Archives (-v)', () => {
     const volFiles = readdirSync(out).filter((f) => f.includes('.part')).sort();
     assert.ok(volFiles.length >= 2);
 
-    const extWin = freshDir('vol-solid-ext-win');
-    const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
-    assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
-    const cmpWin = treesEqual(tree, extWin);
-    assert.equal(cmpWin.ok, true, `WinRAR solid content mismatch: ${cmpWin.why}`);
+    if (oracleAvailable()) {
+      const extWin = freshDir('vol-solid-ext-win');
+      const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
+      assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
+      const cmpWin = treesEqual(tree, extWin);
+      assert.equal(cmpWin.ok, true, `WinRAR solid content mismatch: ${cmpWin.why}`);
+    }
 
     const extOur = freshDir('vol-solid-ext-our');
     const resOur = runTool(OUR_EXE, ['x', '-y', join(out, volFiles[0]), extOur + '\\'], tree);
@@ -125,11 +132,13 @@ describe('RAR 5.0 Multi-Volume Archives (-v)', () => {
     const volFiles = readdirSync(out).filter((f) => f.includes('.part')).sort();
     assert.ok(volFiles.length >= 2);
 
-    const extWin = freshDir('vol-enc-ext-win');
-    const resWin = runTool(WINRAR_UNRAR, ['x', '-pSecret', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
-    assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
-    const cmpWin = treesEqual(tree, extWin);
-    assert.equal(cmpWin.ok, true, `WinRAR enc content mismatch: ${cmpWin.why}`);
+    if (oracleAvailable()) {
+      const extWin = freshDir('vol-enc-ext-win');
+      const resWin = runTool(WINRAR_UNRAR, ['x', '-pSecret', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
+      assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
+      const cmpWin = treesEqual(tree, extWin);
+      assert.equal(cmpWin.ok, true, `WinRAR enc content mismatch: ${cmpWin.why}`);
+    }
 
     const extOur = freshDir('vol-enc-ext-our');
     const resOur = runTool(OUR_EXE, ['x', '-pSecret', '-y', join(out, volFiles[0]), extOur + '\\'], tree);

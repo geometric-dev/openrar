@@ -56,9 +56,11 @@ describe('RAR 5.0 / 7.0 Compression Dictionary & Version Spec', () => {
       const resList = runTool(OUR_EXE, ['lt', arc], out);
       assert.equal(resList.code, 0, `Listing failed for -m${method}`);
 
-      // Dual-oracle test with WinRAR
-      const resWinTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-      assert.equal(resWinTest.code, 0, `WinRAR test failed for -m${method}: ${resWinTest.output}`);
+      // Dual-oracle test with WinRAR (oracle-gated)
+      if (oracleAvailable()) {
+        const resWinTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+        assert.equal(resWinTest.code, 0, `WinRAR test failed for -m${method}: ${resWinTest.output}`);
+      }
     }
   });
 
@@ -83,9 +85,11 @@ describe('RAR 5.0 / 7.0 Compression Dictionary & Version Spec', () => {
       const res = runTool(OUR_EXE, ['a', '-y', '-m3', sw, arc, '.'], tree);
       assert.equal(res.code, 0, `Archiving with ${sw} failed: ${res.output}`);
 
-      // Dual-oracle test with WinRAR
-      const resWinTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-      assert.equal(resWinTest.code, 0, `WinRAR test failed for ${sw}: ${resWinTest.output}`);
+      // Dual-oracle test with WinRAR (oracle-gated)
+      if (oracleAvailable()) {
+        const resWinTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+        assert.equal(resWinTest.code, 0, `WinRAR test failed for ${sw}: ${resWinTest.output}`);
+      }
 
       // Test byte-identical round-trip extraction
       const extDir = freshDir(`ext_${sw.slice(1)}`);
@@ -106,8 +110,10 @@ describe('RAR 5.0 / 7.0 Compression Dictionary & Version Spec', () => {
     const res = runTool(OUR_EXE, ['a', '-y', '-s', '-m4', '-md16m', arc, '.'], tree);
     assert.equal(res.code, 0, `Solid archiving failed: ${res.output}`);
 
-    const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-    assert.equal(resWin.code, 0, `WinRAR test on solid archive failed: ${resWin.output}`);
+    if (oracleAvailable()) {
+      const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.equal(resWin.code, 0, `WinRAR test on solid archive failed: ${resWin.output}`);
+    }
 
     const extDir = freshDir('dict-solid-ext');
     const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + '\\'], tree);

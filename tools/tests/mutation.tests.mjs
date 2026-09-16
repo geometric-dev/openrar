@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync, utimesSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArchive } from '../rar5-coverage.js';
-import { freshDir, makeFixtureTree, buildOurArchive, runTool, OUR_EXE, WINRAR_UNRAR, treesEqual } from './helpers.mjs';
+import { freshDir, makeFixtureTree, buildOurArchive, runTool, OUR_EXE, WINRAR_UNRAR, treesEqual, oracleAvailable, DIR_SEP } from './helpers.mjs';
 
 describe('RAR 5.0 Archive Mutation (d, u, f, m, k)', () => {
   it('deletes files from archive (d) and verifies remaining archive integrity', () => {
@@ -24,9 +24,12 @@ describe('RAR 5.0 Archive Mutation (d, u, f, m, k)', () => {
     const foundDataBin = parsed.blocks.some((b) => b.file?.name === 'data.bin');
     assert.equal(foundDataBin, false, 'data.bin should have been deleted');
 
-    // Dual-oracle test pass on mutated archive
-    const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-    assert.equal(resWin.code, 0, `WinRAR test failed:\n${resWin.output}`);
+    // Dual-oracle test pass on mutated archive (oracle-gated: the self test
+    // below still runs everywhere)
+    if (oracleAvailable()) {
+      const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.equal(resWin.code, 0, `WinRAR test failed:\n${resWin.output}`);
+    }
     const resOur = runTool(OUR_EXE, ['t', '-y', arc], out);
     assert.equal(resOur.code, 0, `Self test failed:\n${resOur.output}`);
   });
@@ -54,10 +57,16 @@ describe('RAR 5.0 Archive Mutation (d, u, f, m, k)', () => {
     const resUpd = runTool(OUR_EXE, ['u', '-y', '-r', arc, '*'], tree);
     assert.equal(resUpd.code, 0, `Update failed: ${resUpd.output}`);
 
-    // Verify extraction
+    // Verify extraction (oracle when available, self extraction otherwise —
+    // the on-disk content assertions below apply either way)
     const extDir = freshDir('mut-upd-ext');
-    const resExt = runTool(WINRAR_UNRAR, ['x', '-y', arc, extDir + '\\'], tree);
-    assert.equal(resExt.code, 0, `WinRAR extract failed: ${resExt.output}`);
+    if (oracleAvailable()) {
+      const resExt = runTool(WINRAR_UNRAR, ['x', '-y', arc, extDir + DIR_SEP], tree);
+      assert.equal(resExt.code, 0, `WinRAR extract failed: ${resExt.output}`);
+    } else {
+      const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + DIR_SEP], tree);
+      assert.equal(resExt.code, 0, `Self extract failed: ${resExt.output}`);
+    }
 
     assert.equal(readFileSync(join(extDir, 'text.txt'), 'utf8'), 'UPDATED CONTENT FOR TEXT.TXT');
     assert.equal(readFileSync(join(extDir, 'brand_new.txt'), 'utf8'), 'BRAND NEW FILE CONTENT');
@@ -86,9 +95,13 @@ describe('RAR 5.0 Archive Mutation (d, u, f, m, k)', () => {
     const foundNew = parsed.blocks.some((b) => b.file?.name === 'should_not_exist.txt');
     assert.equal(foundNew, false, 'freshen must not add new files');
 
-    // Verify text.txt was freshened
+    // Verify text.txt was freshened (oracle or self extraction)
     const extDir = freshDir('mut-fsh-ext');
-    runTool(WINRAR_UNRAR, ['x', '-y', arc, extDir + '\\'], tree);
+    if (oracleAvailable()) {
+      runTool(WINRAR_UNRAR, ['x', '-y', arc, extDir + DIR_SEP], tree);
+    } else {
+      runTool(OUR_EXE, ['x', '-y', arc, extDir + DIR_SEP], tree);
+    }
     assert.equal(readFileSync(join(extDir, 'text.txt'), 'utf8'), 'FRESHENED TEXT CONTENT');
   });
 
@@ -159,8 +172,10 @@ describe('RAR 5.0 Archive Mutation (d, u, f, m, k)', () => {
     assert.equal(main2.extra?.length ?? 0, 0, 'Locator extra record should be stripped');
 
     // Dual-oracle test on stripped archive
-    const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-    assert.equal(resWin.code, 0);
+    if (oracleAvailable()) {
+      const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.equal(resWin.code, 0);
+    }
   });
 
   it('rejects mutation on multi-volume sets', () => {
@@ -190,8 +205,13 @@ describe('RAR 5.0 Archive Mutation (d, u, f, m, k)', () => {
 
     // Verify surviving secret2.txt can still be decrypted with original password
     const extDir = freshDir('mut-enc-ext');
-    const resExt = runTool(WINRAR_UNRAR, ['x', '-y', '-pPass123', arc, extDir + '\\'], tree);
-    assert.equal(resExt.code, 0, `Extracting surviving file failed: ${resExt.output}`);
+    if (oracleAvailable()) {
+      const resExt = runTool(WINRAR_UNRAR, ['x', '-y', '-pPass123', arc, extDir + DIR_SEP], tree);
+      assert.equal(resExt.code, 0, `Extracting surviving file failed: ${resExt.output}`);
+    } else {
+      const resExt = runTool(OUR_EXE, ['x', '-y', '-pPass123', arc, extDir + DIR_SEP], tree);
+      assert.equal(resExt.code, 0, `Extracting surviving file failed: ${resExt.output}`);
+    }
     assert.equal(readFileSync(join(extDir, 'secret2.txt'), 'utf8'), 'SUPER SECRET DATA 2');
     assert.equal(existsSync(join(extDir, 'secret1.txt')), false);
   });
@@ -207,8 +227,10 @@ describe('RAR 5.0 Archive Mutation (d, u, f, m, k)', () => {
     assert.equal(resDel.code, 0, `Solid delete failed: ${resDel.output}`);
 
     // Verify dual-oracle test pass on mutated solid archive
-    const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-    assert.equal(resWin.code, 0, `WinRAR solid test failed: ${resWin.output}`);
+    if (oracleAvailable()) {
+      const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.equal(resWin.code, 0, `WinRAR solid test failed: ${resWin.output}`);
+    }
   });
 
   it('supports wildcard mask deletion (*.txt)', () => {
