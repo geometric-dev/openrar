@@ -70,7 +70,9 @@ void test_cli_lifecycle() {
     std::filesystem::remove(f1);
 
     // Create a file to move
-    { std::ofstream(f1) << "OPENRAR CLI TEST SUITE ITEM"; }
+    {
+        std::ofstream(f1) << "OPENRAR CLI TEST SUITE ITEM";
+    }
     assert(std::filesystem::exists(f1));
 
     std::string exe = get_cli_path();
@@ -297,7 +299,9 @@ void test_cli_overwrite_modes() {
 
     // The archive is built via the mutator so the stored entry name is exactly
     // "cli_ov_src.txt", independent of CLI path-normalization rules.
-    { std::ofstream(src) << "VERSION-ONE"; }
+    {
+        std::ofstream(src) << "VERSION-ONE";
+    }
     assert(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "cli_ov_src.txt"));
 
     auto extract = [&](const char* extra_switch) {
@@ -315,7 +319,9 @@ void test_cli_overwrite_modes() {
     assert(read_target() == "VERSION-ONE");
 
     // Simulate a locally-edited file on disk, then check each mode.
-    { std::ofstream(target, std::ios::binary) << "LOCAL-EDIT"; }
+    {
+        std::ofstream(target, std::ios::binary) << "LOCAL-EDIT";
+    }
 
     // -o-: never overwrite — the on-disk edit must survive.
     res = extract("-o-");
@@ -329,7 +335,9 @@ void test_cli_overwrite_modes() {
 
     // Default with non-interactive stdin: auto-Yes (backward-compatible with
     // the pre-query behavior every scripted caller relies on).
-    { std::ofstream(target, std::ios::binary) << "LOCAL-EDIT"; }
+    {
+        std::ofstream(target, std::ios::binary) << "LOCAL-EDIT";
+    }
     res = extract("");
     assert(res == 0);
     assert(read_target() == "VERSION-ONE");

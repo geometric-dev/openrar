@@ -130,7 +130,7 @@ void apply_unix_owner(format::FileBlock& fb, const std::filesystem::path& path) 
     long bufsize = ::sysconf(_SC_GETPW_R_SIZE_MAX);
     if (bufsize <= 0) bufsize = 1024;
     std::vector<char> buf(static_cast<size_t>(bufsize));
-    struct passwd pwd {};
+    struct passwd pwd{};
     struct passwd* result = nullptr;
     while (true) {
         int rc = ::getpwuid_r(st.st_uid, &pwd, buf.data(), buf.size(), &result);
@@ -149,7 +149,7 @@ void apply_unix_owner(format::FileBlock& fb, const std::filesystem::path& path) 
     long gbufsize = ::sysconf(_SC_GETGR_R_SIZE_MAX);
     if (gbufsize <= 0) gbufsize = 1024;
     std::vector<char> gbuf(static_cast<size_t>(gbufsize));
-    struct group grp {};
+    struct group grp{};
     struct group* gresult = nullptr;
     while (true) {
         int rc = ::getgrgid_r(st.st_gid, &grp, gbuf.data(), gbuf.size(), &gresult);
@@ -1160,7 +1160,8 @@ int ArchiveMutator::write_batch_add_ex(
                     std::vector<core::byte> old_hdr(entry.header_size);
                     if (reader.stream().seek(static_cast<core::int64>(entry.header_offset),
                                              io::SeekOrigin::Begin) &&
-                        reader.stream().read(old_hdr.data(), entry.header_size) == entry.header_size) {
+                        reader.stream().read(old_hdr.data(), entry.header_size) ==
+                            entry.header_size) {
                         qo_arena.insert(qo_arena.end(), old_hdr.begin(), old_hdr.end());
                         qo_indices.push_back({out.tell(), offset, entry.header_size});
                     }
@@ -1284,7 +1285,7 @@ int ArchiveMutator::write_batch_add_ex(
                 qo_indices.push_back({orig_pos, offset, block_bytes.size()});
             }
             format::HeaderWriter::emit_block(out, block_bytes,
-                                                   header_encrypt_mode ? &hcw : nullptr);
+                                             header_encrypt_mode ? &hcw : nullptr);
             if (!pf.payload.empty()) {
                 out.write(pf.payload.data(), pf.payload.size());
             }
@@ -1302,7 +1303,7 @@ int ArchiveMutator::write_batch_add_ex(
                     qo_indices.push_back({child_orig_pos, offset, child_bytes.size()});
                 }
                 format::HeaderWriter::emit_block(out, child_bytes,
-                                                       header_encrypt_mode ? &hcw : nullptr);
+                                                 header_encrypt_mode ? &hcw : nullptr);
                 if (!child.payload.empty()) {
                     out.write(child.payload.data(), child.payload.size());
                 }
@@ -1325,11 +1326,10 @@ int ArchiveMutator::write_batch_add_ex(
                 std::vector<core::byte> struct_body;
                 // Reserve: 3 vints (≤10 bytes each) + idx.size payload.
                 struct_body.reserve(30u + idx.size);
-                core::push_vint(struct_body, 0); // Flags = 0
-                core::push_vint(struct_body, dist); // Distance from start of QO header
+                core::push_vint(struct_body, 0);        // Flags = 0
+                core::push_vint(struct_body, dist);     // Distance from start of QO header
                 core::push_vint(struct_body, idx.size); // Data size
-                struct_body.insert(struct_body.end(),
-                                   qo_arena.begin() + idx.arena_offset,
+                struct_body.insert(struct_body.end(), qo_arena.begin() + idx.arena_offset,
                                    qo_arena.begin() + idx.arena_offset + idx.size);
 
                 std::vector<core::byte> struct_size_vint;
@@ -1345,7 +1345,8 @@ int ArchiveMutator::write_batch_add_ex(
                 qo_payload.push_back(static_cast<core::byte>((struct_crc >> 16) & 0xFF));
                 qo_payload.push_back(static_cast<core::byte>((struct_crc >> 24) & 0xFF));
 
-                qo_payload.insert(qo_payload.end(), struct_size_vint.begin(), struct_size_vint.end());
+                qo_payload.insert(qo_payload.end(), struct_size_vint.begin(),
+                                  struct_size_vint.end());
                 qo_payload.insert(qo_payload.end(), struct_body.begin(), struct_body.end());
             }
 

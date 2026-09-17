@@ -397,24 +397,24 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
 
                                         size_t cur = body_start;
                                         core::uint64 sflags = 0;
-                                        if (!core::read_vint(qo_buf.data() + cur,
-                                                             struct_end - cur, sflags, rb)) {
+                                        if (!core::read_vint(qo_buf.data() + cur, struct_end - cur,
+                                                             sflags, rb)) {
                                             qo_ok = false;
                                             break;
                                         }
                                         cur += rb;
 
                                         core::uint64 dist = 0;
-                                        if (!core::read_vint(qo_buf.data() + cur,
-                                                             struct_end - cur, dist, rb)) {
+                                        if (!core::read_vint(qo_buf.data() + cur, struct_end - cur,
+                                                             dist, rb)) {
                                             qo_ok = false;
                                             break;
                                         }
                                         cur += rb;
 
                                         core::uint64 data_sz = 0;
-                                        if (!core::read_vint(qo_buf.data() + cur,
-                                                             struct_end - cur, data_sz, rb)) {
+                                        if (!core::read_vint(qo_buf.data() + cur, struct_end - cur,
+                                                             data_sz, rb)) {
                                             qo_ok = false;
                                             break;
                                         }
@@ -458,8 +458,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                         }
                                         e.split_before =
                                             (entry_flags & format::HFL_SPLITBEFORE) != 0;
-                                        e.split_after =
-                                            (entry_flags & format::HFL_SPLITAFTER) != 0;
+                                        e.split_after = (entry_flags & format::HFL_SPLITAFTER) != 0;
                                         core::uint64 avail =
                                             e.data_offset < vsz ? vsz - e.data_offset : 0;
                                         core::uint64 admit =

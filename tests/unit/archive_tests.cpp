@@ -92,9 +92,15 @@ void test_delete_and_wildcard() {
         std::filesystem::path f2 = "build/f2.txt";
         std::filesystem::path f3 = "build/data.bin";
 
-        { std::ofstream(f1) << "Text 1"; }
-        { std::ofstream(f2) << "Text 2"; }
-        { std::ofstream(f3) << "Binary Data"; }
+        {
+            std::ofstream(f1) << "Text 1";
+        }
+        {
+            std::ofstream(f2) << "Text 2";
+        }
+        {
+            std::ofstream(f3) << "Binary Data";
+        }
 
         ArchiveMutator::move_file_to_archive(test_arc, f1, "f1.txt");
         ArchiveMutator::move_file_to_archive(test_arc, f2, "f2.txt");
@@ -135,7 +141,9 @@ void test_lock_command() {
 
     // Create archive
     std::filesystem::path f = "build/lock_item.txt";
-    { std::ofstream(f) << "LOCK CONTENT"; }
+    {
+        std::ofstream(f) << "LOCK CONTENT";
+    }
     ArchiveMutator::move_file_to_archive(test_arc, f, "lock_item.txt");
 
     // Lock archive
@@ -170,9 +178,15 @@ void test_mutation_temp_names_not_clobbered() {
     std::filesystem::path f1 = "build/tmpname_a.txt";
     std::filesystem::path f2 = "build/tmpname_b.txt";
     std::filesystem::path f3 = "build/tmpname_c.txt";
-    { std::ofstream(f1) << "AAAA"; }
-    { std::ofstream(f2) << "BBBB"; }
-    { std::ofstream(f3) << "CCCC"; }
+    {
+        std::ofstream(f1) << "AAAA";
+    }
+    {
+        std::ofstream(f2) << "BBBB";
+    }
+    {
+        std::ofstream(f3) << "CCCC";
+    }
     assert(ArchiveMutator::move_file_to_archive(test_arc, f1, "a.txt"));
     assert(ArchiveMutator::move_file_to_archive(test_arc, f2, "b.txt"));
 
