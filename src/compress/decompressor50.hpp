@@ -80,7 +80,7 @@ struct FilterEntry {
 enum class DecompressErrorCode {
     Ok = 0,
     DictionaryTooLarge =
-        1,                // spec max exceeded or > alloc limit 1 GiB – spec says fail not truncate
+        1, // spec max exceeded or > alloc limit 1 GiB – spec says fail not truncate
     AllocationFailed = 2, // valid size but OOM (bad_alloc)
     InvalidInput = 3
 };
