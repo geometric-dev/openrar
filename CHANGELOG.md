@@ -5,6 +5,69 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-09-17
+
+### Added
+
+- **QuickOpen (QO) Engine**: Full reader acceleration and writer serialization
+  for RAR5 QuickOpen service blocks.
+  - Writer: Contiguous header cache arena (`qo_arena`), structure CRC32
+    verification, pre-sized payload buffers, and 10-byte fixed-width locator
+    backpatching into `MainBlock`.
+  - Reader: Instantaneous archive open probing `MainBlock` locator offsets and
+    seeking directly to tail QO cache with defensive bounds checking, structure
+    CRC validation, monotonic offset verification, and transparent fallback to
+    sequential scanning on corrupt or partial caches.
+  - Spec-compliant stripping: All archive mutation operations (`d`, `u`, `f`,
+    `m`, `k`, `s`, `-rr`) automatically strip QuickOpen blocks and locators.
+- **Three-Phase Multi-Threaded Parallel Extraction**: Decoupled parallel
+  extraction architecture:
+  - Phase 1: Parallel file decompression across worker threads (`-mt`).
+  - Phase 2: Sequential restoration of symlinks, hardlinks, and junctions,
+    guaranteeing link target files exist on disk before link creation.
+  - Phase 3: Bottom-up directory metadata and timestamp restoration in reverse
+    topological order (deepest directories first), preventing parent directory
+    `mtime` clobbering.
+- **Hardlink Deduplication** (`-oh`): Identifies duplicate hardlinks across
+  Windows FileID (64/128-bit) and POSIX `(dev, ino)` pairs, storing subsequent
+  instances as hardlink redirections rather than duplicate payloads.
+- **Unix Permissions & Ownership** (`-ow`): Preserves and restores Unix UID,
+  GID, user name, group name, and file permission bits with unprivileged
+  `lchown`/`chmod` fallbacks.
+- **SFX In-Place Conversion** (`s`): Converts archives to self-extracting
+  executables using default or custom SFX stubs (`openrar s archive.rar`).
+- **Recovery Record CLI Parity (`rr[N]`) & Switch Parity**:
+  - Native support for the `rr[N]` command (e.g. `openrar rr5% arc.rar`).
+  - Support for applying `-rr` and `-k` on existing archives without requiring
+    file arguments.
+  - Case-insensitive acceptance of WinRAR switches (`-qo`, `-qo+`, `-qo-`,
+    `-am`, `-ams`).
+- **Architect Skills**: Bundled `architect-challenge` and `architect-walkthrough`
+  principal solution architect auditing workflows in `.agents/skills/`.
+
+### Fixed
+
+- **QO+RR Locator Size Mismatch in `add_recovery_record`**: Fixed a critical
+  header corruption bug where adding a recovery record to a QO-enabled archive
+  preserved the QO block verbatim, creating a 10-byte locator expansion that
+  shifted all internal entry offsets and broke WinRAR validation ("Main archive
+  header is corrupt"). `add_recovery_record` now cleanly strips QO blocks and
+  sets `locator_qo_offset = -1`.
+- **RAII Temporary File Lifecycle**: Introduced `TempFileCleanupGuard` in
+  `RecoveryWriter::add_recovery_record`, guaranteeing that temporary files are
+  closed and unlinked on any error, early return, or unwound exception.
+- **Cryptographic Memory Scrubbing**: Added `openrar::crypto::secure_wipe`
+  (`SecureZeroMemory` on Windows / `explicit_bzero` on POSIX) preventing dead-store
+  compiler elimination, and equipped `Rar5Keys` and `HeaderCryptReader` with
+  automatic RAII memory-scrubbing destructors.
+- **Path Traversal & Device Name Containment**: Hardened extraction target
+  checking with purely algorithmic lexical containment (`is_lexically_contained`)
+  and protected `make_safe_component` against null bytes, control codes,
+  forbidden Windows characters, and trailing-whitespace DOS device stems.
+- **Performance & Mechanical Sympathy**: Pre-sized QO serialization buffers in
+  `ArchiveMutator::write_batch_add_ex`, eliminating $O(N)$ reallocations for
+  large archives.
+
 ## [1.7.0] - 2026-09-17
 
 ### Added
