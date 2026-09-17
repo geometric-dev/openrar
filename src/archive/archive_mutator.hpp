@@ -94,8 +94,7 @@ public:
                                  const std::string& arc_entry_name, int method,
                                  const std::string& password, PreparedAdd& out,
                                  core::uint32 times_mask = time_flags::MTIME,
-                                 core::uint32 window_log2 = 0,
-                                 bool want_streams = false,
+                                 core::uint32 window_log2 = 0, bool want_streams = false,
                                  bool want_acl = false);
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,

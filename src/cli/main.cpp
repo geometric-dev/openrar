@@ -104,8 +104,8 @@ inline bool sw_starts(std::string_view sw, std::string_view prefix) {
 
 void print_banner() {
     if (g_quiet_mode) return;
-        // OPENRAR_CLI_VERSION comes from the CMake project version; the fallback
-        // only serves bare manual compiles that bypass the build system.
+    // OPENRAR_CLI_VERSION comes from the CMake project version; the fallback
+    // only serves bare manual compiles that bypass the build system.
 #ifndef OPENRAR_CLI_VERSION
 #define OPENRAR_CLI_VERSION "1.5.0"
 #endif
@@ -494,8 +494,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                          const std::string& password, bool encrypt_headers, bool delete_source,
                          bool announce, unsigned threads, std::string* err_name = nullptr,
                          core::uint32 times_mask = archive::time_flags::MTIME, bool solid = false,
-                         const std::vector<core::byte>* comment = nullptr,
-                         bool want_stm = false, bool want_acl = false) {
+                         const std::vector<core::byte>* comment = nullptr, bool want_stm = false,
+                         bool want_acl = false) {
     constexpr core::uint64 PREPARE_BUDGET = 1ull << 30; // in-flight prepare bytes
 
     std::vector<archive::ArchiveMutator::PreparedAdd> prepared(queue.size());
@@ -1050,10 +1050,10 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
             Prog.update_bytes(item.file_size);
         }
     } else {
-        int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
-                               /*delete_source=*/false, /*announce=*/true, threads, nullptr,
-                               times_mask, solid, comment.empty() ? nullptr : &comment,
-                               want_stm, want_acl);
+        int rc =
+            run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
+                          /*delete_source=*/false, /*announce=*/true, threads, nullptr, times_mask,
+                          solid, comment.empty() ? nullptr : &comment, want_stm, want_acl);
         if (rc != 0) return rc;
     }
 
@@ -1138,12 +1138,15 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                            : (out_root / std::filesystem::path(safe_name).filename());
             if (!seen_targets.insert(target.string()).second) duplicate_targets = true;
             std::vector<const archive::ArchiveEntry*> children;
-            for (size_t j = i + 1; j < all_entries.size() && all_entries[j].header.is_service; ++j) {
-                if (all_entries[j].header.service_type == "STM" || all_entries[j].header.service_type == "ACL") {
+            for (size_t j = i + 1; j < all_entries.size() && all_entries[j].header.is_service;
+                 ++j) {
+                if (all_entries[j].header.service_type == "STM" ||
+                    all_entries[j].header.service_type == "ACL") {
                     children.push_back(&all_entries[j]);
                 }
             }
-            extract_jobs.push_back({&entry, target, sanitize_for_display(target.string()), std::move(children)});
+            extract_jobs.push_back(
+                {&entry, target, sanitize_for_display(target.string()), std::move(children)});
         }
         // Component-prefix overlap (sweep finding L11): a file entry "a"
         // alongside a directory entry "a/b" makes create_directories race the
@@ -1365,7 +1368,8 @@ int repair_archive(const std::string& arc_path) {
     // shards where RR/REV parity allows mathematical reconstruction.
     // Unrecoverable: damage exceeding parity redundancy, or damaged .rev headers.
     if (openrar::recovery::RecoveryWriter::repair(arc_path)) {
-        if (!g_quiet_mode) std::cout << "Archive " << arc_path << ": OK (reconstruction / structure verified)\n";
+        if (!g_quiet_mode)
+            std::cout << "Archive " << arc_path << ": OK (reconstruction / structure verified)\n";
         return 0;
     }
     std::cerr << "Cannot repair " << arc_path
@@ -1752,7 +1756,8 @@ static int cli_main(int argc, char* argv[]) {
 #ifndef _WIN32
     if ((cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m" || cmd == "x" || cmd == "e") &&
         (want_acl || want_stm)) {
-        std::cerr << "W: ACL (-ow) / alternate streams (-os) preservation not supported on this platform\n";
+        std::cerr << "W: ACL (-ow) / alternate streams (-os) preservation not supported on this "
+                     "platform\n";
     }
 #endif
 
@@ -1779,11 +1784,10 @@ static int cli_main(int argc, char* argv[]) {
 
     if (cmd == "a" || cmd == "u" || cmd == "f") {
         std::string target_arc = want_sfx ? sfx_arc_path_str : arc_path;
-        int rc = openrar::cli::add_to_archive(target_arc, files, method, sfx_stub_path, vol_size,
-                                              password, want_header_encryption, threads, want_solid,
-                                              comment, times_mask, no_dir_records, ep_mode,
-                                              recurse_subdirs, want_symlinks, (cmd == "f"),
-                                              want_stm, want_acl);
+        int rc = openrar::cli::add_to_archive(
+            target_arc, files, method, sfx_stub_path, vol_size, password, want_header_encryption,
+            threads, want_solid, comment, times_mask, no_dir_records, ep_mode, recurse_subdirs,
+            want_symlinks, (cmd == "f"), want_stm, want_acl);
         if (rc == 0 && want_rr) {
             bool rr_ok;
             bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;

@@ -937,8 +937,10 @@ int ArchiveMutator::write_batch_add_ex(
                 for (const auto& pf : files) {
                     if (entries[i].header.file_name == pf.entry_name) {
                         replaced[i] = 1;
-                        for (size_t j = i + 1; j < entries.size() && entries[j].header.is_service; ++j) {
-                            if (entries[j].header.service_type != "QO" && entries[j].header.service_type != "CMT") {
+                        for (size_t j = i + 1; j < entries.size() && entries[j].header.is_service;
+                             ++j) {
+                            if (entries[j].header.service_type != "QO" &&
+                                entries[j].header.service_type != "CMT") {
                                 replaced[j] = 1;
                             }
                         }
@@ -1128,9 +1130,9 @@ int ArchiveMutator::write_batch_add_ex(
             std::vector<core::byte>().swap(pf.payload);
 
             for (auto& child : pf.child_services) {
-                format::HeaderWriter::write_file_block(
-                    out, child.fb, format::HFL_CHILD | format::HFL_INHERITED,
-                    header_encrypt_mode ? &hcw : nullptr);
+                format::HeaderWriter::write_file_block(out, child.fb,
+                                                       format::HFL_CHILD | format::HFL_INHERITED,
+                                                       header_encrypt_mode ? &hcw : nullptr);
                 if (!child.payload.empty()) {
                     out.write(child.payload.data(), child.payload.size());
                 }
