@@ -1391,13 +1391,17 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             }
             if (uid != static_cast<uid_t>(-1) || gid != static_cast<gid_t>(-1)) {
                 // lchown does not follow symlinks; non-fatal on EPERM/ENOSYS
-                (void)::lchown(j.target.c_str(), uid, gid);
+                if (::lchown(j.target.c_str(), uid, gid) != 0) {
+                    // Ignored: unprivileged user or unsupported filesystem
+                }
             }
         }
         if (j.entry && j.entry->header.host_os == 1 && j.entry->header.redir_type == 0) {
             mode_t mode = static_cast<mode_t>(j.entry->header.attributes & 07777);
             if (mode != 0) {
-                (void)::chmod(j.target.c_str(), mode);
+                if (::chmod(j.target.c_str(), mode) != 0) {
+                    // Ignored: non-fatal permission update
+                }
             }
         }
 #endif
