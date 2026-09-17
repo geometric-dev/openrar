@@ -7,12 +7,25 @@
 
 namespace openrar::crypto {
 
+// Platform-optimized, non-optimizable memory zeroing
+void secure_wipe(void* p, size_t n) noexcept;
+
 struct Rar5Keys {
-    core::byte aes_key[32];
-    core::byte hash_key[32];
-    core::byte psw_check[8];
-    core::byte psw_check_csum[4];
+    core::byte aes_key[32]{};
+    core::byte hash_key[32]{};
+    core::byte psw_check[8]{};
+    core::byte psw_check_csum[4]{};
+
+    void wipe() noexcept;
+    ~Rar5Keys() noexcept { wipe(); }
+    Rar5Keys() = default;
+    Rar5Keys(const Rar5Keys&) = default;
+    Rar5Keys& operator=(const Rar5Keys&) = default;
+    Rar5Keys(Rar5Keys&&) noexcept = default;
+    Rar5Keys& operator=(Rar5Keys&&) noexcept = default;
 };
+
+static_assert(std::is_standard_layout<Rar5Keys>::value, "Rar5Keys must be standard layout");
 
 // Clean-room implementation of RAR 5.0 PBKDF2 key derivation
 // Based on RAR 5.0 Encryption Specification (AES-256-CBC + PBKDF2-HMAC-SHA256)

@@ -4,7 +4,33 @@
 #include <cstring>
 #include <vector>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <strings.h>
+#endif
+
 namespace openrar::crypto {
+
+void secure_wipe(void* p, size_t n) noexcept {
+    if (!p || n == 0) return;
+#if defined(_WIN32)
+    ::SecureZeroMemory(p, n);
+#elif defined(__GLIBC__) || defined(__FreeBSD__) || defined(__OpenBSD__) ||                        \
+    (defined(__APPLE__) && defined(MAC_OS_X_VERSION_10_14))
+    ::explicit_bzero(p, n);
+#else
+    volatile core::byte* vp = static_cast<volatile core::byte*>(p);
+    while (n--) {
+        *vp++ = 0;
+    }
+#endif
+}
+
+void Rar5Keys::wipe() noexcept {
+    secure_wipe(this, sizeof(*this));
+}
 
 bool Pbkdf2Rar5::derive_keys(const void* password, size_t password_len, const core::byte* salt,
                              size_t salt_len, core::uint32 count, Rar5Keys& out_keys) {
@@ -13,7 +39,7 @@ bool Pbkdf2Rar5::derive_keys(const void* password, size_t password_len, const co
     // iterations). All current callers validate lg2_count, but this is
     // public API: fail cleanly instead, leaving the keys zeroed.
     if (count == 0) {
-        std::memset(&out_keys, 0, sizeof(out_keys));
+        out_keys.wipe();
         return false;
     }
     // Passwords longer than 127 bytes are truncated before key derivation.
@@ -68,11 +94,11 @@ bool Pbkdf2Rar5::derive_keys(const void* password, size_t password_len, const co
     Sha256::compute(out_keys.psw_check, sizeof(out_keys.psw_check), csum_digest);
     std::memcpy(out_keys.psw_check_csum, csum_digest, sizeof(out_keys.psw_check_csum));
 
-    // Zero out sensitive temporaries
-    std::memset(u1, 0, sizeof(u1));
-    std::memset(u2, 0, sizeof(u2));
-    std::memset(fn, 0, sizeof(fn));
-    std::memset(psw_check_value, 0, sizeof(psw_check_value));
+    // Zero out sensitive temporaries using compiler-barrier memory wiping
+    secure_wipe(u1, sizeof(u1));
+    secure_wipe(u2, sizeof(u2));
+    secure_wipe(fn, sizeof(fn));
+    secure_wipe(psw_check_value, sizeof(psw_check_value));
     return true;
 }
 

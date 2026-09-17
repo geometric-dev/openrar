@@ -115,7 +115,11 @@ bool FileStream::open(const std::filesystem::path& path, FileMode mode) {
         break;
     }
 
-    int fd = ::open(path.string().c_str(), flags, perm);
+#if defined(O_CLOEXEC)
+    flags |= O_CLOEXEC;
+#endif
+
+    int fd = ::open(path.c_str(), flags, perm);
     if (fd < 0) {
         handle_ = nullptr;
         last_error_ = errno;
