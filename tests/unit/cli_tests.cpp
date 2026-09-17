@@ -1,5 +1,6 @@
 #include "../../src/core/types.hpp"
 #include "../../src/archive/archive_mutator.hpp"
+#include "openrar/version.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
@@ -405,6 +406,85 @@ void test_cli_help_switch_parity() {
     std::cout << "[PASS] CLI help/parser switch parity (every advertised switch parses)\n";
 }
 
+static void test_cli_version() {
+    namespace fs = std::filesystem;
+    fs::path out_file = "test_cli_version.txt";
+    std::string cmd = get_cli_path() + " --version > " + out_file.string() + " 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+    std::string data;
+    {
+        std::ifstream f(out_file, std::ios::binary);
+        data.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    }
+    assert(data.find(std::string("OpenRAR ") + OPENRAR_VERSION_STRING) != std::string::npos);
+    std::error_code ec;
+    fs::remove(out_file, ec);
+    std::cout << "[PASS] CLI --version parity\n";
+}
+
+static void test_cli_sfx() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories("test_sfx_dir", ec);
+    fs::path sample = "test_sfx_dir/sample.txt";
+    fs::path arc = "test_sfx_dir/test.rar";
+    fs::path exe_arc = "test_sfx_dir/test.exe";
+    {
+        std::ofstream f(sample, std::ios::binary);
+        f << "sfx conversion payload\n";
+    }
+    std::string cmd =
+        get_cli_path() + " a -q " + arc.string() + " " + sample.string() + " > " DEVNULL " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+    assert(fs::exists(arc));
+
+    // Convert to sfx
+    cmd = get_cli_path() + " s -q " + arc.string() + " > " DEVNULL " 2>&1";
+    int s_res = std::system(cmd.c_str());
+    if (s_res == 0) {
+        assert(fs::exists(exe_arc));
+        // Test integrity of the SFX
+        cmd = get_cli_path() + " t -q " + exe_arc.string() + " > " DEVNULL " 2>&1";
+        assert(std::system(cmd.c_str()) == 0);
+        // Double-sfx conversion must be rejected
+        cmd = get_cli_path() + " s " + exe_arc.string() + " > " DEVNULL " 2>&1";
+        assert(std::system(cmd.c_str()) != 0);
+    }
+
+    fs::remove_all("test_sfx_dir", ec);
+    std::cout << "[PASS] CLI sfx conversion & double-sfx guard\n";
+}
+
+static void test_cli_hardlinks() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories("test_hl_dir", ec);
+    fs::path f1 = "test_hl_dir/f1.txt";
+    fs::path f2 = "test_hl_dir/f2.txt";
+    fs::path arc = "test_hl_dir/hl.rar";
+    {
+        std::ofstream f(f1, std::ios::binary);
+        f << "hardlink deduplication content\n";
+    }
+    fs::create_hard_link(f1, f2, ec);
+    if (!ec) {
+        std::string cmd = get_cli_path() + " a -oh -q " + arc.string() + " " + f1.string() + " " +
+                          f2.string() + " > " DEVNULL " 2>&1";
+        assert(std::system(cmd.c_str()) == 0);
+        assert(fs::exists(arc));
+
+        // Test extraction
+        fs::path out_dir = "test_hl_dir/out";
+        fs::create_directories(out_dir, ec);
+        cmd = get_cli_path() + " x -q " + arc.string() + " " + out_dir.string() +
+              "/ > " DEVNULL " 2>&1";
+        assert(std::system(cmd.c_str()) == 0);
+    }
+    fs::remove_all("test_hl_dir", ec);
+    std::cout << "[PASS] CLI hardlink archiving (-oh) & extraction\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -415,6 +495,9 @@ int main() {
 #endif
     std::cout << "Running Clean-Room Milestone 7 CLI Verification...\n";
     test_cli_help();
+    test_cli_version();
+    test_cli_sfx();
+    test_cli_hardlinks();
     test_cli_lifecycle();
     test_cli_quiet_list_missing_archive_fails();
     test_cli_list_sanitizes_esc_entry_name();

@@ -102,14 +102,25 @@ public:
     // apply to directory records.
     static bool prepare_add_dir(const std::filesystem::path& src_dir,
                                 const std::string& arc_entry_name, PreparedAdd& out,
-                                core::uint32 times_mask = time_flags::MTIME);
+                                core::uint32 times_mask = time_flags::MTIME,
+                                bool want_acl = false);
 
     // Stage 1 variant for a symbolic link: emits a symlink record (FHEXTRA_REDIR,
     // redir_type = 2 on Windows, 1 on POSIX, no data area) carrying the link's timestamps.
     static bool prepare_add_symlink(const std::filesystem::path& src_symlink,
                                     const std::string& arc_entry_name, const std::string& target,
                                     bool is_dir_target, PreparedAdd& out,
-                                    core::uint32 times_mask = time_flags::MTIME);
+                                    core::uint32 times_mask = time_flags::MTIME,
+                                    bool want_acl = false);
+
+    // Stage 1 variant for a hard link: emits a hardlink record (FHEXTRA_REDIR,
+    // redir_type = 4, no data area) pointing to target_entry_name.
+    static bool prepare_add_hardlink(const std::filesystem::path& src_file,
+                                     const std::string& arc_entry_name,
+                                     const std::string& target_entry_name,
+                                     PreparedAdd& out,
+                                     core::uint32 times_mask = time_flags::MTIME,
+                                     bool want_acl = false);
 
     // Query disk file last-modification time as unix epoch seconds.
     static bool get_file_mtime(const std::filesystem::path& path, core::uint64& mtime_out);
@@ -164,6 +175,10 @@ public:
                                          const std::string& arc_entry_name, int method,
                                          core::uint64 vol_size, const std::string& password = "",
                                          bool solid = false);
+
+    static bool convert_to_sfx(const std::filesystem::path& arc_path,
+                               const std::filesystem::path& sfx_stub_path,
+                               std::string& err_detail);
 };
 
 } // namespace openrar::archive

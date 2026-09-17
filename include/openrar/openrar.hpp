@@ -26,6 +26,10 @@ inline std::string u8_str(const std::filesystem::path& p) {
 }
 } // namespace detail
 
+inline std::string package_version() {
+    return openrar_package_version_string();
+}
+
 inline void check(int rc) {
     if (rc == RAR_OK || rc == RAR_ERR_PARTIAL_OK) return;
     char buf[512] = {};

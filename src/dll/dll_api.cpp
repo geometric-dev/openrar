@@ -676,10 +676,14 @@ int OPENRAR_DLL_CALL openrar_version(void) {
 int OPENRAR_DLL_CALL openrar_archive_version(void) {
     return 1;
 }
+const char* OPENRAR_DLL_CALL openrar_package_version_string(void) {
+    return OPENRAR_VERSION_STRING;
+}
 uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
     return OPENRAR_ABI_FEATURE_LIST_PROGRESS | OPENRAR_ABI_FEATURE_LIST_PASSWORD |
            OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS | OPENRAR_ABI_FEATURE_FILE_HANDLE |
-           OPENRAR_ABI_FEATURE_MUTATION | OPENRAR_ABI_FEATURE_ENTRY_EX;
+           OPENRAR_ABI_FEATURE_MUTATION | OPENRAR_ABI_FEATURE_ENTRY_EX |
+           OPENRAR_ABI_FEATURE_PACKAGE_VERSION;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {

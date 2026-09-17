@@ -1,4 +1,5 @@
 #include "archive_mutator.hpp"
+#include "archive_reader.hpp"
 #include "volume.hpp"
 #include "rar_errors.hpp" // RAR_* status codes for the mutation variants
 #include "../compress/compressor50.hpp"
@@ -24,6 +25,8 @@
 #else
 #include <sys/stat.h>
 #include <unistd.h>
+#include <pwd.h>
+#include <grp.h>
 #endif
 
 namespace openrar::archive {
@@ -95,6 +98,56 @@ void apply_file_times(format::FileBlock& fb, const FileTimes& times, core::uint3
     if (fb.htime_mtime_unix != 0 || fb.htime_ctime_unix != 0 || fb.htime_atime_unix != 0)
         fb.htime_is_unix = true;
 }
+
+#ifndef _WIN32
+void apply_unix_owner(format::FileBlock& fb, const std::filesystem::path& path) {
+    struct stat st;
+    if (::lstat(path.c_str(), &st) != 0) return;
+    fb.has_owner = true;
+    fb.has_owner_uid = true;
+    fb.owner_uid = static_cast<core::uint64>(st.st_uid);
+    fb.has_owner_gid = true;
+    fb.owner_gid = static_cast<core::uint64>(st.st_gid);
+
+    long bufsize = ::sysconf(_SC_GETPW_R_SIZE_MAX);
+    if (bufsize <= 0) bufsize = 1024;
+    std::vector<char> buf(static_cast<size_t>(bufsize));
+    struct passwd pwd{};
+    struct passwd* result = nullptr;
+    while (true) {
+        int rc = ::getpwuid_r(st.st_uid, &pwd, buf.data(), buf.size(), &result);
+        if (rc == 0) {
+            if (result && result->pw_name) {
+                fb.owner_user = result->pw_name;
+            }
+            break;
+        } else if (rc == ERANGE && buf.size() < 65536) {
+            buf.resize(buf.size() * 2);
+        } else {
+            break;
+        }
+    }
+
+    long gbufsize = ::sysconf(_SC_GETGR_R_SIZE_MAX);
+    if (gbufsize <= 0) gbufsize = 1024;
+    std::vector<char> gbuf(static_cast<size_t>(gbufsize));
+    struct group grp{};
+    struct group* gresult = nullptr;
+    while (true) {
+        int rc = ::getgrgid_r(st.st_gid, &grp, gbuf.data(), gbuf.size(), &gresult);
+        if (rc == 0) {
+            if (gresult && gresult->gr_name) {
+                fb.owner_group = gresult->gr_name;
+            }
+            break;
+        } else if (rc == ERANGE && gbuf.size() < 65536) {
+            gbuf.resize(gbuf.size() * 2);
+        } else {
+            break;
+        }
+    }
+}
+#endif
 
 // RAR5 per-file AES-256-CBC encryption helper. Generates a fresh salt + IV,
 // pads the payload to a 16-byte multiple with zero bytes, encrypts in place,
@@ -767,7 +820,11 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
             }
         }
     }
+
     if (want_acl) {
+#ifndef _WIN32
+        apply_unix_owner(fb, src_file);
+#else
         std::vector<core::byte> sd;
         if (io::read_security_descriptor(src_file, sd) && !sd.empty()) {
             if (sd.size() <= 0x100000ULL) { // 1 MiB cap per spec
@@ -789,6 +846,7 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                 out.child_services.push_back(std::move(child));
             }
         }
+#endif
     }
 
     // entry_name/src_path are caller-owned identity fields, filled before the
@@ -799,7 +857,7 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
 
 bool ArchiveMutator::prepare_add_dir(const std::filesystem::path& src_dir,
                                      const std::string& arc_entry_name, PreparedAdd& out,
-                                     core::uint32 times_mask) {
+                                     core::uint32 times_mask, [[maybe_unused]] bool want_acl) {
     std::error_code ec;
     if (!std::filesystem::is_directory(src_dir, ec)) return false;
 
@@ -816,6 +874,11 @@ bool ArchiveMutator::prepare_add_dir(const std::filesystem::path& src_dir,
     if (get_file_times(src_dir, times)) {
         apply_file_times(fb, times, times_mask);
     }
+#ifndef _WIN32
+    if (want_acl) {
+        apply_unix_owner(fb, src_dir);
+    }
+#endif
 
     // entry_name/src_path stay caller-owned (see prepare_add_file, M4).
     out.fb = std::move(fb);
@@ -825,7 +888,8 @@ bool ArchiveMutator::prepare_add_dir(const std::filesystem::path& src_dir,
 bool ArchiveMutator::prepare_add_symlink(const std::filesystem::path& src_symlink,
                                          const std::string& arc_entry_name,
                                          const std::string& target, bool is_dir_target,
-                                         PreparedAdd& out, core::uint32 times_mask) {
+                                         PreparedAdd& out, core::uint32 times_mask,
+                                         [[maybe_unused]] bool want_acl) {
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
     fb.unp_size = 0;
@@ -845,7 +909,42 @@ bool ArchiveMutator::prepare_add_symlink(const std::filesystem::path& src_symlin
     if (get_file_times(src_symlink, times)) {
         apply_file_times(fb, times, times_mask);
     }
+#ifndef _WIN32
+    if (want_acl) {
+        apply_unix_owner(fb, src_symlink);
+    }
+#endif
     out.fb = std::move(fb);
+    return true;
+}
+
+bool ArchiveMutator::prepare_add_hardlink(const std::filesystem::path& src_file,
+                                          const std::string& arc_entry_name,
+                                          const std::string& target,
+                                          PreparedAdd& out, core::uint32 times_mask,
+                                          [[maybe_unused]] bool want_acl) {
+    format::FileBlock fb;
+    fb.file_name = arc_entry_name;
+    fb.unp_size = 0;
+    fb.pack_size = -1;
+    fb.attributes = 0x20;
+    fb.method = 0;
+    fb.win_size = 0;
+    fb.unp_ver = 0;
+    fb.redir_type = 4; // HARDLINK
+    fb.redir_dir_target = false;
+    fb.redir_target = target;
+    FileTimes times;
+    if (get_file_times(src_file, times)) {
+        apply_file_times(fb, times, times_mask);
+    }
+#ifndef _WIN32
+    if (want_acl) {
+        apply_unix_owner(fb, src_file);
+    }
+#endif
+    out.fb = std::move(fb);
+    out.payload.clear();
     return true;
 }
 
@@ -1684,6 +1783,107 @@ std::filesystem::path ArchiveMutator::apply_sfx_extension(const std::filesystem:
     std::filesystem::path out = arc_path;
     out.replace_extension(".exe");
     return out;
+}
+
+bool ArchiveMutator::convert_to_sfx(const std::filesystem::path& arc_path,
+                                    const std::filesystem::path& sfx_stub_path,
+                                    std::string& err_detail) {
+    ArchiveReader reader;
+    int status = RAR_OK;
+    std::string detail;
+    if (!reader.open_ex(arc_path, "", status, detail, {}, false)) {
+        err_detail = "cannot open " + io::u8_str(arc_path);
+        return false;
+    }
+    if (reader.sfx_offset() > 0) {
+        err_detail = "cannot convert SFX archive: already an SFX module";
+        return false;
+    }
+    if (reader.is_volume()) {
+        err_detail = "cannot convert multi-volume archive to SFX";
+        return false;
+    }
+    reader.close();
+
+    std::error_code ec;
+    if (!std::filesystem::exists(sfx_stub_path, ec)) {
+        err_detail = "cannot open " + io::u8_str(sfx_stub_path);
+        return false;
+    }
+    auto stub_sz = std::filesystem::file_size(sfx_stub_path, ec);
+    if (ec || stub_sz > MAX_SFX_SIZE) {
+        err_detail = "SFX module too large";
+        return false;
+    }
+
+    std::filesystem::path target_path = apply_sfx_extension(arc_path);
+    std::filesystem::path parent = target_path.parent_path();
+    if (parent.empty()) parent = ".";
+    std::filesystem::path tmp_path =
+        parent / (target_path.filename().string() + ".sfx_tmp." +
+                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+
+    {
+        io::FileStream out;
+        if (!out.open(tmp_path, io::FileMode::CreateAlways)) {
+            err_detail = "cannot create temporary file " + io::u8_str(tmp_path);
+            return false;
+        }
+        io::FileStream stub;
+        if (!stub.open(sfx_stub_path, io::FileMode::ReadOnly)) {
+            out.close();
+            std::filesystem::remove(tmp_path, ec);
+            err_detail = "cannot read SFX module " + io::u8_str(sfx_stub_path);
+            return false;
+        }
+        io::FileStream arc;
+        if (!arc.open(arc_path, io::FileMode::ReadOnly)) {
+            out.close();
+            std::filesystem::remove(tmp_path, ec);
+            err_detail = "cannot read archive " + io::u8_str(arc_path);
+            return false;
+        }
+
+        std::vector<core::byte> buf(64 * 1024);
+        core::uint64 rem = stub.size();
+        while (rem > 0) {
+            size_t take = static_cast<size_t>(std::min<core::uint64>(rem, buf.size()));
+            if (stub.read(buf.data(), take) != take || out.write(buf.data(), take) != take) {
+                out.close();
+                std::filesystem::remove(tmp_path, ec);
+                err_detail = "failed writing SFX stub";
+                return false;
+            }
+            rem -= take;
+        }
+        rem = arc.size();
+        while (rem > 0) {
+            size_t take = static_cast<size_t>(std::min<core::uint64>(rem, buf.size()));
+            if (arc.read(buf.data(), take) != take || out.write(buf.data(), take) != take) {
+                out.close();
+                std::filesystem::remove(tmp_path, ec);
+                err_detail = "failed writing archive payload";
+                return false;
+            }
+            rem -= take;
+        }
+        out.close();
+    }
+
+    if (!atomic_replace(tmp_path, target_path)) {
+        std::filesystem::remove(tmp_path, ec);
+        err_detail = "atomic replace failed";
+        return false;
+    }
+
+    std::error_code ec_c1, ec_c2;
+    auto c1 = std::filesystem::weakly_canonical(target_path, ec_c1);
+    auto c2 = std::filesystem::weakly_canonical(arc_path, ec_c2);
+    if ((!ec_c1 && !ec_c2 && c1 != c2) || (target_path != arc_path)) {
+        std::filesystem::remove(arc_path, ec);
+    }
+
+    return true;
 }
 
 } // namespace openrar::archive

@@ -89,6 +89,18 @@ jobs:
           find src include tests -name '*.cpp' -o -name '*.hpp' -o -name '*.h' | \
             xargs clang-format-18 --dry-run --Werror
 
+      - name: Version consistency check (gate leg only)
+        if: matrix.format_check == true
+        shell: bash
+        run: |
+          CMAKE_VER=$(grep -E 'project\(openrar VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | sed -E 's/.*VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          PKG_VER=$(node -e "console.log(require('./wasm/js/package.json').version)")
+          echo "CMake version: $CMAKE_VER, wasm/js package.json version: $PKG_VER"
+          if [ "$CMAKE_VER" != "$PKG_VER" ]; then
+            echo "ERROR: CMake project version ($CMAKE_VER) does not match wasm/js/package.json ($PKG_VER)!"
+            exit 1
+          fi
+
 
 
       - name: Configure CMake (Windows MSVC)
@@ -146,6 +158,9 @@ jobs:
           
           # Verify help output
           $EXE
+          
+          # Verify version output
+          $EXE --version
           
           # Create test archive
           mkdir -p ci_test_data
