@@ -1159,13 +1159,15 @@ int ArchiveMutator::write_batch_add_ex(
                 if (i < replaced.size() && replaced[i]) continue;
                 if (want_qo) {
                     size_t offset = qo_arena.size();
-                    std::vector<core::byte> old_hdr(entry.header_size);
+                    std::vector<core::byte> old_hdr(static_cast<size_t>(entry.header_size));
                     if (reader.stream().seek(static_cast<core::int64>(entry.header_offset),
                                              io::SeekOrigin::Begin) &&
-                        reader.stream().read(old_hdr.data(), entry.header_size) ==
+                        reader.stream().read(old_hdr.data(),
+                                             static_cast<size_t>(entry.header_size)) ==
                             entry.header_size) {
                         qo_arena.insert(qo_arena.end(), old_hdr.begin(), old_hdr.end());
-                        qo_indices.push_back({out.tell(), offset, entry.header_size});
+                        qo_indices.push_back(
+                            {out.tell(), offset, static_cast<size_t>(entry.header_size)});
                     }
                 }
                 if (!copy_stream_region(reader.stream(), out, entry.header_offset,
