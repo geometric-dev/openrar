@@ -465,11 +465,17 @@ int delete_from_archive(const std::string& arc_path, const std::vector<std::stri
 struct PendingFile {
     std::filesystem::path src_path;
     std::string entry_name;
-    core::uint64 file_size;
+    core::uint64 file_size{0};
     bool is_dir{false};
     bool is_symlink{false};
     bool is_dir_target{false};
     std::string symlink_target;
+
+    PendingFile() = default;
+    PendingFile(std::filesystem::path src, std::string entry, core::uint64 sz, bool dir = false,
+                bool symlink = false, bool dir_target = false, std::string target = {})
+        : src_path(std::move(src)), entry_name(std::move(entry)), file_size(sz), is_dir(dir),
+          is_symlink(symlink), is_dir_target(dir_target), symlink_target(std::move(target)) {}
 };
 
 // Parallel batch add: prepare every file on the pool (read + CRC + compress +
