@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArchive } from '../rar5-coverage.js';
-import { freshDir, makeFixtureTree, buildOurArchive, runTool, OUR_EXE, WINRAR_UNRAR, treesEqual, oracleAvailable } from './helpers.mjs';
+import { DIR_SEP, freshDir, makeFixtureTree, buildOurArchive, runTool, OUR_EXE, WINRAR_UNRAR, treesEqual, oracleAvailable } from './helpers.mjs';
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -47,7 +47,7 @@ describe('RAR 5.0 Multi-Volume Archives (-v)', () => {
     // e.g. the Linux CI job; the self extraction below still verifies fully)
     if (oracleAvailable()) {
       const extWin = freshDir('vol-store-ext-win');
-      const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
+      const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + DIR_SEP], tree);
       assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
       const cmpWin = treesEqual(tree, extWin);
       assert.equal(cmpWin.ok, true, `WinRAR extracted content mismatch: ${cmpWin.why}`);
@@ -55,7 +55,7 @@ describe('RAR 5.0 Multi-Volume Archives (-v)', () => {
 
     // Self extraction test
     const extOur = freshDir('vol-store-ext-our');
-    const resOur = runTool(OUR_EXE, ['x', '-y', join(out, volFiles[0]), extOur + '\\'], tree);
+    const resOur = runTool(OUR_EXE, ['x', '-y', join(out, volFiles[0]), extOur + DIR_SEP], tree);
     assert.equal(resOur.code, 0, `Self extract failed:\n${resOur.output}`);
     const cmpOur = treesEqual(tree, extOur);
     assert.equal(cmpOur.ok, true, `Self extracted content mismatch: ${cmpOur.why}`);
@@ -83,7 +83,7 @@ describe('RAR 5.0 Multi-Volume Archives (-v)', () => {
     // WinRAR extraction (oracle-gated; see above)
     if (oracleAvailable()) {
       const extWin = freshDir('vol-m3-ext-win');
-      const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
+      const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + DIR_SEP], tree);
       assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
       const cmpWin = treesEqual(tree, extWin);
       assert.equal(cmpWin.ok, true, `WinRAR content mismatch: ${cmpWin.why}`);
@@ -91,7 +91,7 @@ describe('RAR 5.0 Multi-Volume Archives (-v)', () => {
 
     // Self extraction
     const extOur = freshDir('vol-m3-ext-our');
-    const resOur = runTool(OUR_EXE, ['x', '-y', join(out, volFiles[0]), extOur + '\\'], tree);
+    const resOur = runTool(OUR_EXE, ['x', '-y', join(out, volFiles[0]), extOur + DIR_SEP], tree);
     assert.equal(resOur.code, 0, `Self extract failed:\n${resOur.output}`);
     const cmpOur = treesEqual(tree, extOur);
     assert.equal(cmpOur.ok, true, `Self content mismatch: ${cmpOur.why}`);
@@ -109,14 +109,14 @@ describe('RAR 5.0 Multi-Volume Archives (-v)', () => {
 
     if (oracleAvailable()) {
       const extWin = freshDir('vol-solid-ext-win');
-      const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
+      const resWin = runTool(WINRAR_UNRAR, ['x', '-y', join(out, volFiles[0]), extWin + DIR_SEP], tree);
       assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
       const cmpWin = treesEqual(tree, extWin);
       assert.equal(cmpWin.ok, true, `WinRAR solid content mismatch: ${cmpWin.why}`);
     }
 
     const extOur = freshDir('vol-solid-ext-our');
-    const resOur = runTool(OUR_EXE, ['x', '-y', join(out, volFiles[0]), extOur + '\\'], tree);
+    const resOur = runTool(OUR_EXE, ['x', '-y', join(out, volFiles[0]), extOur + DIR_SEP], tree);
     assert.equal(resOur.code, 0, `Self extract failed:\n${resOur.output}`);
     const cmpOur = treesEqual(tree, extOur);
     assert.equal(cmpOur.ok, true, `Self solid content mismatch: ${cmpOur.why}`);
@@ -134,14 +134,14 @@ describe('RAR 5.0 Multi-Volume Archives (-v)', () => {
 
     if (oracleAvailable()) {
       const extWin = freshDir('vol-enc-ext-win');
-      const resWin = runTool(WINRAR_UNRAR, ['x', '-pSecret', '-y', join(out, volFiles[0]), extWin + '\\'], tree);
+      const resWin = runTool(WINRAR_UNRAR, ['x', '-pSecret', '-y', join(out, volFiles[0]), extWin + DIR_SEP], tree);
       assert.equal(resWin.code, 0, `WinRAR extract failed:\n${resWin.output}`);
       const cmpWin = treesEqual(tree, extWin);
       assert.equal(cmpWin.ok, true, `WinRAR enc content mismatch: ${cmpWin.why}`);
     }
 
     const extOur = freshDir('vol-enc-ext-our');
-    const resOur = runTool(OUR_EXE, ['x', '-pSecret', '-y', join(out, volFiles[0]), extOur + '\\'], tree);
+    const resOur = runTool(OUR_EXE, ['x', '-pSecret', '-y', join(out, volFiles[0]), extOur + DIR_SEP], tree);
     assert.equal(resOur.code, 0, `Self extract failed:\n${resOur.output}`);
     const cmpOur = treesEqual(tree, extOur);
     assert.equal(cmpOur.ok, true, `Self enc content mismatch: ${cmpOur.why}`);

@@ -127,8 +127,7 @@ static void test_cpp_wrapper_password_and_open() {
 // ── File-mode handle wrapper (open_file / extract_to_path / test) ────────────
 static void test_cpp_wrapper_file_handle() {
     using namespace openrar;
-    const std::filesystem::path fixtures =
-        std::filesystem::path(OPENRAR_SOURCE_DIR) / "tests";
+    const std::filesystem::path fixtures = std::filesystem::path(OPENRAR_SOURCE_DIR) / "tests";
     auto scratch = fixtures / "wrapper_file_handle_scratch";
     std::filesystem::create_directories(scratch);
 

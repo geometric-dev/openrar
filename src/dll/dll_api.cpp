@@ -112,13 +112,13 @@ struct ArchiveHandleBase {
     virtual int list(uint32_t* count, void** entries_out, void** paths_out,
                      size_t* paths_size_out) = 0;
     virtual int extract(uint32_t entry_index, uint8_t** out_ptr, size_t* out_len) = 0;
-    virtual int extract_all(uint8_t** buf_out_ptr, size_t* buf_size_out,
-                            uint64_t** offsets_out_ptr, uint32_t* offsets_count_out) = 0;
+    virtual int extract_all(uint8_t** buf_out_ptr, size_t* buf_size_out, uint64_t** offsets_out_ptr,
+                            uint32_t* offsets_count_out) = 0;
     virtual int extract_to_path(uint32_t entry_index, const char* dest_path,
                                 openrar_progress_cb progress, openrar_cancel_cb cancel,
                                 void* user) = 0;
-    virtual int test(uint32_t entry_index, openrar_progress_cb progress,
-                     openrar_cancel_cb cancel, void* user) = 0;
+    virtual int test(uint32_t entry_index, openrar_progress_cb progress, openrar_cancel_cb cancel,
+                     void* user) = 0;
     // Extended metadata (v1.5.0): file-mode handles only — the buffer MVP
     // has no streaming reader behind it, so the default refuses.
     virtual int entry_ex(uint32_t entry_index, openrar_entry_ex_t* out, void** extra_out,
@@ -251,8 +251,7 @@ int durable_write_to(const std::filesystem::path& dest,
         std::filesystem::create_directories(dest.parent_path(), ec);
         if (ec) return RAR_ERR_IO; // Fail fast if parent directory cannot be created
     }
-    const std::string suffix =
-        ".openrar-tmp." + std::to_string(current_pid()) + ".";
+    const std::string suffix = ".openrar-tmp." + std::to_string(current_pid()) + ".";
     for (unsigned seq = 0; seq < 10; ++seq) {
         std::filesystem::path tmp = dest;
         tmp += suffix + std::to_string(seq);
@@ -340,8 +339,7 @@ struct BufferArchiveHandle : ArchiveHandleBase {
             set_error("oom");
             return RAR_ERR_NOMEM;
         }
-        uint64_t* offs =
-            static_cast<uint64_t*>(std::malloc(files.size() * sizeof(uint64_t) * 2));
+        uint64_t* offs = static_cast<uint64_t*>(std::malloc(files.size() * sizeof(uint64_t) * 2));
         if (!offs) {
             std::free(buf);
             set_error("oom");
@@ -382,8 +380,7 @@ struct BufferArchiveHandle : ArchiveHandleBase {
         if (rc != RAR_OK) return rc;
         if (ctx.progress) ctx.progress(ctx.user, 0, total);
         rc = durable_write_to(std::filesystem::u8path(dest_path), [&](openrar::io::FileStream& f) {
-            if (!out.empty() && f.write(out.data(), out.size()) != out.size())
-                return RAR_ERR_IO;
+            if (!out.empty() && f.write(out.data(), out.size()) != out.size()) return RAR_ERR_IO;
             return RAR_OK;
         });
         if (rc != RAR_OK) return rc;
@@ -455,10 +452,9 @@ struct FileArchiveHandle : ArchiveHandleBase {
         int rc = reader->extract_entry_to_memory(reader_index[entry_index], out,
                                                  OPENRAR_MAX_HEAP_EXTRACT_SIZE, {});
         if (rc != RAR_OK) {
-            set_error(rc == RAR_ERR_NOMEM
-                          ? "entry exceeds the 256 MiB in-memory extract cap; use "
-                            "openrar_archive_handle_extract_to_path"
-                          : "extract failed");
+            set_error(rc == RAR_ERR_NOMEM ? "entry exceeds the 256 MiB in-memory extract cap; use "
+                                            "openrar_archive_handle_extract_to_path"
+                                          : "extract failed");
             return rc;
         }
         *out_ptr = openrar::api::heap_dup(out.data(), out.size());
@@ -567,7 +563,8 @@ struct FileArchiveHandle : ArchiveHandleBase {
         if (out->atime_ft) flags |= OPENRAR_ENTRY_FLAG_HAS_ATIME;
         if (h.file_flags & openrar::format::FHFL_DIRECTORY) flags |= OPENRAR_ENTRY_FLAG_DIRECTORY;
         out->flags = flags;
-        out->win_size = h.win_size > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(h.win_size);
+        out->win_size =
+            h.win_size > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(h.win_size);
         out->redir_type = h.redir_type;
         out->version_needed = h.unp_ver;
         if (h.redir_type != 0) {
@@ -1130,8 +1127,7 @@ int OPENRAR_DLL_CALL openrar_archive_handle_extract_all(uint32_t handle, uint8_t
 }
 
 // ── File-mode handles (v1.3.0) ───────────────────────────────────────────────
-uint32_t OPENRAR_DLL_CALL openrar_archive_open_file(const char* arc_path,
-                                                    const char* password_utf8,
+uint32_t OPENRAR_DLL_CALL openrar_archive_open_file(const char* arc_path, const char* password_utf8,
                                                     openrar_progress_cb progress,
                                                     openrar_cancel_cb cancel, void* user) {
     try {
@@ -1144,10 +1140,10 @@ uint32_t OPENRAR_DLL_CALL openrar_archive_open_file(const char* arc_path,
         ListCallbackCtx ctx{progress, cancel, user};
         int status = RAR_OK;
         std::string detail;
-        const bool ok = h->reader->open_ex(
-            std::filesystem::u8path(arc_path),
-            password_utf8 ? std::string(password_utf8) : std::string(), status, detail,
-            make_reader_hooks(ctx), /*strict_volumes=*/true);
+        const bool ok =
+            h->reader->open_ex(std::filesystem::u8path(arc_path),
+                               password_utf8 ? std::string(password_utf8) : std::string(), status,
+                               detail, make_reader_hooks(ctx), /*strict_volumes=*/true);
         if (!ok) {
             if (detail.empty()) {
                 detail = "open failed";
@@ -1247,8 +1243,7 @@ int mutation_precheck(const char* arc_path) {
 // index translation — close it before invoking the mutator, whose final
 // rename must not face our own open stream.
 int mutation_open(const std::filesystem::path& arc,
-                  std::unique_ptr<openrar::archive::ArchiveReader>& reader,
-                  std::string& detail) {
+                  std::unique_ptr<openrar::archive::ArchiveReader>& reader, std::string& detail) {
     auto r = std::make_unique<openrar::archive::ArchiveReader>();
     int status = RAR_OK;
     std::string open_detail;
@@ -1326,7 +1321,8 @@ int OPENRAR_DLL_CALL openrar_archive_delete_entries_file(const char* arc_path,
                           std::to_string(file_indices.size()) + " entries)");
                 return RAR_ERR_INVALID_ARG;
             }
-            if (seen.insert(idx).second) offsets.push_back(entries[file_indices[idx]].header_offset);
+            if (seen.insert(idx).second)
+                offsets.push_back(entries[file_indices[idx]].header_offset);
         }
         reader.reset(); // close the walk before the mutator's rename
 
@@ -1406,9 +1402,10 @@ int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
         }
 
         std::string detail;
-        int rc = openrar::archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, /*password=*/"",
-                                                                      /*encrypt_headers=*/false, {},
-                                                                      /*solid=*/false, {}, detail);
+        int rc =
+            openrar::archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, /*password=*/"",
+                                                                 /*encrypt_headers=*/false, {},
+                                                                 /*solid=*/false, {}, detail);
         if (rc != RAR_OK) set_error(detail.empty() ? "add failed" : detail);
         return rc;
     } catch (const std::exception& e) {
@@ -1617,16 +1614,12 @@ int OPENRAR_DLL_CALL openrar_archive_create_to_file(const char* const* src_paths
                                                    window_log2, &buf, &len);
         if (rc != RAR_OK) return rc;
         std::filesystem::path out = std::filesystem::u8path(out_path);
-        std::error_code ec;
-        std::filesystem::create_directories(out.parent_path(), ec);
-        std::ofstream f(out, std::ios::binary);
-        if (!f) {
-            openrar_free(buf);
-            return RAR_ERR_IO;
-        }
-        if (len > 0) f.write(reinterpret_cast<char*>(buf), static_cast<std::streamsize>(len));
+        rc = durable_write_to(out, [&](openrar::io::FileStream& f) {
+            if (len > 0 && f.write(buf, len) != len) return RAR_ERR_IO;
+            return RAR_OK;
+        });
         openrar_free(buf);
-        return f ? RAR_OK : RAR_ERR_IO;
+        return rc;
     } catch (const std::exception& e) {
         set_error(e.what());
         return RAR_ERR_IO;

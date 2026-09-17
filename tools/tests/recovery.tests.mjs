@@ -8,15 +8,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import {
-  OUR_EXE,
+import { DIR_SEP, OUR_EXE,
   WINRAR_UNRAR,
   buildOurArchive,
   freshDir,
   makeFixtureTree,
   runTool,
-  oracleAvailable,
-} from './helpers.mjs';
+  oracleAvailable, } from './helpers.mjs';
 import { parseArchive } from '../rar5-coverage.js';
 
 describe('RAR 5.0 Recovery Records (-rr) & Repair (r)', () => {
@@ -94,7 +92,7 @@ describe('RAR 5.0 Recovery Records (-rr) & Repair (r)', () => {
 
     // 5. Verify byte-identical file extraction
     const extDir = freshDir('rec-rep-ext');
-    const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + '\\'], tree);
+    const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + DIR_SEP], tree);
     assert.equal(resExt.code, 0, `Extraction failed: ${resExt.output}`);
     const extracted = readFileSync(join(extDir, 'important.txt'), 'utf8');
     assert.equal(extracted, originalContent, 'Extracted data must match original payload exactly');
@@ -127,7 +125,7 @@ describe('RAR 5.0 Recovery Records (-rr) & Repair (r)', () => {
 
     // 5. Extract and verify full fixture tree
     const extDir = freshDir('rec-mf-ext');
-    const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + '\\'], tree);
+    const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + DIR_SEP], tree);
     assert.equal(resExt.code, 0, `Extraction failed: ${resExt.output}`);
     assert.ok(existsSync(join(extDir, 'data.bin')), 'Extracted data.bin must exist');
     assert.ok(existsSync(join(extDir, 'text.txt')), 'Extracted text.txt must exist');

@@ -52,8 +52,9 @@ static fs::path make_scratch_dir(const char* name) {
 static void write_bytes(const fs::path& p, const std::vector<uint8_t>& data) {
     std::ofstream f(p, std::ios::binary);
     assert(f);
-    if (!data.empty()) f.write(reinterpret_cast<const char*>(data.data()),
-                               static_cast<std::streamsize>(data.size()));
+    if (!data.empty())
+        f.write(reinterpret_cast<const char*>(data.data()),
+                static_cast<std::streamsize>(data.size()));
 }
 
 static std::vector<uint8_t> read_bytes(const fs::path& p) {
@@ -85,8 +86,9 @@ static std::vector<uint8_t> make_pattern(size_t n, uint32_t seed) {
 }
 
 // Plain (non-solid) archive through the C ABI create export.
-static fs::path create_plain_archive(const fs::path& dir, const char* name,
-                                     const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files) {
+static fs::path
+create_plain_archive(const fs::path& dir, const char* name,
+                     const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files) {
     std::vector<std::vector<uint8_t>> name_bytes;
     std::vector<const uint8_t*> name_ptrs;
     std::vector<const uint8_t*> data_ptrs;
@@ -139,8 +141,8 @@ static fs::path make_volume_set(const fs::path& dir, const char* name) {
 
 // Entry names in file-handle listing order (what the delete indices refer to).
 static std::vector<std::string> handle_names(const fs::path& arc) {
-    uint32_t h = openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr,
-                                           nullptr);
+    uint32_t h =
+        openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
     assert(h != 0);
     uint32_t count = 0;
     void* ents = nullptr;
@@ -160,8 +162,8 @@ static std::vector<std::string> handle_names(const fs::path& arc) {
 }
 
 static std::vector<uint8_t> handle_extract(const fs::path& arc, uint32_t index) {
-    uint32_t h = openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr,
-                                           nullptr);
+    uint32_t h =
+        openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
     assert(h != 0);
     uint8_t* out = nullptr;
     size_t len = 0;
@@ -248,12 +250,11 @@ static void test_delete_roundtrip() {
     std::cout << "Starting test_delete_roundtrip...\n" << std::flush;
     const fs::path dir = make_scratch_dir("roundtrip");
     const std::vector<uint8_t> a = make_pattern(4096, 1), b = make_pattern(4096, 2),
-                                c = make_pattern(4096, 3);
+                               c = make_pattern(4096, 3);
     const fs::path arc =
         create_plain_archive(dir, "del.rar", {{"a.txt", a}, {"b.txt", b}, {"c.txt", c}});
 
-    assert(handle_names(arc) ==
-           std::vector<std::string>({"a.txt", "b.txt", "c.txt"}));
+    assert(handle_names(arc) == std::vector<std::string>({"a.txt", "b.txt", "c.txt"}));
 
     const uint32_t idx[1] = {1}; // b.txt
     assert(openrar_archive_delete_entries_file(arc.u8string().c_str(), idx, 1) == RAR_OK);
@@ -284,8 +285,7 @@ static void test_solid_orphan_delete_refused() {
     assert(last_error().find("cannot delete entries from solid archive") != std::string::npos);
 
     // Refusals leave the archive loadable and its data intact.
-    assert(handle_names(arc) ==
-           std::vector<std::string>({"s0.bin", "s1.bin", "s2.bin"}));
+    assert(handle_names(arc) == std::vector<std::string>({"s0.bin", "s1.bin", "s2.bin"}));
     assert(handle_extract(arc, 2) == read_bytes(dir / "src_s2.bin"));
     std::cout << "[PASS] solid_orphan_delete_refused\n";
 }
@@ -300,8 +300,7 @@ static void test_solid_suffix_and_whole_run_delete() {
     const std::vector<uint8_t> s0 = read_bytes(dir / "src_s0.bin");
     const std::vector<uint8_t> s1 = read_bytes(dir / "src_s1.bin");
     const uint32_t tail[1] = {2};
-    assert(openrar_archive_delete_entries_file(suffix_arc.u8string().c_str(), tail, 1) ==
-           RAR_OK);
+    assert(openrar_archive_delete_entries_file(suffix_arc.u8string().c_str(), tail, 1) == RAR_OK);
     assert(handle_names(suffix_arc) == std::vector<std::string>({"s0.bin", "s1.bin"}));
     assert(handle_extract(suffix_arc, 0) == s0);
     assert(handle_extract(suffix_arc, 1) == s1);
@@ -352,8 +351,7 @@ static void test_locked_volume_hp_refused() {
                                                /*encrypt_headers=*/true));
     const int hp_rc = openrar_archive_delete_entries_file(hp.u8string().c_str(), idx0, 1);
     if (hp_rc != RAR_ERR_UNSUPPORTED_FEATURE) {
-        std::cout << "  hp delete rc=" << hp_rc << " err=" << last_error() << "\n"
-                  << std::flush;
+        std::cout << "  hp delete rc=" << hp_rc << " err=" << last_error() << "\n" << std::flush;
     }
     assert(hp_rc == RAR_ERR_UNSUPPORTED_FEATURE);
     assert(last_error().find("mutating header-encrypted archive") != std::string::npos);
@@ -385,10 +383,8 @@ static void test_add_replace_u_semantics() {
     if (got != a_new) {
         std::cout << "  u_semantics: got size=" << got.size() << " want=" << a_new.size()
                   << " first8=";
-        for (size_t i = 0; i < 8 && i < got.size(); ++i)
-            std::cout << (int)got[i] << ",";
-        std::cout << "\n"
-                  << std::flush;
+        for (size_t i = 0; i < 8 && i < got.size(); ++i) std::cout << (int)got[i] << ",";
+        std::cout << "\n" << std::flush;
     }
     assert(got == a_new);
     std::cout << "[PASS] add_replace_u_semantics\n";
@@ -440,8 +436,7 @@ static void test_add_atomicity() {
     const std::string at_arc_u8 = arc.u8string();
     const char* srcs[2] = {good_u8.c_str(), missing_u8.c_str()};
     const char* names[2] = {"good.txt", "missing.bin"};
-    assert(openrar_archive_add_files_file(at_arc_u8.c_str(), srcs, names, 2, 3, 2) ==
-           RAR_ERR_IO);
+    assert(openrar_archive_add_files_file(at_arc_u8.c_str(), srcs, names, 2, 3, 2) == RAR_ERR_IO);
     assert(read_bytes(arc) == before);
     assert(handle_names(arc) == std::vector<std::string>({"a.txt", "b.txt"}));
     std::cout << "[PASS] add_atomicity\n";
@@ -454,8 +449,8 @@ static void test_busy_handle_collision() {
     const std::vector<uint8_t> a = make_pattern(1024, 5);
     const fs::path arc = create_plain_archive(dir, "busy.rar", {{"a.txt", a}});
 
-    uint32_t h = openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr,
-                                           nullptr);
+    uint32_t h =
+        openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
     assert(h != 0);
 
     const uint32_t idx[1] = {0};
@@ -477,8 +472,7 @@ static void test_busy_handle_collision() {
     openrar_archive_close(h);
     // Closed → both mutations succeed.
     assert(openrar_archive_delete_entries_file(busy_arc_u8.c_str(), idx, 1) == RAR_OK);
-    assert(openrar_archive_add_files_file(busy_arc_u8.c_str(), srcs, names, 1, 3, 2) ==
-           RAR_OK);
+    assert(openrar_archive_add_files_file(busy_arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
     assert(handle_names(arc) == std::vector<std::string>({"z.bin"}));
     std::cout << "[PASS] busy_handle_collision\n";
 }
@@ -544,8 +538,8 @@ static void test_comment_preserved_qo_stripped() {
         assert(ArchiveMutator::prepare_add_file(src, "f.bin", 3, "", p));
         prepared.push_back(std::move(p));
         const std::vector<openrar::core::byte> comment = {'h', 'i', ' ', 'c', 'm', 't'};
-        assert(ArchiveMutator::write_batch_add(cmt_arc, prepared, {}, "", false, {}, false,
-                                               comment));
+        assert(
+            ArchiveMutator::write_batch_add(cmt_arc, prepared, {}, "", false, {}, false, comment));
     }
     assert(has_service(cmt_arc, "CMT"));
     const uint32_t idx0[1] = {0};
@@ -564,8 +558,8 @@ static void test_comment_preserved_qo_stripped() {
         assert(ArchiveMutator::prepare_add_file(src, "f.bin", 3, "", p));
         prepared.push_back(std::move(p));
         const std::vector<openrar::core::byte> comment = {'c', 'm', 't', '2'};
-        assert(ArchiveMutator::write_batch_add(cmt_arc2, prepared, {}, "", false, {}, false,
-                                               comment));
+        assert(
+            ArchiveMutator::write_batch_add(cmt_arc2, prepared, {}, "", false, {}, false, comment));
     }
     const fs::path add_src = dir / "add.bin";
     write_bytes(add_src, {'A'});
@@ -599,8 +593,8 @@ static void test_add_directory_record() {
     const char* srcs[1] = {sub_u8.c_str()};
     const char* names[1] = {"subdir/"};
     assert(openrar_archive_add_files_file(dir_arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
-    uint32_t h = openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr,
-                                           nullptr);
+    uint32_t h =
+        openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
     assert(h != 0);
     uint32_t count = 0;
     void* ents = nullptr;

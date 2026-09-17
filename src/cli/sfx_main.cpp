@@ -316,11 +316,10 @@ static int sfx_main_impl(int argc, char* argv[]) {
             // No [-y] here: the module has no interactive queries (it
             // overwrites silently), so advertising it would repeat the B8
             // class — help promising behavior nothing implements.
-            std::cout
-                << "\nOpenRAR 5.0 Self-Extracting Archive Module (SFX)\n"
-                << "Copyright (c) 2026 OpenRAR Project\n\n"
-                << "Usage: " << sfx_filename
-                << " [-d<destination_directory>] [-p<password>] [-t] [-s] [-plain] [-q]\n";
+            std::cout << "\nOpenRAR 5.0 Self-Extracting Archive Module (SFX)\n"
+                      << "Copyright (c) 2026 OpenRAR Project\n\n"
+                      << "Usage: " << sfx_filename
+                      << " [-d<destination_directory>] [-p<password>] [-t] [-s] [-plain] [-q]\n";
         }
         return 0;
     }

@@ -33,9 +33,9 @@ const files = [
   path.join(repo, 'tools', 'tests', 'links.tests.mjs'),
   // Dictionary size flags (-md)
   path.join(repo, 'tools', 'tests', 'dictionary.tests.mjs'),
-  // Compression filters (DELTA/E8/…)   [skip-guarded until implemented]
+  // Compression filters (-mc)          [oracle asserts gated on UnRAR]
   path.join(repo, 'tools', 'tests', 'filters.tests.mjs'),
-  // Encryption (-p / -hp)              [skip-guarded until implemented]
+  // Encryption (-p / -hp)              [oracle asserts gated on UnRAR]
   path.join(repo, 'tools', 'tests', 'encryption.tests.mjs'),
   // C ABI <-> JS/TS error-code sync (no binary needed)
   path.join(repo, 'tools', 'tests', 'errorsync.tests.mjs'),

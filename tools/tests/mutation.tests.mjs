@@ -119,7 +119,7 @@ describe('RAR 5.0 Archive Mutation (d, u, f, m, k)', () => {
 
     // Verify archive contains file
     const extDir = freshDir('mut-mov-ext');
-    const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + '\\'], tree);
+    const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + DIR_SEP], tree);
     assert.equal(resExt.code, 0);
     assert.equal(readFileSync(join(extDir, 'move_me.txt'), 'utf8'), 'DATA TO BE MOVED');
   });

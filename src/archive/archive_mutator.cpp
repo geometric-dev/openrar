@@ -637,13 +637,27 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
         win_size = 0x20000u << (window_log2 - 1);
     } else if (window_log2 == 0) {
         switch (method) {
-            case 0: win_size = 0x20000u; break;   // 128 KB
-            case 1: win_size = 0x80000u; break;   // 512 KB
-            case 2: win_size = 0x100000u; break;  // 1 MB
-            case 3: win_size = 0x200000u; break;  // 2 MB
-            case 4: win_size = 0x400000u; break;  // 4 MB
-            case 5: win_size = 0x1000000u; break; // 16 MB
-            default: win_size = 0x200000u; break;
+        case 0:
+            win_size = 0x20000u;
+            break; // 128 KB
+        case 1:
+            win_size = 0x80000u;
+            break; // 512 KB
+        case 2:
+            win_size = 0x100000u;
+            break; // 1 MB
+        case 3:
+            win_size = 0x200000u;
+            break; // 2 MB
+        case 4:
+            win_size = 0x400000u;
+            break; // 4 MB
+        case 5:
+            win_size = 0x1000000u;
+            break; // 16 MB
+        default:
+            win_size = 0x200000u;
+            break;
         }
     }
 
@@ -759,8 +773,7 @@ bool ArchiveMutator::prepare_add_dir(const std::filesystem::path& src_dir,
 bool ArchiveMutator::prepare_add_symlink(const std::filesystem::path& src_symlink,
                                          const std::string& arc_entry_name,
                                          const std::string& target, bool is_dir_target,
-                                         PreparedAdd& out,
-                                         core::uint32 times_mask) {
+                                         PreparedAdd& out, core::uint32 times_mask) {
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
     fb.unp_size = 0;
@@ -857,8 +870,8 @@ int ArchiveMutator::write_batch_add_ex(
             if (reader.is_locked() || reader.is_volume()) {
                 out.close();
                 std::filesystem::remove(tmp_path);
-                detail_out =
-                    reader.is_locked() ? "archive is locked" : "cannot mutate a multi-volume archive";
+                detail_out = reader.is_locked() ? "archive is locked"
+                                                : "cannot mutate a multi-volume archive";
                 return RAR_ERR_UNSUPPORTED_FEATURE;
             }
 

@@ -111,8 +111,8 @@ void test_cli_quiet_list_missing_archive_fails() {
     // success. Quiet mode must only suppress output, never the open/validate.
     // NOTE: switches parse after the command in this CLI, so `-q` must follow
     // the archive argument to actually reach list_archive.
-    int res =
-        std::system((get_cli_path() + " l build/cli_no_such_archive.rar -q > " DEVNULL " 2>&1").c_str());
+    int res = std::system(
+        (get_cli_path() + " l build/cli_no_such_archive.rar -q > " DEVNULL " 2>&1").c_str());
     assert(res != 0);
 
     // Quiet list of a VALID archive: real exit code (0), zero output printed.
@@ -226,15 +226,18 @@ void test_cli_mt_batch_equivalence() {
     std::string exe = get_cli_path();
     std::string src_list =
         root.string() + "/a_text.txt " + root.string() + "/sub " + root.string() + "/c_empty.txt";
-    int res =
-        std::system((exe + " a " + arc1.string() + " -mt1 " + src_list + " > " DEVNULL " 2>&1").c_str());
+    int res = std::system(
+        (exe + " a " + arc1.string() + " -mt1 " + src_list + " > " DEVNULL " 2>&1").c_str());
     assert(res == 0);
-    res = std::system((exe + " a " + arc4.string() + " -mt4 " + src_list + " > " DEVNULL " 2>&1").c_str());
+    res = std::system(
+        (exe + " a " + arc4.string() + " -mt4 " + src_list + " > " DEVNULL " 2>&1").c_str());
     assert(res == 0);
 
-    res = std::system((exe + " x " + arc1.string() + " " + out1.string() + " > " DEVNULL " 2>&1").c_str());
+    res = std::system(
+        (exe + " x " + arc1.string() + " " + out1.string() + " > " DEVNULL " 2>&1").c_str());
     assert(res == 0);
-    res = std::system((exe + " x " + arc4.string() + " " + out4.string() + " > " DEVNULL " 2>&1").c_str());
+    res = std::system(
+        (exe + " x " + arc4.string() + " " + out4.string() + " > " DEVNULL " 2>&1").c_str());
     assert(res == 0);
 
     // Compare extracted trees: same file set, same bytes.
@@ -257,9 +260,9 @@ void test_cli_mt_batch_equivalence() {
     // -mt0 (auto) must also be accepted.
     fs::path arc_auto = "build/cli_mt0.rar";
     fs::remove(arc_auto, ec);
-    res = std::system(
-        (exe + " a " + arc_auto.string() + " -mt0 " + root.string() + "/a_text.txt > " DEVNULL " 2>&1")
-            .c_str());
+    res = std::system((exe + " a " + arc_auto.string() + " -mt0 " + root.string() +
+                       "/a_text.txt > " DEVNULL " 2>&1")
+                          .c_str());
     assert(res == 0);
     res = std::system((exe + " t " + arc_auto.string() + " > " DEVNULL " 2>&1").c_str());
     assert(res == 0);
@@ -333,7 +336,8 @@ void test_cli_overwrite_modes() {
     fs::remove(src, ec);
     fs::remove(arc, ec);
     fs::remove_all(out, ec);
-    std::cout << "[PASS] CLI overwrite modes: -o- keeps, -y overwrites, non-tty default overwrites\n";
+    std::cout
+        << "[PASS] CLI overwrite modes: -o- keeps, -y overwrites, non-tty default overwrites\n";
 }
 
 void test_cli_help_switch_parity() {
@@ -357,13 +361,13 @@ void test_cli_help_switch_parity() {
     assert(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "payload.txt"));
 
     const char* switches[] = {
-        "-ed", "-ep", "-ep1", "-ep2", "-ep3", "-ol", "-ol-", "-os", "-ow", "-plain", "-q",
-        "-r",  "-r-", "-s",   "-sfx", "-y",  "-kb", "-o+", "-o-", "-vp", "-m3",  "-mt1",
-        "-md1m", "-tsm", "-v1k", "-psecret", "-hpsecret", "-rr3",
+        "-ed", "-ep",  "-ep1",  "-ep2", "-ep3", "-ol",      "-ol-",      "-os",  "-ow", "-plain",
+        "-q",  "-r",   "-r-",   "-s",   "-sfx", "-y",       "-kb",       "-o+",  "-o-", "-vp",
+        "-m3", "-mt1", "-md1m", "-tsm", "-v1k", "-psecret", "-hpsecret", "-rr3",
     };
     for (const char* sw : switches) {
-        std::string cmd = get_cli_path() + " lb " + arc.string() + " " + sw + " > " +
-                          captured.string() + " 2>&1";
+        std::string cmd =
+            get_cli_path() + " lb " + arc.string() + " " + sw + " > " + captured.string() + " 2>&1";
         int res = std::system(cmd.c_str());
         if (res != 0) {
             std::cerr << "  switch rejected: " << sw << " (exit " << res << ")\n";
@@ -379,8 +383,8 @@ void test_cli_help_switch_parity() {
     }
 
     // -- end-of-options: everything after it is a name, even "-weird".
-    std::string cmd = get_cli_path() + " lb -- " + arc.string() + " > " + captured.string() +
-                      " 2>&1";
+    std::string cmd =
+        get_cli_path() + " lb -- " + arc.string() + " > " + captured.string() + " 2>&1";
     assert(std::system(cmd.c_str()) == 0);
 
     // -z takes a file argument: comment is only consumed by a/u/f/m, so lb

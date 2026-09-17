@@ -290,8 +290,7 @@ inline std::vector<uint8_t> create_archive(const std::vector<InputFile>& files,
 // entries only; service headers like CMT/RR are never exposed). Deleting a
 // member of a solid run while a later member is retained throws
 // UNSUPPORTED_FEATURE (suffix-only delete).
-inline void delete_entries(const std::filesystem::path& arc,
-                           const std::vector<uint32_t>& indices) {
+inline void delete_entries(const std::filesystem::path& arc, const std::vector<uint32_t>& indices) {
     std::string u8 = detail::u8_str(arc);
     int rc = openrar_archive_delete_entries_file(u8.c_str(), indices.data(),
                                                  static_cast<uint32_t>(indices.size()));
@@ -431,11 +430,11 @@ public:
     // byte progress against entry.size. File handles: streaming; buffer
     // handles: in-memory extract then write.
     void extract_to_path(uint32_t idx, const std::filesystem::path& dest,
-                         openrar_progress_cb progress = nullptr,
-                         openrar_cancel_cb cancel = nullptr, void* user = nullptr) const {
+                         openrar_progress_cb progress = nullptr, openrar_cancel_cb cancel = nullptr,
+                         void* user = nullptr) const {
         std::string u8 = detail::u8_str(dest);
-        int rc = openrar_archive_handle_extract_to_path(h_, idx, u8.c_str(), progress, cancel,
-                                                        user);
+        int rc =
+            openrar_archive_handle_extract_to_path(h_, idx, u8.c_str(), progress, cancel, user);
         check(rc);
     }
     // Streaming integrity test (file handles; buffer handles throw

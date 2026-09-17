@@ -47,6 +47,16 @@ Consumers copy `include/openrar/` + the built library. No runtime deps beyond CR
 
 **CMake integration (recommended):**
 
+Package-config / installed integration (v1.6.0+):
+
+```cmake
+find_package(openrar REQUIRED)
+target_link_libraries(myapp PRIVATE openrar::openrar_dll)
+# Public headers are located at <openrar/openrar_dll.h> and <openrar/openrar.hpp>
+```
+
+Or embed via source checkout:
+
 ```cmake
 add_subdirectory(openrar) # provides openrar_dll target
 target_link_libraries(myapp PRIVATE openrar_dll)
@@ -372,6 +382,12 @@ AES-256-CBC — fixed small RAM regardless of entry size). Directory and link
 entries verify trivially. `RAR_ERR_TRUNCATED` = packed stream ended early;
 `RAR_ERR_CRC_MISMATCH` = checksum failure; `RAR_ERR_BAD_PASSWORD` /
 `RAR_ERR_ENCRYPTED` / `RAR_ERR_ABORTED` / `RAR_ERR_MISSING_VOLUME` as above.
+Tweaked-checksum exception (`0x0002` crypt flag): when third-party archives
+mark encryption checksums as key-dependent, the stored value is not the
+plaintext hash and is bypassed during verification (the embedded PswCheck
+authenticates the key instead), preventing false `RAR_ERR_CRC_MISMATCH`
+refusals. Plaintext checksums written by OpenRAR never set `0x0002` and stay
+fully verified.
 
 *Lifetime & threading.* Hosts close all handles on a set before
 renaming/deleting any volume. A file changed on disk under an open handle
@@ -505,9 +521,11 @@ NUL) iff `redir_type != 0`; free it with `openrar_archive_entry_ex_free` or
 archive comment. The CMT payload is read lazily at query time — comments
 stored compressed are decompressed, and a payload failing its CRC or decode
 is reported as absent with `RAR_OK` (a filesystem read failure is
-`RAR_ERR_IO`; free a returned comment with `openrar_free`). `volume_count`
-is always determinable on this surface: the file-mode open is strict, so a
-successfully opened set has every volume scanned (1 for single-volume).
+`RAR_ERR_IO`; free a returned comment with `openrar_free`). Capped at 16 MiB:
+comment payloads exceeding 16 MiB return `RAR_ERR_UNSUPPORTED_FEATURE` to
+protect against speculative unbounded allocations from untrusted headers.
+`volume_count` is always determinable on this surface: the file-mode open is
+strict, so a successfully opened set has every volume scanned (1 for single-volume).
 
 ---
 

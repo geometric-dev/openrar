@@ -104,9 +104,8 @@ public:
     // Stage 1 variant for a symbolic link: emits a symlink record (FHEXTRA_REDIR,
     // redir_type = 2 on Windows, 1 on POSIX, no data area) carrying the link's timestamps.
     static bool prepare_add_symlink(const std::filesystem::path& src_symlink,
-                                    const std::string& arc_entry_name,
-                                    const std::string& target, bool is_dir_target,
-                                    PreparedAdd& out,
+                                    const std::string& arc_entry_name, const std::string& target,
+                                    bool is_dir_target, PreparedAdd& out,
                                     core::uint32 times_mask = time_flags::MTIME);
 
     // Query disk file last-modification time as unix epoch seconds.
@@ -138,12 +137,13 @@ public:
     // RAR_ERR_UNSUPPORTED_FEATURE ("cannot replace entry in solid archive
     // without recompressing chain"). Refuses locked and multi-volume
     // archives the same way. detail_out is set for every non-OK return.
-    static int
-    write_batch_add_ex(const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
-                       const std::filesystem::path& sfx_stub_path, const std::string& password,
-                       bool encrypt_headers,
-                       const std::function<void(size_t, const std::string&)>& on_write, bool solid,
-                       const std::vector<core::byte>& comment, std::string& detail_out);
+    static int write_batch_add_ex(const std::filesystem::path& arc_path,
+                                  std::vector<PreparedAdd>& files,
+                                  const std::filesystem::path& sfx_stub_path,
+                                  const std::string& password, bool encrypt_headers,
+                                  const std::function<void(size_t, const std::string&)>& on_write,
+                                  bool solid, const std::vector<core::byte>& comment,
+                                  std::string& detail_out);
 
     // SFX stub upper bound: the reader locates the signature behind the stub
     // by scanning at most 4 MiB (10-sfx.md:15), so a larger module would

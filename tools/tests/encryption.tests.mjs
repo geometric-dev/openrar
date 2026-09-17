@@ -1,7 +1,7 @@
 // Encryption test suite for OpenRAR (-p and -hp)
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { freshDir, makeFixtureTree, buildOurArchive, runTool, OUR_EXE, WINRAR_UNRAR, treesEqual } from './helpers.mjs';
+import { DIR_SEP, freshDir, makeFixtureTree, buildOurArchive, runTool, OUR_EXE, WINRAR_UNRAR, treesEqual, oracleAvailable } from './helpers.mjs';
 
 describe('RAR 5.0 Encryption (-p / -hp)', () => {
   const PASSWORD = 'CorrectHorseBatteryStaple123!';
@@ -17,22 +17,24 @@ describe('RAR 5.0 Encryption (-p / -hp)', () => {
 
         // 1. Extract with our extractor
         const extOur = freshDir(`enc-p-${method}-ext-our`);
-        const resOur = runTool(OUR_EXE, ['x', '-y', `-p${PASSWORD}`, arc, extOur + '\\'], tree);
+        const resOur = runTool(OUR_EXE, ['x', '-y', `-p${PASSWORD}`, arc, extOur + DIR_SEP], tree);
         assert.equal(resOur.code, 0, `our extract failed: ${resOur.output}`);
 
         // Compare extracted files with original tree
         const eq = treesEqual(tree, extOur);
         assert.ok(eq.ok, eq.why);
 
-        // 2. Oracle test with WinRAR if available
-        const resWinRar = runTool(WINRAR_UNRAR, ['t', `-p${PASSWORD}`, arc], tree);
-        if (resWinRar.code !== 127) { // 127 = binary not found
+        // 2. Oracle test with WinRAR (oracle-gated; runTool reports a
+        // missing binary as code 1, not 127, so oracleAvailable() is the
+        // reliable check)
+        if (oracleAvailable()) {
+          const resWinRar = runTool(WINRAR_UNRAR, ['t', `-p${PASSWORD}`, arc], tree);
           assert.equal(resWinRar.code, 0, `WinRAR test failed: ${resWinRar.output}`);
         }
 
         // 3. Fast failure with wrong password
         const extWrong = freshDir(`enc-p-${method}-ext-wrong`);
-        const resWrong = runTool(OUR_EXE, ['x', '-y', `-p${WRONG_PWD}`, arc, extWrong + '\\'], tree);
+        const resWrong = runTool(OUR_EXE, ['x', '-y', `-p${WRONG_PWD}`, arc, extWrong + DIR_SEP], tree);
         assert.notEqual(resWrong.code, 0, 'Extraction with wrong password should fail');
       });
     }
@@ -51,7 +53,7 @@ describe('RAR 5.0 Encryption (-p / -hp)', () => {
 
       // 2. Extraction with correct password
       const extOur = freshDir('enc-hp-ext-our');
-      const resOur = runTool(OUR_EXE, ['x', '-y', `-p${PASSWORD}`, arc, extOur + '\\'], tree);
+      const resOur = runTool(OUR_EXE, ['x', '-y', `-p${PASSWORD}`, arc, extOur + DIR_SEP], tree);
       assert.equal(resOur.code, 0, `extract failed: ${resOur.output}`);
 
       const eq = treesEqual(tree, extOur);
@@ -61,9 +63,9 @@ describe('RAR 5.0 Encryption (-p / -hp)', () => {
       const resWrong = runTool(OUR_EXE, ['l', `-p${WRONG_PWD}`, arc], tree);
       assert.notEqual(resWrong.code, 0, 'Listing with wrong password should fail');
 
-      // 4. WinRAR oracle verification
-      const resWinRar = runTool(WINRAR_UNRAR, ['t', `-p${PASSWORD}`, arc], tree);
-      if (resWinRar.code !== 127) {
+      // 4. WinRAR oracle verification (oracle-gated)
+      if (oracleAvailable()) {
+        const resWinRar = runTool(WINRAR_UNRAR, ['t', `-p${PASSWORD}`, arc], tree);
         assert.equal(resWinRar.code, 0, `WinRAR test failed: ${resWinRar.output}`);
       }
     });

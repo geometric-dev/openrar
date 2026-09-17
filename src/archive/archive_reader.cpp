@@ -135,8 +135,8 @@ bool ArchiveReader::open(const std::filesystem::path& arc_path, const std::strin
 }
 
 bool ArchiveReader::open_ex(const std::filesystem::path& arc_path, const std::string& password,
-                            int& status_out, std::string& detail_out,
-                            const ReaderHooks& hooks, bool strict_volumes) {
+                            int& status_out, std::string& detail_out, const ReaderHooks& hooks,
+                            bool strict_volumes) {
     close();
     status_out = RAR_OK;
     detail_out.clear();
@@ -515,8 +515,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
 
     if (scan_aborted) return fail(RAR_ERR_ABORTED, "open aborted");
     if (missing_required && strict_volumes)
-        return fail(RAR_ERR_MISSING_VOLUME,
-                    "missing volume: " + io::u8_str(missing_volume_path_));
+        return fail(RAR_ERR_MISSING_VOLUME, "missing volume: " + io::u8_str(missing_volume_path_));
     if (!first_main_read) {
         // A HEAD_CRYPT block that could not be passed (no password, wrong
         // password, unknown crypto version) dies before the main header —
@@ -525,8 +524,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
         // (header CRC / PswCheck failure), per the documented contract.
         if (saw_crypt_header_) {
             if (crypt_unsupported_)
-                return fail(RAR_ERR_UNSUPPORTED_FEATURE,
-                            "unsupported HEAD_CRYPT crypto version");
+                return fail(RAR_ERR_UNSUPPORTED_FEATURE, "unsupported HEAD_CRYPT crypto version");
             if (bad_password_)
                 return fail(RAR_ERR_BAD_PASSWORD, "wrong password for encrypted headers");
             if (password_.empty())
@@ -607,9 +605,8 @@ int ArchiveReader::derive_entry_keys(const ArchiveEntry& entry, crypto::Rar5Keys
     if (entry.header.lg2_count >= 25) return RAR_ERR_UNSUPPORTED_FEATURE;
     crypto::Pbkdf2Rar5::derive_keys(password_, entry.header.salt.data(), 16,
                                     1U << entry.header.lg2_count, keys);
-    if (entry.header.has_psw_check &&
-        !crypto::Pbkdf2Rar5::constant_time_equal(keys.psw_check, entry.header.psw_check.data(),
-                                                 8)) {
+    if (entry.header.has_psw_check && !crypto::Pbkdf2Rar5::constant_time_equal(
+                                          keys.psw_check, entry.header.psw_check.data(), 8)) {
         bad_password_ = true;
         return RAR_ERR_BAD_PASSWORD;
     }
@@ -833,8 +830,7 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
                 return RAR_ERR_IO;
             core::uint64 remain = ext.size;
             while (remain > 0) {
-                const size_t take =
-                    static_cast<size_t>(std::min<core::uint64>(remain, buf.size()));
+                const size_t take = static_cast<size_t>(std::min<core::uint64>(remain, buf.size()));
                 if (hooks.cancelled()) {
                     status.aborted = true;
                     return RAR_ERR_ABORTED;
@@ -861,8 +857,7 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
     } else {
         ExtentPullSource src(entry, path_, keys);
         bool ok = decode_compressed(
-            entry,
-            [&src](core::byte* buf, size_t want) -> size_t { return src.pull(buf, want); },
+            entry, [&src](core::byte* buf, size_t want) -> size_t { return src.pull(buf, want); },
             static_cast<size_t>(entry.data_size), core_sink);
         if (!ok) {
             if (status.aborted)
@@ -886,8 +881,7 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
     if (use_blake) {
         core::byte digest[32];
         b2.finish(digest);
-        if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0)
-            return RAR_ERR_CRC_MISMATCH;
+        if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) return RAR_ERR_CRC_MISMATCH;
     }
     if (use_crc && crc.get() != entry.header.data_crc32) return RAR_ERR_CRC_MISMATCH;
 
@@ -914,11 +908,9 @@ int ArchiveReader::extract_entry_stream(size_t entry_index, io::FileStream& out,
     if (total > 0) hooks.emit(0, total);
 
     SinkStatus st;
-    rc = stream_payload(entry_index, entry.header.is_encrypted ? &keys : nullptr,
-                        [&](const core::byte* p, size_t n) -> bool {
-                            return out.write(p, n) == n;
-                        },
-                        st, hooks);
+    rc = stream_payload(
+        entry_index, entry.header.is_encrypted ? &keys : nullptr,
+        [&](const core::byte* p, size_t n) -> bool { return out.write(p, n) == n; }, st, hooks);
     secure_zero(&keys, sizeof(keys));
     if (rc == RAR_OK && total == 0) hooks.emit(0, 0);
     return rc;
@@ -943,12 +935,13 @@ int ArchiveReader::extract_entry_to_memory(size_t entry_index, std::vector<core:
     if (total > 0) hooks.emit(0, total);
 
     SinkStatus st;
-    rc = stream_payload(entry_index, entry.header.is_encrypted ? &keys : nullptr,
-                        [&](const core::byte* p, size_t n) -> bool {
-                            out.insert(out.end(), p, p + n);
-                            return true;
-                        },
-                        st, hooks);
+    rc = stream_payload(
+        entry_index, entry.header.is_encrypted ? &keys : nullptr,
+        [&](const core::byte* p, size_t n) -> bool {
+            out.insert(out.end(), p, p + n);
+            return true;
+        },
+        st, hooks);
     secure_zero(&keys, sizeof(keys));
     if (rc == RAR_OK && total == 0) hooks.emit(0, 0);
     return rc;
@@ -972,8 +965,9 @@ int ArchiveReader::test_entry_stream(size_t entry_index, const ReaderHooks& hook
     }
 
     SinkStatus st;
-    rc = stream_payload(entry_index, entry.header.is_encrypted ? &keys : nullptr,
-                        [](const core::byte*, size_t) { return true; }, st, hooks);
+    rc = stream_payload(
+        entry_index, entry.header.is_encrypted ? &keys : nullptr,
+        [](const core::byte*, size_t) { return true; }, st, hooks);
     secure_zero(&keys, sizeof(keys));
     if (rc == RAR_OK && entry.header.unp_size == 0) hooks.emit(0, 0);
     return rc;
