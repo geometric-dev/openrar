@@ -84,10 +84,11 @@ jobs:
         if: matrix.format_check == true
         run: |
           # Pinned: formatting output varies between clang-format versions;
-          # ubuntu-latest ships 16/17/18 and the default symlink can drift.
-          clang-format-18 --version
+          # ubuntu-latest ships 18/19 and the default symlink can drift.
+          # Pin to 19 to match local LLVM toolchain.
+          clang-format-19 --version
           find src include tests -name '*.cpp' -o -name '*.hpp' -o -name '*.h' | \
-            xargs clang-format-18 --dry-run --Werror
+            xargs clang-format-19 --dry-run --Werror
 
       - name: Configure CMake (Windows MSVC)
         if: runner.os == 'Windows'
