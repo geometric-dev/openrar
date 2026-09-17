@@ -257,7 +257,10 @@ void test_pbkdf2_zero_count_fails_cleanly() {
     core::byte salt[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
     crypto::Rar5Keys keys;
-    std::memset(&keys, 0xAB, sizeof(keys)); // sentinel: the guard must zero it
+    std::memset(keys.aes_key, 0xAB, sizeof(keys.aes_key));
+    std::memset(keys.hash_key, 0xAB, sizeof(keys.hash_key));
+    std::memset(keys.psw_check, 0xAB, sizeof(keys.psw_check));
+    std::memset(keys.psw_check_csum, 0xAB, sizeof(keys.psw_check_csum));
 
     const auto t0 = std::chrono::steady_clock::now();
     const bool ok = crypto::Pbkdf2Rar5::derive_keys(pwd, salt, 16, 0, keys);
