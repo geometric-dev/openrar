@@ -121,12 +121,13 @@ struct ArchiveHandleBase {
                      void* user) = 0;
     // Extended metadata (v1.5.0): file-mode handles only — the buffer MVP
     // has no streaming reader behind it, so the default refuses.
-    virtual int entry_ex(uint32_t entry_index, openrar_entry_ex_t* out, void** extra_out,
-                         size_t* extra_size_out) {
+    virtual int entry_ex(uint32_t /*entry_index*/, openrar_entry_ex_t* /*out*/,
+                         void** /*extra_out*/, size_t* /*extra_size_out*/) {
         set_error("extended metadata requires a file-mode handle");
         return RAR_ERR_UNSUPPORTED_FEATURE;
     }
-    virtual int info(openrar_archive_info_t* out, void** comment_out, size_t* comment_size_out) {
+    virtual int info(openrar_archive_info_t* /*out*/, void** /*comment_out*/,
+                     size_t* /*comment_size_out*/) {
         set_error("archive info requires a file-mode handle");
         return RAR_ERR_UNSUPPORTED_FEATURE;
     }

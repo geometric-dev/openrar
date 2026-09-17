@@ -744,7 +744,6 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
 
     for (const auto& f : files) {
         std::filesystem::path p(f);
-#ifdef _WIN32
         std::string filename_str = p.filename().string();
         if (filename_str.find('*') != std::string::npos ||
             filename_str.find('?') != std::string::npos) {
@@ -872,7 +871,6 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
             }
             continue;
         }
-#endif
         if (std::filesystem::is_directory(p)) {
             std::error_code it_ec;
             auto scan_dir_entry = [&](const std::filesystem::directory_entry& dir_entry) {
@@ -1004,6 +1002,10 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
         std::cerr << "No files found to add\n";
         return 1;
     }
+
+    std::stable_sort(queue.begin(), queue.end(), [](const PendingFile& a, const PendingFile& b) {
+        return a.entry_name < b.entry_name;
+    });
 
     Prog.set_totals(queue.size(), total_unp);
 

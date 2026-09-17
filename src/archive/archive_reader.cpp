@@ -1304,9 +1304,12 @@ bool has_symlink_parent(const std::filesystem::path& dest_path) {
     std::error_code ec;
     std::filesystem::path parent = dest_path.parent_path();
     for (auto p = parent; !p.empty(); p = p.parent_path()) {
+        if (p == p.root_path() || p.parent_path() == p) break;
+        // Direct children of the system root (such as /var or /tmp on macOS)
+        // are system-level symlinks and must not fail archive extraction.
+        if (p.is_absolute() && p.parent_path() == p.root_path()) break;
         auto st = std::filesystem::symlink_status(p, ec);
         if (!ec && std::filesystem::is_symlink(st)) return true;
-        if (p == p.root_path() || p.parent_path() == p) break;
     }
     return false;
 }
