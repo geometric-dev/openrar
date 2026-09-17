@@ -124,8 +124,7 @@ static void sha256_transform_scalar(core::uint32* state, const core::byte* block
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("sha,sse4.1")))
 #endif
-static void
-sha256_transform_shani(core::uint32* state, const core::byte* block) {
+static void sha256_transform_shani(core::uint32* state, const core::byte* block) {
     // Transcribed 1:1 from Jeffrey Walton's public-domain SHA-NI implementation
     // (github.com/noloader/SHA-Intrinsics, sha256-x86.c), itself based on
     // Intel's SHA Extensions sample and the Linux kernel sha256_ni_transform
