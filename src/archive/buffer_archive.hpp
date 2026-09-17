@@ -3,6 +3,7 @@
 
 #include "../core/types.hpp"
 #include "rar_errors.hpp"
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -28,13 +29,16 @@ struct BufferArchiveEntry {
     uint64_t size{0};        // uncompressed size
     uint64_t packed_size{0}; // compressed (or stored) size; 0 for dirs
     uint64_t mtime{0};       // UNIX seconds (converted from DOS time on disk)
-    uint32_t crc32{0};       // 0 == UNVERIFIED (NOT a verified-zero CRC); see spec
+    uint32_t crc32{0};       // CRC32 if has_crc32; 0 when absent
     int method{0};           // 0/1/2/3/4/5
     uint64_t win_size{0};    // compression window size
     bool is_encrypted{false};
     uint64_t header_offset{0}; // absolute byte offset of header in source buffer
     uint64_t data_offset{0};   // absolute byte offset of payload start in source buffer
     uint64_t data_size{0};     // byte size of packed payload (single extent in MVP)
+    bool has_crc32{false};
+    bool has_blake2sp{false};
+    std::array<uint8_t, 32> blake2sp{};
 };
 
 // ── Validate an archive entry path. Returns true on success. ─────────────────

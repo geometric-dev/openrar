@@ -8,9 +8,11 @@
 #include "../archive/volume.hpp"
 #include "../recovery/recovery_record.hpp"
 #include "../recovery/recovery_writer.hpp"
+#include "../io/win32_meta.hpp"
 #include "progress.hpp"
 #include "thread_pool.hpp"
 #include "../core/cpu.hpp"
+#include "../crypto/crc32.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -157,8 +159,7 @@ void print_help() {
               << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto)\n"
               << "  -ol           Save symbolic links as the link instead of the file\n"
               << "  -o+ / -o-     Overwrite all existing files / never overwrite (default: ask)\n"
-              << "  -os, -ow      Save NTFS streams / Security ACLs (accepted; writer not\n"
-              << "                yet implemented — a warning notes the skip)\n"
+              << "  -os, -ow      Save NTFS streams / Security ACLs (Windows only)\n"
               << "  -p<p>         Set password\n"
               << "  -plain, --plain\n"
               << "                Plain line-by-line output (disable ANSI animations)\n"
@@ -493,7 +494,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                          const std::string& password, bool encrypt_headers, bool delete_source,
                          bool announce, unsigned threads, std::string* err_name = nullptr,
                          core::uint32 times_mask = archive::time_flags::MTIME, bool solid = false,
-                         const std::vector<core::byte>* comment = nullptr) {
+                         const std::vector<core::byte>* comment = nullptr,
+                         bool want_stm = false, bool want_acl = false) {
     constexpr core::uint64 PREPARE_BUDGET = 1ull << 30; // in-flight prepare bytes
 
     std::vector<archive::ArchiveMutator::PreparedAdd> prepared(queue.size());
@@ -521,9 +523,9 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                 okv = archive::ArchiveMutator::prepare_add_dir(
                     queue[0].src_path, queue[0].entry_name, prepared[0], times_mask);
             else
-                okv = archive::ArchiveMutator::prepare_add_file(queue[0].src_path,
-                                                                queue[0].entry_name, method,
-                                                                password, prepared[0], times_mask);
+                okv = archive::ArchiveMutator::prepare_add_file(
+                    queue[0].src_path, queue[0].entry_name, method, password, prepared[0],
+                    times_mask, 0, want_stm, want_acl);
         } catch (...) {
             okv = false;
         }
@@ -567,7 +569,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
 
     for (size_t i = 0; i < queue.size(); ++i) {
         pool.submit([&pl, &queue, &prepared, i, method, &password, delete_source, times_mask,
-                     budget_bytes = PREPARE_BUDGET] {
+                     want_stm, want_acl, budget_bytes = PREPARE_BUDGET] {
             std::unique_lock<std::mutex> lk(pl.mu);
             pl.cv.wait(lk, [&] { return pl.aborting || pl.admit_head == i; });
             if (pl.aborting) {
@@ -601,7 +603,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                         else
                             okv = archive::ArchiveMutator::prepare_add_file(
                                 queue[i].src_path, queue[i].entry_name, method, password,
-                                prepared[i], times_mask);
+                                prepared[i], times_mask, 0, want_stm, want_acl);
                     } catch (...) {
                         // std::filesystem throws on sources that vanish or
                         // become unreadable after the scan; same handling as
@@ -707,7 +709,8 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                    core::uint32 times_mask = archive::time_flags::MTIME,
                    bool no_dir_records = false,
                    io::ExcludePathMode ep_mode = io::ExcludePathMode::None,
-                   bool recurse_subdirs = true, bool want_symlinks = false, bool freshen = false) {
+                   bool recurse_subdirs = true, bool want_symlinks = false, bool freshen = false,
+                   bool want_stm = false, bool want_acl = false) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return 1;
@@ -1049,7 +1052,8 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
     } else {
         int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
                                /*delete_source=*/false, /*announce=*/true, threads, nullptr,
-                               times_mask, solid, &comment);
+                               times_mask, solid, comment.empty() ? nullptr : &comment,
+                               want_stm, want_acl);
         if (rc != 0) return rc;
     }
 
@@ -1113,12 +1117,15 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         const archive::ArchiveEntry* entry;
         std::filesystem::path target;
         std::string display_name;
+        std::vector<const archive::ArchiveEntry*> children;
     };
     std::vector<ExtractJob> extract_jobs;
     bool duplicate_targets = false;
     {
         std::set<std::string> seen_targets;
-        for (const auto& entry : reader.entries()) {
+        const auto& all_entries = reader.entries();
+        for (size_t i = 0; i < all_entries.size(); ++i) {
+            const auto& entry = all_entries[i];
             if (entry.header.is_service) continue;
             std::string safe_name = io::sanitize_archive_path(entry.header.file_name);
             if (safe_name.empty()) {
@@ -1130,7 +1137,13 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                 full_paths ? (out_root / std::filesystem::path(safe_name))
                            : (out_root / std::filesystem::path(safe_name).filename());
             if (!seen_targets.insert(target.string()).second) duplicate_targets = true;
-            extract_jobs.push_back({&entry, target, sanitize_for_display(target.string())});
+            std::vector<const archive::ArchiveEntry*> children;
+            for (size_t j = i + 1; j < all_entries.size() && all_entries[j].header.is_service; ++j) {
+                if (all_entries[j].header.service_type == "STM" || all_entries[j].header.service_type == "ACL") {
+                    children.push_back(&all_entries[j]);
+                }
+            }
+            extract_jobs.push_back({&entry, target, sanitize_for_display(target.string()), std::move(children)});
         }
         // Component-prefix overlap (sweep finding L11): a file entry "a"
         // alongside a directory entry "a/b" makes create_directories race the
@@ -1199,6 +1212,35 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
 
     bool any_failed = false;
 
+    auto restore_children = [](archive::ArchiveReader& r, const ExtractJob& j) {
+        for (const auto* child : j.children) {
+            if (child->header.service_type == "STM") {
+                std::vector<core::byte> payload;
+                if (r.read_packed_data(*child, payload)) {
+                    if (child->header.has_crc32) {
+                        crypto::Crc32 c;
+                        c.update(payload.data(), payload.size());
+                        if (c.get() != child->header.data_crc32) continue;
+                    }
+                    std::string sname(child->header.sub_data.begin(), child->header.sub_data.end());
+                    if (!sname.empty() && sname[0] == ':') {
+                        io::write_alternate_stream(j.target, sname, payload.data(), payload.size());
+                    }
+                }
+            } else if (child->header.service_type == "ACL") {
+                std::vector<core::byte> payload;
+                if (r.read_packed_data(*child, payload)) {
+                    if (child->header.has_crc32) {
+                        crypto::Crc32 c;
+                        c.update(payload.data(), payload.size());
+                        if (c.get() != child->header.data_crc32) continue;
+                    }
+                    io::write_security_descriptor(j.target, payload.data(), payload.size());
+                }
+            }
+        }
+    };
+
     if (slots.readers.empty()) {
         size_t idx = 0;
         for (const auto& job : extract_jobs) {
@@ -1241,6 +1283,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
 
             if (reader.extract_entry(*job.entry, job.target, password)) {
                 if (!g_quiet_mode && !is_vt_supported()) std::cout << "OK\n";
+                restore_children(reader, job);
             } else {
                 if (!g_quiet_mode && !is_vt_supported()) {
                     if (reader.has_bad_password()) {
@@ -1263,7 +1306,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             r->set_extract_symlinks(extract_symlinks);
         }
         for (size_t i = 0; i < extract_jobs.size(); ++i) {
-            pool.submit([&slots, &flags, &extract_jobs, &badpw_flag, i] {
+            pool.submit([&slots, &flags, &extract_jobs, &badpw_flag, &restore_children, i] {
                 // Same exception contract as the test path: extract_entry
                 // handles untrusted data; never skip flags.finish (H2).
                 bool okv = false;
@@ -1275,6 +1318,9 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     okv = slots.readers[s]->extract_entry(*extract_jobs[i].entry,
                                                           extract_jobs[i].target,
                                                           slots.readers[s]->password());
+                    if (okv) {
+                        restore_children(*slots.readers[s], extract_jobs[i]);
+                    }
                     if (!okv && slots.readers[s]->has_bad_password()) badpw_flag.store(1);
                 } catch (...) {
                     okv = false;
@@ -1314,13 +1360,12 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
 
 int repair_archive(const std::string& arc_path) {
     // Uses the inline "RR" service block's Reed-Solomon parity (0x1100B GF(2^16)
-    // Cauchy). Recoverable damage: tail-truncated data shards where the RR
-    // block itself remains intact, and archives whose structure still verifies.
-    // Unrecoverable via inline RR: RR block itself damaged, or damage exceeds
-    // the parity redundancy. Multi-volume repair via external .rev files is
-    // not yet implemented.
+    // Cauchy) for single-volume archives, or external .rev parity shards for
+    // multi-volume sets. Recoverable damage: tail-truncated or corrupt data
+    // shards where RR/REV parity allows mathematical reconstruction.
+    // Unrecoverable: damage exceeding parity redundancy, or damaged .rev headers.
     if (openrar::recovery::RecoveryWriter::repair(arc_path)) {
-        if (!g_quiet_mode) std::cout << "Archive " << arc_path << ": OK (RR structure verified)\n";
+        if (!g_quiet_mode) std::cout << "Archive " << arc_path << ": OK (reconstruction / structure verified)\n";
         return 0;
     }
     std::cerr << "Cannot repair " << arc_path
@@ -1704,12 +1749,12 @@ static int cli_main(int argc, char* argv[]) {
     // ACL/STM are read-skipped with warning; writer path warns once. The
     // warning also fires for x/e: without it the switches are silently
     // ignored there (B8 class — advertised behavior must never fail silent).
+#ifndef _WIN32
     if ((cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m" || cmd == "x" || cmd == "e") &&
         (want_acl || want_stm)) {
-        std::cerr << "W: ACL (-ow) / alternate streams (-os) preservation not yet supported – "
-                     "files will be stored without ACL/STM\n";
-        // continue but without extra handling (skip)
+        std::cerr << "W: ACL (-ow) / alternate streams (-os) preservation not supported on this platform\n";
     }
+#endif
 
     // SFX handling: resolve stub, validate MAX_SFX_SIZE, apply SetSFXExt
     // (first-volume-only with -v handled via want_vol reject above)
@@ -1737,7 +1782,8 @@ static int cli_main(int argc, char* argv[]) {
         int rc = openrar::cli::add_to_archive(target_arc, files, method, sfx_stub_path, vol_size,
                                               password, want_header_encryption, threads, want_solid,
                                               comment, times_mask, no_dir_records, ep_mode,
-                                              recurse_subdirs, want_symlinks, (cmd == "f"));
+                                              recurse_subdirs, want_symlinks, (cmd == "f"),
+                                              want_stm, want_acl);
         if (rc == 0 && want_rr) {
             bool rr_ok;
             bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;

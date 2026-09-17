@@ -5,6 +5,7 @@
 #include "../compress/decompressor50.hpp"
 #include "../core/vint.hpp"
 #include "../crypto/crc32.hpp"
+#include "../crypto/blake2sp.hpp"
 #include "../format/header_reader.hpp"
 #include "../format/header_writer.hpp"
 #include "../format/headers.hpp"
@@ -377,7 +378,12 @@ WalkStatus walk_headers(Source& src, const WalkHooks& hooks,
             e.header_offset = head_start;
             e.data_offset = head_end;
             e.data_size = e.packed_size;
+            e.has_crc32 = fb.has_crc32;
             e.crc32 = fb.has_crc32 ? fb.data_crc32 : 0;
+            e.has_blake2sp = fb.has_blake2sp;
+            if (fb.has_blake2sp) {
+                std::memcpy(e.blake2sp.data(), fb.blake2sp.data(), 32);
+            }
             e.mtime = dos_time_to_unix(fb.utime_unix);
             out_entries.push_back(std::move(e));
 
@@ -717,10 +723,19 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
         return RAR_ERR_UNSUPPORTED_FEATURE;
     }
 
-    if (e.crc32 != 0) {
+    if (e.has_crc32) {
         crypto::Crc32 crc;
         crc.update(out.data(), out.size());
         if (crc.get() != e.crc32) return RAR_ERR_CRC_MISMATCH;
+    }
+    if (e.has_blake2sp) {
+        crypto::Blake2sp b2;
+        b2.update(out.data(), out.size());
+        std::array<uint8_t, 32> digest{};
+        b2.finish(digest.data());
+        if (std::memcmp(digest.data(), e.blake2sp.data(), 32) != 0) {
+            return RAR_ERR_CRC_MISMATCH;
+        }
     }
     return RAR_OK;
 }

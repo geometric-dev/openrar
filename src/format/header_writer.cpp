@@ -343,9 +343,9 @@ bool HeaderWriter::write_file_block(io::FileStream& dest, const FileBlock& block
         extra.insert(extra.end(), block.sub_data.begin(), block.sub_data.end());
     }
 
-    core::uint64 head_flags = (block.pack_size >= 0 ? HFL_DATA : 0) |
-                              (extra.empty() ? 0 : HFL_EXTRA) |
-                              (extra_head_flags & (HFL_SPLITBEFORE | HFL_SPLITAFTER));
+    core::uint64 head_flags =
+        (block.pack_size >= 0 ? HFL_DATA : 0) | (extra.empty() ? 0 : HFL_EXTRA) |
+        (extra_head_flags & (HFL_SPLITBEFORE | HFL_SPLITAFTER | HFL_CHILD | HFL_INHERITED));
 
     std::vector<core::byte> body;
     core::push_vint(body, block.is_service ? HEAD_SERVICE : HEAD_FILE);
