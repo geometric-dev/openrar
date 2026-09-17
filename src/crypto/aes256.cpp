@@ -1,4 +1,5 @@
 #include "aes256.hpp"
+#include "pbkdf2.hpp"
 #include "../core/cpu.hpp"
 #include <algorithm>
 #include <cstring>
@@ -328,14 +329,6 @@ static inline uint8x16_t neon_dec_block(uint8x16_t ct, const core::byte* dec_buf
 } // namespace
 
 // ─── Aes256 Class Methods ────────────────────────────────────────────────────
-
-// Best-effort wipe of sensitive material: volatile loop so the compiler
-// cannot elide the dead store. (Compilers are permitted to remove plain
-// memset-on-exit; volatile forces the write.)
-static void secure_wipe(void* p, size_t n) noexcept {
-    volatile core::byte* b = static_cast<volatile core::byte*>(p);
-    for (size_t i = 0; i < n; ++i) b[i] = 0;
-}
 
 Aes256::Aes256() : has_ni_(false) {
     std::memset(enc_round_keys_, 0, sizeof(enc_round_keys_));

@@ -36,12 +36,36 @@ std::string make_safe_component(std::string item) {
         "com4", "com5", "com6", "com7", "com8", "com9", "lpt0", "lpt1",
         "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
     };
+
+    // Pass 1: Map null byte \0, control characters \x01..\x1F, and forbidden
+    // Windows characters (< > " | ? * :) to '_' to prevent invalid name
+    // errors and null-byte C-string truncation attacks.
     for (char& c : item) {
-        if (c == ':') c = '_';
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (uc < 0x20 || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*' ||
+            c == ':') {
+            c = '_';
+        }
     }
+
+    // Pass 2: Trim trailing dots and spaces from the whole component. Win32
+    // strips them at open time, which would cause distinct entries to collide.
+    size_t end = item.size();
+    while (end > 0 && (item[end - 1] == '.' || item[end - 1] == ' ')) {
+        --end;
+    }
+    if (end == 0) return "_";
+    item.resize(end);
+
+    // Pass 3: Extract the stem before the first dot, trim trailing dots/spaces
+    // from the stem, and check against DOS device names (e.g., "CON .txt" or
+    // "aux.tar.gz"). Prefixing with '_' ensures regular file creation.
     std::string stem = item;
     size_t dot = stem.find('.');
     if (dot != std::string::npos) stem.resize(dot);
+    while (!stem.empty() && (stem.back() == '.' || stem.back() == ' ')) {
+        stem.pop_back();
+    }
     for (char& c : stem) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
@@ -51,12 +75,7 @@ std::string make_safe_component(std::string item) {
             break;
         }
     }
-    size_t end = item.size();
-    while (end > 0 && (item[end - 1] == '.' || item[end - 1] == ' ')) {
-        --end;
-    }
-    if (end == 0) return "_";
-    item.resize(end);
+
     return item;
 }
 
@@ -182,6 +201,24 @@ bool wildcard_match(const std::string& pattern, const std::string& text, bool ca
     }
 
     return p == pattern.size();
+}
+
+bool is_lexically_contained(const std::filesystem::path& target,
+                            const std::filesystem::path& base_dir) {
+    std::filesystem::path norm_target = target.lexically_normal();
+    std::filesystem::path norm_base = base_dir.lexically_normal();
+
+    std::filesystem::path rel = norm_target.lexically_relative(norm_base);
+    if (rel.empty()) return false;
+    // An absolute relative path indicates different root drives (e.g. C: vs D:)
+    if (rel.is_absolute()) return false;
+
+    // Check if relative path escapes via leading ".."
+    auto it = rel.begin();
+    if (it != rel.end() && *it == "..") {
+        return false;
+    }
+    return true;
 }
 
 } // namespace openrar::io

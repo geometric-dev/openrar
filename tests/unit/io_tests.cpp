@@ -121,6 +121,25 @@ void test_path_utils() {
     assert(io::sanitize_archive_path("...") == "_");
     assert(io::sanitize_archive_path("normal_name-v1.2.txt") == "normal_name-v1.2.txt");
 
+    // Hardened character set and device sanitization tests
+    assert(io::sanitize_archive_path("foo<bar>baz:1?2*3|4.txt") == "foo_bar_baz_1_2_3_4.txt");
+    assert(io::sanitize_archive_path("foo\x01\x1f.txt") == "foo__.txt");
+    std::string null_str = std::string("bad.exe\0.txt", sizeof("bad.exe\0.txt") - 1);
+    assert(io::sanitize_archive_path(null_str) == "bad.exe_.txt");
+    assert(io::sanitize_archive_path("CON .txt") == "_CON .txt");
+    assert(io::sanitize_archive_path("aux.tar.gz") == "_aux.tar.gz");
+    assert(io::sanitize_archive_path("Nul . .") == "_Nul");
+
+    // Lexical containment verification (pure algorithmic, zero disk syscalls)
+    assert(io::is_lexically_contained("C:/root/sub/file.txt", "C:/root"));
+    assert(io::is_lexically_contained("C:/root/file.txt", "C:/root"));
+    assert(io::is_lexically_contained("C:/root", "C:/root"));
+    assert(!io::is_lexically_contained("C:/root/../escape.txt", "C:/root"));
+    assert(!io::is_lexically_contained("C:/root/sub/../../escape.txt", "C:/root"));
+    assert(!io::is_lexically_contained("D:/other/file.txt", "C:/root"));
+    assert(!io::is_lexically_contained("../escape.txt", "root"));
+    assert(io::is_lexically_contained("root/sub/file.txt", "root"));
+
     // Format archive path switches (-ep)
     std::string full = "C:/dev/project/src/main.cpp";
     std::string base = "C:/dev/project";

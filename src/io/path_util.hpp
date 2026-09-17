@@ -33,6 +33,11 @@ std::string normalize_separators(const std::string& path, char sep = '/');
 // Sanitizes path to prevent directory traversal vulnerabilities (strips leading '/', resolves '..')
 std::string sanitize_archive_path(const std::string& path);
 
+// Validates that target is strictly contained within base_dir using purely lexical resolution
+// (zero filesystem roundtrips or disk syscalls). Returns false if target escapes base_dir.
+bool is_lexically_contained(const std::filesystem::path& target,
+                            const std::filesystem::path& base_dir);
+
 // Formats file path according to -ep switch rules
 std::string format_archive_path(const std::string& full_path, const std::string& base_path,
                                 ExcludePathMode mode);

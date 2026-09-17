@@ -444,6 +444,41 @@ void test_b6_padded_vint() {
     std::cout << "[PASS] B6: 2 MiB and non-canonical padded VINTs up to 10 bytes\n";
 }
 
+void test_secure_wipe_and_rar5_keys() {
+    core::byte buf[64];
+    std::memset(buf, 0x55, sizeof(buf));
+    crypto::secure_wipe(buf, sizeof(buf));
+    for (size_t i = 0; i < sizeof(buf); ++i) {
+        assert(buf[i] == 0);
+    }
+
+    crypto::Rar5Keys keys;
+    std::memset(keys.aes_key, 0xAA, sizeof(keys.aes_key));
+    std::memset(keys.hash_key, 0xBB, sizeof(keys.hash_key));
+    std::memset(keys.psw_check, 0xCC, sizeof(keys.psw_check));
+    std::memset(keys.psw_check_csum, 0xDD, sizeof(keys.psw_check_csum));
+
+    keys.wipe();
+    for (size_t i = 0; i < sizeof(keys.aes_key); ++i) assert(keys.aes_key[i] == 0);
+    for (size_t i = 0; i < sizeof(keys.hash_key); ++i) assert(keys.hash_key[i] == 0);
+    for (size_t i = 0; i < sizeof(keys.psw_check); ++i) assert(keys.psw_check[i] == 0);
+    for (size_t i = 0; i < sizeof(keys.psw_check_csum); ++i) assert(keys.psw_check_csum[i] == 0);
+
+    // Test RAII destructor zeroing on storage
+    alignas(crypto::Rar5Keys) core::byte raw_mem[sizeof(crypto::Rar5Keys)];
+    std::memset(raw_mem, 0x77, sizeof(raw_mem));
+    auto* k = new (raw_mem) crypto::Rar5Keys();
+    assert(raw_mem[0] == 0);
+    std::memset(raw_mem, 0x88, sizeof(raw_mem));
+    assert(raw_mem[0] == 0x88);
+    k->~Rar5Keys();
+    for (size_t i = 0; i < sizeof(raw_mem); ++i) {
+        assert(raw_mem[i] == 0);
+    }
+
+    std::cout << "[PASS] secure_wipe and Rar5Keys RAII memory zeroing\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -468,6 +503,7 @@ int main() {
     test_pbkdf2_rfc_vectors();
     test_blake2sp_kat();
     test_crc64_xz();
+    test_secure_wipe_and_rar5_keys();
     std::cout << "All Milestone 1 Core & Crypto Primitives PASSED!\n";
     return 0;
 }

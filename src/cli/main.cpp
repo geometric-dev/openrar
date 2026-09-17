@@ -1267,6 +1267,11 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             std::filesystem::path target =
                 full_paths ? (out_root / std::filesystem::path(safe_name))
                            : (out_root / std::filesystem::path(safe_name).filename());
+            if (!io::is_lexically_contained(target, out_root)) {
+                std::cerr << "Skipping entry escaping extraction directory: "
+                          << sanitize_for_display(entry.header.file_name) << "\n";
+                continue;
+            }
             if (!seen_targets.insert(target.string()).second) duplicate_targets = true;
             std::vector<const archive::ArchiveEntry*> children;
             for (size_t j = i + 1; j < all_entries.size() && all_entries[j].header.is_service;

@@ -395,6 +395,12 @@ static int sfx_main_impl(int argc, char* argv[]) {
                 continue;
             }
             std::filesystem::path target = out_root / std::filesystem::path(safe_name);
+            if (!openrar::io::is_lexically_contained(target, out_root)) {
+                if (!silent)
+                    std::cout << "Skipping entry escaping extraction directory: "
+                              << openrar::cli::sanitize_for_display(entry.header.file_name) << "\n";
+                continue;
+            }
 
             if (!silent) prog.start_file(entry.header.file_name, idx);
 

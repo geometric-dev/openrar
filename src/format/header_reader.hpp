@@ -26,6 +26,7 @@ struct HeaderCryptReader {
     // present and self-consistent, a mismatch with the derived value sets
     // bad_password and fails.
     bool init(const std::string& password, const CryptBlock& crypt);
+    ~HeaderCryptReader() noexcept { keys.wipe(); }
 };
 
 class HeaderReader {

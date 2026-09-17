@@ -33,6 +33,23 @@ namespace openrar::archive {
 
 namespace {
 
+struct TempFileCleanupGuard {
+    io::FileStream* stream{nullptr};
+    std::filesystem::path path;
+    bool committed{false};
+
+    void commit() noexcept { committed = true; }
+
+    ~TempFileCleanupGuard() {
+        if (committed) return;
+        if (stream && stream->is_open()) stream->close();
+        if (!path.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+        }
+    }
+};
+
 // Returns false on any short read or write so callers can abort.
 bool copy_stream_region(io::FileStream& src, io::FileStream& dest, core::uint64 src_offset,
                         core::uint64 size) {
@@ -984,6 +1001,7 @@ int ArchiveMutator::write_batch_add_ex(
         detail_out = "cannot create temp file";
         return RAR_ERR_IO;
     }
+    TempFileCleanupGuard tmp_guard{&out, tmp_path};
 
     // Body runs in a lambda so an exception (the CLI's pipelined writer
     // aborts via a throwing on_write; std::filesystem/bad_alloc can also
@@ -1247,6 +1265,7 @@ int ArchiveMutator::write_batch_add_ex(
             detail_out = "atomic replace failed";
             return RAR_ERR_IO;
         }
+        tmp_guard.commit();
 
         for (const auto& pf : files) {
             if (!pf.delete_source) continue;
@@ -1822,58 +1841,50 @@ bool ArchiveMutator::convert_to_sfx(const std::filesystem::path& arc_path,
         parent / (target_path.filename().string() + ".sfx_tmp." +
                   std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
 
-    {
-        io::FileStream out;
-        if (!out.open(tmp_path, io::FileMode::CreateAlways)) {
-            err_detail = "cannot create temporary file " + io::u8_str(tmp_path);
-            return false;
-        }
-        io::FileStream stub;
-        if (!stub.open(sfx_stub_path, io::FileMode::ReadOnly)) {
-            out.close();
-            std::filesystem::remove(tmp_path, ec);
-            err_detail = "cannot read SFX module " + io::u8_str(sfx_stub_path);
-            return false;
-        }
-        io::FileStream arc;
-        if (!arc.open(arc_path, io::FileMode::ReadOnly)) {
-            out.close();
-            std::filesystem::remove(tmp_path, ec);
-            err_detail = "cannot read archive " + io::u8_str(arc_path);
-            return false;
-        }
+    io::FileStream out;
+    if (!out.open(tmp_path, io::FileMode::CreateAlways)) {
+        err_detail = "cannot create temporary file " + io::u8_str(tmp_path);
+        return false;
+    }
+    TempFileCleanupGuard tmp_guard{&out, tmp_path};
 
-        std::vector<core::byte> buf(64 * 1024);
-        core::uint64 rem = stub.size();
-        while (rem > 0) {
-            size_t take = static_cast<size_t>(std::min<core::uint64>(rem, buf.size()));
-            if (stub.read(buf.data(), take) != take || out.write(buf.data(), take) != take) {
-                out.close();
-                std::filesystem::remove(tmp_path, ec);
-                err_detail = "failed writing SFX stub";
-                return false;
-            }
-            rem -= take;
-        }
-        rem = arc.size();
-        while (rem > 0) {
-            size_t take = static_cast<size_t>(std::min<core::uint64>(rem, buf.size()));
-            if (arc.read(buf.data(), take) != take || out.write(buf.data(), take) != take) {
-                out.close();
-                std::filesystem::remove(tmp_path, ec);
-                err_detail = "failed writing archive payload";
-                return false;
-            }
-            rem -= take;
-        }
-        out.close();
+    io::FileStream stub;
+    if (!stub.open(sfx_stub_path, io::FileMode::ReadOnly)) {
+        err_detail = "cannot read SFX module " + io::u8_str(sfx_stub_path);
+        return false;
+    }
+    io::FileStream arc;
+    if (!arc.open(arc_path, io::FileMode::ReadOnly)) {
+        err_detail = "cannot read archive " + io::u8_str(arc_path);
+        return false;
     }
 
+    std::vector<core::byte> buf(64 * 1024);
+    core::uint64 rem = stub.size();
+    while (rem > 0) {
+        size_t take = static_cast<size_t>(std::min<core::uint64>(rem, buf.size()));
+        if (stub.read(buf.data(), take) != take || out.write(buf.data(), take) != take) {
+            err_detail = "failed writing SFX stub";
+            return false;
+        }
+        rem -= take;
+    }
+    rem = arc.size();
+    while (rem > 0) {
+        size_t take = static_cast<size_t>(std::min<core::uint64>(rem, buf.size()));
+        if (arc.read(buf.data(), take) != take || out.write(buf.data(), take) != take) {
+            err_detail = "failed writing archive payload";
+            return false;
+        }
+        rem -= take;
+    }
+    out.close();
+
     if (!atomic_replace(tmp_path, target_path)) {
-        std::filesystem::remove(tmp_path, ec);
         err_detail = "atomic replace failed";
         return false;
     }
+    tmp_guard.commit();
 
     std::error_code ec_c1, ec_c2;
     auto c1 = std::filesystem::weakly_canonical(target_path, ec_c1);

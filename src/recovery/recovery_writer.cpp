@@ -58,7 +58,7 @@ std::filesystem::path recovery_temp_path(const std::filesystem::path& arc_path, 
 }
 
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 // RAR 5.0 inline recovery-record layout.
 //
 // A recovery record is stored as a RAR 5.0 service header named "RR" placed
@@ -83,7 +83,7 @@ std::filesystem::path recovery_temp_path(const std::filesystem::path& arc_path, 
 //     +0x3A..+0x3B   D  (data-shard count per group)         (u16 LE)
 //     +0x3C..+0x3D   NR (parity-shard count in this record)  (u16 LE)
 //     +0x3E..+0x3F   shard_index (0..NR-1)                   (u16 LE)
-//     +0x40..+0x40+D*8-1   D Ã— u64 LE  encoder-internal state
+//     +0x40..+0x40+D*8-1   D * u64 LE   encoder-internal state
 //     +0x40+D*8..+0x47+D*8 u64 LE     encoder-internal final state
 //     +header_size..+shard_size-1   parity payload (group_count bytes)
 //
@@ -112,7 +112,7 @@ std::filesystem::path recovery_temp_path(const std::filesystem::path& arc_path, 
 // with the Cauchy matrix MX[j][i] = 1 / ((j+D) XOR i). Bytes within a
 // group_count buffer are consumed as consecutive uint16 little-endian words
 // (group_count is always even).
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 
 namespace {
 
