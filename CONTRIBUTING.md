@@ -88,7 +88,10 @@ The POSIX `makefile` and plain MSBuild also work. WASM builds via
 - Comments: plain `//`, English, no Doxygen. Cross-references to spec files
   and finding IDs are encouraged (`// Constant-time compare (report L3)`).
 - `.clang-format` is the canonical formatter (4-space, K&R, 100-col limit).
-  Run `clang-format -i` on your files; CI checks formatting on the gate leg.
+  Run `clang-format -i` on your files; CI checks formatting on the gate leg (pinned to `clang-format-18`).
+  *Note on comments after early returns:* In constructs like `if (cond) return;`, an immediately following
+  comment without an intervening empty line is treated by `clang-format-18` as a continuation indented with
+  8 spaces. Maintain this indentation or insert a blank line to prevent format gate check failures.
 - **Boundary exemptions** (C ABI / WASM API code in `src/dll/`, `src/wasm/`,
   `src/archive/buffer_archive.*`): raw `malloc`/`new` is allowed where it
   crosses the C boundary, but must pair with `openrar_free` ("single heap"),

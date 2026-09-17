@@ -16,6 +16,9 @@
 static void test_version() {
     assert(openrar_version() == OPENRAR_DLL_API_VERSION);
     assert(openrar_archive_version() == 1);
+    assert(openrar_package_version_string() != nullptr);
+    assert(std::string(openrar_package_version_string()) == OPENRAR_VERSION_STRING);
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_PACKAGE_VERSION) != 0);
     std::cout << "PASS test_version\n";
 }
 

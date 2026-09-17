@@ -14,6 +14,15 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#if defined(__has_include)
+#if __has_include("openrar/version.h")
+#include "openrar/version.h"
+#elif __has_include("version.h")
+#include "version.h"
+#endif
+#else
+#include "version.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +63,7 @@ extern "C" {
 
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_version(void);
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_version(void);
+OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void);
 
 // ── Capability negotiation (additive; feature bits) ──────────────────────────
 // Bit flags for openrar_abi_features(). Hosts must not assume an export
@@ -68,6 +78,7 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_version(void);
 //   bit 4  MUTATION               archive_delete_entries_file /
 //                                 archive_add_files_file            (v1.4.0)
 //   bit 5  ENTRY_EX               handle_entry_ex / handle_info     (v1.5.0)
+//   bit 6  PACKAGE_VERSION        openrar_package_version_string    (v1.7.0)
 // Reserve convention: future open-time options (e.g. codepage override,
 // custom volume search callbacks) ship as openrar_archive_open_file_ex
 // behind a new bit, never as signature changes to open_file.
@@ -77,6 +88,7 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_version(void);
 #define OPENRAR_ABI_FEATURE_FILE_HANDLE (1ull << 3)          // file-mode handles below
 #define OPENRAR_ABI_FEATURE_MUTATION (1ull << 4)             // mutation exports below
 #define OPENRAR_ABI_FEATURE_ENTRY_EX (1ull << 5)             // metadata exports below
+#define OPENRAR_ABI_FEATURE_PACKAGE_VERSION (1ull << 6)      // openrar_package_version_string
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────

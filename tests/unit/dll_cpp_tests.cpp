@@ -47,6 +47,8 @@ static void test_cpp_wrapper() {
     auto sdec = decompress_block(sout);
     assert(sdec == src);
 
+    assert(package_version() == OPENRAR_VERSION_STRING);
+
     std::cout << "PASS test_cpp_wrapper\n";
 }
 

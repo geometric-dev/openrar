@@ -77,6 +77,12 @@ set(OPENRAR_DLL_SOURCES
     src/dll/dll_api.cpp
 )
 
+# Generate openrar/version.h from template
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/openrar/version.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/include/openrar/version.h"
+    @ONLY)
+
 set(OPENRAR_INCLUDES
     src
     src/archive
@@ -89,14 +95,21 @@ set(OPENRAR_INCLUDES
     src/recovery
     src/dll
     include
+    ${CMAKE_CURRENT_BINARY_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/include/openrar
 )
 
 # Same dirs wrapped for export: build-interface keeps source-tree paths out of
 # the installed CMake package (R3), which only exposes include/ to consumers.
 set(OPENRAR_EXPORT_INCLUDES "")
 foreach(_inc ${OPENRAR_INCLUDES})
-    list(APPEND OPENRAR_EXPORT_INCLUDES
-        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/${_inc}>")
+    if(IS_ABSOLUTE "${_inc}")
+        list(APPEND OPENRAR_EXPORT_INCLUDES
+            "$<BUILD_INTERFACE:${_inc}>")
+    else()
+        list(APPEND OPENRAR_EXPORT_INCLUDES
+            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/${_inc}>")
+    endif()
 endforeach()
 
 # ── Native platform flags (NOT applied when targeting Emscripten) ─────────────
@@ -558,7 +571,10 @@ if(NOT EMSCRIPTEN)
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
             LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
             ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-    install(FILES include/openrar/openrar_dll.h include/openrar/openrar.hpp
+    install(FILES
+                include/openrar/openrar_dll.h
+                include/openrar/openrar.hpp
+                "${CMAKE_CURRENT_BINARY_DIR}/include/openrar/version.h"
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/openrar)
 
     set(OPENRAR_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/openrar")

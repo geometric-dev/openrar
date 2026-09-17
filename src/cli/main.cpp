@@ -29,11 +29,17 @@
 #include <iomanip>
 #include <sstream>
 
+#include "openrar/version.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
 #else
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <pwd.h>
+#include <grp.h>
 #endif
 
 namespace openrar::cli {
@@ -107,7 +113,7 @@ void print_banner() {
         // OPENRAR_CLI_VERSION comes from the CMake project version; the fallback
         // only serves bare manual compiles that bypass the build system.
 #ifndef OPENRAR_CLI_VERSION
-#define OPENRAR_CLI_VERSION "1.5.0"
+#define OPENRAR_CLI_VERSION OPENRAR_VERSION_STRING
 #endif
     std::cout << "\nOpenRAR " << OPENRAR_CLI_VERSION << " Open Source Archiver\n"
               << "Copyright (c) 2026 OpenRAR Project\n";
@@ -146,6 +152,7 @@ void print_help() {
               << "  l[t[a],b]     List contents of archive [technical, bare]\n"
               << "  m             Move files to archive (delete after archiving)\n"
               << "  r             Repair damaged archive\n"
+              << "  s             Convert archive to SFX\n"
               << "  t             Test archive integrity\n"
               << "  u             Update files in archive\n"
               << "  x             Extract files with full paths\n\n"
@@ -157,9 +164,10 @@ void print_help() {
               << "  -md<size>     Accepted and validated (128k..1T); dictionary size is\n"
               << "                auto-selected per entry\n"
               << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto)\n"
+              << "  -oh           Save hard links as the link instead of the file\n"
               << "  -ol           Save symbolic links as the link instead of the file\n"
               << "  -o+ / -o-     Overwrite all existing files / never overwrite (default: ask)\n"
-              << "  -os, -ow      Save NTFS streams / Security ACLs (Windows only)\n"
+              << "  -os, -ow      Save NTFS streams / File security data (Windows ACLs, POSIX owner/group/mode)\n"
               << "  -p<p>         Set password\n"
               << "  -plain, --plain\n"
               << "                Plain line-by-line output (disable ANSI animations)\n"
@@ -173,7 +181,8 @@ void print_help() {
               << "                (letters combine; default -tsm)\n"
               << "  -v<size>      Create multi-volume archive\n"
               << "  -y            Assume Yes on all queries\n"
-              << "  -z<file>      Read archive comment from file\n";
+              << "  -z<file>      Read archive comment from file\n"
+              << "  --version     Print version information and exit\n";
 }
 
 int list_archive(const std::string& arc_path, bool bare, bool technical,
@@ -471,12 +480,16 @@ struct PendingFile {
     bool is_symlink{false};
     bool is_dir_target{false};
     std::string symlink_target;
+    bool is_hardlink{false};
+    std::string hardlink_target;
 
     PendingFile() = default;
     PendingFile(std::filesystem::path src, std::string entry, core::uint64 sz, bool dir = false,
-                bool symlink = false, bool dir_target = false, std::string target = {})
+                bool symlink = false, bool dir_target = false, std::string target = {},
+                bool hardlink = false, std::string htarget = {})
         : src_path(std::move(src)), entry_name(std::move(entry)), file_size(sz), is_dir(dir),
-          is_symlink(symlink), is_dir_target(dir_target), symlink_target(std::move(target)) {}
+          is_symlink(symlink), is_dir_target(dir_target), symlink_target(std::move(target)),
+          is_hardlink(hardlink), hardlink_target(std::move(htarget)) {}
 };
 
 // Parallel batch add: prepare every file on the pool (read + CRC + compress +
@@ -515,13 +528,17 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     if (queue.size() == 1) {
         bool okv = false;
         try {
-            if (queue[0].is_symlink)
+            if (queue[0].is_hardlink)
+                okv = archive::ArchiveMutator::prepare_add_hardlink(
+                    queue[0].src_path, queue[0].entry_name, queue[0].hardlink_target,
+                    prepared[0], times_mask, want_acl);
+            else if (queue[0].is_symlink)
                 okv = archive::ArchiveMutator::prepare_add_symlink(
                     queue[0].src_path, queue[0].entry_name, queue[0].symlink_target,
-                    queue[0].is_dir_target, prepared[0], times_mask);
+                    queue[0].is_dir_target, prepared[0], times_mask, want_acl);
             else if (queue[0].is_dir)
                 okv = archive::ArchiveMutator::prepare_add_dir(
-                    queue[0].src_path, queue[0].entry_name, prepared[0], times_mask);
+                    queue[0].src_path, queue[0].entry_name, prepared[0], times_mask, want_acl);
             else
                 okv = archive::ArchiveMutator::prepare_add_file(
                     queue[0].src_path, queue[0].entry_name, method, password, prepared[0],
@@ -593,13 +610,17 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
 
                     bool okv = false;
                     try {
-                        if (queue[i].is_symlink)
+                        if (queue[i].is_hardlink)
+                            okv = archive::ArchiveMutator::prepare_add_hardlink(
+                                queue[i].src_path, queue[i].entry_name, queue[i].hardlink_target,
+                                prepared[i], times_mask, want_acl);
+                        else if (queue[i].is_symlink)
                             okv = archive::ArchiveMutator::prepare_add_symlink(
                                 queue[i].src_path, queue[i].entry_name, queue[i].symlink_target,
-                                queue[i].is_dir_target, prepared[i], times_mask);
+                                queue[i].is_dir_target, prepared[i], times_mask, want_acl);
                         else if (queue[i].is_dir)
                             okv = archive::ArchiveMutator::prepare_add_dir(
-                                queue[i].src_path, queue[i].entry_name, prepared[i], times_mask);
+                                queue[i].src_path, queue[i].entry_name, prepared[i], times_mask, want_acl);
                         else
                             okv = archive::ArchiveMutator::prepare_add_file(
                                 queue[i].src_path, queue[i].entry_name, method, password,
@@ -710,7 +731,7 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                    bool no_dir_records = false,
                    io::ExcludePathMode ep_mode = io::ExcludePathMode::None,
                    bool recurse_subdirs = true, bool want_symlinks = false, bool freshen = false,
-                   bool want_stm = false, bool want_acl = false) {
+                   bool want_stm = false, bool want_acl = false, bool want_hardlinks = false) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return 1;
@@ -1016,6 +1037,113 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
         return a.entry_name < b.entry_name;
     });
 
+    if (want_hardlinks) {
+#ifdef _WIN32
+        struct WinFileId {
+            FILE_ID_128 id128{};
+            DWORD vol_serial{0};
+            bool is_128{false};
+            DWORD file_idx_high{0};
+            DWORD file_idx_low{0};
+
+            bool operator==(const WinFileId& o) const {
+                if (vol_serial != o.vol_serial) return false;
+                if (is_128 && o.is_128) {
+                    return std::memcmp(&id128, &o.id128, sizeof(id128)) == 0;
+                }
+                return file_idx_high == o.file_idx_high && file_idx_low == o.file_idx_low;
+            }
+        };
+        struct WinFileIdHash {
+            size_t operator()(const WinFileId& k) const {
+                if (k.is_128) {
+                    uint64_t low64 = 0, high64 = 0;
+                    std::memcpy(&low64, k.id128.Identifier, 8);
+                    std::memcpy(&high64, k.id128.Identifier + 8, 8);
+                    return std::hash<uint64_t>()(low64) ^ (std::hash<uint64_t>()(high64) << 1) ^
+                           (std::hash<uint32_t>()(k.vol_serial) << 2);
+                }
+                return (static_cast<size_t>(k.file_idx_high) << 32) ^ k.file_idx_low ^ k.vol_serial;
+            }
+        };
+        std::unordered_map<WinFileId, std::string, WinFileIdHash> seen_files;
+        for (auto& item : queue) {
+            if (item.is_dir || item.is_symlink) continue;
+            HANDLE h = CreateFileW(item.src_path.c_str(), FILE_READ_ATTRIBUTES,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+            if (h != INVALID_HANDLE_VALUE) {
+                FILE_ID_INFO id_info{};
+                BY_HANDLE_FILE_INFORMATION bhfi{};
+                bool got_id = false;
+                WinFileId fid{};
+                DWORD nlinks = 1;
+
+                if (GetFileInformationByHandle(h, &bhfi)) {
+                    nlinks = bhfi.nNumberOfLinks;
+                    fid.vol_serial = bhfi.dwVolumeSerialNumber;
+                    fid.file_idx_high = bhfi.nFileIndexHigh;
+                    fid.file_idx_low = bhfi.nFileIndexLow;
+                    fid.is_128 = false;
+                    got_id = true;
+                }
+                if (GetFileInformationByHandleEx(h, FileIdInfo, &id_info, sizeof(id_info))) {
+                    fid.vol_serial = static_cast<DWORD>(id_info.VolumeSerialNumber);
+                    fid.id128 = id_info.FileId;
+                    fid.is_128 = true;
+                    got_id = true;
+                }
+                CloseHandle(h);
+
+                if (got_id && nlinks > 1) {
+                    auto it = seen_files.find(fid);
+                    if (it == seen_files.end()) {
+                        seen_files[fid] = item.entry_name;
+                    } else {
+                        item.is_hardlink = true;
+                        item.hardlink_target = it->second;
+                        if (total_unp >= item.file_size) {
+                            total_unp -= item.file_size;
+                        }
+                        item.file_size = 0;
+                    }
+                }
+            }
+        }
+#else
+        struct DevIno {
+            dev_t dev;
+            ino_t ino;
+            bool operator==(const DevIno& o) const { return dev == o.dev && ino == o.ino; }
+        };
+        struct DevInoHash {
+            size_t operator()(const DevIno& k) const {
+                return std::hash<uint64_t>()(static_cast<uint64_t>(k.dev)) ^
+                       (std::hash<uint64_t>()(static_cast<uint64_t>(k.ino)) << 1);
+            }
+        };
+        std::unordered_map<DevIno, std::string, DevInoHash> seen_files;
+        for (auto& item : queue) {
+            if (item.is_dir || item.is_symlink) continue;
+            struct stat st;
+            if (::lstat(item.src_path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_nlink > 1) {
+                DevIno key{st.st_dev, st.st_ino};
+                auto it = seen_files.find(key);
+                if (it == seen_files.end()) {
+                    seen_files[key] = item.entry_name;
+                } else {
+                    item.is_hardlink = true;
+                    item.hardlink_target = it->second;
+                    if (total_unp >= item.file_size) {
+                        total_unp -= item.file_size;
+                    }
+                    item.file_size = 0;
+                }
+            }
+        }
+#endif
+    }
+
     Prog.set_totals(queue.size(), total_unp);
 
     if (!g_quiet_mode && !is_vt_supported()) {
@@ -1242,6 +1370,34 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                 }
             }
         }
+#ifndef _WIN32
+        if (j.entry && j.entry->header.has_owner) {
+            uid_t uid = static_cast<uid_t>(-1);
+            gid_t gid = static_cast<gid_t>(-1);
+            if (j.entry->header.has_owner_uid) {
+                uid = static_cast<uid_t>(j.entry->header.owner_uid);
+            } else if (!j.entry->header.owner_user.empty()) {
+                struct passwd* pw = ::getpwnam(j.entry->header.owner_user.c_str());
+                if (pw) uid = pw->pw_uid;
+            }
+            if (j.entry->header.has_owner_gid) {
+                gid = static_cast<gid_t>(j.entry->header.owner_gid);
+            } else if (!j.entry->header.owner_group.empty()) {
+                struct group* gr = ::getgrnam(j.entry->header.owner_group.c_str());
+                if (gr) gid = gr->gr_gid;
+            }
+            if (uid != static_cast<uid_t>(-1) || gid != static_cast<gid_t>(-1)) {
+                // lchown does not follow symlinks; non-fatal on EPERM/ENOSYS
+                (void)::lchown(j.target.c_str(), uid, gid);
+            }
+        }
+        if (j.entry && j.entry->header.host_os == 1 && j.entry->header.redir_type == 0) {
+            mode_t mode = static_cast<mode_t>(j.entry->header.attributes & 07777);
+            if (mode != 0) {
+                (void)::chmod(j.target.c_str(), mode);
+            }
+        }
+#endif
     };
 
     if (slots.readers.empty()) {
@@ -1390,6 +1546,21 @@ int lock_archive(const std::string& arc_path) {
     return 0;
 }
 
+int convert_to_sfx(const std::string& arc_path, const std::string& sfx_name_raw,
+                   const char* argv0) {
+    std::filesystem::path sfx_stub_path =
+        archive::ArchiveMutator::resolve_sfx_stub(sfx_name_raw, argv0);
+    std::string err;
+    if (!archive::ArchiveMutator::convert_to_sfx(arc_path, sfx_stub_path, err)) {
+        std::cerr << "Error: " << err << "\n";
+        return 1;
+    }
+    if (!g_quiet_mode) {
+        std::cout << "Done\n";
+    }
+    return 0;
+}
+
 int move_to_archive(const std::string& arc_path, const std::vector<std::string>& files,
                     int method = 3, const std::filesystem::path& sfx_stub = {},
                     ::openrar::core::uint64 vol_size = 0, const std::string& password = "",
@@ -1441,6 +1612,13 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
 // main() below wraps it. The argc<2/argv copies here cannot throw.
 static int cli_main(int argc, char* argv[]) {
     using namespace openrar::cli;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--version") {
+            std::cout << "OpenRAR " << OPENRAR_VERSION_STRING << "\n";
+            return 0;
+        }
+    }
+
     if (argc < 2) {
         openrar::cli::print_help();
         return 0;
@@ -1484,6 +1662,7 @@ static int cli_main(int argc, char* argv[]) {
     // Feature switch flags
     bool want_sfx = false, want_rr = false;
     bool want_acl = false, want_stm = false;
+    bool want_hardlinks = false;                                            // -oh
     bool want_solid = false;                                                // -s
     bool no_dir_records = false;                                            // -ed
     bool want_lock = false;                                                 // -k
@@ -1511,6 +1690,10 @@ static int cli_main(int argc, char* argv[]) {
             recurse_subdirs = true;
         } else if (sw_eq(s, "-r-")) {
             recurse_subdirs = false;
+        } else if (sw_eq(s, "-oh")) {
+            want_hardlinks = true;
+        } else if (sw_eq(s, "-oh-")) {
+            want_hardlinks = false;
         } else if (sw_eq(s, "-ol")) {
             want_symlinks = true;
             extract_symlinks = true;
@@ -1755,9 +1938,8 @@ static int cli_main(int argc, char* argv[]) {
     // ignored there (B8 class — advertised behavior must never fail silent).
 #ifndef _WIN32
     if ((cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m" || cmd == "x" || cmd == "e") &&
-        (want_acl || want_stm)) {
-        std::cerr << "W: ACL (-ow) / alternate streams (-os) preservation not supported on this "
-                     "platform\n";
+        want_stm) {
+        std::cerr << "W: alternate streams (-os) preservation not supported on this platform\n";
     }
 #endif
 
@@ -1787,7 +1969,7 @@ static int cli_main(int argc, char* argv[]) {
         int rc = openrar::cli::add_to_archive(
             target_arc, files, method, sfx_stub_path, vol_size, password, want_header_encryption,
             threads, want_solid, comment, times_mask, no_dir_records, ep_mode, recurse_subdirs,
-            want_symlinks, (cmd == "f"), want_stm, want_acl);
+            want_symlinks, (cmd == "f"), want_stm, want_acl, want_hardlinks);
         if (rc == 0 && want_rr) {
             bool rr_ok;
             bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;
@@ -1891,6 +2073,12 @@ static int cli_main(int argc, char* argv[]) {
             }
         }
         return rc;
+    } else if (cmd == "s" || (cmd.size() > 1 && (cmd[0] == 's' || cmd[0] == 'S') && cmd != "sfx")) {
+        std::string sfx_sub = sfx_name_raw;
+        if (sfx_sub.empty() && cmd.size() > 1) {
+            sfx_sub = cmd.substr(1);
+        }
+        return openrar::cli::convert_to_sfx(arc_path, sfx_sub, argv[0]);
     } else {
         std::cerr << "Unknown command: " << cmd << "\n";
         openrar::cli::print_help();
