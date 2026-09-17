@@ -529,7 +529,11 @@ int BufferArchive::list(const uint8_t* data, size_t size,
     case WalkStatus::Aborted:
         out_entries.clear();
         return RAR_ERR_ABORTED;
+    case WalkStatus::BadPassword:
+        out_entries.clear();
+        return RAR_ERR_BAD_PASSWORD;
     case WalkStatus::CryptHeader:
+    case WalkStatus::CryptUnsupported:
     case WalkStatus::EncryptedFile:
     case WalkStatus::SolidHeader:
         out_entries.clear();
