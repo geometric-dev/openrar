@@ -114,8 +114,7 @@ inline core::uint32 inv_mix_column(core::uint32 w) {
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("aes,sse4.1")))
 #endif
-static __m128i
-aes_xor_assist(__m128i a, __m128i b) noexcept {
+static __m128i aes_xor_assist(__m128i a, __m128i b) noexcept {
     __m128i t = _mm_slli_si128(a, 4);
     a = _mm_xor_si128(a, t);
     t = _mm_slli_si128(t, 4);
@@ -128,8 +127,8 @@ aes_xor_assist(__m128i a, __m128i b) noexcept {
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("aes,sse4.1")))
 #endif
-static void
-aesni_expand_key(const core::byte* key, core::byte* enc_buf, core::byte* dec_buf) noexcept {
+static void aesni_expand_key(const core::byte* key, core::byte* enc_buf,
+                             core::byte* dec_buf) noexcept {
     auto* ek = reinterpret_cast<__m128i*>(enc_buf);
     auto* dk = reinterpret_cast<__m128i*>(dec_buf);
 
@@ -180,8 +179,7 @@ aesni_expand_key(const core::byte* key, core::byte* enc_buf, core::byte* dec_buf
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("aes")))
 #endif
-static inline __m128i
-aesni_enc_block(const __m128i& pt, const __m128i* ek) noexcept {
+static inline __m128i aesni_enc_block(const __m128i& pt, const __m128i* ek) noexcept {
     __m128i m = _mm_xor_si128(pt, ek[0]);
     m = _mm_aesenc_si128(m, ek[1]);
     m = _mm_aesenc_si128(m, ek[2]);
@@ -202,8 +200,7 @@ aesni_enc_block(const __m128i& pt, const __m128i* ek) noexcept {
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("aes")))
 #endif
-static inline __m128i
-aesni_dec_block(const __m128i& ct, const __m128i* dk) noexcept {
+static inline __m128i aesni_dec_block(const __m128i& ct, const __m128i* dk) noexcept {
     __m128i m = _mm_xor_si128(ct, dk[0]);
     m = _mm_aesdec_si128(m, dk[1]);
     m = _mm_aesdec_si128(m, dk[2]);
@@ -224,9 +221,8 @@ aesni_dec_block(const __m128i& ct, const __m128i* dk) noexcept {
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("aes")))
 #endif
-static void
-aesni_encrypt_cbc(core::byte* data, size_t size, core::byte* iv,
-                  const core::byte* enc_buf) noexcept {
+static void aesni_encrypt_cbc(core::byte* data, size_t size, core::byte* iv,
+                              const core::byte* enc_buf) noexcept {
     const auto* ek = reinterpret_cast<const __m128i*>(enc_buf);
     __m128i chain = _mm_loadu_si128(reinterpret_cast<const __m128i*>(iv));
     size_t blocks = size / 16;
@@ -244,9 +240,8 @@ aesni_encrypt_cbc(core::byte* data, size_t size, core::byte* iv,
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("aes")))
 #endif
-static void
-aesni_decrypt_cbc(core::byte* data, size_t size, core::byte* iv,
-                  const core::byte* dec_buf) noexcept {
+static void aesni_decrypt_cbc(core::byte* data, size_t size, core::byte* iv,
+                              const core::byte* dec_buf) noexcept {
     const auto* dk = reinterpret_cast<const __m128i*>(dec_buf);
     __m128i prev = _mm_loadu_si128(reinterpret_cast<const __m128i*>(iv));
     size_t blocks = size / 16;

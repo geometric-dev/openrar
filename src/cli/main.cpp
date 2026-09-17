@@ -110,8 +110,8 @@ inline bool sw_starts(std::string_view sw, std::string_view prefix) {
 
 void print_banner() {
     if (g_quiet_mode) return;
-        // OPENRAR_CLI_VERSION comes from the CMake project version; the fallback
-        // only serves bare manual compiles that bypass the build system.
+    // OPENRAR_CLI_VERSION comes from the CMake project version; the fallback
+    // only serves bare manual compiles that bypass the build system.
 #ifndef OPENRAR_CLI_VERSION
 #define OPENRAR_CLI_VERSION OPENRAR_VERSION_STRING
 #endif
@@ -1776,7 +1776,7 @@ static int cli_main(int argc, char* argv[]) {
     bool extract_symlinks = true; // -ol-
     bool keep_broken = false;     // -kb
     openrar::cli::OverwriteMode overwrite_mode = openrar::cli::OverwriteMode::Prompt;
-    bool want_qo = true;          // -qo, -qo+, -qo- (default: enabled)
+    bool want_qo = true; // -qo, -qo+, -qo- (default: enabled)
 
     for (const auto& s : switches) {
         if (sw_eq(s, "-plain") || sw_eq(s, "--plain") || sw_eq(s, "-idp") ||
@@ -2082,10 +2082,11 @@ static int cli_main(int argc, char* argv[]) {
                 return 1;
             }
         } else {
-            rc = openrar::cli::add_to_archive(
-                target_arc, files, method, sfx_stub_path, vol_size, password, want_header_encryption,
-                threads, want_solid, comment, times_mask, no_dir_records, ep_mode, recurse_subdirs,
-                want_symlinks, (cmd == "f"), want_stm, want_acl, want_hardlinks, want_qo);
+            rc = openrar::cli::add_to_archive(target_arc, files, method, sfx_stub_path, vol_size,
+                                              password, want_header_encryption, threads, want_solid,
+                                              comment, times_mask, no_dir_records, ep_mode,
+                                              recurse_subdirs, want_symlinks, (cmd == "f"),
+                                              want_stm, want_acl, want_hardlinks, want_qo);
         }
         if (rc == 0 && want_rr) {
             bool rr_ok;
@@ -2150,7 +2151,8 @@ static int cli_main(int argc, char* argv[]) {
                 if (rr_percent > 1000) rr_percent = 1000;
             }
         }
-        bool rr_ok = openrar::recovery::RecoveryWriter::add_recovery_record(arc_path, rr_percent, threads);
+        bool rr_ok =
+            openrar::recovery::RecoveryWriter::add_recovery_record(arc_path, rr_percent, threads);
         if (!rr_ok) {
             std::cerr << "W: recovery record creation failed\n";
             return 1;
