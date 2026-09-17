@@ -1,3 +1,8 @@
+#if defined(__APPLE__)
+#define __STDC_WANT_LIB_EXT1__ 1
+#include <string.h>
+#endif
+
 #include "pbkdf2.hpp"
 #include "sha256.hpp"
 #include <algorithm>
@@ -7,7 +12,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#else
+#elif !defined(__APPLE__)
 #include <strings.h>
 #endif
 
@@ -17,8 +22,14 @@ void secure_wipe(void* p, size_t n) noexcept {
     if (!p || n == 0) return;
 #if defined(_WIN32)
     ::SecureZeroMemory(p, n);
-#elif defined(__GLIBC__) || defined(__FreeBSD__) || defined(__OpenBSD__) ||                        \
-    (defined(__APPLE__) && defined(MAC_OS_X_VERSION_10_14))
+#elif defined(__APPLE__)
+    if (::memset_s(p, n, 0, n) != 0) {
+        volatile core::byte* vp = static_cast<volatile core::byte*>(p);
+        while (n--) {
+            *vp++ = 0;
+        }
+    }
+#elif defined(__GLIBC__) || defined(__FreeBSD__) || defined(__OpenBSD__)
     ::explicit_bzero(p, n);
 #else
     volatile core::byte* vp = static_cast<volatile core::byte*>(p);
