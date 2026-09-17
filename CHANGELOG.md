@@ -5,48 +5,57 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- Verification asymmetry sweep (bug-class audit): the bool `extract_entry`
-  path verified stored payload but wrote **compressed** payload with no
-  CRC/BLAKE2sp check at all — corrupt data extracted "successfully". All
-  extract paths (compressed, stored contiguous/extents, encrypted,
-  in-memory) now apply the same hash policy (BLAKE2sp authoritative, else
-  CRC32); encrypted entries whose writer set the tweaked-checksum flag
-  (0x0002) are accepted without a hash compare — the stored value is
-  key-dependent and not comparable, and the PswCheck already authenticates
-  the key. CLI `t` verifies encrypted entries via the streaming path when a
-  password is supplied (it previously reported OK without decoding them)
-  and fails closed on a wrong password.
-- RecoveryWriter temp files (`.rr_tmp`/`.rep_tmp`/`.rev_tmp`) used fixed,
-  predictable names opened with `CreateAlways` — the symlink-pre-plant
-  truncation pattern the mutator already fixed (L8). All recovery temps now
-  use unique pid/timestamp/counter names with `CreateNew`, the `.rev` writer
-  cleans up temps on early failure, and the mutator's delete/lock rewrite
-  loops are exception-safe (temp removed on an escaping exception).
-- `openrar_archive_handle_info` caps the comment payload allocation before
-  sizing from the (crafted) header field.
-
-### Changed
-
-- CLI honesty (B8 class): `-os`/`-ow` are marked "accepted; writer not yet
-  implemented" in the help instead of advertising unimplemented behavior,
-  the skip warning now also fires for `x`/`e`, `m` warns when `-z`/`-s`/`-ts`
-  are dropped by its batch path, and the SFX usage line no longer advertises
-  a meaningless `-y`. `find_package` consumers unaffected.
-- CI: the DLL artifact upload uses `if-no-files-found: error` — a broken
-  glob can no longer publish an empty release zip with a green build.
+## [1.7.0] - 2026-09-17
 
 ### Added
 
-- Regression suites from the bug-class audit: help/parser switch parity
-  (every advertised switch must parse), C-ABI ↔ JS/TS error-code sync
-  (`errorsync.tests.mjs`, would have caught the I1/I2 drift), corrupted
-  compressed-payload extraction refusal, and a streaming-verify pair over
-  the tweaked-checksum golden (accept) plus a plaintext-CRC encrypted
-  archive (corrupt → `RAR_ERR_CRC_MISMATCH`).
+- **NTFS Alternate Data Streams (ADS) Archiving & Extraction** (`-os`): Full
+  support for NTFS alternate data streams on Windows. Archiving enumerates and
+  stores streams as child service records (`HFL_CHILD` | `HFL_INHERITED`)
+  with `FHEXTRA_SUBBLOCK` headers matching WinRAR 5 format. Extraction restores
+  named data streams to destination files. Portable stubs ensure graceful
+  fallback and non-Windows compatibility.
+- **NTFS Security Access Control Lists (ACL) Archiving & Extraction** (`-ow`):
+  Full support for Windows security descriptors on Windows. Archiving captures
+  owner, group, DACL, and SACL descriptors into inherited security records;
+  extraction applies stored security descriptors to created files and
+  directories via Win32 security APIs.
+- **BufferArchive Checksum Verification**: In-memory archive extractions now
+  verify checksums authoritatively against BLAKE2sp digests, and CRC32
+  checksums are verified (properly respecting the 0-sentinel flag for zeroed
+  CRCs).
+- **Regression suites**: Added automated tests for NTFS streams and security
+  metadata, BufferArchive CRC/BLAKE2sp corruption detection, switch parity
+  validation, C-ABI ↔ JS/TS error code synchronization (`errorsync.tests.mjs`),
+  corrupted compressed payload extraction rejection, and streaming-verify over
+  tweaked-checksum archives.
+
+### Fixed
+
+- **Multi-volume Writer Partial-write Cleanup**: Added RAII `VolumeCleanupGuard`
+  to track created volume files during multi-volume archive creation, safely
+  removing any orphaned volume parts if writing fails or is interrupted.
+- **Header Writer Flag Preservation**: `HeaderWriter` now preserves `HFL_CHILD`
+  and `HFL_INHERITED` flags when writing file and service headers, ensuring
+  child records properly maintain hierarchical relationships.
+- **Verification Asymmetry Sweep**: The bool `extract_entry` path verified
+  stored payloads but wrote compressed payloads without CRC/BLAKE2sp validation.
+  All extract paths now enforce uniform hash policies (BLAKE2sp authoritative,
+  else CRC32). Encrypted entries with tweaked checksums (`0x0002`) are accepted
+  cleanly after password verification. CLI `t` verifies encrypted entries via
+  streaming when a password is provided.
+- **Recovery & Mutator Temp Files**: Temp files (`.rr_tmp`, `.rep_tmp`,
+  `.rev_tmp`) now use unique counter-based names created with `CreateNew` to
+  prevent symlink pre-plant truncation attacks. Mutator delete/lock rewrite
+  loops and `.rev` writers are exception-safe and remove temporary files on
+  failure.
+- **Header & Memory Allocation Caps**: `openrar_archive_handle_info` enforces a
+  16 MiB allocation cap before reading archive comments from crafted header
+  lengths.
+- **Fuzzing Harnesses & CI**: Fixed allocation leak of `handle_list` in
+  `fuzz_archive`, removed duplicate `main()` definition in `fuzz_file_handle`
+  under libFuzzer builds, enabled duration parameter in `fuzz.yml`, staged seed
+  fixtures properly, and pinned the CI formatting gate to `clang-format-18`.
 
 ## [1.6.0] - 2026-09-16
 
