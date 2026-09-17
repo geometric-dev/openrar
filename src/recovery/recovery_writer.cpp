@@ -985,6 +985,13 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
 
     format::MainBlock mb = reader.main_block();
     mb.arc_flags |= format::MHFL_PROTECT;
+    // Strip QO locator: adding RR is a mutation; per the RAR5 spec, mutations
+    // always strip the QuickOpen service block and its locator. Preserving the
+    // QO offset here would be wrong anyway: the combined QO+RR locator extra
+    // record is 10 bytes larger than the QO-only record, shifting all
+    // subsequent entries in the rewritten archive and making the stored offset
+    // point to the wrong location, which WinRAR detects as a corrupt header.
+    mb.locator_qo_offset = -1;
     mb.has_locator = true;
     mb.locator_rr_offset = 0; // patched below to the actual RR offset once known
     if (!format::HeaderWriter::write_main_block(out, mb)) {
@@ -994,9 +1001,13 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     }
 
     for (const auto& entry : reader.entries()) {
-        // Drop any pre-existing RR service block; we're replacing it. Keep
-        // every other service (comments, quick-open) verbatim.
+        // Drop any pre-existing RR service block; we're replacing it.
+        // Also drop the QO service block: mutations always strip QuickOpen per
+        // spec (the regenerated locator would point to the wrong location in
+        // the rewritten archive anyway, as the main header grows by 10 bytes
+        // when going from a QO-only to a combined QO+RR locator extra record).
         if (entry.header.is_service && entry.header.service_type == "RR") continue;
+        if (entry.header.is_service && entry.header.service_type == "QO") continue;
         if (!copy_stream_region(src_for_copy, out, entry.header_offset,
                                 entry.header_size + entry.data_size)) {
             out.close();
