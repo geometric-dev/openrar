@@ -1,6 +1,11 @@
 #include "../../src/archive/buffer_archive.hpp"
 #include "../../src/archive/archive_reader.hpp"
 #include "../../src/core/types.hpp"
+#include "../../src/crypto/crc32.hpp"
+#include "../../src/crypto/blake2sp.hpp"
+#include "../../src/format/headers.hpp"
+#include "../../src/format/header_writer.hpp"
+#include "../../src/io/file_stream.hpp"
 #include "test_support.hpp"
 
 #include <algorithm>
@@ -734,6 +739,98 @@ void test_list_file_stream_emit_encrypted() {
     std::cout << "[PASS] list_file_stream_emit_encrypted\n";
 }
 
+void test_buffer_archive_checksum_validation() {
+    std::cout << "Starting test_buffer_archive_checksum_validation...\n" << std::flush;
+
+    // 1. CRC32 validation and corrupted data detection
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> files = {
+        {"test.txt", {'H', 'e', 'l', 'l', 'o', ' ', 'W', 'o', 'r', 'l', 'd'}},
+    };
+    std::vector<uint8_t> arc_buf;
+    int rc = create_archive(files, arc_buf, /*method=*/0);
+    assert(rc == RAR_OK);
+
+    BufferArchive arc;
+    std::vector<BufferArchiveEntry> entries;
+    rc = arc.list(arc_buf.data(), arc_buf.size(), entries);
+    assert(rc == RAR_OK);
+    assert(entries.size() == 1);
+    assert(entries[0].has_crc32 == true);
+    assert(!entries[0].has_blake2sp);
+
+    // Clean extraction
+    std::vector<uint8_t> out;
+    rc = arc.extract(arc_buf.data(), arc_buf.size(), 0, out);
+    assert(rc == RAR_OK);
+    assert(out == files[0].second);
+
+    // Corrupt one byte of the payload inside arc_buf (in-place to preserve cached buffer pointer)
+    assert(entries[0].data_offset < arc_buf.size());
+    arc_buf[entries[0].data_offset] ^= 0xFF;
+
+    rc = arc.extract(arc_buf.data(), arc_buf.size(), 0, out);
+    assert(rc == RAR_ERR_CRC_MISMATCH);
+
+    // Restore arc_buf
+    arc_buf[entries[0].data_offset] ^= 0xFF;
+
+    // 2. BLAKE2sp validation
+    auto dir = openrar::test::scratch_dir("buffer_archive_checksum");
+    auto arc_path = dir / "b2.rar";
+    format::FileBlock fb;
+    {
+        io::FileStream out_fs;
+        assert(out_fs.open(arc_path, io::FileMode::CreateAlways));
+        assert(format::HeaderWriter::write_signature(out_fs));
+        format::MainBlock mb;
+        assert(format::HeaderWriter::write_main_block(out_fs, mb));
+
+        fb.file_name = "b2_file.txt";
+        fb.unp_size = files[0].second.size();
+        fb.pack_size = files[0].second.size();
+        fb.method = 0;
+        fb.has_crc32 = true;
+        crypto::Crc32 crc;
+        crc.update(files[0].second.data(), files[0].second.size());
+        fb.data_crc32 = crc.get();
+
+        fb.has_blake2sp = true;
+        crypto::Blake2sp b2;
+        b2.update(files[0].second.data(), files[0].second.size());
+        b2.finish(fb.blake2sp.data());
+
+        assert(format::HeaderWriter::write_file_block(out_fs, fb));
+        assert(out_fs.write(files[0].second.data(), files[0].second.size()) == files[0].second.size());
+
+        format::EndArcBlock eb;
+        assert(format::HeaderWriter::write_end_block(out_fs, eb));
+    }
+
+    std::ifstream ifs(arc_path, std::ios::binary);
+    assert(ifs);
+    std::vector<uint8_t> b2_arc((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+
+    std::vector<BufferArchiveEntry> b2_entries;
+    rc = arc.list(b2_arc.data(), b2_arc.size(), b2_entries);
+    assert(rc == RAR_OK);
+    assert(b2_entries.size() == 1);
+    assert(b2_entries[0].has_crc32 == true);
+    assert(b2_entries[0].has_blake2sp == true);
+    assert(b2_entries[0].blake2sp == fb.blake2sp);
+
+    // Extract clean
+    rc = arc.extract(b2_arc.data(), b2_arc.size(), 0, out);
+    assert(rc == RAR_OK);
+    assert(out == files[0].second);
+
+    // Corrupt payload in-place
+    b2_arc[b2_entries[0].data_offset] ^= 0x55;
+    rc = arc.extract(b2_arc.data(), b2_arc.size(), 0, out);
+    assert(rc == RAR_ERR_CRC_MISMATCH);
+
+    std::cout << "[PASS] buffer_archive_checksum_validation\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -762,6 +859,7 @@ int main() {
     test_list_file_stream_encrypted();
     test_list_file_stream_password();
     test_list_file_stream_emit_encrypted();
+    test_buffer_archive_checksum_validation();
     std::cout << "All buffer_archive tests PASSED!\n";
     return 0;
 }

@@ -8,6 +8,7 @@
 #include "../crypto/aes256.hpp"
 #include "../crypto/pbkdf2.hpp"
 #include "../crypto/rng.hpp"
+#include "../io/win32_meta.hpp"
 #include <chrono>
 
 #include <algorithm>
@@ -623,7 +624,8 @@ static bool copy_sfx_stub(const std::filesystem::path& stub_path, io::FileStream
 bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                                       const std::string& arc_entry_name, int method,
                                       const std::string& password, PreparedAdd& out,
-                                      core::uint32 times_mask, core::uint32 window_log2) {
+                                      core::uint32 times_mask, core::uint32 window_log2,
+                                      bool want_streams, bool want_acl) {
     if (!std::filesystem::exists(src_file)) {
         return false;
     }
@@ -739,6 +741,56 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
 
     out.fb = std::move(fb);
     out.payload = std::move(payload_to_write);
+
+    if (want_streams) {
+        std::vector<io::StreamEntry> streams;
+        if (io::read_alternate_streams(src_file, streams)) {
+            for (const auto& s : streams) {
+                if (s.data.size() > 0x40000000ULL) continue; // cap at 1 GiB per spec
+                PreparedAdd child;
+                child.fb.is_service = true;
+                child.fb.service_type = "STM";
+                child.fb.file_name = "STM";
+                child.fb.sub_data.assign(s.name.begin(), s.name.end());
+                child.fb.unp_size = s.data.size();
+                child.fb.pack_size = static_cast<core::int64>(s.data.size());
+                child.fb.attributes = 0x20;
+                child.fb.method = 0;
+                child.fb.win_size = 0;
+                child.fb.unp_ver = 0;
+                child.fb.has_crc32 = true;
+                crypto::Crc32 scrc;
+                scrc.update(s.data.data(), s.data.size());
+                child.fb.data_crc32 = scrc.get();
+                child.payload = s.data;
+                out.child_services.push_back(std::move(child));
+            }
+        }
+    }
+    if (want_acl) {
+        std::vector<core::byte> sd;
+        if (io::read_security_descriptor(src_file, sd) && !sd.empty()) {
+            if (sd.size() <= 0x100000ULL) { // 1 MiB cap per spec
+                PreparedAdd child;
+                child.fb.is_service = true;
+                child.fb.service_type = "ACL";
+                child.fb.file_name = "ACL";
+                child.fb.unp_size = sd.size();
+                child.fb.pack_size = static_cast<core::int64>(sd.size());
+                child.fb.attributes = 0x20;
+                child.fb.method = 0;
+                child.fb.win_size = 0;
+                child.fb.unp_ver = 0;
+                child.fb.has_crc32 = true;
+                crypto::Crc32 acrc;
+                acrc.update(sd.data(), sd.size());
+                child.fb.data_crc32 = acrc.get();
+                child.payload = std::move(sd);
+                out.child_services.push_back(std::move(child));
+            }
+        }
+    }
+
     // entry_name/src_path are caller-owned identity fields, filled before the
     // call: the batch writer reads them concurrently while this prepare may
     // still be running, so writing them here would be a data race (M4).
@@ -885,6 +937,11 @@ int ArchiveMutator::write_batch_add_ex(
                 for (const auto& pf : files) {
                     if (entries[i].header.file_name == pf.entry_name) {
                         replaced[i] = 1;
+                        for (size_t j = i + 1; j < entries.size() && entries[j].header.is_service; ++j) {
+                            if (entries[j].header.service_type != "QO" && entries[j].header.service_type != "CMT") {
+                                replaced[j] = 1;
+                            }
+                        }
                         break;
                     }
                 }
@@ -1069,6 +1126,16 @@ int ArchiveMutator::write_batch_add_ex(
             // Free the payload as soon as it is on disk so peak memory tracks
             // the in-flight preparation set, not the whole batch.
             std::vector<core::byte>().swap(pf.payload);
+
+            for (auto& child : pf.child_services) {
+                format::HeaderWriter::write_file_block(
+                    out, child.fb, format::HFL_CHILD | format::HFL_INHERITED,
+                    header_encrypt_mode ? &hcw : nullptr);
+                if (!child.payload.empty()) {
+                    out.write(child.payload.data(), child.payload.size());
+                }
+                std::vector<core::byte>().swap(child.payload);
+            }
         }
 
         format::EndArcBlock eb;
@@ -1355,6 +1422,34 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     std::filesystem::path curPath = firstVolume;
     int vol_idx = 0;
     std::vector<std::filesystem::path> created;
+
+    struct VolumeCleanupGuard {
+        io::FileStream* cur;
+        std::vector<std::filesystem::path>* created;
+        const std::vector<std::pair<std::filesystem::path, std::filesystem::path>>* sidecars;
+        bool committed{false};
+        ~VolumeCleanupGuard() {
+            if (committed) return;
+            if (cur) cur->close();
+            if (!created) return;
+            for (const auto& p : *created) {
+                bool in_sidecars = false;
+                if (sidecars) {
+                    for (const auto& [orig, bak] : *sidecars) {
+                        if (p == orig) {
+                            in_sidecars = true;
+                            break;
+                        }
+                    }
+                }
+                if (!in_sidecars) {
+                    std::error_code ec;
+                    std::filesystem::remove(p, ec);
+                }
+            }
+        }
+    } vol_cleanup_guard{&cur, &created, &sidecars};
+
     // Helper to start volume
     auto start_vol = [&](std::filesystem::path path, int idx) -> bool {
         // close previous already handled
@@ -1513,6 +1608,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         }
     }
     sidecar_guard.committed = true; // success: guard will drop .mv_bak files
+    vol_cleanup_guard.committed = true;
     return true;
 }
 

@@ -144,8 +144,18 @@ bool write_alternate_stream(const std::filesystem::path& host_file, const std::s
     }
 
     std::wstring full_path = host_file.wstring() + utf8_to_wide(stream_name);
+    DWORD orig_attrs = GetFileAttributesW(host_file.wstring().c_str());
+    bool was_readonly = (orig_attrs != INVALID_FILE_ATTRIBUTES && (orig_attrs & FILE_ATTRIBUTE_READONLY));
+    if (was_readonly) {
+        SetFileAttributesW(host_file.wstring().c_str(), orig_attrs & ~FILE_ATTRIBUTE_READONLY);
+    }
+
     HANDLE stream_handle = CreateFileW(full_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (was_readonly) {
+        SetFileAttributesW(host_file.wstring().c_str(), orig_attrs);
+    }
+
     if (stream_handle == INVALID_HANDLE_VALUE) {
         return false;
     }

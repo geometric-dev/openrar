@@ -8,7 +8,7 @@ import { parseArchive } from '../rar5-coverage.js';
 import { DIR_SEP, freshDir, buildOurArchive, runTool, OUR_EXE, readFileSync } from './helpers.mjs';
 
 describe('RAR 5.0 NTFS Alternate Data Streams (-os)', () => {
-  it('archives, parses, and restores NTFS streams', { skip: process.platform !== 'win32' ? 'non-Windows' : 'STM writer support deferred per 00-overview.md' }, () => {
+  it('archives, parses, and restores NTFS streams', { skip: process.platform !== 'win32' && 'non-Windows' }, () => {
     const tree = freshDir('streams-test-tree');
     const testFile = join(tree, 'stream_file.txt');
     writeFileSync(testFile, 'Main data stream content.\n');
@@ -64,4 +64,39 @@ describe('RAR 5.0 NTFS Alternate Data Streams (-os)', () => {
     assert.ok(adsCheck.includes('Custom stream payload 12345'), 'CustomADS content should be restored');
     assert.ok(adsCheck.includes('ZoneId=3'), 'Zone.Identifier content should be restored');
   });
+
+  it('archives, parses, and restores NTFS security ACLs (-ow)', { skip: process.platform !== 'win32' && 'non-Windows' }, () => {
+    const tree = freshDir('acl-test-tree');
+    const testFile = join(tree, 'acl_file.txt');
+    writeFileSync(testFile, 'File with security descriptor.\n');
+
+    const out = freshDir('acl-test-out');
+    const arc = buildOurArchive({ tree, out, switches: ['-ow', '-m3'] });
+
+    const buf = readFileSync(arc);
+    const parsed = parseArchive(buf);
+
+    assert.equal(parsed.truncated, false, `Archive truncated: ${parsed.parseError}`);
+
+    // Verify ACL service block exists
+    const aclBlocks = parsed.blocks.filter((b) => (b.type === 3 || b.typeName === 'service') && b.file?.name === 'ACL');
+    assert.ok(aclBlocks.length >= 1, `Expected at least 1 ACL service block, found ${aclBlocks.length}`);
+
+    // Extraction round-trip
+    const extOur = freshDir('acl-test-ext');
+    const resOur = runTool(OUR_EXE, ['x', '-y', arc, extOur + DIR_SEP], tree);
+    assert.equal(resOur.code, 0, `extract failed: ${resOur.output}`);
+
+    const extractedFile = join(extOur, 'acl_file.txt');
+    assert.ok(existsSync(extractedFile), 'extracted file should exist');
+
+    // Verify ACL exists on extracted file via PowerShell Get-Acl
+    const aclCheck = execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `$acl = Get-Acl -Path "${extractedFile}"; Write-Output $acl.Owner`
+    ], { encoding: 'utf8' }).trim();
+    assert.ok(aclCheck.length > 0, 'Extracted file should have a valid ACL owner');
+  });
 });
+

@@ -78,6 +78,7 @@ public:
         std::filesystem::path src_path;  // original file, removed for move after success
         std::string entry_name;
         bool delete_source{false};
+        std::vector<PreparedAdd> child_services;
     };
 
     // Stage 1 of batch add: read + CRC + compress (+ store fallback) + encrypt
@@ -88,11 +89,14 @@ public:
     // (1..4 → 128 KiB..1 MiB, create parity); 0 keeps the historical 2 MiB
     // CLI default. Ignored for stored entries. The value is written into the
     // header's win_size and must match the compressor's dictionary.
+    // want_streams / want_acl attach NTFS ADS and Security ACL child records.
     static bool prepare_add_file(const std::filesystem::path& src_file,
                                  const std::string& arc_entry_name, int method,
                                  const std::string& password, PreparedAdd& out,
                                  core::uint32 times_mask = time_flags::MTIME,
-                                 core::uint32 window_log2 = 0);
+                                 core::uint32 window_log2 = 0,
+                                 bool want_streams = false,
+                                 bool want_acl = false);
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,
     // no data area) carrying the directory's timestamps. Encryption does not
