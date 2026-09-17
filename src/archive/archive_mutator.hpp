@@ -102,8 +102,7 @@ public:
     // apply to directory records.
     static bool prepare_add_dir(const std::filesystem::path& src_dir,
                                 const std::string& arc_entry_name, PreparedAdd& out,
-                                core::uint32 times_mask = time_flags::MTIME,
-                                bool want_acl = false);
+                                core::uint32 times_mask = time_flags::MTIME, bool want_acl = false);
 
     // Stage 1 variant for a symbolic link: emits a symlink record (FHEXTRA_REDIR,
     // redir_type = 2 on Windows, 1 on POSIX, no data area) carrying the link's timestamps.
@@ -117,8 +116,7 @@ public:
     // redir_type = 4, no data area) pointing to target_entry_name.
     static bool prepare_add_hardlink(const std::filesystem::path& src_file,
                                      const std::string& arc_entry_name,
-                                     const std::string& target_entry_name,
-                                     PreparedAdd& out,
+                                     const std::string& target_entry_name, PreparedAdd& out,
                                      core::uint32 times_mask = time_flags::MTIME,
                                      bool want_acl = false);
 
@@ -128,14 +126,10 @@ public:
     // Stage 2 of batch add: one sequential pass that writes SFX stub, archive
     // prefix, every prepared file in vector order, and ENDARC, then atomically
     // replaces arc_path and deletes sources flagged delete_source. Entries in
-    // the existing archive whose name matches any prepared entry are replaced
-    // (old copy skipped), matching the per-file append semantics. The archive
-    // is only replaced if every file is written — a failure leaves the
-    // original untouched. on_write (optional) fires right before each file's
-    // header is written, in final archive order. solid (fresh creates) marks
-    // the archive MHFL_SOLID and chains per-entry solid bits; comment (from
-    // -z) is written as a CMT service header right after the main header and
-    // replaces any existing CMT on append.
+    // files are prepared beforehand (read + compressed + encrypted) and
+    // caller owns the concurrency; this function only writes.
+    // Progress callback (optional): invoked on the writer thread before each
+    // entry is committed.
     static bool
     write_batch_add(const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
                     const std::filesystem::path& sfx_stub_path = {},
@@ -177,8 +171,7 @@ public:
                                          bool solid = false);
 
     static bool convert_to_sfx(const std::filesystem::path& arc_path,
-                               const std::filesystem::path& sfx_stub_path,
-                               std::string& err_detail);
+                               const std::filesystem::path& sfx_stub_path, std::string& err_detail);
 };
 
 } // namespace openrar::archive

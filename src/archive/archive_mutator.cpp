@@ -112,7 +112,7 @@ void apply_unix_owner(format::FileBlock& fb, const std::filesystem::path& path) 
     long bufsize = ::sysconf(_SC_GETPW_R_SIZE_MAX);
     if (bufsize <= 0) bufsize = 1024;
     std::vector<char> buf(static_cast<size_t>(bufsize));
-    struct passwd pwd{};
+    struct passwd pwd {};
     struct passwd* result = nullptr;
     while (true) {
         int rc = ::getpwuid_r(st.st_uid, &pwd, buf.data(), buf.size(), &result);
@@ -131,7 +131,7 @@ void apply_unix_owner(format::FileBlock& fb, const std::filesystem::path& path) 
     long gbufsize = ::sysconf(_SC_GETGR_R_SIZE_MAX);
     if (gbufsize <= 0) gbufsize = 1024;
     std::vector<char> gbuf(static_cast<size_t>(gbufsize));
-    struct group grp{};
+    struct group grp {};
     struct group* gresult = nullptr;
     while (true) {
         int rc = ::getgrgid_r(st.st_gid, &grp, gbuf.data(), gbuf.size(), &gresult);
@@ -920,9 +920,8 @@ bool ArchiveMutator::prepare_add_symlink(const std::filesystem::path& src_symlin
 
 bool ArchiveMutator::prepare_add_hardlink(const std::filesystem::path& src_file,
                                           const std::string& arc_entry_name,
-                                          const std::string& target,
-                                          PreparedAdd& out, core::uint32 times_mask,
-                                          [[maybe_unused]] bool want_acl) {
+                                          const std::string& target, PreparedAdd& out,
+                                          core::uint32 times_mask, [[maybe_unused]] bool want_acl) {
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
     fb.unp_size = 0;
