@@ -15,7 +15,7 @@ import { DIR_SEP, OUR_EXE,
   makeFixtureTree,
   runTool,
   oracleAvailable, } from './helpers.mjs';
-import { parseArchive } from '../rar5-coverage.js';
+import { parseArchive, analyze } from '../rar5-coverage.js';
 
 describe('RAR 5.0 Recovery Records (-rr) & Repair (r)', () => {
   it('creates in-archive recovery record (-rr5%), verifies headers and WinRAR listing', () => {
@@ -147,5 +147,101 @@ describe('RAR 5.0 Recovery Records (-rr) & Repair (r)', () => {
 
     const resRep = runTool(OUR_EXE, ['r', '-y', arc], out);
     assert.notEqual(resRep.code, 0, 'Repairing beyond capacity must report failure');
+  });
+
+  it('strips QuickOpen locator and QO service block when adding -rr to a QO-enabled archive', () => {
+    // Structural regression test for the QO+RR locator size-mismatch bug
+    // (commit 9b672b0). add_recovery_record must strip both the QO service
+    // block and locator_qo_offset. If it doesn't, the combined QO+RR locator
+    // extra record is 10 bytes larger than the source's QO-only locator,
+    // shifting the QO block's real position while the stored offset points
+    // to the old location — WinRAR rejects this as "Main archive header is
+    // corrupt".
+    const tree = freshDir('rec-qo-strip-tree');
+    makeFixtureTree(tree);
+    const out = freshDir('rec-qo-strip-out');
+    const arc = join(out, 'qo_then_rr.rar');
+
+    // Step 1: Create a QO-enabled archive (default behaviour writes QO).
+    const resAdd = runTool(OUR_EXE, ['a', '-y', '-m0', arc, '.'], tree);
+    assert.equal(resAdd.code, 0, `QO archive creation failed: ${resAdd.output}`);
+
+    // Confirm QO was written (pre-condition).
+    const beforeBuf = readFileSync(arc);
+    const beforeFeatures = analyze(parseArchive(beforeBuf));
+    assert.ok(beforeFeatures.locatorQuickOpen,
+      'Source archive must have QO locator (pre-condition)');
+    assert.ok(
+      parseArchive(beforeBuf).blocks.some((b) => b.file?.service === 'QO'),
+      'Source archive must have QO service block (pre-condition)',
+    );
+
+    // Step 2: Add recovery record to the QO-enabled archive.
+    const resRr = runTool(OUR_EXE, ['a', '-y', '-rr5%', arc], out);
+    assert.equal(resRr.code, 0, `Adding RR to QO archive failed: ${resRr.output}`);
+
+    // Step 3: Structural assertions — QO must be fully stripped.
+    const afterBuf = readFileSync(arc);
+    const afterParsed = parseArchive(afterBuf);
+    const afterFeatures = analyze(afterParsed);
+
+    assert.ok(!afterFeatures.locatorQuickOpen,
+      'After adding RR, locatorQuickOpen flag must be absent (QO locator stripped)');
+    assert.ok(!afterParsed.blocks.some((b) => b.file?.service === 'QO'),
+      'After adding RR, QO service block must be absent');
+    assert.ok(afterFeatures.locatorRR,
+      'After adding RR, locatorRR flag must be present');
+    assert.ok(afterParsed.blocks.some((b) => b.file?.service === 'RR'),
+      'After adding RR, RR service block must be present');
+
+    // Step 4: WinRAR oracle validation (catches "Main archive header is corrupt").
+    if (oracleAvailable()) {
+      const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.equal(resWin.code, 0,
+        `WinRAR rejected the QO+RR archive: ${resWin.output}`);
+    }
+  });
+
+  it('applying -rr twice (idempotency) produces a valid archive', () => {
+    // Regression guard: calling add_recovery_record on an archive that already
+    // has an RR (but no QO, since the first -rr strips it) must not corrupt
+    // the main header or introduce stale locator offsets.
+    const tree = freshDir('rec-idempotent-tree');
+    makeFixtureTree(tree);
+    const out = freshDir('rec-idempotent-out');
+    const arc = join(out, 'double_rr.rar');
+
+    // First -rr pass.
+    runTool(OUR_EXE, ['a', '-y', '-m0', '-rr5%', arc, '.'], tree);
+    assert.ok(existsSync(arc), 'Archive must exist after first -rr');
+
+    // Second -rr pass on an already-RR archive.
+    const resRr2 = runTool(OUR_EXE, ['a', '-y', '-rr5%', arc], out);
+    assert.equal(resRr2.code, 0, `Second -rr pass failed: ${resRr2.output}`);
+
+    // Structural check: single RR block, no QO block.
+    const buf = readFileSync(arc);
+    const parsed = parseArchive(buf);
+    const features = analyze(parsed);
+    const rrBlocks = parsed.blocks.filter((b) => b.file?.service === 'RR');
+    assert.equal(rrBlocks.length, 1,
+      'Exactly one RR service block must be present after double -rr');
+    assert.ok(!features.locatorQuickOpen,
+      'QO locator must be absent after double -rr');
+    assert.ok(features.locatorRR,
+      'RR locator must be present after double -rr');
+
+    // Oracle validation.
+    if (oracleAvailable()) {
+      const resWin = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.equal(resWin.code, 0,
+        `WinRAR rejected double-rr archive: ${resWin.output}`);
+    }
+
+    // Extraction must still work.
+    const extDir = freshDir('rec-idempotent-ext');
+    const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + DIR_SEP], tree);
+    assert.equal(resExt.code, 0,
+      `Extraction failed after double -rr: ${resExt.output}`);
   });
 });

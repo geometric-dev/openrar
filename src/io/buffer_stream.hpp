@@ -19,7 +19,7 @@ public:
         size_ = size;
         pos_ = 0;
     }
-    void set(const core::byte* data, size_t size) {
+    void set(const char* data, size_t size) {
         data_ = reinterpret_cast<const core::byte*>(data);
         size_ = size;
         pos_ = 0;

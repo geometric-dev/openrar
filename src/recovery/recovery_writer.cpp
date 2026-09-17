@@ -230,6 +230,26 @@ bool atomic_replace(const std::filesystem::path& tmp_path, const std::filesystem
 #endif
 }
 
+// Exception-safe cleanup guard for the single rr_tmp file created by
+// add_recovery_record. Mirrors the TempFileCleanupGuard in archive_mutator.cpp;
+// duplicated here to avoid a cross-library dependency.
+struct TempFileCleanupGuard {
+    io::FileStream* stream{nullptr};
+    std::filesystem::path path;
+    bool committed{false};
+
+    void commit() noexcept { committed = true; }
+
+    ~TempFileCleanupGuard() {
+        if (committed) return;
+        if (stream && stream->is_open()) stream->close();
+        if (!path.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+        }
+    }
+};
+
 // Locate the "RR" service header inside a file. Returns file offsets and the
 // raw data-area bytes; caller parses the internal shard structure.
 struct RrLocation {
@@ -661,6 +681,11 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path, co
     // ———— .rev recovery volumes (INTEGRITY_WRITE_SIDE.md §4.7) ————————————————
     // Every data volume is one RS16 data shard; each .rev file carries one
     // parity shard. Layout per .rev file:
+    //
+    // QO-locator safety: this function treats each data volume as an opaque
+    // stream of bytes for RS16 encoding. It never reads a MainBlock or emits
+    // a locator. The QO/RR locator size-mismatch bug fixed in
+    // add_recovery_record does NOT apply here.
     //   +0  "Rar!\x1aRev"   +8  HeaderCRC32 = CRC32(HeaderSize_le32 || body)
     //   +12 HeaderSize LE32 (body length)   +16 body   +16+N parity payload
     //   body: u8 version=1, u16 DataCount, u16 RecCount, u16 RecNum (=ND+j),
@@ -960,25 +985,26 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
         reader.close();
         return false;
     }
+    // Exception-safe guard: any throw (bad_alloc from parity vectors, RS16
+    // init, etc.) will close + remove the tmp file before propagating.
+    TempFileCleanupGuard tmp_guard{&out, tmp_path};
 
     io::FileStream src_for_copy;
     if (!src_for_copy.open(arc_path, io::FileMode::ReadOnly)) {
-        out.close();
-        std::filesystem::remove(tmp_path);
         reader.close();
-        return false;
+        return false; // tmp_guard destructor will clean up out + tmp_path
     }
 
     if (sfx_off > 0) {
         if (!copy_stream_region(src_for_copy, out, 0, sfx_off)) {
-            out.close();
-            std::filesystem::remove(tmp_path);
+            src_for_copy.close();
+            reader.close();
             return false;
         }
     }
     if (!format::HeaderWriter::write_signature(out)) {
-        out.close();
-        std::filesystem::remove(tmp_path);
+        src_for_copy.close();
+        reader.close();
         return false;
     }
     core::uint64 main_start = sfx_off + 8;
@@ -991,12 +1017,13 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     // record is 10 bytes larger than the QO-only record, shifting all
     // subsequent entries in the rewritten archive and making the stored offset
     // point to the wrong location, which WinRAR detects as a corrupt header.
+    // See headers.hpp MainBlock::locator_qo_offset for sentinel semantics.
     mb.locator_qo_offset = -1;
     mb.has_locator = true;
     mb.locator_rr_offset = 0; // patched below to the actual RR offset once known
     if (!format::HeaderWriter::write_main_block(out, mb)) {
-        out.close();
-        std::filesystem::remove(tmp_path);
+        src_for_copy.close();
+        reader.close();
         return false;
     }
 
@@ -1010,8 +1037,8 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
         if (entry.header.is_service && entry.header.service_type == "QO") continue;
         if (!copy_stream_region(src_for_copy, out, entry.header_offset,
                                 entry.header_size + entry.data_size)) {
-            out.close();
-            std::filesystem::remove(tmp_path);
+            src_for_copy.close();
+            reader.close();
             return false;
         }
     }
@@ -1031,20 +1058,14 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     // size stable, so rr_header_offset stays valid.
     mb.locator_rr_offset = static_cast<core::int64>(rr_header_offset - main_start);
     if (!out.seek(static_cast<core::int64>(main_start), io::SeekOrigin::Begin)) {
-        out.close();
-        std::filesystem::remove(tmp_path);
         return false;
     }
     if (!format::HeaderWriter::write_main_block(out, mb)) {
-        out.close();
-        std::filesystem::remove(tmp_path);
         return false;
     }
 
     RecoveryGeometry g = compute_geometry(archive_size, percent);
     if (g.NR == 0 || g.D == 0 || g.group_count == 0) {
-        out.close();
-        std::filesystem::remove(tmp_path);
         return false;
     }
 
@@ -1059,14 +1080,11 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     out.flush();
     out.close();
     if (!out.open(tmp_path, io::FileMode::ReadWrite)) {
-        std::filesystem::remove(tmp_path);
         return false;
     }
 
     ReedSolomon16 rs;
     if (!rs.init(g.D, g.NR)) {
-        out.close();
-        std::filesystem::remove(tmp_path);
         return false;
     }
 
@@ -1108,13 +1126,9 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
             if (base < avail) {
                 core::uint64 take = std::min<core::uint64>(stripe_len, avail - base);
                 if (!out.seek(static_cast<core::int64>(shard_off + base), io::SeekOrigin::Begin)) {
-                    out.close();
-                    std::filesystem::remove(tmp_path);
                     return false;
                 }
                 if (out.read(scratch.data(), static_cast<size_t>(take)) != take) {
-                    out.close();
-                    std::filesystem::remove(tmp_path);
                     return false;
                 }
             }
@@ -1133,8 +1147,6 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
 
     // Position at end of archive prefix for appending RR service block.
     if (!out.seek(static_cast<core::int64>(archive_size), io::SeekOrigin::Begin)) {
-        out.close();
-        std::filesystem::remove(tmp_path);
         return false;
     }
 
@@ -1142,8 +1154,6 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     auto data_area_size =
         calculate_parity_buffer_size(g.NR, static_cast<core::uint32>(g.shard_size));
     if (!data_area_size) {
-        out.close();
-        std::filesystem::remove(tmp_path);
         return false;
     }
     std::vector<core::byte> data_area;
@@ -1154,8 +1164,6 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     }
 
     if (!write_rr_service_block(out, data_area, g.pct)) {
-        out.close();
-        std::filesystem::remove(tmp_path);
         return false;
     }
 
@@ -1163,13 +1171,11 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     format::EndArcBlock eb;
     eb.end_flags = 0;
     if (!format::HeaderWriter::write_end_block(out, eb)) {
-        out.close();
-        std::filesystem::remove(tmp_path);
         return false;
     }
 
     out.close();
-
+    tmp_guard.commit();
     return atomic_replace(tmp_path, arc_path);
 }
 
