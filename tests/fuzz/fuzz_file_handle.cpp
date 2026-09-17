@@ -299,11 +299,4 @@ int main() {
     return 0;
 }
 
-#else
-
-int main() {
-    std::cout << "libFuzzer driver linked; standalone main unused.\n";
-    return 0;
-}
-
-#endif
+#endif // OPENRAR_USE_LIBFUZZER
