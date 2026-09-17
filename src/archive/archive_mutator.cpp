@@ -130,7 +130,8 @@ void apply_unix_owner(format::FileBlock& fb, const std::filesystem::path& path) 
     long bufsize = ::sysconf(_SC_GETPW_R_SIZE_MAX);
     if (bufsize <= 0) bufsize = 1024;
     std::vector<char> buf(static_cast<size_t>(bufsize));
-    struct passwd pwd{};
+    struct passwd pwd;
+    std::memset(&pwd, 0, sizeof(pwd));
     struct passwd* result = nullptr;
     while (true) {
         int rc = ::getpwuid_r(st.st_uid, &pwd, buf.data(), buf.size(), &result);
@@ -149,7 +150,8 @@ void apply_unix_owner(format::FileBlock& fb, const std::filesystem::path& path) 
     long gbufsize = ::sysconf(_SC_GETGR_R_SIZE_MAX);
     if (gbufsize <= 0) gbufsize = 1024;
     std::vector<char> gbuf(static_cast<size_t>(gbufsize));
-    struct group grp{};
+    struct group grp;
+    std::memset(&grp, 0, sizeof(grp));
     struct group* gresult = nullptr;
     while (true) {
         int rc = ::getgrgid_r(st.st_gid, &grp, gbuf.data(), gbuf.size(), &gresult);

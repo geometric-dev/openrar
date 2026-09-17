@@ -109,7 +109,10 @@ inline bool sw_starts(std::string_view sw, std::string_view prefix) {
 }
 
 void print_banner() {
-    if (g_quiet_mode) return;
+    if (g_quiet_mode) {
+        return;
+    }
+
     // OPENRAR_CLI_VERSION comes from the CMake project version; the fallback
     // only serves bare manual compiles that bypass the build system.
 #ifndef OPENRAR_CLI_VERSION
