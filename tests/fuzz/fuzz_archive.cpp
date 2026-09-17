@@ -46,11 +46,9 @@ void exercise_archive_abi(const uint8_t* data, size_t size) {
         size_t buf_size = 0;
         uint64_t* offsets = nullptr;
         uint32_t n = 0;
-        if (openrar_archive_extract_all(data, size, &buf, &buf_size, &offsets, &n) == RAR_OK ||
-            openrar_archive_extract_all(data, size, &buf, &buf_size, &offsets, &n) != RAR_OK) {
-            openrar_archive_free(buf);
-            openrar_archive_free(offsets);
-        }
+        openrar_archive_extract_all(data, size, &buf, &buf_size, &offsets, &n);
+        openrar_archive_free(buf);
+        openrar_archive_free(offsets);
     }
 
     // open / close handle flow
@@ -61,14 +59,21 @@ void exercise_archive_abi(const uint8_t* data, size_t size) {
             void* he = nullptr;
             void* hp = nullptr;
             size_t hs = 0;
-            if (openrar_archive_handle_list(h, &hc, &he, &hp, &hs) == RAR_OK && hc > 0) {
-                uint8_t* out = nullptr;
-                size_t out_len = 0;
-                openrar_archive_handle_extract(h, hc - 1, &out, &out_len);
-                openrar_archive_free(out);
+            if (openrar_archive_handle_list(h, &hc, &he, &hp, &hs) == RAR_OK) {
+                if (hc > 0) {
+                    uint8_t* out = nullptr;
+                    size_t out_len = 0;
+                    openrar_archive_handle_extract(h, hc - 1, &out, &out_len);
+                    openrar_archive_free(out);
+                }
+                openrar_archive_list_free(he, hp, hs);
+                he = nullptr;
+                hp = nullptr;
+                hs = 0;
             }
-            openrar_archive_handle_list(h, &hc, &he, &hp, &hs);
-            openrar_archive_list_free(he, hp, hs);
+            if (openrar_archive_handle_list(h, &hc, &he, &hp, &hs) == RAR_OK) {
+                openrar_archive_list_free(he, hp, hs);
+            }
             openrar_archive_close(h);
             openrar_archive_close(h); // double close must be safe
         }
