@@ -3,6 +3,7 @@
 #include "volume.hpp"
 #include "../format/header_reader.hpp"
 #include "../io/path_util.hpp"
+#include "../io/buffer_stream.hpp"
 #include "../core/vint.hpp"
 #include "../crypto/crc32.hpp"
 #include "../crypto/blake2sp.hpp"
@@ -333,6 +334,218 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                 if (!first_main_read) {
                     first_main = vol_main;
                     first_main_read = true;
+                }
+                // QuickOpen fast-path: if main header carries a locator with a valid QO offset
+                // and this is not a multi-volume set, try reading all cached headers at once.
+                if (vol_main.has_locator && vol_main.locator_qo_offset > 0 &&
+                    !(vol_main.arc_flags & format::MHFL_VOLUME) && !hcrypt.active) {
+                    core::uint64 qo_abs_pos =
+                        head_start + static_cast<core::uint64>(vol_main.locator_qo_offset);
+                    core::uint64 curr_pos = vs.tell();
+                    if (qo_abs_pos + 7 < vsz &&
+                        vs.seek(static_cast<core::int64>(qo_abs_pos), io::SeekOrigin::Begin)) {
+                        core::uint64 qo_type = 0, qo_flags = 0, qo_data_size = 0;
+                        std::vector<core::byte> qo_body;
+                        auto qo_res = format::HeaderReader::read_block_raw(
+                            vs, qo_type, qo_flags, qo_body, qo_data_size, &hcrypt);
+                        if (qo_res == format::HeaderResult::Ok && qo_type == format::HEAD_SERVICE) {
+                            format::FileBlock qo_header;
+                            if (format::HeaderReader::parse_file_header(
+                                    qo_body.data(), qo_body.size(), qo_header) &&
+                                qo_header.is_service && qo_header.service_type == "QO" &&
+                                qo_data_size > 0 && qo_data_size <= 64 * 1024 * 1024 &&
+                                vs.tell() + qo_data_size <= vsz) {
+                                std::vector<core::byte> qo_buf(static_cast<size_t>(qo_data_size));
+                                if (vs.read(qo_buf.data(), qo_buf.size()) == qo_buf.size()) {
+                                    size_t qp = 0;
+                                    std::vector<ArchiveEntry> qo_entries;
+                                    core::uint64 last_orig_pos = 0;
+                                    bool qo_ok = true;
+
+                                    while (qp < qo_buf.size()) {
+                                        if (qp + 4 > qo_buf.size()) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+                                        core::uint32 struct_crc =
+                                            core::read_le32(qo_buf.data() + qp);
+                                        size_t struct_size_start = qp + 4;
+                                        core::uint64 struct_size = 0;
+                                        size_t rb = 0;
+                                        if (!core::read_vint(qo_buf.data() + struct_size_start,
+                                                             qo_buf.size() - struct_size_start,
+                                                             struct_size, rb)) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+                                        size_t body_start = struct_size_start + rb;
+                                        size_t struct_end =
+                                            body_start + static_cast<size_t>(struct_size);
+                                        if (struct_size > 2 * 1024 * 1024 ||
+                                            struct_end > qo_buf.size()) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+
+                                        crypto::Crc32 check_crc;
+                                        check_crc.update(qo_buf.data() + struct_size_start,
+                                                         struct_end - struct_size_start);
+                                        if (check_crc.get() != struct_crc) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+
+                                        size_t cur = body_start;
+                                        core::uint64 sflags = 0;
+                                        if (!core::read_vint(qo_buf.data() + cur,
+                                                             struct_end - cur, sflags, rb)) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+                                        cur += rb;
+
+                                        core::uint64 dist = 0;
+                                        if (!core::read_vint(qo_buf.data() + cur,
+                                                             struct_end - cur, dist, rb)) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+                                        cur += rb;
+
+                                        core::uint64 data_sz = 0;
+                                        if (!core::read_vint(qo_buf.data() + cur,
+                                                             struct_end - cur, data_sz, rb)) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+                                        cur += rb;
+
+                                        if (cur + data_sz > struct_end || dist > qo_abs_pos) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+
+                                        core::uint64 orig_pos = qo_abs_pos - dist;
+                                        if (orig_pos < last_orig_pos) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+                                        last_orig_pos = orig_pos;
+
+                                        size_t mem_off = 0;
+                                        core::uint64 entry_type = 0, entry_flags = 0,
+                                                     entry_data_size = 0;
+                                        std::vector<core::byte> entry_body;
+                                        auto bres = format::HeaderReader::read_block_raw_mem(
+                                            qo_buf.data() + cur, static_cast<size_t>(data_sz),
+                                            mem_off, entry_type, entry_flags, entry_body,
+                                            entry_data_size);
+                                        if (bres != format::HeaderResult::Ok ||
+                                            (entry_type != format::HEAD_FILE &&
+                                             entry_type != format::HEAD_SERVICE)) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+
+                                        ArchiveEntry e;
+                                        e.header_offset = orig_pos;
+                                        e.header_size = data_sz;
+                                        e.data_offset = orig_pos + data_sz;
+                                        if (!format::HeaderReader::parse_file_header(
+                                                entry_body.data(), entry_body.size(), e.header)) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+                                        e.split_before =
+                                            (entry_flags & format::HFL_SPLITBEFORE) != 0;
+                                        e.split_after =
+                                            (entry_flags & format::HFL_SPLITAFTER) != 0;
+                                        core::uint64 avail =
+                                            e.data_offset < vsz ? vsz - e.data_offset : 0;
+                                        core::uint64 admit =
+                                            entry_data_size < avail ? entry_data_size : avail;
+                                        e.data_size = admit;
+                                        e.extents.push_back({vpath, e.data_offset, admit});
+                                        qo_entries.push_back(std::move(e));
+
+                                        qp = struct_end;
+                                    }
+
+                                    if (qo_ok && !qo_entries.empty()) {
+                                        // If the first cached entry starts after curr_pos, QO is only a partial cache
+                                        // (e.g. WinRAR archives created with -qo caching only large files, like hello5_p.rar).
+                                        // In that case fall back to sequential scan so no preceding files are lost.
+                                        if (qo_entries.front().header_offset > curr_pos) {
+                                            qo_ok = false;
+                                        }
+                                    }
+
+                                    if (qo_ok && !qo_entries.empty()) {
+                                        ArchiveEntry qo_entry;
+                                        qo_entry.header_offset = qo_abs_pos;
+                                        core::uint64 qo_hdr_end = vs.tell();
+                                        qo_entry.header_size =
+                                            (qo_hdr_end - qo_data_size) > qo_abs_pos
+                                                ? (qo_hdr_end - qo_data_size - qo_abs_pos)
+                                                : 0;
+                                        qo_entry.data_offset = qo_abs_pos + qo_entry.header_size;
+                                        qo_entry.data_size = qo_data_size;
+                                        qo_entry.header = qo_header;
+                                        qo_entry.extents.push_back(
+                                            {vpath, qo_entry.data_offset, qo_data_size});
+                                        qo_entries.push_back(std::move(qo_entry));
+
+                                        // Scan trailing blocks (e.g. RR, ENDARC)
+                                        while (vs.tell() < vsz) {
+                                            core::uint64 trail_start = vs.tell();
+                                            core::uint64 ttype = 0, tflags = 0, tdata_size = 0;
+                                            std::vector<core::byte> tbody;
+                                            auto tres = format::HeaderReader::read_block_raw(
+                                                vs, ttype, tflags, tbody, tdata_size, &hcrypt);
+                                            if (tres != format::HeaderResult::Ok) break;
+                                            core::uint64 trail_end = vs.tell();
+
+                                            if (ttype == format::HEAD_SERVICE) {
+                                                ArchiveEntry te;
+                                                te.header_offset = trail_start;
+                                                te.header_size = trail_end - trail_start;
+                                                te.data_offset = trail_end;
+                                                if (format::HeaderReader::parse_file_header(
+                                                        tbody.data(), tbody.size(), te.header)) {
+                                                    core::uint64 avail =
+                                                        tdata_size > 0 && vsz > vs.tell()
+                                                            ? vsz - vs.tell()
+                                                            : 0;
+                                                    core::uint64 admit =
+                                                        tdata_size < avail ? tdata_size : avail;
+                                                    te.data_size = admit;
+                                                    te.extents.push_back(
+                                                        {vpath, te.data_offset, admit});
+                                                    qo_entries.push_back(std::move(te));
+                                                    if (admit > 0) {
+                                                        vs.seek(static_cast<core::int64>(admit),
+                                                                io::SeekOrigin::Current);
+                                                    }
+                                                }
+                                            } else if (ttype == format::HEAD_ENDARC) {
+                                                format::EndArcBlock eb;
+                                                if (format::HeaderReader::parse_end_header(
+                                                        tbody.data(), tbody.size(), eb)) {
+                                                    if ((eb.end_flags & 0x0001) == 0)
+                                                        vol_saw_end = true;
+                                                }
+                                                break;
+                                            }
+                                        }
+
+                                        raw_out = std::move(qo_entries);
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    vs.seek(static_cast<core::int64>(curr_pos), io::SeekOrigin::Begin);
                 }
             } else if (type == format::HEAD_FILE || type == format::HEAD_SERVICE) {
                 ArchiveEntry e;

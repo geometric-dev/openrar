@@ -165,8 +165,8 @@ bool HeaderWriter::write_file_block(io::FileStream& dest, const FileBlock& block
     return write_file_block(dest, block, 0, nullptr);
 }
 
-bool HeaderWriter::write_file_block(io::FileStream& dest, const FileBlock& block,
-                                    core::uint64 extra_head_flags, HeaderCryptWriter* crypt) {
+std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& block,
+                                                           core::uint64 extra_head_flags) {
     std::vector<core::byte> extra;
 
     // Encryption Extra Record
@@ -405,7 +405,12 @@ bool HeaderWriter::write_file_block(io::FileStream& dest, const FileBlock& block
         body.insert(body.end(), extra.begin(), extra.end());
     }
 
-    auto wrapped = wrap_block(body);
+    return wrap_block(body);
+}
+
+bool HeaderWriter::write_file_block(io::FileStream& dest, const FileBlock& block,
+                                    core::uint64 extra_head_flags, HeaderCryptWriter* crypt) {
+    auto wrapped = serialize_file_block(block, extra_head_flags);
     return emit_block(dest, wrapped, crypt);
 }
 

@@ -149,7 +149,7 @@ describe('RAR 5.0 Archive Mutation (d, u, f, m, k)', () => {
     assert.notEqual(resUpd.code, 0, 'Update on locked archive must return non-zero error code');
   });
 
-  it('strips QuickOpen and locators upon mutation', { skip: true && 'QO writer support deferred per 00-overview.md' }, () => {
+  it('strips QuickOpen and locators upon mutation', () => {
     const tree = freshDir('mut-qo-tree');
     makeFixtureTree(tree);
     const out = freshDir('mut-qo-out');

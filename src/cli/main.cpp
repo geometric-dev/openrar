@@ -152,6 +152,7 @@ void print_help() {
               << "  l[t[a],b]     List contents of archive [technical, bare]\n"
               << "  m             Move files to archive (delete after archiving)\n"
               << "  r             Repair damaged archive\n"
+              << "  rr[N]         Add data recovery record\n"
               << "  s             Convert archive to SFX\n"
               << "  t             Test archive integrity\n"
               << "  u             Update files in archive\n"
@@ -309,14 +310,13 @@ struct ReaderSlots {
 
 // Parallel decode is only safe when every entry decodes independently: no
 // solid archive or solid-flagged entry (they share one LZ window in order),
-// no multi-volume set (chain state across volumes), no redirections/symlinks
-// (self-link conversion is order-sensitive), no duplicate names (target-path
-// collisions are checked separately by the extract path).
+// and no multi-volume set (chain state across volumes). Redirections/symlinks
+// are handled cleanly by the Three-Phase extraction pipeline.
 bool entries_independently_decodable(const archive::ArchiveReader& reader) {
     if (reader.is_solid() || reader.is_volume()) return false;
     for (const auto& e : reader.entries()) {
         if (e.header.is_service) continue;
-        if (e.header.is_solid || e.header.redir_type != 0) return false;
+        if (e.header.is_solid) return false;
     }
     return true;
 }
@@ -509,7 +509,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                          bool announce, unsigned threads, std::string* err_name = nullptr,
                          core::uint32 times_mask = archive::time_flags::MTIME, bool solid = false,
                          const std::vector<core::byte>* comment = nullptr, bool want_stm = false,
-                         bool want_acl = false) {
+                         bool want_acl = false, bool want_qo = true) {
     constexpr core::uint64 PREPARE_BUDGET = 1ull << 30; // in-flight prepare bytes
 
     std::vector<archive::ArchiveMutator::PreparedAdd> prepared(queue.size());
@@ -558,7 +558,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         Prog.note_file_done(queue[0].entry_name, queue[0].file_size);
         if (!archive::ArchiveMutator::write_batch_add(
                 arc_path, prepared, sfx_stub, password, encrypt_headers, {}, solid,
-                comment ? *comment : std::vector<core::byte>())) {
+                comment ? *comment : std::vector<core::byte>(), want_qo)) {
             return 1;
         }
         if (announce && !g_quiet_mode && !is_vt_supported()) {
@@ -700,7 +700,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     try {
         ok = archive::ArchiveMutator::write_batch_add(
             arc_path, prepared, sfx_stub, password, encrypt_headers, on_write, solid,
-            comment ? *comment : std::vector<core::byte>());
+            comment ? *comment : std::vector<core::byte>(), want_qo);
     } catch (const PrepareFailed&) {
         ok = false;
     } catch (...) {
@@ -733,7 +733,8 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                    bool no_dir_records = false,
                    io::ExcludePathMode ep_mode = io::ExcludePathMode::None,
                    bool recurse_subdirs = true, bool want_symlinks = false, bool freshen = false,
-                   bool want_stm = false, bool want_acl = false, bool want_hardlinks = false) {
+                   bool want_stm = false, bool want_acl = false, bool want_hardlinks = false,
+                   bool want_qo = true) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return 1;
@@ -1184,7 +1185,7 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
         int rc =
             run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
                           /*delete_source=*/false, /*announce=*/true, threads, nullptr, times_mask,
-                          solid, comment.empty() ? nullptr : &comment, want_stm, want_acl);
+                          solid, comment.empty() ? nullptr : &comment, want_stm, want_acl, want_qo);
         if (rc != 0) return rc;
     }
 
@@ -1476,35 +1477,120 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             r->set_keep_broken(keep_broken);
             r->set_extract_symlinks(extract_symlinks);
         }
+
+        // Categorize jobs into three phases:
+        // Phase 1: Regular files (parallelized across the thread pool)
+        // Phase 2: Links/redirections (symlinks, junctions, hardlinks, filecopy) - sequential
+        // Phase 3: Directories - bottom-up reverse topological order
+        std::vector<size_t> phase1_indices;
+        std::vector<size_t> phase2_indices;
+        std::vector<size_t> phase3_indices;
+
         for (size_t i = 0; i < extract_jobs.size(); ++i) {
-            pool.submit([&slots, &flags, &extract_jobs, &badpw_flag, &restore_children, i] {
-                // Same exception contract as the test path: extract_entry
-                // handles untrusted data; never skip flags.finish (H2).
+            const auto* ent = extract_jobs[i].entry;
+            if (ent->header.redir_type != 0) {
+                phase2_indices.push_back(i);
+            } else if ((ent->header.file_flags & format::FHFL_DIRECTORY) != 0) {
+                phase3_indices.push_back(i);
+            } else {
+                phase1_indices.push_back(i);
+            }
+        }
+
+        // Sort Phase 3 directory indices descending by target path length (deepest directories first)
+        std::sort(phase3_indices.begin(), phase3_indices.end(), [&](size_t a, size_t b) {
+            return extract_jobs[a].target.string().size() > extract_jobs[b].target.string().size();
+        });
+
+        // Phase 1: Parallel file extraction
+        std::mutex phase1_mu;
+        std::condition_variable phase1_cv;
+        size_t phase1_remaining = phase1_indices.size();
+
+        for (size_t idx : phase1_indices) {
+            pool.submit([&slots, &flags, &extract_jobs, &badpw_flag, &restore_children,
+                         &phase1_remaining, &phase1_cv, &phase1_mu, idx] {
                 bool okv = false;
                 size_t s = 0;
                 bool acquired = false;
                 try {
                     s = slots.acquire();
                     acquired = true;
-                    okv = slots.readers[s]->extract_entry(*extract_jobs[i].entry,
-                                                          extract_jobs[i].target,
+                    okv = slots.readers[s]->extract_entry(*extract_jobs[idx].entry,
+                                                          extract_jobs[idx].target,
                                                           slots.readers[s]->password());
                     if (okv) {
-                        restore_children(*slots.readers[s], extract_jobs[i]);
+                        restore_children(*slots.readers[s], extract_jobs[idx]);
                     }
                     if (!okv && slots.readers[s]->has_bad_password()) badpw_flag.store(1);
                 } catch (...) {
                     okv = false;
                 }
                 if (acquired) slots.release(s);
-                flags.finish(i, okv);
+                flags.finish(idx, okv);
                 try {
-                    Prog.note_file_done(extract_jobs[i].entry->header.file_name,
-                                        extract_jobs[i].entry->header.unp_size);
+                    Prog.note_file_done(extract_jobs[idx].entry->header.file_name,
+                                        extract_jobs[idx].entry->header.unp_size);
                 } catch (...) {
+                }
+                {
+                    std::lock_guard<std::mutex> lk(phase1_mu);
+                    if (--phase1_remaining == 0) {
+                        phase1_cv.notify_one();
+                    }
                 }
             });
         }
+
+        if (!phase1_indices.empty()) {
+            std::unique_lock<std::mutex> lk(phase1_mu);
+            phase1_cv.wait(lk, [&] { return phase1_remaining == 0; });
+        }
+
+        // Phase 2: Sequential links/redirections (target files guaranteed to exist on disk)
+        for (size_t idx : phase2_indices) {
+            bool okv = false;
+            try {
+                okv = slots.readers[0]->extract_entry(*extract_jobs[idx].entry,
+                                                      extract_jobs[idx].target,
+                                                      slots.readers[0]->password());
+                if (okv) {
+                    restore_children(*slots.readers[0], extract_jobs[idx]);
+                }
+                if (!okv && slots.readers[0]->has_bad_password()) badpw_flag.store(1);
+            } catch (...) {
+                okv = false;
+            }
+            flags.finish(idx, okv);
+            try {
+                Prog.note_file_done(extract_jobs[idx].entry->header.file_name,
+                                    extract_jobs[idx].entry->header.unp_size);
+            } catch (...) {
+            }
+        }
+
+        // Phase 3: Directories in reverse topological order (bottom-up)
+        for (size_t idx : phase3_indices) {
+            bool okv = false;
+            try {
+                okv = slots.readers[0]->extract_entry(*extract_jobs[idx].entry,
+                                                      extract_jobs[idx].target,
+                                                      slots.readers[0]->password());
+                if (okv) {
+                    restore_children(*slots.readers[0], extract_jobs[idx]);
+                }
+                if (!okv && slots.readers[0]->has_bad_password()) badpw_flag.store(1);
+            } catch (...) {
+                okv = false;
+            }
+            flags.finish(idx, okv);
+            try {
+                Prog.note_file_done(extract_jobs[idx].entry->header.file_name,
+                                    extract_jobs[idx].entry->header.unp_size);
+            } catch (...) {
+            }
+        }
+
         // Report in archive order so console output matches the sequential run.
         // Unlike the old first-failure abort, every entry is attempted —
         // whatever is decodable gets extracted before the non-zero exit.
@@ -1576,7 +1662,7 @@ int convert_to_sfx(const std::string& arc_path, const std::string& sfx_name_raw,
 int move_to_archive(const std::string& arc_path, const std::vector<std::string>& files,
                     int method = 3, const std::filesystem::path& sfx_stub = {},
                     ::openrar::core::uint64 vol_size = 0, const std::string& password = "",
-                    bool encrypt_headers = false, unsigned threads = 1) {
+                    bool encrypt_headers = false, unsigned threads = 1, bool want_qo = true) {
     if (files.empty()) {
         std::cerr << "No files specified for move\n";
         return 1;
@@ -1606,7 +1692,9 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
 
     std::string failed_name;
     int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
-                           /*delete_source=*/true, /*announce=*/false, threads, &failed_name);
+                           /*delete_source=*/true, /*announce=*/false, threads, &failed_name,
+                           archive::time_flags::MTIME, /*solid=*/false, nullptr, /*want_stm=*/false,
+                           /*want_acl=*/false, want_qo);
     if (rc != 0) {
         std::cerr << "Failed moving "
                   << (failed_name.empty() ? queue.front().src_path.string() : failed_name) << " to "
@@ -1688,6 +1776,7 @@ static int cli_main(int argc, char* argv[]) {
     bool extract_symlinks = true; // -ol-
     bool keep_broken = false;     // -kb
     openrar::cli::OverwriteMode overwrite_mode = openrar::cli::OverwriteMode::Prompt;
+    bool want_qo = true;          // -qo, -qo+, -qo- (default: enabled)
 
     for (const auto& s : switches) {
         if (sw_eq(s, "-plain") || sw_eq(s, "--plain") || sw_eq(s, "-idp") ||
@@ -1875,6 +1964,12 @@ static int cli_main(int argc, char* argv[]) {
             want_acl = true;
         } else if (sw_eq(s, "-os") || sw_starts(s, "-os")) {
             want_stm = true;
+        } else if (sw_eq(s, "-qo") || sw_eq(s, "-qo+")) {
+            want_qo = true;
+        } else if (sw_eq(s, "-qo-")) {
+            want_qo = false;
+        } else if (sw_eq(s, "-am") || sw_eq(s, "-ams")) {
+            // Archive mutator switch accepted
         } else {
             // Unknown switches must not vanish silently: a mistyped
             // security-relevant switch would otherwise degrade to insecure
@@ -1978,10 +2073,20 @@ static int cli_main(int argc, char* argv[]) {
 
     if (cmd == "a" || cmd == "u" || cmd == "f") {
         std::string target_arc = want_sfx ? sfx_arc_path_str : arc_path;
-        int rc = openrar::cli::add_to_archive(
-            target_arc, files, method, sfx_stub_path, vol_size, password, want_header_encryption,
-            threads, want_solid, comment, times_mask, no_dir_records, ep_mode, recurse_subdirs,
-            want_symlinks, (cmd == "f"), want_stm, want_acl, want_hardlinks);
+        int rc = 0;
+        if (files.empty()) {
+            if (std::filesystem::exists(target_arc) && (want_rr || want_lock)) {
+                rc = 0;
+            } else {
+                std::cerr << "No files specified for addition\n";
+                return 1;
+            }
+        } else {
+            rc = openrar::cli::add_to_archive(
+                target_arc, files, method, sfx_stub_path, vol_size, password, want_header_encryption,
+                threads, want_solid, comment, times_mask, no_dir_records, ep_mode, recurse_subdirs,
+                want_symlinks, (cmd == "f"), want_stm, want_acl, want_hardlinks, want_qo);
+        }
         if (rc == 0 && want_rr) {
             bool rr_ok;
             bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;
@@ -2025,6 +2130,35 @@ static int cli_main(int argc, char* argv[]) {
                                              overwrite_mode, extract_symlinks);
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
+    } else if (cmd == "rr" || cmd.rfind("rr", 0) == 0) {
+        if (!std::filesystem::exists(arc_path)) {
+            std::cerr << "Cannot open " << arc_path << "\n";
+            return 1;
+        }
+        if (cmd.size() > 2) {
+            std::string pct_str = cmd.substr(2);
+            while (!pct_str.empty() &&
+                   (pct_str.back() == '%' || pct_str.back() == 'p' || pct_str.back() == 'P'))
+                pct_str.pop_back();
+            if (!pct_str.empty()) {
+                try {
+                    rr_percent = static_cast<openrar::core::uint32>(std::stoul(pct_str));
+                } catch (...) {
+                    rr_percent = 3;
+                }
+                if (rr_percent == 0) rr_percent = 3;
+                if (rr_percent > 1000) rr_percent = 1000;
+            }
+        }
+        bool rr_ok = openrar::recovery::RecoveryWriter::add_recovery_record(arc_path, rr_percent, threads);
+        if (!rr_ok) {
+            std::cerr << "W: recovery record creation failed\n";
+            return 1;
+        }
+        if (!openrar::cli::g_quiet_mode) {
+            std::cout << "Added RR " << rr_percent << "% (0x1100B)\n";
+        }
+        return 0;
     } else if (cmd == "l" || cmd == "v") {
         return openrar::cli::list_archive(arc_path, false, false, password);
     } else if (cmd == "lb") {
@@ -2050,7 +2184,7 @@ static int cli_main(int argc, char* argv[]) {
         }
         std::string move_arc = sfx_stub_path.empty() ? arc_path : sfx_arc_path_str;
         int rc = openrar::cli::move_to_archive(move_arc, files, method, sfx_stub_path, vol_size,
-                                               password, want_header_encryption, threads);
+                                               password, want_header_encryption, threads, want_qo);
         if (rc == 0 && want_rr) {
             bool rr_ok;
             bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;

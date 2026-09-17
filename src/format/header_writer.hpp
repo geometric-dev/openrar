@@ -44,6 +44,8 @@ public:
     static bool write_file_block(io::FileStream& dest, const FileBlock& block);
     static bool write_file_block(io::FileStream& dest, const FileBlock& block,
                                  core::uint64 extra_head_flags, HeaderCryptWriter* crypt = nullptr);
+    static std::vector<core::byte> serialize_file_block(const FileBlock& block,
+                                                        core::uint64 extra_head_flags = 0);
     static bool write_crypt_block(io::FileStream& dest, const CryptBlock& block);
     static bool write_end_block(io::FileStream& dest, const EndArcBlock& block,
                                 HeaderCryptWriter* crypt = nullptr);

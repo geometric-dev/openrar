@@ -216,7 +216,7 @@ describe('RAR5 writer structural output', () => {
     assert.notEqual(meta.name, undefined, 'metadata record should carry archive name');
   });
 
-  it('[default] writes locator + QO service; [qo-off] writes neither', { skip: QO_METADATA_DEFERRED && 'QO/locator writer support deferred per 00-overview.md' }, () => {
+  it('[default] writes locator + QO service; [qo-off] writes neither', () => {
     const def = buildParsed({ name: 'def-qo', switches: ['-m3'] });
     const mainDef = def.parsed.blocks.find((b) => b.typeName === 'main');
     assert.ok(mainDef.extra?.some((e) => e.type === 1));
@@ -226,15 +226,6 @@ describe('RAR5 writer structural output', () => {
     const mainOff = off.parsed.blocks.find((b) => b.typeName === 'main');
     assert.ok(!mainOff.extra?.some((e) => e.type === 1));
     assert.ok(!off.features.services.includes('QO'));
-  });
-
-  it('[default] writes no locator and no QO while QO support is deferred; [qo-off] likewise', () => {
-    for (const switches of [[], ['-qo-', '-m3']]) {
-      const ctx = buildParsed({ name: `noqo-${switches.length}`, switches });
-      const main = ctx.parsed.blocks.find((b) => b.typeName === 'main');
-      assert.ok(!main.extra?.some((e) => e.type === 1), `locator written with ${switches}`);
-      assert.ok(!ctx.features.services.includes('QO'), `QO written with ${switches}`);
-    }
   });
 
   it('[times-all] htime record carries mtime, ctime and atime', () => {

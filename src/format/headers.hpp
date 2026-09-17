@@ -120,6 +120,14 @@ struct MainBlock {
     core::uint64 arc_flags{0};
     core::uint64 vol_number{0};
     bool has_locator{false};
+    // Locator extra record offsets (MHEXTRA_LOCATOR, §01-headers.md:§2.1).
+    // Sentinel -1 means absent: write_main_block emits a locator vint for the
+    // field only when the value is >= 0 (has_qo = locator_qo_offset >= 0,
+    // has_rr = locator_rr_offset >= 0 in header_writer.cpp). Callers that
+    // strip QuickOpen on mutation MUST set locator_qo_offset = -1 explicitly
+    // — do NOT leave it at 0, which write_main_block interprets as "QO block
+    // is located at offset 0 from main_header_pos" (i.e. points into the RAR5
+    // signature, producing a corrupt locator that WinRAR will reject).
     core::int64 locator_qo_offset{-1};
     core::int64 locator_rr_offset{-1};
 };

@@ -3,6 +3,7 @@
 #include "volume.hpp"
 #include "rar_errors.hpp" // RAR_* status codes for the mutation variants
 #include "../compress/compressor50.hpp"
+#include "../core/vint.hpp"
 #include "../format/header_writer.hpp"
 #include "../io/path_util.hpp"
 #include "../crypto/crc32.hpp"
@@ -975,7 +976,7 @@ int ArchiveMutator::write_batch_add_ex(
     const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
     const std::filesystem::path& sfx_stub_path, const std::string& password, bool encrypt_headers,
     const std::function<void(size_t, const std::string&)>& on_write, bool solid,
-    const std::vector<core::byte>& comment, std::string& detail_out) {
+    const std::vector<core::byte>& comment, std::string& detail_out, bool want_qo) {
     if (files.empty()) {
         detail_out = "no input files";
         return RAR_ERR_INVALID_ARG;
@@ -1024,6 +1025,16 @@ int ArchiveMutator::write_batch_add_ex(
         // True when the first data-bearing entry continues an existing solid
         // stream (append to a solid archive); false on fresh creates.
         bool continue_solid_stream = false;
+
+        format::MainBlock written_main_block;
+        core::uint64 main_header_pos = 0;
+        struct QoIndex {
+            core::uint64 orig_pos;
+            size_t arena_offset;
+            size_t size;
+        };
+        std::vector<core::byte> qo_arena;
+        std::vector<QoIndex> qo_indices;
 
         if (std::filesystem::exists(arc_path)) {
             ArchiveReader reader;
@@ -1118,10 +1129,16 @@ int ArchiveMutator::write_batch_add_ex(
                 }
             }
 
-            format::MainBlock mb = reader.main_block();
-            mb.has_locator = false;
-            if (solid) mb.arc_flags |= format::MHFL_SOLID;
-            format::HeaderWriter::write_main_block(out, mb, header_encrypt_mode ? &hcw : nullptr);
+            written_main_block = reader.main_block();
+            written_main_block.has_locator = false;
+            if (want_qo) {
+                written_main_block.has_locator = true;
+                written_main_block.locator_qo_offset = 0;
+            }
+            if (solid) written_main_block.arc_flags |= format::MHFL_SOLID;
+            main_header_pos = out.tell();
+            format::HeaderWriter::write_main_block(out, written_main_block,
+                                                   header_encrypt_mode ? &hcw : nullptr);
 
             // A new CMT replaces the archive's previous comment; QO is always stripped per spec.
             continue_solid_stream = reader.is_solid();
@@ -1138,6 +1155,16 @@ int ArchiveMutator::write_batch_add_ex(
                     !comment.empty())
                     continue;
                 if (i < replaced.size() && replaced[i]) continue;
+                if (want_qo) {
+                    size_t offset = qo_arena.size();
+                    std::vector<core::byte> old_hdr(entry.header_size);
+                    if (reader.stream().seek(static_cast<core::int64>(entry.header_offset),
+                                             io::SeekOrigin::Begin) &&
+                        reader.stream().read(old_hdr.data(), entry.header_size) == entry.header_size) {
+                        qo_arena.insert(qo_arena.end(), old_hdr.begin(), old_hdr.end());
+                        qo_indices.push_back({out.tell(), offset, entry.header_size});
+                    }
+                }
                 if (!copy_stream_region(reader.stream(), out, entry.header_offset,
                                         entry.header_size + entry.data_size)) {
                     out.close();
@@ -1174,9 +1201,15 @@ int ArchiveMutator::write_batch_add_ex(
                 }
             }
 
-            format::MainBlock mb;
-            mb.arc_flags = solid ? format::MHFL_SOLID : 0;
-            format::HeaderWriter::write_main_block(out, mb, header_encrypt_mode ? &hcw : nullptr);
+            written_main_block = format::MainBlock{};
+            written_main_block.arc_flags = solid ? format::MHFL_SOLID : 0;
+            if (want_qo && !header_encrypt_mode) {
+                written_main_block.has_locator = true;
+                written_main_block.locator_qo_offset = 0;
+            }
+            main_header_pos = out.tell();
+            format::HeaderWriter::write_main_block(out, written_main_block,
+                                                   header_encrypt_mode ? &hcw : nullptr);
         }
 
         // A requested comment (-z) becomes a CMT service header right after the
@@ -1196,8 +1229,15 @@ int ArchiveMutator::write_batch_add_ex(
             cmt.method = 0;
             cmt.unp_ver = 0;
             cmt.win_size = 0;
-            if (!format::HeaderWriter::write_file_block(out, cmt, 0,
-                                                        header_encrypt_mode ? &hcw : nullptr)) {
+            core::uint64 cmt_orig_pos = out.tell();
+            auto cmt_bytes = format::HeaderWriter::serialize_file_block(cmt, 0);
+            if (want_qo && !header_encrypt_mode) {
+                size_t offset = qo_arena.size();
+                qo_arena.insert(qo_arena.end(), cmt_bytes.begin(), cmt_bytes.end());
+                qo_indices.push_back({cmt_orig_pos, offset, cmt_bytes.size()});
+            }
+            if (!format::HeaderWriter::emit_block(out, cmt_bytes,
+                                                  header_encrypt_mode ? &hcw : nullptr)) {
                 out.close();
                 std::filesystem::remove(tmp_path);
                 detail_out = "rewrite failed";
@@ -1236,7 +1276,14 @@ int ArchiveMutator::write_batch_add_ex(
                 pf.fb.is_solid = false;
             }
 
-            format::HeaderWriter::write_file_block(out, pf.fb, 0,
+            core::uint64 orig_pos = out.tell();
+            auto block_bytes = format::HeaderWriter::serialize_file_block(pf.fb, 0);
+            if (want_qo) {
+                size_t offset = qo_arena.size();
+                qo_arena.insert(qo_arena.end(), block_bytes.begin(), block_bytes.end());
+                qo_indices.push_back({orig_pos, offset, block_bytes.size()});
+            }
+            format::HeaderWriter::emit_block(out, block_bytes,
                                                    header_encrypt_mode ? &hcw : nullptr);
             if (!pf.payload.empty()) {
                 out.write(pf.payload.data(), pf.payload.size());
@@ -1246,13 +1293,115 @@ int ArchiveMutator::write_batch_add_ex(
             std::vector<core::byte>().swap(pf.payload);
 
             for (auto& child : pf.child_services) {
-                format::HeaderWriter::write_file_block(out, child.fb,
-                                                       format::HFL_CHILD | format::HFL_INHERITED,
+                core::uint64 child_orig_pos = out.tell();
+                auto child_bytes = format::HeaderWriter::serialize_file_block(
+                    child.fb, format::HFL_CHILD | format::HFL_INHERITED);
+                if (want_qo) {
+                    size_t offset = qo_arena.size();
+                    qo_arena.insert(qo_arena.end(), child_bytes.begin(), child_bytes.end());
+                    qo_indices.push_back({child_orig_pos, offset, child_bytes.size()});
+                }
+                format::HeaderWriter::emit_block(out, child_bytes,
                                                        header_encrypt_mode ? &hcw : nullptr);
                 if (!child.payload.empty()) {
                     out.write(child.payload.data(), child.payload.size());
                 }
                 std::vector<core::byte>().swap(child.payload);
+            }
+        }
+
+        if (want_qo && !header_encrypt_mode && !qo_indices.empty()) {
+            core::uint64 qo_header_pos = out.tell();
+            std::vector<core::byte> qo_payload;
+            // Pre-size: each record costs 4 bytes (CRC32) + up to 3 bytes
+            // (size vint for reasonable header sizes) + up to 22 bytes (3
+            // vint fields: flags=0, dist, size) + idx.size header bytes from
+            // qo_arena. Reserving arena_size + 30*N avoids all reallocations
+            // for archives up to several thousand entries.
+            qo_payload.reserve(qo_arena.size() + 30u * qo_indices.size());
+
+            for (const auto& idx : qo_indices) {
+                core::uint64 dist = qo_header_pos - idx.orig_pos;
+                std::vector<core::byte> struct_body;
+                // Reserve: 3 vints (≤10 bytes each) + idx.size payload.
+                struct_body.reserve(30u + idx.size);
+                core::push_vint(struct_body, 0); // Flags = 0
+                core::push_vint(struct_body, dist); // Distance from start of QO header
+                core::push_vint(struct_body, idx.size); // Data size
+                struct_body.insert(struct_body.end(),
+                                   qo_arena.begin() + idx.arena_offset,
+                                   qo_arena.begin() + idx.arena_offset + idx.size);
+
+                std::vector<core::byte> struct_size_vint;
+                core::push_vint(struct_size_vint, struct_body.size());
+
+                crypto::Crc32 crc;
+                crc.update(struct_size_vint.data(), struct_size_vint.size());
+                crc.update(struct_body.data(), struct_body.size());
+                core::uint32 struct_crc = crc.get();
+
+                qo_payload.push_back(static_cast<core::byte>(struct_crc & 0xFF));
+                qo_payload.push_back(static_cast<core::byte>((struct_crc >> 8) & 0xFF));
+                qo_payload.push_back(static_cast<core::byte>((struct_crc >> 16) & 0xFF));
+                qo_payload.push_back(static_cast<core::byte>((struct_crc >> 24) & 0xFF));
+
+                qo_payload.insert(qo_payload.end(), struct_size_vint.begin(), struct_size_vint.end());
+                qo_payload.insert(qo_payload.end(), struct_body.begin(), struct_body.end());
+            }
+
+
+            format::FileBlock qo_block;
+            qo_block.is_service = true;
+            qo_block.service_type = "QO";
+            qo_block.file_name = "QO";
+            qo_block.unp_size = qo_payload.size();
+            qo_block.pack_size = static_cast<core::int64>(qo_payload.size());
+            qo_block.attributes = 0x20;
+            qo_block.has_crc32 = true;
+            crypto::Crc32 qo_crc;
+            qo_crc.update(qo_payload.data(), qo_payload.size());
+            qo_block.data_crc32 = qo_crc.get();
+            qo_block.method = 0;
+            qo_block.unp_ver = 0;
+            qo_block.win_size = 0;
+
+            if (!format::HeaderWriter::write_file_block(out, qo_block, 0,
+                                                        header_encrypt_mode ? &hcw : nullptr)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "rewrite failed";
+                return RAR_ERR_IO;
+            }
+            if (out.write(qo_payload.data(), qo_payload.size()) != qo_payload.size()) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "rewrite failed";
+                return RAR_ERR_IO;
+            }
+
+            core::uint64 end_after_qo = out.tell();
+
+            written_main_block.has_locator = true;
+            written_main_block.locator_qo_offset =
+                static_cast<core::int64>(qo_header_pos - main_header_pos);
+            if (!out.seek(static_cast<core::int64>(main_header_pos), io::SeekOrigin::Begin)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "seek failed";
+                return RAR_ERR_IO;
+            }
+            if (!format::HeaderWriter::write_main_block(out, written_main_block,
+                                                        header_encrypt_mode ? &hcw : nullptr)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "rewrite failed";
+                return RAR_ERR_IO;
+            }
+            if (!out.seek(static_cast<core::int64>(end_after_qo), io::SeekOrigin::Begin)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "seek failed";
+                return RAR_ERR_IO;
             }
         }
 
@@ -1293,10 +1442,10 @@ bool ArchiveMutator::write_batch_add(
     const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
     const std::filesystem::path& sfx_stub_path, const std::string& password, bool encrypt_headers,
     const std::function<void(size_t, const std::string&)>& on_write, bool solid,
-    const std::vector<core::byte>& comment) {
+    const std::vector<core::byte>& comment, bool want_qo) {
     std::string detail;
     return write_batch_add_ex(arc_path, files, sfx_stub_path, password, encrypt_headers, on_write,
-                              solid, comment, detail) == RAR_OK;
+                              solid, comment, detail, want_qo) == RAR_OK;
 }
 
 static bool add_or_move_file(const std::filesystem::path& arc_path,
