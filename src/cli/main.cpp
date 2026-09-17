@@ -167,7 +167,8 @@ void print_help() {
               << "  -oh           Save hard links as the link instead of the file\n"
               << "  -ol           Save symbolic links as the link instead of the file\n"
               << "  -o+ / -o-     Overwrite all existing files / never overwrite (default: ask)\n"
-              << "  -os, -ow      Save NTFS streams / File security data (Windows ACLs, POSIX owner/group/mode)\n"
+              << "  -os, -ow      Save NTFS streams / File security data (Windows ACLs, POSIX "
+                 "owner/group/mode)\n"
               << "  -p<p>         Set password\n"
               << "  -plain, --plain\n"
               << "                Plain line-by-line output (disable ANSI animations)\n"
@@ -530,8 +531,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         try {
             if (queue[0].is_hardlink)
                 okv = archive::ArchiveMutator::prepare_add_hardlink(
-                    queue[0].src_path, queue[0].entry_name, queue[0].hardlink_target,
-                    prepared[0], times_mask, want_acl);
+                    queue[0].src_path, queue[0].entry_name, queue[0].hardlink_target, prepared[0],
+                    times_mask, want_acl);
             else if (queue[0].is_symlink)
                 okv = archive::ArchiveMutator::prepare_add_symlink(
                     queue[0].src_path, queue[0].entry_name, queue[0].symlink_target,
@@ -620,7 +621,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                                 queue[i].is_dir_target, prepared[i], times_mask, want_acl);
                         else if (queue[i].is_dir)
                             okv = archive::ArchiveMutator::prepare_add_dir(
-                                queue[i].src_path, queue[i].entry_name, prepared[i], times_mask, want_acl);
+                                queue[i].src_path, queue[i].entry_name, prepared[i], times_mask,
+                                want_acl);
                         else
                             okv = archive::ArchiveMutator::prepare_add_file(
                                 queue[i].src_path, queue[i].entry_name, method, password,
@@ -1070,8 +1072,8 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
         for (auto& item : queue) {
             if (item.is_dir || item.is_symlink) continue;
             HANDLE h = CreateFileW(item.src_path.c_str(), FILE_READ_ATTRIBUTES,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                   nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                   OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
             if (h != INVALID_HANDLE_VALUE) {
                 FILE_ID_INFO id_info{};
                 BY_HANDLE_FILE_INFORMATION bhfi{};
@@ -1126,7 +1128,8 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
         for (auto& item : queue) {
             if (item.is_dir || item.is_symlink) continue;
             struct stat st;
-            if (::lstat(item.src_path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_nlink > 1) {
+            if (::lstat(item.src_path.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
+                st.st_nlink > 1) {
                 DevIno key{st.st_dev, st.st_ino};
                 auto it = seen_files.find(key);
                 if (it == seen_files.end()) {
