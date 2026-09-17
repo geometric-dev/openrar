@@ -800,7 +800,8 @@ void test_buffer_archive_checksum_validation() {
         b2.finish(fb.blake2sp.data());
 
         assert(format::HeaderWriter::write_file_block(out_fs, fb));
-        assert(out_fs.write(files[0].second.data(), files[0].second.size()) == files[0].second.size());
+        assert(out_fs.write(files[0].second.data(), files[0].second.size()) ==
+               files[0].second.size());
 
         format::EndArcBlock eb;
         assert(format::HeaderWriter::write_end_block(out_fs, eb));
@@ -808,7 +809,8 @@ void test_buffer_archive_checksum_validation() {
 
     std::ifstream ifs(arc_path, std::ios::binary);
     assert(ifs);
-    std::vector<uint8_t> b2_arc((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    std::vector<uint8_t> b2_arc((std::istreambuf_iterator<char>(ifs)),
+                                std::istreambuf_iterator<char>());
 
     std::vector<BufferArchiveEntry> b2_entries;
     rc = arc.list(b2_arc.data(), b2_arc.size(), b2_entries);
