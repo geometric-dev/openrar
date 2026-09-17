@@ -8,15 +8,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import {
-  OUR_EXE,
+import { DIR_SEP, OUR_EXE,
   WINRAR_UNRAR,
   oracleAvailable,
   buildOurArchive,
   freshDir,
   makeFixtureTree,
-  runTool,
-} from './helpers.mjs';
+  runTool, } from './helpers.mjs';
 import { parseArchive } from '../rar5-coverage.js';
 
 describe('RAR 5.0 / 7.0 Compression Dictionary & Version Spec', () => {
@@ -93,7 +91,7 @@ describe('RAR 5.0 / 7.0 Compression Dictionary & Version Spec', () => {
 
       // Test byte-identical round-trip extraction
       const extDir = freshDir(`ext_${sw.slice(1)}`);
-      const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + '\\'], tree);
+      const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + DIR_SEP], tree);
       assert.equal(resExt.code, 0, `Extraction failed for ${sw}: ${resExt.output}`);
       const extracted = readFileSync(join(extDir, 'data.txt'), 'utf8');
       const original = readFileSync(join(tree, 'data.txt'), 'utf8');
@@ -116,7 +114,7 @@ describe('RAR 5.0 / 7.0 Compression Dictionary & Version Spec', () => {
     }
 
     const extDir = freshDir('dict-solid-ext');
-    const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + '\\'], tree);
+    const resExt = runTool(OUR_EXE, ['x', '-y', arc, extDir + DIR_SEP], tree);
     assert.equal(resExt.code, 0, `Solid extraction failed: ${resExt.output}`);
   });
 

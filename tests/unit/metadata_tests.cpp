@@ -50,8 +50,9 @@ static fs::path make_scratch_dir(const char* name) {
 static void write_bytes(const fs::path& p, const std::vector<uint8_t>& data) {
     std::ofstream f(p, std::ios::binary);
     assert(f);
-    if (!data.empty()) f.write(reinterpret_cast<const char*>(data.data()),
-                               static_cast<std::streamsize>(data.size()));
+    if (!data.empty())
+        f.write(reinterpret_cast<const char*>(data.data()),
+                static_cast<std::streamsize>(data.size()));
 }
 
 static std::string last_error() {
@@ -162,8 +163,8 @@ static void test_entry_ex_basics() {
     prepared.push_back(std::move(p));
     assert(ArchiveMutator::write_batch_add(arc, prepared));
 
-    uint32_t h = openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr,
-                                           nullptr);
+    uint32_t h =
+        openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
     assert(h != 0);
     void* extra = nullptr;
     size_t extra_len = 0;
@@ -193,8 +194,8 @@ static void test_entry_ex_flags() {
 
     // Solid: head has no SOLID flag, chained members do.
     const fs::path solid = make_solid_archive(dir, "solid.rar");
-    uint32_t h = openrar_archive_open_file(solid.u8string().c_str(), nullptr, nullptr, nullptr,
-                                           nullptr);
+    uint32_t h =
+        openrar_archive_open_file(solid.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
     assert(h != 0);
     void* extra = nullptr;
     size_t extra_len = 0;
@@ -245,8 +246,8 @@ static void test_entry_ex_redir_and_filetime() {
     std::cout << "Starting test_entry_ex_redir_and_filetime...\n" << std::flush;
     const fs::path dir = make_scratch_dir("redir");
     const fs::path arc = create_redir_archive(dir, "redir.rar");
-    uint32_t h = openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr,
-                                           nullptr);
+    uint32_t h =
+        openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
     assert(h != 0);
 
     // Entry 0: unix symlink — REDIR flag, type, and the target extra.
@@ -268,8 +269,7 @@ static void test_entry_ex_redir_and_filetime() {
     assert(wt.mtime_ft == 0x01D9B4C6D5A3E800ULL);
 
     // Invalid index and null args (handle still open here).
-    assert(openrar_archive_handle_entry_ex(h, 9, nullptr, nullptr, nullptr) ==
-           RAR_ERR_INVALID_ARG);
+    assert(openrar_archive_handle_entry_ex(h, 9, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
     openrar_entry_ex_t ex{};
     void* e2 = nullptr;
     size_t l2 = 0;
@@ -297,13 +297,12 @@ static void test_info_comment_and_volumes() {
         p.src_path = src;
         assert(ArchiveMutator::prepare_add_file(src, "f.bin", 3, "", p));
         prepared.push_back(std::move(p));
-        const std::vector<openrar::core::byte> comment(comment_text.begin(),
-                                                       comment_text.end());
-        assert(ArchiveMutator::write_batch_add(cmt_arc, prepared, {}, "", false, {}, false,
-                                               comment));
+        const std::vector<openrar::core::byte> comment(comment_text.begin(), comment_text.end());
+        assert(
+            ArchiveMutator::write_batch_add(cmt_arc, prepared, {}, "", false, {}, false, comment));
     }
-    uint32_t h = openrar_archive_open_file(cmt_arc.u8string().c_str(), nullptr, nullptr, nullptr,
-                                           nullptr);
+    uint32_t h =
+        openrar_archive_open_file(cmt_arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
     assert(h != 0);
     openrar_archive_info_t info{};
     void* cmt = nullptr;
@@ -400,8 +399,8 @@ static void test_buffer_refusal_and_validation() {
     write_bytes(src, {'s'});
     const fs::path arc = dir / "s.rar";
     assert(ArchiveMutator::add_file_to_archive(arc, src, "s.bin", 0));
-    const uint32_t fh = openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr, nullptr);
+    const uint32_t fh =
+        openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
     assert(fh != 0);
     assert(openrar_archive_handle_entry_ex(fh, 0, nullptr, &extra, &extra_len) ==
            RAR_ERR_INVALID_ARG);

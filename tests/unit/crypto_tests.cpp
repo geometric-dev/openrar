@@ -220,8 +220,8 @@ void test_cbc_rejects_unaligned_size() {
     crypto::Aes256 aes(key);
     assert(aes.encrypt_cbc(data, 20, iv) == false);
     assert(aes.decrypt_cbc(data, 20, iv) == false);
-    assert(std::memcmp(data, snapshot, 20) == 0); // buffer untouched on refusal
-    assert(aes.encrypt_cbc(data, 0, iv) == true); // zero blocks is a valid no-op
+    assert(std::memcmp(data, snapshot, 20) == 0);  // buffer untouched on refusal
+    assert(aes.encrypt_cbc(data, 0, iv) == true);  // zero blocks is a valid no-op
     assert(aes.decrypt_cbc(data, 16, iv) == true); // aligned still works
 
     std::cout << "[PASS] AES-256 CBC rejects unaligned size without touching data (Q5)\n";
@@ -436,7 +436,8 @@ void test_b6_padded_vint() {
     assert(read_bytes == 10);
 
     // 11-byte invalid VINT (exceeds 10 bytes)
-    const core::byte invalid_vint_11[] = {0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01};
+    const core::byte invalid_vint_11[] = {0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+                                          0x80, 0x80, 0x80, 0x80, 0x01};
     ok = core::read_vint(invalid_vint_11, sizeof(invalid_vint_11), val, read_bytes);
     assert(!ok);
 

@@ -1,7 +1,7 @@
 # DLL Enhancement Plan — post-v1.1.0
 
-**Status:** Approved & Frozen working specification. Phase 0 committed in `master` (pending v1.2.0 tag); Phases 1–3 planned for pickup (v1.3.0–v1.5.0)  
-**Source:** Feature request from the Crate project (Windows desktop archiver, Hybrid D consumer, pinned `v1.1.0`), evaluated against the tree at `v1.1.0` + the landed Phase 0 work (`commit d680d4f`).  
+**Status:** Completed & Shipped through v1.6.0. Phase 0 (v1.2.0), Phase 1 (v1.3.0), Phase 2 (v1.4.0), and Phase 3 (v1.5.0) are fully delivered; v1.6.0 delivers CMake package target `openrar::openrar_dll`, handle info comment cap, and durability/verification hardening.
+**Source:** Feature request from the Crate project (Windows desktop archiver, Hybrid D consumer, pinned `v1.1.0`), evaluated against the tree at `v1.1.0` + the landed Phase 0–3 work.  
 **Rules that bind every phase:** Additive exports only — no `OPENRAR_DLL_API_VERSION` bump, no change to the 64-byte `openrar_archive_entry_t`, no behavior change to any existing export (`docs/versioning.md`, `docs/dll-integration-spec.md` §3). New capability is negotiated with `openrar_abi_features()` bits + `GetProcAddress`.
 
 ---
@@ -454,14 +454,15 @@ openrar_archive_handle_info(uint32_t handle, openrar_archive_info_t* out,
 ### 6.2 Communication to Crate
 
 Reply to Crate with this feature-to-release mapping:
-1. **v1.2.0 (now):** Enables password prompt flow for `-hp` archives via `openrar_archive_list_file_pw`. Note: extraction of encrypted entries is gated on v1.3.0.
+1. **v1.2.0:** Enables password prompt flow for `-hp` archives via `openrar_archive_list_file_pw`.
 2. **v1.3.0 (keystone):** Delivers requests #1 (extraction), #2 (persistent file handle), #3 (streaming extract to disk with progress/cancel), #5 (integrity test with chunked decrypt), and #7 (multi-volume stitching and missing volume handling). Includes all contract answers requested:
    - *Durability on abort:* DLL-owned temp-and-rename (`.openrar-tmp.<pid>.<seq>`) with `FlushFileBuffers` / `fsync`; partial files are never left behind.
    - *Solid access:* Automatic catch-up decompressing intermediate solid runs; in-order extraction remains the zero-overhead fast path.
    - *Encrypted memory ceiling:* Chunked AES-256-CBC decrypt ensures RAM usage is strictly bounded by $O(\text{dictionary window} + \text{slice buffers})$, independent of entry size.
 3. **v1.4.0:** Delivers request #4 (atomic mutation: add and delete), with in-DLL handle sharing collision detection (`RAR_ERR_BUSY = -14`).
 4. **v1.5.0:** Delivers request #6 (extended metadata: FILETIMEs, host attributes, symlink targets, archive comments), and documentation cleanup.
-5. **Integration deliverables:** Provide Crate with a unified v1.1.0 $\to$ v1.5.0 migration guide and publish Release Candidate (`-rc1`) builds prior to official tags.
+5. **v1.6.0:** Delivers CMake package configuration (`find_package(openrar)` -> `openrar::openrar_dll`), handle info comment allocation cap (16 MiB), tweaked-checksum verification tolerance (`0x0002`), and comprehensive durability/collision test hardening.
+6. **Integration deliverables:** Provide Crate with unified migration guide, CMake package integration, and release assets.
 
 ---
 

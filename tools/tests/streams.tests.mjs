@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { parseArchive } from '../rar5-coverage.js';
-import { freshDir, buildOurArchive, runTool, OUR_EXE, readFileSync } from './helpers.mjs';
+import { DIR_SEP, freshDir, buildOurArchive, runTool, OUR_EXE, readFileSync } from './helpers.mjs';
 
 describe('RAR 5.0 NTFS Alternate Data Streams (-os)', () => {
   it('archives, parses, and restores NTFS streams', { skip: process.platform !== 'win32' ? 'non-Windows' : 'STM writer support deferred per 00-overview.md' }, () => {
@@ -46,7 +46,7 @@ describe('RAR 5.0 NTFS Alternate Data Streams (-os)', () => {
 
     // Extraction round-trip
     const extOur = freshDir('streams-test-ext');
-    const resOur = runTool(OUR_EXE, ['x', '-y', arc, extOur + '\\'], tree);
+    const resOur = runTool(OUR_EXE, ['x', '-y', arc, extOur + DIR_SEP], tree);
     assert.equal(resOur.code, 0, `extract failed: ${resOur.output}`);
 
     const extractedFile = join(extOur, 'stream_file.txt');

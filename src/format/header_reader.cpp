@@ -99,7 +99,8 @@ HeaderResult HeaderReader::read_block_raw(io::FileStream& src, core::uint64& out
         std::vector<core::byte> plain_first(16);
         if (src.read(plain_first.data(), 16) != 16) return HeaderResult::Error;
         crypto::Aes256 aes(crypt->keys.aes_key);
-        if (!aes.decrypt_cbc(plain_first.data(), plain_first.size(), iv)) return HeaderResult::Error;
+        if (!aes.decrypt_cbc(plain_first.data(), plain_first.size(), iv))
+            return HeaderResult::Error;
 
         core::uint32 expected_crc = core::read_le32(plain_first.data());
 

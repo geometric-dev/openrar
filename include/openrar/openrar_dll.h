@@ -4,6 +4,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  openrar_dll.h — Public C ABI for openrar.dll / libopenrar.so
 //  Hybrid D: stable C core with header-only C++ wrapper (include/openrar/openrar.hpp).
+//  CMake integration: find_package(openrar) provides target openrar::openrar_dll.
+//  Public include path: #include <openrar/openrar_dll.h> (or <openrar/openrar.hpp>).
 //  Contracts shared with src/wasm via src/api/abi_contract.hpp (the enum and
 //  entry struct below are the C-compatible declarations; dll_api.cpp pins them
 //  to the canonical definitions with compile-time equivalence checks)
@@ -365,9 +367,11 @@ openrar_archive_list_file_pw(const char* arc_path, const char* password, uint32_
 // encrypted archives with no password fail with an "archive headers are
 // encrypted" detail (prompt, then re-open with the password — one cheap
 // header walk).
-OPENRAR_DLL_API uint32_t OPENRAR_DLL_CALL
-openrar_archive_open_file(const char* arc_path, const char* password_utf8,
-                          openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
+OPENRAR_DLL_API uint32_t OPENRAR_DLL_CALL openrar_archive_open_file(const char* arc_path,
+                                                                    const char* password_utf8,
+                                                                    openrar_progress_cb progress,
+                                                                    openrar_cancel_cb cancel,
+                                                                    void* user);
 
 // Extract one entry directly to disk with byte progress + cancel (the
 // file-mode handle's main extraction path; the same-name operation on a
@@ -400,8 +404,8 @@ openrar_archive_open_file(const char* arc_path, const char* password_utf8,
 // early, RAR_ERR_ABORTED on cancel, RAR_ERR_MISSING_VOLUME when an extent
 // volume is absent (path in the error detail), RAR_ERR_IO on write failure.
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_extract_to_path(
-    uint32_t handle, uint32_t entry_index, const char* dest_path,
-    openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
+    uint32_t handle, uint32_t entry_index, const char* dest_path, openrar_progress_cb progress,
+    openrar_cancel_cb cancel, void* user);
 
 // Streaming integrity test: verifies CRC32 (or BLAKE2sp when present)
 // without retaining decompressed output — fixed, small memory footprint
@@ -414,9 +418,11 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_extract_to_path(
 // RAR_ERR_TRUNCATED on a short decode; RAR_ERR_BAD_PASSWORD /
 // RAR_ERR_ENCRYPTED as above; RAR_ERR_ABORTED on cancel. Buffer handles
 // return RAR_ERR_UNSUPPORTED_FEATURE (no streaming test exists there).
-OPENRAR_DLL_API int OPENRAR_DLL_CALL
-openrar_archive_handle_test(uint32_t handle, uint32_t entry_index,
-                            openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_test(uint32_t handle,
+                                                                 uint32_t entry_index,
+                                                                 openrar_progress_cb progress,
+                                                                 openrar_cancel_cb cancel,
+                                                                 void* user);
 
 // ── Archive mutation (free functions; additive) ─────────────────────────────
 // Atomic write-path operations over an existing archive on disk, backed by
@@ -463,9 +469,8 @@ openrar_archive_handle_test(uint32_t handle, uint32_t entry_index,
 // preserved; QuickOpen locators are stripped; a recovery record (RR) is
 // copied verbatim and NOT recomputed — treat it as absent after a
 // mutation. RAR_ERR_IO when arc_path cannot be read or rewritten.
-OPENRAR_DLL_API int OPENRAR_DLL_CALL
-openrar_archive_delete_entries_file(const char* arc_path, const uint32_t* entry_indices,
-                                    uint32_t count);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_delete_entries_file(
+    const char* arc_path, const uint32_t* entry_indices, uint32_t count);
 
 // Batch add/replace with 'u' semantics: incoming entries are appended at
 // the end in src_paths order, and every existing entry whose name equals an
@@ -492,10 +497,11 @@ openrar_archive_delete_entries_file(const char* arc_path, const uint32_t* entry_
 // (locked, multi-volume, header-encrypted, or solid replacement as above).
 // Atomic like delete: the archive on disk is replaced only after every
 // file in the batch has been written.
-OPENRAR_DLL_API int OPENRAR_DLL_CALL
-openrar_archive_add_files_file(const char* arc_path, const char* const* src_paths,
-                               const char* const* arc_names, uint32_t file_count, int method,
-                               uint32_t window_log2);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
+                                                                    const char* const* src_paths,
+                                                                    const char* const* arc_names,
+                                                                    uint32_t file_count, int method,
+                                                                    uint32_t window_log2);
 
 // ── Extended metadata (file-mode handles; additive) ─────────────────────────
 // The 64-byte entry struct is frozen (shared WASM contract); these queries
@@ -542,9 +548,11 @@ typedef struct {
 // openrar_free. If the entry has no redirection, *extra_out is NULL and
 // *extra_size_out is 0. On failure (including RAR_ERR_UNSUPPORTED_FEATURE
 // on a buffer handle) nothing is allocated.
-OPENRAR_DLL_API int OPENRAR_DLL_CALL
-openrar_archive_handle_entry_ex(uint32_t handle, uint32_t entry_index, openrar_entry_ex_t* out,
-                                void** extra_out, size_t* extra_size_out);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_entry_ex(uint32_t handle,
+                                                                     uint32_t entry_index,
+                                                                     openrar_entry_ex_t* out,
+                                                                     void** extra_out,
+                                                                     size_t* extra_size_out);
 
 // Free helper for extra_out (openrar_free is also valid).
 OPENRAR_DLL_API void OPENRAR_DLL_CALL openrar_archive_entry_ex_free(void* extra);
@@ -552,27 +560,30 @@ OPENRAR_DLL_API void OPENRAR_DLL_CALL openrar_archive_entry_ex_free(void* extra)
 // Archive-level properties of the handle's volume set.
 #pragma pack(push, 1)
 typedef struct {
-    uint32_t flags;          // main-header flags (MHFL_VOLUME, MHFL_SOLID, MHFL_LOCK, ...)
-    uint32_t volume_index;   // 0-based volume number (0 if not multi-volume)
-    uint32_t volume_count;   // total volumes of the set; the file-mode open is
-                             // strict, so a successfully opened set always has
-                             // every volume scanned (1 for single-volume)
-    uint64_t recovery_size;  // recovery record (RR service) size in bytes, 0 if none
-    uint32_t comment_len;    // archive comment length in bytes, 0 if none
-} openrar_archive_info_t;    // 24 bytes, fixed size
+    uint32_t flags;         // main-header flags (MHFL_VOLUME, MHFL_SOLID, MHFL_LOCK, ...)
+    uint32_t volume_index;  // 0-based volume number (0 if not multi-volume)
+    uint32_t volume_count;  // total volumes of the set; the file-mode open is
+                            // strict, so a successfully opened set always has
+                            // every volume scanned (1 for single-volume)
+    uint64_t recovery_size; // recovery record (RR service) size in bytes, 0 if none
+    uint32_t comment_len;   // archive comment length in bytes, 0 if none
+} openrar_archive_info_t;   // 24 bytes, fixed size
 #pragma pack(pop)
 
 // Query archive-level properties. If comment_len > 0, comment_out receives a
 // malloc'd UTF-8 string with the archive comment payload (read lazily from
 // the CMT service header at query time — stored compressed comments are
 // decompressed, and a payload that fails its CRC or decode is reported as
-// absent with RAR_OK). If the archive has no comment, *comment_out is NULL
+// absent with RAR_OK). Capped at 16 MiB: comment payloads exceeding 16 MiB
+// return RAR_ERR_UNSUPPORTED_FEATURE to protect against speculative memory allocation.
+// If the archive has no comment, *comment_out is NULL
 // and *comment_size_out is 0; free a returned comment with openrar_free.
 // RAR_ERR_IO when the lazy payload read hits a filesystem error. Buffer
 // handles return RAR_ERR_UNSUPPORTED_FEATURE.
-OPENRAR_DLL_API int OPENRAR_DLL_CALL
-openrar_archive_handle_info(uint32_t handle, openrar_archive_info_t* out, void** comment_out,
-                            size_t* comment_size_out);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_info(uint32_t handle,
+                                                                 openrar_archive_info_t* out,
+                                                                 void** comment_out,
+                                                                 size_t* comment_size_out);
 
 #ifdef __cplusplus
 } // extern "C"

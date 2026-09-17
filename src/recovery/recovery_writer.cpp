@@ -40,8 +40,7 @@ namespace openrar::recovery {
 // well-known path and have the open follow it and truncate an arbitrary
 // user-writable file. A pid+timestamp+counter name is unguessable, and
 // CreateNew refuses anything already there.
-std::filesystem::path recovery_temp_path(const std::filesystem::path& arc_path,
-                                         const char* tag) {
+std::filesystem::path recovery_temp_path(const std::filesystem::path& arc_path, const char* tag) {
     static std::atomic<core::uint32> counter{0};
 #ifdef _WIN32
     const core::uint64 pid = static_cast<core::uint64>(GetCurrentProcessId());
@@ -346,7 +345,8 @@ RrLocation find_rr(io::FileStream& stream, core::uint64 sfx_offset) {
         stream.seek(static_cast<core::int64>(start), io::SeekOrigin::Begin);
         core::uint64 mtype = 0, mflags = 0, mdata_sz = 0;
         std::vector<core::byte> mbody;
-        if (format::HeaderReader::read_block_raw(stream, mtype, mflags, mbody, mdata_sz) == format::HeaderResult::Ok &&
+        if (format::HeaderReader::read_block_raw(stream, mtype, mflags, mbody, mdata_sz) ==
+                format::HeaderResult::Ok &&
             mtype == format::HEAD_MAIN) {
             format::MainBlock mb;
             if (format::HeaderReader::parse_main_header(mbody.data(), mbody.size(), mb) &&
@@ -599,8 +599,7 @@ bool splice_repair(const std::filesystem::path& arc_path,
 // protected prefix, the new RR service block, and the EndArc terminator.
 bool splice_repair_with_rr(const std::filesystem::path& arc_path,
                            const std::vector<core::byte>& repaired_prefix,
-                           const std::vector<core::byte>& new_rr_data_area,
-                           core::uint32 rec_pct) {
+                           const std::vector<core::byte>& new_rr_data_area, core::uint32 rec_pct) {
     std::filesystem::path tmp_path = recovery_temp_path(arc_path, "rep_tmp");
     io::FileStream out;
     if (!out.open(tmp_path, io::FileMode::CreateNew)) return false;
@@ -1129,7 +1128,8 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     }
 
     // Serialise the shards back-to-back.
-    auto data_area_size = calculate_parity_buffer_size(g.NR, static_cast<core::uint32>(g.shard_size));
+    auto data_area_size =
+        calculate_parity_buffer_size(g.NR, static_cast<core::uint32>(g.shard_size));
     if (!data_area_size) {
         out.close();
         std::filesystem::remove(tmp_path);
@@ -1714,10 +1714,12 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         }
     }
     for (core::uint32 i = 0; i < D; ++i) {
-        const core::byte* data_ptr = file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
+        const core::byte* data_ptr =
+            file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
         for (core::uint32 j = 0; j < NR; ++j) {
             if (!parity_valid[j]) continue;
-            rs_enc.update_ecc(i, j, data_ptr, recomputed_parity[j].data(), static_cast<size_t>(group_count));
+            rs_enc.update_ecc(i, j, data_ptr, recomputed_parity[j].data(),
+                              static_cast<size_t>(group_count));
         }
     }
 
@@ -1728,7 +1730,9 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     for (core::uint32 j = 0; j < NR; ++j) {
         if (!parity_valid[j]) continue;
         syndromes[j].resize(static_cast<size_t>(group_count));
-        const core::byte* P_j = rr.raw_data.data() + static_cast<size_t>(j) * static_cast<size_t>(shard_size) + static_cast<size_t>(header_size32);
+        const core::byte* P_j = rr.raw_data.data() +
+                                static_cast<size_t>(j) * static_cast<size_t>(shard_size) +
+                                static_cast<size_t>(header_size32);
         bool all_zero = true;
         for (size_t b = 0; b < group_count; ++b) {
             core::byte diff = static_cast<core::byte>(P_j[b] ^ recomputed_parity[j][b]);
@@ -1767,33 +1771,41 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         if (all_data_ok) {
             // Parity-Only Corruption branch:
             // Recompute all NR parity shards from file_bytes
-            std::vector<std::vector<core::byte>> all_new_parity(NR, std::vector<core::byte>(static_cast<size_t>(group_count), 0));
+            std::vector<std::vector<core::byte>> all_new_parity(
+                NR, std::vector<core::byte>(static_cast<size_t>(group_count), 0));
             for (core::uint32 i = 0; i < D; ++i) {
-                const core::byte* data_ptr = file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
+                const core::byte* data_ptr =
+                    file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
                 for (core::uint32 j = 0; j < NR; ++j) {
-                    rs_enc.update_ecc(i, j, data_ptr, all_new_parity[j].data(), static_cast<size_t>(group_count));
+                    rs_enc.update_ecc(i, j, data_ptr, all_new_parity[j].data(),
+                                      static_cast<size_t>(group_count));
                 }
             }
 
             RecoveryGeometry g{};
             g.archive_size = prot_size;
-            g.pct = rr.rec_pct > 0 ? rr.rec_pct : static_cast<core::uint32>((static_cast<core::uint64>(NR) * 100) / D);
+            g.pct = rr.rec_pct > 0
+                        ? rr.rec_pct
+                        : static_cast<core::uint32>((static_cast<core::uint64>(NR) * 100) / D);
             g.D = D;
             g.NR = NR;
             g.group_count = group_count;
             g.header_size = header_size32;
             g.shard_size = shard_size;
 
-            auto data_area_size = calculate_parity_buffer_size(NR, static_cast<core::uint32>(shard_size));
+            auto data_area_size =
+                calculate_parity_buffer_size(NR, static_cast<core::uint32>(shard_size));
             if (!data_area_size) return false;
             std::vector<core::byte> data_area;
             data_area.reserve(static_cast<size_t>(*data_area_size));
             for (core::uint32 j = 0; j < NR; ++j) {
-                auto s = build_shard(j, g, all_new_parity[j].data(), static_cast<size_t>(group_count));
+                auto s =
+                    build_shard(j, g, all_new_parity[j].data(), static_cast<size_t>(group_count));
                 data_area.insert(data_area.end(), s.begin(), s.end());
             }
 
-            std::vector<core::byte> prefix(file_bytes.begin(), file_bytes.begin() + static_cast<size_t>(rr.header_offset));
+            std::vector<core::byte> prefix(
+                file_bytes.begin(), file_bytes.begin() + static_cast<size_t>(rr.header_offset));
             if (!splice_repair_with_rr(arc_path, prefix, data_area, g.pct)) return false;
             return headers_verify(arc_path, sfx_off);
         }
@@ -1817,8 +1829,8 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                     for (size_t w = 0; w < num_words; ++w) {
                         core::uint16 s0 = static_cast<core::uint16>(
                             syndromes[j0][2 * w] | (syndromes[j0][2 * w + 1] << 8));
-                        core::uint16 sj = static_cast<core::uint16>(
-                            syndromes[j][2 * w] | (syndromes[j][2 * w + 1] << 8));
+                        core::uint16 sj = static_cast<core::uint16>(syndromes[j][2 * w] |
+                                                                    (syndromes[j][2 * w + 1] << 8));
                         if (rs_enc.gf_mul(sj, c0) != rs_enc.gf_mul(s0, cj)) {
                             candidate_matches = false;
                             break;
@@ -1849,8 +1861,8 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                         core::uint64 head_start = stream.tell();
                         core::uint64 type = 0, flags = 0, data_sz = 0;
                         std::vector<core::byte> body;
-                        if (format::HeaderReader::read_block_raw(stream, type, flags, body, data_sz) !=
-                            format::HeaderResult::Ok) {
+                        if (format::HeaderReader::read_block_raw(
+                                stream, type, flags, body, data_sz) != format::HeaderResult::Ok) {
                             core::uint64 bad_shard = head_start / group_count;
                             if (bad_shard < D && data_valid[bad_shard]) {
                                 data_valid[bad_shard] = 0;
@@ -1863,7 +1875,9 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                         if (data_sz > 0) {
                             core::uint64 cur = stream.tell();
                             if (data_sz > file_sz - cur) break;
-                            if (!stream.seek(static_cast<core::int64>(cur + data_sz), io::SeekOrigin::Begin)) break;
+                            if (!stream.seek(static_cast<core::int64>(cur + data_sz),
+                                             io::SeekOrigin::Begin))
+                                break;
                         }
                         if (stream.tell() <= head_start) break;
                     }
@@ -1877,7 +1891,8 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                     if (entry.header.is_service) continue;
                     if (!reader.test_entry(entry)) {
                         core::uint64 s_start = entry.header_offset / group_count;
-                        core::uint64 s_end = (entry.data_offset + entry.data_size + group_count - 1) / group_count;
+                        core::uint64 s_end =
+                            (entry.data_offset + entry.data_size + group_count - 1) / group_count;
                         if (s_end <= s_start) s_end = s_start + 1;
                         if (s_end > D) s_end = D;
 
@@ -1892,11 +1907,13 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
 
                             for (core::uint64 s = s_start; s < s_end; ++s) {
                                 if (!data_valid[s]) continue;
-                                core::uint32 inv_c0 = rs_enc.gf_inv(rs_enc.gf_add(j0 + D, static_cast<core::uint32>(s)));
+                                core::uint32 inv_c0 = rs_enc.gf_inv(
+                                    rs_enc.gf_add(j0 + D, static_cast<core::uint32>(s)));
                                 bool consistent = true;
                                 for (core::uint32 j = 0; j < NR && consistent; ++j) {
                                     if (!parity_valid[j] || j == j0) continue;
-                                    core::uint32 cj = rs_enc.gf_inv(rs_enc.gf_add(j + D, static_cast<core::uint32>(s)));
+                                    core::uint32 cj = rs_enc.gf_inv(
+                                        rs_enc.gf_add(j + D, static_cast<core::uint32>(s)));
                                     for (size_t w = 0; w < num_words; ++w) {
                                         core::uint16 s0 = static_cast<core::uint16>(
                                             syndromes[j0][2 * w] | (syndromes[j0][2 * w + 1] << 8));
@@ -1914,17 +1931,25 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                                     crypto::Crc32 cand_crc;
                                     core::uint64 s_byte_start = s * group_count;
                                     core::uint64 s_byte_end = (s + 1) * group_count;
-                                    for (core::uint64 off = entry.data_offset; off < entry.data_offset + entry.data_size; ++off) {
+                                    for (core::uint64 off = entry.data_offset;
+                                         off < entry.data_offset + entry.data_size; ++off) {
                                         core::byte b = file_bytes[off];
                                         if (off >= s_byte_start && off < s_byte_end) {
-                                            size_t w = static_cast<size_t>((off - s_byte_start) / 2);
+                                            size_t w =
+                                                static_cast<size_t>((off - s_byte_start) / 2);
                                             core::uint16 s0 = static_cast<core::uint16>(
-                                                syndromes[j0][2 * w] | (syndromes[j0][2 * w + 1] << 8));
-                                            core::uint16 err_word = static_cast<core::uint16>(
-                                                rs_enc.gf_mul(rs_enc.gf_add(j0 + D, static_cast<core::uint32>(s)), s0));
-                                            core::byte err_byte = ((off - s_byte_start) % 2 == 0)
-                                                ? static_cast<core::byte>(err_word & 0xFF)
-                                                : static_cast<core::byte>((err_word >> 8) & 0xFF);
+                                                syndromes[j0][2 * w] |
+                                                (syndromes[j0][2 * w + 1] << 8));
+                                            core::uint16 err_word =
+                                                static_cast<core::uint16>(rs_enc.gf_mul(
+                                                    rs_enc.gf_add(j0 + D,
+                                                                  static_cast<core::uint32>(s)),
+                                                    s0));
+                                            core::byte err_byte =
+                                                ((off - s_byte_start) % 2 == 0)
+                                                    ? static_cast<core::byte>(err_word & 0xFF)
+                                                    : static_cast<core::byte>((err_word >> 8) &
+                                                                              0xFF);
                                             b ^= err_byte;
                                         }
                                         cand_crc.update(&b, 1);
@@ -2029,17 +2054,21 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         }
     }
     for (core::uint32 i = 0; i < D; ++i) {
-        const core::byte* data_ptr = file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
+        const core::byte* data_ptr =
+            file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
         for (core::uint32 j = 0; j < NR; ++j) {
             if (!parity_valid[j]) continue;
-            rs_enc.update_ecc(i, j, data_ptr, recomputed_parity[j].data(), static_cast<size_t>(group_count));
+            rs_enc.update_ecc(i, j, data_ptr, recomputed_parity[j].data(),
+                              static_cast<size_t>(group_count));
         }
     }
 
     bool post_repair_syndromes_zero = true;
     for (core::uint32 j = 0; j < NR; ++j) {
         if (!parity_valid[j]) continue;
-        const core::byte* P_j = rr.raw_data.data() + static_cast<size_t>(j) * static_cast<size_t>(shard_size) + static_cast<size_t>(header_size32);
+        const core::byte* P_j = rr.raw_data.data() +
+                                static_cast<size_t>(j) * static_cast<size_t>(shard_size) +
+                                static_cast<size_t>(header_size32);
         for (size_t b = 0; b < group_count; ++b) {
             if ((P_j[b] ^ recomputed_parity[j][b]) != 0) {
                 post_repair_syndromes_zero = false;

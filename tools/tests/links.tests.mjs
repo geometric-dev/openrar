@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { symlinkSync, writeFileSync, readlinkSync, existsSync } from 'node:fs';
 import { parseArchive } from '../rar5-coverage.js';
-import { freshDir, makeFixtureTree, buildOurArchive, runTool, OUR_EXE, WINRAR_UNRAR, readFileSync } from './helpers.mjs';
+import { DIR_SEP, freshDir, makeFixtureTree, buildOurArchive, runTool, OUR_EXE, WINRAR_UNRAR, readFileSync } from './helpers.mjs';
 
 describe('RAR 5.0 Redirections and Links (-ol)', () => {
   it('archives and preserves symlinks with FHEXTRA_REDIR records', () => {
@@ -50,7 +50,7 @@ describe('RAR 5.0 Redirections and Links (-ol)', () => {
 
     // Extraction round-trip with -ol
     const extOur = freshDir('links-test-ext');
-    const resOur = runTool(OUR_EXE, ['x', '-y', '-ol', arc, extOur + '\\'], tree);
+    const resOur = runTool(OUR_EXE, ['x', '-y', '-ol', arc, extOur + DIR_SEP], tree);
     assert.equal(resOur.code, 0, `extract failed: ${resOur.output}`);
 
     if (hasSymlinks) {
@@ -77,7 +77,7 @@ describe('RAR 5.0 Redirections and Links (-ol)', () => {
     const arc = buildOurArchive({ tree, out, switches: ['-ol', '-m3'] });
 
     const extSkip = freshDir('links-test-skip-ext');
-    const res = runTool(OUR_EXE, ['x', '-y', '-ol-', arc, extSkip + '\\'], tree);
+    const res = runTool(OUR_EXE, ['x', '-y', '-ol-', arc, extSkip + DIR_SEP], tree);
     assert.equal(res.code, 0, `extract failed: ${res.output}`);
 
     const extractedLink = join(extSkip, 'link_to_text.txt');

@@ -92,9 +92,9 @@ unsigned long current_pid_stub() {
 int one_input(const uint8_t* data, size_t size) {
     static unsigned long counter = 0;
     const unsigned long id = counter++;
-    fs::path dir = fs::temp_directory_path() /
-                   ("openrar_fuzz_fh_" + std::to_string(current_pid_stub()) + "_" +
-                    std::to_string(id));
+    fs::path dir =
+        fs::temp_directory_path() /
+        ("openrar_fuzz_fh_" + std::to_string(current_pid_stub()) + "_" + std::to_string(id));
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return 0;
@@ -141,7 +141,8 @@ int one_input(const uint8_t* data, size_t size) {
         // Valid and out-of-range indices alike: bounds checks must hold.
         const uint32_t idx = size ? static_cast<uint32_t>(data[1]) : 0u;
         for (uint32_t attempt = 0; attempt < 3; ++attempt) {
-            const uint32_t i = attempt == 0 ? idx : (attempt == 1 ? (count ? count - 1 : 0) : 0x7ffffffeu);
+            const uint32_t i =
+                attempt == 0 ? idx : (attempt == 1 ? (count ? count - 1 : 0) : 0x7ffffffeu);
             fs::path dest = dir / ("dest" + std::to_string(attempt) + ".bin");
             openrar_archive_handle_extract_to_path(h, i, dest.u8string().c_str(),
                                                    ExtractGuard::progress, ExtractGuard::cancel,
@@ -150,8 +151,7 @@ int one_input(const uint8_t* data, size_t size) {
             size_t out_len = 0;
             openrar_archive_handle_extract(h, i, &out, &out_len);
             openrar_free(out);
-            openrar_archive_handle_test(h, i, ExtractGuard::progress, ExtractGuard::cancel,
-                                        &guard);
+            openrar_archive_handle_test(h, i, ExtractGuard::progress, ExtractGuard::cancel, &guard);
         }
         openrar_archive_close(h);
         openrar_archive_close(h); // double close must be safe
@@ -163,9 +163,9 @@ int one_input(const uint8_t* data, size_t size) {
         void* entries = nullptr;
         void* paths = nullptr;
         size_t paths_size = 0;
-        int rc = openrar_archive_list_file_pw(primary.u8string().c_str(), password, &count,
-                                              &entries, &paths, &paths_size, nullptr, nullptr,
-                                              nullptr);
+        int rc =
+            openrar_archive_list_file_pw(primary.u8string().c_str(), password, &count, &entries,
+                                         &paths, &paths_size, nullptr, nullptr, nullptr);
         if (rc == RAR_OK) openrar_archive_list_free(entries, paths, paths_size);
     }
 
@@ -203,8 +203,7 @@ int one_input(const uint8_t* data, size_t size) {
             void* entries = nullptr;
             void* paths = nullptr;
             size_t paths_size = 0;
-            if (openrar_archive_handle_list(h3, &count, &entries, &paths, &paths_size) ==
-                RAR_OK) {
+            if (openrar_archive_handle_list(h3, &count, &entries, &paths, &paths_size) == RAR_OK) {
                 openrar_archive_list_free(entries, paths, paths_size);
             }
             openrar_archive_close(h3);
@@ -241,10 +240,18 @@ void mutate(std::vector<uint8_t>& v) {
         if (v.empty()) break;
         const size_t pos = rng() % v.size();
         switch (rng() % 4) {
-        case 0: v[pos] = static_cast<uint8_t>(rng()); break;
-        case 1: v[pos] ^= static_cast<uint8_t>(1u << (rng() % 8)); break;
-        case 2: v[pos] = static_cast<uint8_t>(0xFFu << (rng() % 8)); break;
-        default: v.insert(v.begin() + static_cast<long>(pos), static_cast<uint8_t>(rng())); break;
+        case 0:
+            v[pos] = static_cast<uint8_t>(rng());
+            break;
+        case 1:
+            v[pos] ^= static_cast<uint8_t>(1u << (rng() % 8));
+            break;
+        case 2:
+            v[pos] = static_cast<uint8_t>(0xFFu << (rng() % 8));
+            break;
+        default:
+            v.insert(v.begin() + static_cast<long>(pos), static_cast<uint8_t>(rng()));
+            break;
         }
     }
 }
@@ -269,8 +276,7 @@ int main() {
         const size_t sizes[] = {sizeof(a)};
         uint8_t* out = nullptr;
         size_t out_len = 0;
-        if (openrar_archive_create(paths, datas, sizes, 1, 3, 2, &out, &out_len) == RAR_OK &&
-            out) {
+        if (openrar_archive_create(paths, datas, sizes, 1, 3, 2, &out, &out_len) == RAR_OK && out) {
             corpus.emplace_back(out, out + out_len);
             openrar_free(out);
         }
@@ -284,8 +290,7 @@ int main() {
     for (int i = 0; i < num_iterations; ++i) {
         std::vector<uint8_t> input = corpus[rng() % corpus.size()];
         if (rng() % 10 != 0) mutate(input);
-        if (rng() % 5 == 0 && !input.empty())
-            input.resize((rng() % input.size()) + 1);
+        if (rng() % 5 == 0 && !input.empty()) input.resize((rng() % input.size()) + 1);
         one_input(input.data(), input.size());
         if ((i + 1) % 250 == 0)
             std::cout << "  Completed " << (i + 1) << " iterations...\n" << std::flush;

@@ -243,8 +243,7 @@ void test_golden_hello5_p_streaming_verify() {
     assert(hello);
     assert(hello->header.is_encrypted);
     assert((hello->header.crypt_flags & 0x0002) != 0); // fixture really is tweaked
-    const size_t hello_index =
-        static_cast<size_t>(hello - reader.entries().data());
+    const size_t hello_index = static_cast<size_t>(hello - reader.entries().data());
     archive::ReaderHooks hooks{};
     assert(reader.test_entry_stream(hello_index, hooks) == archive::RAR_OK);
 
@@ -263,8 +262,7 @@ void test_golden_hello5_p_streaming_verify() {
         std::ofstream f(src, std::ios::binary);
         f << std::string(2048, 'K') << "ENCRYPTED-CRC-CONTROL";
     }
-    assert(archive::ArchiveMutator::add_file_to_archive(plain, src, "ctl.bin", 0, {}, 0,
-                                                        PASSWORD));
+    assert(archive::ArchiveMutator::add_file_to_archive(plain, src, "ctl.bin", 0, {}, 0, PASSWORD));
     {
         archive::ArchiveReader probe;
         assert(probe.open(plain, PASSWORD));
@@ -287,8 +285,8 @@ void test_golden_hello5_p_streaming_verify() {
         const archive::ArchiveEntry* e = find_entry(broken, "ctl.bin");
         assert(e);
         const size_t idx = static_cast<size_t>(e - broken.entries().data());
-        archive::ReaderHooks hooks{};
-        assert(broken.test_entry_stream(idx, hooks) == archive::RAR_ERR_CRC_MISMATCH);
+        archive::ReaderHooks broken_hooks{};
+        assert(broken.test_entry_stream(idx, broken_hooks) == archive::RAR_ERR_CRC_MISMATCH);
     }
     fs::remove(src, ec);
     fs::remove(plain, ec);

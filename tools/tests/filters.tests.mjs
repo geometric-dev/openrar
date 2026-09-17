@@ -8,14 +8,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import {
-  OUR_EXE,
+import { DIR_SEP, OUR_EXE,
   WINRAR_UNRAR,
   buildOurArchive,
   freshDir,
   makeFixtureTree,
-  runTool,
-} from './helpers.mjs';
+  oracleAvailable,
+  runTool, } from './helpers.mjs';
 import { parseArchive } from '../rar5-coverage.js';
 
 describe('RAR 5.0 / RAR 3.x Filter Specification & -mc Switch Handling', () => {
@@ -31,8 +30,12 @@ describe('RAR 5.0 / RAR 3.x Filter Specification & -mc Switch Handling', () => {
     const resTest = runTool(OUR_EXE, ['t', '-y', arc], out);
     assert.equal(resTest.code, 0, `Testing -mc- archive failed: ${resTest.output}`);
 
-    const resWinTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-    assert.equal(resWinTest.code, 0, `WinRAR testing -mc- archive failed: ${resWinTest.output}`);
+    // Oracle-gated: without an UnRAR binary (Linux CI) the self test above
+    // still verifies the archive.
+    if (oracleAvailable()) {
+      const resWinTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+      assert.equal(resWinTest.code, 0, `WinRAR testing -mc- archive failed: ${resWinTest.output}`);
+    }
   });
 
   it('accepts explicit filter enable and disable switches (-mcE+, -mcE-, -mcD+, -mcD-)', () => {
@@ -65,9 +68,11 @@ describe('RAR 5.0 / RAR 3.x Filter Specification & -mc Switch Handling', () => {
       const resTest = runTool(OUR_EXE, ['t', '-y', arc], out);
       assert.equal(resTest.code, 0, `Self-test failed for ${name}: ${resTest.output}`);
 
-      // Dual-oracle verification with WinRAR UnRAR
-      const resWinTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
-      assert.equal(resWinTest.code, 0, `WinRAR test failed for ${name}: ${resWinTest.output}`);
+      // Dual-oracle verification with WinRAR UnRAR (oracle-gated)
+      if (oracleAvailable()) {
+        const resWinTest = runTool(WINRAR_UNRAR, ['t', '-y', arc], out);
+        assert.equal(resWinTest.code, 0, `WinRAR test failed for ${name}: ${resWinTest.output}`);
+      }
     }
   });
 
@@ -81,7 +86,7 @@ describe('RAR 5.0 / RAR 3.x Filter Specification & -mc Switch Handling', () => {
     const resAdd = runTool(OUR_EXE, ['a', '-y', '-mcE+', '-mcD-', '-m3', arc, '.'], tree);
     assert.equal(resAdd.code, 0, `Archiving failed: ${resAdd.output}`);
 
-    const resX = runTool(OUR_EXE, ['x', '-y', arc, extractDir + '\\'], out);
+    const resX = runTool(OUR_EXE, ['x', '-y', arc, extractDir + DIR_SEP], out);
     assert.equal(resX.code, 0, `Extraction failed: ${resX.output}`);
 
     // Verify extracted files match original fixture
