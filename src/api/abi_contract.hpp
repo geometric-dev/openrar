@@ -46,6 +46,7 @@ using openrar::archive::RAR_ERR_CRC_MISMATCH;
 using openrar::archive::RAR_ERR_ENCRYPTED;
 using openrar::archive::RAR_ERR_INVALID_ARG;
 using openrar::archive::RAR_ERR_IO;
+using openrar::archive::RAR_ERR_LIMIT_EXCEEDED;
 using openrar::archive::RAR_ERR_MISSING_VOLUME;
 using openrar::archive::RAR_ERR_NOMEM;
 using openrar::archive::RAR_ERR_NOT_RAR;
@@ -53,6 +54,10 @@ using openrar::archive::RAR_ERR_PARTIAL_OK;
 using openrar::archive::RAR_ERR_TRUNCATED;
 using openrar::archive::RAR_ERR_UNSUPPORTED_FEATURE;
 using openrar::archive::RAR_OK;
+// Pin the integer value of the new code so the C header and JS mirror can never
+// drift from the canonical enum definition (architect directive 1).
+static_assert(static_cast<int>(openrar::archive::RAR_ERR_LIMIT_EXCEEDED) == -15,
+              "RAR_ERR_LIMIT_EXCEEDED must be -15 to match openrar_dll.h and RarErrorCode.ts");
 
 // Largest accepted dictionary window. MUST stay uint64_t: as size_t the
 // 4 GiB value truncates to 0 on wasm32, which made "win > cap" reject every

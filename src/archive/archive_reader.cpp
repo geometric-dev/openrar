@@ -144,7 +144,9 @@ bool ArchiveReader::open(const std::filesystem::path& arc_path, const std::strin
 
 bool ArchiveReader::open_ex(const std::filesystem::path& arc_path, const std::string& password,
                             int& status_out, std::string& detail_out, const ReaderHooks& hooks,
-                            bool strict_volumes) {
+                            bool strict_volumes,
+                            const ExtractionLimits* limits,
+                            LimitState* state) {
     close();
     status_out = RAR_OK;
     detail_out.clear();
@@ -179,7 +181,7 @@ bool ArchiveReader::open_ex(const std::filesystem::path& arc_path, const std::st
         return false;
     }
 
-    if (!scan_archive(hooks, strict_volumes, status_out, detail_out)) {
+    if (!scan_archive(hooks, strict_volumes, status_out, detail_out, limits, state)) {
         // Preserve the wrong-password verdict for the caller: close()
         // resets all per-archive state.
         bool bad = bad_password_;
@@ -204,12 +206,16 @@ std::filesystem::path ArchiveReader::derive_first_volume_name(const std::filesys
 }
 
 bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, int& status_out,
-                                 std::string& detail_out) {
+                                 std::string& detail_out,
+                                 const ExtractionLimits* limits,
+                                 LimitState* state) {
     auto fail = [&](int status, std::string detail) {
         status_out = status;
         detail_out = std::move(detail);
         return false;
     };
+    LimitState local_state;
+    if (!state) state = &local_state;
     // Preserve original stream for single-volume compat, but multivolume scan uses per-volume streams
     core::uint64 file_size = stream_.size();
     if (file_size < format::RAR5_SIGNATURE_SIZE) {
@@ -314,6 +320,23 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                 break;
             }
             core::uint64 head_end = vs.tell();
+            if (limits) {
+                const uint64_t hdr_bytes = (head_end >= head_start) ? (head_end - head_start) : 0;
+                if (limits->hdr_count_limited() && state->header_count + 1 > limits->max_header_count) {
+                    return fail(RAR_ERR_LIMIT_EXCEEDED,
+                                "limit exceeded: header count " +
+                                std::to_string(state->header_count + 1) + " > " +
+                                std::to_string(limits->max_header_count));
+                }
+                if (limits->hdr_bytes_limited() && state->header_bytes + hdr_bytes > limits->max_header_bytes) {
+                    return fail(RAR_ERR_LIMIT_EXCEEDED,
+                                "limit exceeded: header bytes " +
+                                std::to_string(state->header_bytes + hdr_bytes) + " > " +
+                                std::to_string(limits->max_header_bytes));
+                }
+                state->header_count += 1;
+                state->header_bytes += hdr_bytes;
+            }
             if (type == format::HEAD_CRYPT) {
                 format::CryptBlock cb;
                 if (!format::HeaderReader::parse_crypt_header(body.data(), body.size(), cb)) {
@@ -454,6 +477,24 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                             break;
                                         }
 
+                                        if (limits) {
+                                            const uint64_t hdr_bytes = static_cast<uint64_t>(struct_end - struct_size_start);
+                                            if (limits->hdr_count_limited() && state->header_count + 1 > limits->max_header_count) {
+                                                return fail(RAR_ERR_LIMIT_EXCEEDED,
+                                                            "limit exceeded: header count " +
+                                                            std::to_string(state->header_count + 1) + " > " +
+                                                            std::to_string(limits->max_header_count));
+                                            }
+                                            if (limits->hdr_bytes_limited() && state->header_bytes + hdr_bytes > limits->max_header_bytes) {
+                                                return fail(RAR_ERR_LIMIT_EXCEEDED,
+                                                            "limit exceeded: header bytes " +
+                                                            std::to_string(state->header_bytes + hdr_bytes) + " > " +
+                                                            std::to_string(limits->max_header_bytes));
+                                            }
+                                            state->header_count += 1;
+                                            state->header_bytes += hdr_bytes;
+                                        }
+
                                         ArchiveEntry e;
                                         e.header_offset = orig_pos;
                                         e.header_size = data_sz;
@@ -510,6 +551,23 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                                 vs, ttype, tflags, tbody, tdata_size, &hcrypt);
                                             if (tres != format::HeaderResult::Ok) break;
                                             core::uint64 trail_end = vs.tell();
+                                            if (limits) {
+                                                const uint64_t hdr_bytes = (trail_end >= trail_start) ? (trail_end - trail_start) : 0;
+                                                if (limits->hdr_count_limited() && state->header_count + 1 > limits->max_header_count) {
+                                                    return fail(RAR_ERR_LIMIT_EXCEEDED,
+                                                                "limit exceeded: header count " +
+                                                                std::to_string(state->header_count + 1) + " > " +
+                                                                std::to_string(limits->max_header_count));
+                                                }
+                                                if (limits->hdr_bytes_limited() && state->header_bytes + hdr_bytes > limits->max_header_bytes) {
+                                                    return fail(RAR_ERR_LIMIT_EXCEEDED,
+                                                                "limit exceeded: header bytes " +
+                                                                std::to_string(state->header_bytes + hdr_bytes) + " > " +
+                                                                std::to_string(limits->max_header_bytes));
+                                                }
+                                                state->header_count += 1;
+                                                state->header_bytes += hdr_bytes;
+                                            }
 
                                             if (ttype == format::HEAD_SERVICE) {
                                                 ArchiveEntry te;
@@ -733,6 +791,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
     }
 
     if (scan_aborted) return fail(RAR_ERR_ABORTED, "open aborted");
+    if (status_out == RAR_ERR_LIMIT_EXCEEDED) return false;
     if (missing_required && strict_volumes)
         return fail(RAR_ERR_MISSING_VOLUME, "missing volume: " + io::u8_str(missing_volume_path_));
     if (!first_main_read) {
@@ -1068,6 +1127,7 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
                 size_t emit = take;
                 if (aes && produced + emit > total) emit = static_cast<size_t>(total - produced);
                 if (!core_sink(buf.data(), emit)) {
+                    if (status.limit_exceeded) return RAR_ERR_LIMIT_EXCEEDED;
                     return status.aborted ? RAR_ERR_ABORTED : RAR_ERR_IO;
                 }
                 remain -= take;
@@ -1079,7 +1139,9 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
             entry, [&src](core::byte* buf, size_t want) -> size_t { return src.pull(buf, want); },
             static_cast<size_t>(entry.data_size), core_sink);
         if (!ok) {
-            if (status.aborted)
+            if (status.limit_exceeded)
+                rc = RAR_ERR_LIMIT_EXCEEDED;
+            else if (status.aborted)
                 rc = RAR_ERR_ABORTED;
             else if (status.failed)
                 rc = RAR_ERR_IO;
@@ -1093,6 +1155,7 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
         }
     }
     if (rc != RAR_OK) return rc;
+    if (status.limit_exceeded) return RAR_ERR_LIMIT_EXCEEDED;
     if (status.aborted) return RAR_ERR_ABORTED;
     if (status.failed) return RAR_ERR_IO;
     if (produced != total) return RAR_ERR_TRUNCATED;
@@ -1110,37 +1173,30 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
 }
 
 int ArchiveReader::extract_entry_stream(size_t entry_index, io::FileStream& out,
-                                        const ReaderHooks& hooks) {
+                                        const ReaderHooks& hooks,
+                                        const ExtractionLimits* limits,
+                                        LimitState* state) {
     bad_password_ = false;
     if (entry_index >= entries_.size()) return RAR_ERR_INVALID_ARG;
     const ArchiveEntry& entry = entries_[entry_index];
 
-    crypto::Rar5Keys keys{};
-    int rc = derive_entry_keys(entry, keys);
-    if (rc == RAR_OK) rc = ensure_solid_position(entry_index, hooks);
-    if (rc != RAR_OK) {
-        secure_zero(&keys, sizeof(keys));
-        return rc;
+    // Directory and link entries carry no payload.
+    if ((entry.header.file_flags & format::FHFL_DIRECTORY) || entry.header.redir_type != 0)
+        return RAR_OK;
+
+    LimitState local_state;
+    if (!state) state = &local_state;
+    state->member_out = 0; // reset per member
+
+    // Fast-path pre-check for known-size entries
+    if (limits && entry.header.unp_size > 0) {
+        if (limits->member_limited() && entry.header.unp_size > limits->max_member_output_bytes) {
+            return RAR_ERR_LIMIT_EXCEEDED;
+        }
+        if (limits->total_limited() && state->total_out + entry.header.unp_size > limits->max_total_output_bytes) {
+            return RAR_ERR_LIMIT_EXCEEDED;
+        }
     }
-
-    const uint64_t total = entry.header.unp_size;
-    if (total > 0) hooks.emit(0, total);
-
-    SinkStatus st;
-    rc = stream_payload(
-        entry_index, entry.header.is_encrypted ? &keys : nullptr,
-        [&](const core::byte* p, size_t n) -> bool { return out.write(p, n) == n; }, st, hooks);
-    secure_zero(&keys, sizeof(keys));
-    if (rc == RAR_OK && total == 0) hooks.emit(0, 0);
-    return rc;
-}
-
-int ArchiveReader::extract_entry_to_memory(size_t entry_index, std::vector<core::byte>& out,
-                                           uint64_t max_bytes, const ReaderHooks& hooks) {
-    bad_password_ = false;
-    if (entry_index >= entries_.size()) return RAR_ERR_INVALID_ARG;
-    const ArchiveEntry& entry = entries_[entry_index];
-    if (entry.header.unp_size > max_bytes) return RAR_ERR_NOMEM;
 
     crypto::Rar5Keys keys{};
     int rc = derive_entry_keys(entry, keys);
@@ -1157,7 +1213,22 @@ int ArchiveReader::extract_entry_to_memory(size_t entry_index, std::vector<core:
     rc = stream_payload(
         entry_index, entry.header.is_encrypted ? &keys : nullptr,
         [&](const core::byte* p, size_t n) -> bool {
-            out.insert(out.end(), p, p + n);
+            if (limits && n > 0) {
+                if (limits->member_limited() && state->member_out + n > limits->max_member_output_bytes) {
+                    st.limit_exceeded = true;
+                    return false;
+                }
+                if (limits->total_limited() && state->total_out + n > limits->max_total_output_bytes) {
+                    st.limit_exceeded = true;
+                    return false;
+                }
+                state->member_out += n;
+                state->total_out += n;
+            }
+            if (out.write(p, n) != n) {
+                st.failed = true;
+                return false;
+            }
             return true;
         },
         st, hooks);
@@ -1166,7 +1237,74 @@ int ArchiveReader::extract_entry_to_memory(size_t entry_index, std::vector<core:
     return rc;
 }
 
-int ArchiveReader::test_entry_stream(size_t entry_index, const ReaderHooks& hooks) {
+int ArchiveReader::extract_entry_to_memory(size_t entry_index, std::vector<core::byte>& out,
+                                           uint64_t max_bytes, const ReaderHooks& hooks,
+                                           const ExtractionLimits* limits,
+                                           LimitState* state) {
+    bad_password_ = false;
+    if (entry_index >= entries_.size()) return RAR_ERR_INVALID_ARG;
+    const ArchiveEntry& entry = entries_[entry_index];
+    if (entry.header.unp_size > max_bytes) return RAR_ERR_NOMEM;
+
+    LimitState local_state;
+    if (!state) state = &local_state;
+    state->member_out = 0; // reset per member
+
+    // Fast-path pre-check for known-size entries
+    if (limits && entry.header.unp_size > 0) {
+        if (limits->member_limited() && entry.header.unp_size > limits->max_member_output_bytes) {
+            return RAR_ERR_LIMIT_EXCEEDED;
+        }
+        if (limits->total_limited() && state->total_out + entry.header.unp_size > limits->max_total_output_bytes) {
+            return RAR_ERR_LIMIT_EXCEEDED;
+        }
+    }
+
+    crypto::Rar5Keys keys{};
+    int rc = derive_entry_keys(entry, keys);
+    if (rc == RAR_OK) rc = ensure_solid_position(entry_index, hooks);
+    if (rc != RAR_OK) {
+        secure_zero(&keys, sizeof(keys));
+        return rc;
+    }
+
+    const uint64_t total = entry.header.unp_size;
+    if (total > 0) hooks.emit(0, total);
+
+    SinkStatus st;
+    bool mem_limit_hit = false;
+    rc = stream_payload(
+        entry_index, entry.header.is_encrypted ? &keys : nullptr,
+        [&](const core::byte* p, size_t n) -> bool {
+            if (limits && n > 0) {
+                if (limits->member_limited() && state->member_out + n > limits->max_member_output_bytes) {
+                    st.limit_exceeded = true;
+                    return false;
+                }
+                if (limits->total_limited() && state->total_out + n > limits->max_total_output_bytes) {
+                    st.limit_exceeded = true;
+                    return false;
+                }
+                state->member_out += n;
+                state->total_out += n;
+            }
+            if (out.size() + n > max_bytes) {
+                mem_limit_hit = true;
+                return false;
+            }
+            out.insert(out.end(), p, p + n);
+            return true;
+        },
+        st, hooks);
+    secure_zero(&keys, sizeof(keys));
+    if (mem_limit_hit) return RAR_ERR_NOMEM;
+    if (rc == RAR_OK && total == 0) hooks.emit(0, 0);
+    return rc;
+}
+
+int ArchiveReader::test_entry_stream(size_t entry_index, const ReaderHooks& hooks,
+                                     const ExtractionLimits* limits,
+                                     LimitState* state) {
     bad_password_ = false;
     if (entry_index >= entries_.size()) return RAR_ERR_INVALID_ARG;
     const ArchiveEntry& entry = entries_[entry_index];
@@ -1174,6 +1312,20 @@ int ArchiveReader::test_entry_stream(size_t entry_index, const ReaderHooks& hook
     // not be followed — the target may not exist yet).
     if ((entry.header.file_flags & format::FHFL_DIRECTORY) || entry.header.redir_type != 0)
         return RAR_OK;
+
+    LimitState local_state;
+    if (!state) state = &local_state;
+    state->member_out = 0; // reset per member
+
+    // Fast-path pre-check for known-size entries
+    if (limits && entry.header.unp_size > 0) {
+        if (limits->member_limited() && entry.header.unp_size > limits->max_member_output_bytes) {
+            return RAR_ERR_LIMIT_EXCEEDED;
+        }
+        if (limits->total_limited() && state->total_out + entry.header.unp_size > limits->max_total_output_bytes) {
+            return RAR_ERR_LIMIT_EXCEEDED;
+        }
+    }
 
     crypto::Rar5Keys keys{};
     int rc = derive_entry_keys(entry, keys);
@@ -1186,7 +1338,22 @@ int ArchiveReader::test_entry_stream(size_t entry_index, const ReaderHooks& hook
     SinkStatus st;
     rc = stream_payload(
         entry_index, entry.header.is_encrypted ? &keys : nullptr,
-        [](const core::byte*, size_t) { return true; }, st, hooks);
+        [&](const core::byte* /*p*/, size_t n) -> bool {
+            if (limits && n > 0) {
+                if (limits->member_limited() && state->member_out + n > limits->max_member_output_bytes) {
+                    st.limit_exceeded = true;
+                    return false;
+                }
+                if (limits->total_limited() && state->total_out + n > limits->max_total_output_bytes) {
+                    st.limit_exceeded = true;
+                    return false;
+                }
+                state->member_out += n;
+                state->total_out += n;
+            }
+            return true;
+        },
+        st, hooks);
     secure_zero(&keys, sizeof(keys));
     if (rc == RAR_OK && entry.header.unp_size == 0) hooks.emit(0, 0);
     return rc;

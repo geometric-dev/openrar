@@ -2,6 +2,7 @@
 #define OPENRAR_ARCHIVE_BUFFER_ARCHIVE_HPP
 
 #include "../core/types.hpp"
+#include "extraction_limits.hpp"
 #include "rar_errors.hpp"
 #include <array>
 #include <cstddef>
@@ -80,7 +81,9 @@ public:
     // Decompress a single entry to `out`. `entry_index` is into the most
     // recent list() result on this instance. Returns RAR_ERR_INVALID_ARG
     // if entry_index is out of range.
-    int extract(const uint8_t* data, size_t size, size_t entry_index, std::vector<uint8_t>& out);
+    int extract(const uint8_t* data, size_t size, size_t entry_index, std::vector<uint8_t>& out,
+                const ExtractionLimits* limits = nullptr,
+                LimitState* state = nullptr);
 
     // Extract every entry from the most recent list(). Cumulative monotonic
     // progress from 0 to `total` (sum of entry sizes); ~50% is the size-probe
@@ -89,7 +92,9 @@ public:
     int extract_all(const uint8_t* data, size_t size,
                     std::vector<std::pair<std::string, std::vector<uint8_t>>>& out_files,
                     progress_cb on_progress = nullptr, void* user = nullptr,
-                    cancel_cb on_cancel = nullptr, void* cancel_user = nullptr);
+                    cancel_cb on_cancel = nullptr, void* cancel_user = nullptr,
+                    const ExtractionLimits* limits = nullptr,
+                    LimitState* state = nullptr);
 
 private:
     // Cached result from the most recent list() call.

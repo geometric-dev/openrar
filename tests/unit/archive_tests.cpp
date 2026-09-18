@@ -4,8 +4,9 @@
 #include "../../src/format/header_writer.hpp"
 #include "../../src/format/header_reader.hpp"
 #include "../../src/format/header_writer.hpp"
-#include "../../src/archive/archive_reader.hpp"
 #include "../../src/archive/archive_mutator.hpp"
+#include "../../src/archive/archive_reader.hpp"
+#include "../../src/archive/extraction_limits.hpp"
 #include "../../src/archive/rar_errors.hpp"
 
 #include <cassert>
@@ -769,6 +770,349 @@ void test_b2_parent_is_file_fails_cleanly() {
     std::cout << "[PASS] parent-is-file collision fails cleanly, no throw (B2)\n";
 }
 
+void test_extraction_limits_member_cap_known_size() {
+    namespace fs = std::filesystem;
+    fs::path dir = "build/test_limits_known";
+    fs::path arc = dir / "test.rar";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    fs::remove(arc, ec);
+
+    // Create an archive with 1024 bytes of stored data
+    {
+        io::FileStream out;
+        assert(out.open(arc, io::FileMode::CreateAlways));
+        assert(HeaderWriter::write_signature(out));
+        MainBlock mb;
+        assert(HeaderWriter::write_main_block(out, mb));
+
+        FileBlock fb;
+        fb.file_name = "test.bin";
+        fb.unp_size = 1024;
+        fb.pack_size = 1024;
+        fb.attributes = 0x20;
+        fb.method = 0; // store
+        assert(HeaderWriter::write_file_block(out, fb, format::HFL_DATA));
+        std::vector<core::byte> payload(1024, 'X');
+        assert(out.write(payload.data(), payload.size()) == payload.size());
+
+        EndArcBlock eb;
+        assert(HeaderWriter::write_end_block(out, eb));
+    }
+
+    ArchiveReader reader;
+    int status = 0;
+    std::string detail;
+    assert(reader.open_ex(arc, "", status, detail));
+    assert(reader.entries().size() == 1);
+
+    // Member cap = 500 bytes (< 1024): must fail with RAR_ERR_LIMIT_EXCEEDED
+    ExtractionLimits limits;
+    limits.max_member_output_bytes = 500;
+    LimitState state;
+    std::vector<core::byte> mem_out;
+    int rc = reader.extract_entry_to_memory(0, mem_out, 65536, {}, &limits, &state);
+    assert(rc == RAR_ERR_LIMIT_EXCEEDED);
+
+    // Member cap = 2000 bytes (> 1024): succeeds
+    limits.max_member_output_bytes = 2000;
+    mem_out.clear();
+    LimitState state2;
+    rc = reader.extract_entry_to_memory(0, mem_out, 65536, {}, &limits, &state2);
+    assert(rc == RAR_OK);
+    assert(mem_out.size() == 1024);
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] ExtractionLimits_MemberCapFiredOnKnownSize\n";
+}
+
+void test_extraction_limits_member_cap_unknown_size() {
+    namespace fs = std::filesystem;
+    fs::path dir = "build/test_limits_unknown";
+    fs::path arc = dir / "bomb.rar";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    fs::remove(arc, ec);
+
+    // Create an archive with FHFL_UNPUNKNOWN (unp_size = 0 declared in header)
+    // but with 2048 bytes of stored payload
+    {
+        io::FileStream out;
+        assert(out.open(arc, io::FileMode::CreateAlways));
+        assert(HeaderWriter::write_signature(out));
+        MainBlock mb;
+        assert(HeaderWriter::write_main_block(out, mb));
+
+        FileBlock fb;
+        fb.file_name = "bomb.bin";
+        fb.file_flags = format::FHFL_UNPUNKNOWN;
+        fb.unp_size = 0; // unknown uncompressed size
+        fb.pack_size = 2048;
+        fb.attributes = 0x20;
+        fb.method = 0; // store
+        assert(HeaderWriter::write_file_block(out, fb, format::HFL_DATA));
+        std::vector<core::byte> payload(2048, 'Z');
+        assert(out.write(payload.data(), payload.size()) == payload.size());
+
+        EndArcBlock eb;
+        assert(HeaderWriter::write_end_block(out, eb));
+    }
+
+    ArchiveReader reader;
+    int status = 0;
+    std::string detail;
+    assert(reader.open_ex(arc, "", status, detail));
+    assert(reader.entries().size() == 1);
+    assert(reader.entries()[0].header.unp_size == 0); // verified unknown size
+
+    // Member cap = 512 bytes: must fire mid-stream in sink lambda!
+    ExtractionLimits limits;
+    limits.max_member_output_bytes = 512;
+    LimitState state;
+    std::vector<core::byte> mem_out;
+    int rc = reader.extract_entry_to_memory(0, mem_out, 65536, {}, &limits, &state);
+    assert(rc == RAR_ERR_LIMIT_EXCEEDED);
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] ExtractionLimits_MemberCapFiredOnUnknownSize\n";
+}
+
+void test_extraction_limits_total_cap_spans_entries() {
+    namespace fs = std::filesystem;
+    fs::path dir = "build/test_limits_total";
+    fs::path arc = dir / "two_files.rar";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    fs::remove(arc, ec);
+
+    // Create archive with two files, 500 bytes each
+    {
+        io::FileStream out;
+        assert(out.open(arc, io::FileMode::CreateAlways));
+        assert(HeaderWriter::write_signature(out));
+        MainBlock mb;
+        assert(HeaderWriter::write_main_block(out, mb));
+
+        FileBlock fb1;
+        fb1.file_name = "f1.bin";
+        fb1.unp_size = 500;
+        fb1.pack_size = 500;
+        fb1.method = 0;
+        assert(HeaderWriter::write_file_block(out, fb1, format::HFL_DATA));
+        std::vector<core::byte> payload1(500, 'A');
+        assert(out.write(payload1.data(), 500) == 500);
+
+        FileBlock fb2;
+        fb2.file_name = "f2.bin";
+        fb2.unp_size = 500;
+        fb2.pack_size = 500;
+        fb2.method = 0;
+        assert(HeaderWriter::write_file_block(out, fb2, format::HFL_DATA));
+        std::vector<core::byte> payload2(500, 'B');
+        assert(out.write(payload2.data(), 500) == 500);
+
+        EndArcBlock eb;
+        assert(HeaderWriter::write_end_block(out, eb));
+    }
+
+    ArchiveReader reader;
+    int status = 0;
+    std::string detail;
+    assert(reader.open_ex(arc, "", status, detail));
+    assert(reader.entries().size() == 2);
+
+    // Limits: member cap = 800 (allows 500), total cap = 800 (< 1000)
+    ExtractionLimits limits;
+    limits.max_member_output_bytes = 800;
+    limits.max_total_output_bytes = 800;
+    LimitState state; // shared across entries
+
+    std::vector<core::byte> mem_out;
+    int rc1 = reader.extract_entry_to_memory(0, mem_out, 65536, {}, &limits, &state);
+    assert(rc1 == RAR_OK);
+    assert(state.total_out == 500);
+
+    // Second entry pushes total_out to 1000 > 800: must fail with RAR_ERR_LIMIT_EXCEEDED
+    mem_out.clear();
+    int rc2 = reader.extract_entry_to_memory(1, mem_out, 65536, {}, &limits, &state);
+    assert(rc2 == RAR_ERR_LIMIT_EXCEEDED);
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] ExtractionLimits_TotalCapSpansEntries\n";
+}
+
+void test_extraction_limits_header_count_cap() {
+    namespace fs = std::filesystem;
+    fs::path dir = "build/test_limits_hdr_count";
+    fs::path arc = dir / "many_headers.rar";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    fs::remove(arc, ec);
+
+    // Write signature, main header (1), and 10 file headers
+    {
+        io::FileStream out;
+        assert(out.open(arc, io::FileMode::CreateAlways));
+        assert(HeaderWriter::write_signature(out));
+        MainBlock mb;
+        assert(HeaderWriter::write_main_block(out, mb));
+
+        for (int i = 0; i < 10; ++i) {
+            FileBlock fb;
+            fb.file_name = "file_" + std::to_string(i) + ".txt";
+            fb.unp_size = 0;
+            fb.pack_size = 0;
+            fb.method = 0;
+            assert(HeaderWriter::write_file_block(out, fb, 0));
+        }
+
+        EndArcBlock eb;
+        assert(HeaderWriter::write_end_block(out, eb));
+    }
+
+    // Set max_header_count = 5.
+    // Reading headers (main + 10 files) exceeds cap at 5th header!
+    ExtractionLimits limits;
+    limits.max_header_count = 5;
+    LimitState state;
+
+    ArchiveReader reader;
+    int status = 0;
+    std::string detail;
+    bool opened = reader.open_ex(arc, "", status, detail, {}, false, &limits, &state);
+    assert(!opened);
+    assert(status == RAR_ERR_LIMIT_EXCEEDED);
+    assert(state.header_count == 5);
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] ExtractionLimits_HeaderCountCap\n";
+}
+
+void test_extraction_limits_header_count_cumulative_across_volumes() {
+    namespace fs = std::filesystem;
+    fs::path dir = "build/test_limits_vol_cumulative";
+    fs::path vol1 = dir / "vol.part01.rar";
+    fs::path vol2 = dir / "vol.part02.rar";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    fs::remove(vol1, ec);
+    fs::remove(vol2, ec);
+
+    // Volume 1: signature, main block (volume), 2 file headers, end arc (nextvol)
+    {
+        io::FileStream out;
+        assert(out.open(vol1, io::FileMode::CreateAlways));
+        assert(HeaderWriter::write_signature(out));
+        MainBlock mb;
+        mb.arc_flags = format::MHFL_VOLUME;
+        assert(HeaderWriter::write_main_block(out, mb));
+
+        FileBlock fb1;
+        fb1.file_name = "vol_f1.txt";
+        fb1.unp_size = 0;
+        fb1.pack_size = 0;
+        fb1.method = 0;
+        assert(HeaderWriter::write_file_block(out, fb1, 0));
+
+        FileBlock fb2;
+        fb2.file_name = "vol_f2.txt";
+        fb2.unp_size = 0;
+        fb2.pack_size = 0;
+        fb2.method = 0;
+        assert(HeaderWriter::write_file_block(out, fb2, 0));
+
+        EndArcBlock eb;
+        eb.end_flags = 0x0001; // next volume
+        assert(HeaderWriter::write_end_block(out, eb));
+    }
+
+    // Volume 2: signature, main block (volume), 2 file headers, end arc
+    {
+        io::FileStream out;
+        assert(out.open(vol2, io::FileMode::CreateAlways));
+        assert(HeaderWriter::write_signature(out));
+        MainBlock mb;
+        mb.arc_flags = format::MHFL_VOLUME;
+        assert(HeaderWriter::write_main_block(out, mb));
+
+        FileBlock fb3;
+        fb3.file_name = "vol_f3.txt";
+        fb3.unp_size = 0;
+        fb3.pack_size = 0;
+        fb3.method = 0;
+        assert(HeaderWriter::write_file_block(out, fb3, 0));
+
+        FileBlock fb4;
+        fb4.file_name = "vol_f4.txt";
+        fb4.unp_size = 0;
+        fb4.pack_size = 0;
+        fb4.method = 0;
+        assert(HeaderWriter::write_file_block(out, fb4, 0));
+
+        EndArcBlock eb;
+        assert(HeaderWriter::write_end_block(out, eb));
+    }
+
+    // Total headers across both volumes is ~8.
+    // If cap is 5, volume 1 has 4 headers (main, f1, f2, endarc).
+    // Volume 2's main block makes 5 headers, and next block reaches 6 > 5.
+    // It must fail across the volume boundary with RAR_ERR_LIMIT_EXCEEDED!
+    ExtractionLimits limits;
+    limits.max_header_count = 5;
+    LimitState state;
+
+    ArchiveReader reader;
+    int status = 0;
+    std::string detail;
+    bool opened = reader.open_ex(vol1, "", status, detail, {}, true, &limits, &state);
+    assert(!opened);
+    assert(status == RAR_ERR_LIMIT_EXCEEDED);
+    assert(state.header_count == 5);
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] ExtractionLimits_HeaderCountCumulativeAcrossVolumes\n";
+}
+
+void test_invalid_utf8_filename_rejected() {
+    namespace fs = std::filesystem;
+    fs::path dir = "build/test_invalid_utf8";
+    fs::path arc = dir / "invalid_name.rar";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    fs::remove(arc, ec);
+
+    // Create an archive with an invalid UTF-8 filename (raw 0xFF byte)
+    {
+        io::FileStream out;
+        assert(out.open(arc, io::FileMode::CreateAlways));
+        assert(HeaderWriter::write_signature(out));
+        MainBlock mb;
+        assert(HeaderWriter::write_main_block(out, mb));
+
+        FileBlock fb;
+        fb.file_name = "bad_\xFF_name.txt";
+        fb.unp_size = 0;
+        fb.pack_size = 0;
+        fb.method = 0;
+        assert(HeaderWriter::write_file_block(out, fb, 0));
+
+        EndArcBlock eb;
+        assert(HeaderWriter::write_end_block(out, eb));
+    }
+
+    ArchiveReader reader;
+    int status = 0;
+    std::string detail;
+    bool opened = reader.open_ex(arc, "", status, detail);
+    // Archive opens (signature and main header valid), but invalid UTF-8 filename
+    // causes the entry's header parsing to fail, so it is rejected and not admitted.
+    assert(opened);
+    assert(reader.entries().empty());
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] test_invalid_utf8_filename_rejected\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -791,6 +1135,12 @@ int main() {
     test_b9_compressed_corrupt_fails_cleanly();
     test_b2_parent_is_file_fails_cleanly();
     test_solid_window_size();
+    test_extraction_limits_member_cap_known_size();
+    test_extraction_limits_member_cap_unknown_size();
+    test_extraction_limits_total_cap_spans_entries();
+    test_extraction_limits_header_count_cap();
+    test_extraction_limits_header_count_cumulative_across_volumes();
+    test_invalid_utf8_filename_rejected();
     std::cout << "All Milestone 5 Archive Operations & Mutation Primitives PASSED!\n";
     return 0;
 }

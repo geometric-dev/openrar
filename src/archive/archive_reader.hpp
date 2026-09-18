@@ -5,6 +5,7 @@
 #include "../io/file_stream.hpp"
 #include "../format/headers.hpp"
 #include "archive_entry.hpp"
+#include "extraction_limits.hpp"
 
 #include <filesystem>
 #include <functional>
@@ -104,7 +105,9 @@ public:
     // for openrar_archive_get_error.
     bool open_ex(const std::filesystem::path& arc_path, const std::string& password,
                  int& status_out, std::string& detail_out, const ReaderHooks& hooks = {},
-                 bool strict_volumes = false);
+                 bool strict_volumes = false,
+                 const ExtractionLimits* limits = nullptr,
+                 LimitState* state = nullptr);
 
     // Volume paths in the open set (primary first, then every extent volume,
     // deduplicated) — destination-guard input for the DLL layer.
@@ -121,22 +124,30 @@ public:
     // data-bearing file entry (directories and links are the caller's
     // concern). Returns RAR_OK or RAR_ERR_BAD_PASSWORD / RAR_ERR_ENCRYPTED /
     // RAR_ERR_CRC_MISMATCH / RAR_ERR_TRUNCATED / RAR_ERR_ABORTED /
-    // RAR_ERR_MISSING_VOLUME / RAR_ERR_IO.
-    int extract_entry_stream(size_t entry_index, io::FileStream& out, const ReaderHooks& hooks);
+    // RAR_ERR_MISSING_VOLUME / RAR_ERR_IO / RAR_ERR_LIMIT_EXCEEDED.
+    int extract_entry_stream(size_t entry_index, io::FileStream& out, const ReaderHooks& hooks,
+                             const ExtractionLimits* limits = nullptr,
+                             LimitState* state = nullptr);
 
     // Extract into memory (preview path). Fails with RAR_ERR_NOMEM when the
     // uncompressed size exceeds max_bytes (checked before any work).
     int extract_entry_to_memory(size_t entry_index, std::vector<core::byte>& out,
-                                uint64_t max_bytes, const ReaderHooks& hooks);
+                                uint64_t max_bytes, const ReaderHooks& hooks,
+                                const ExtractionLimits* limits = nullptr,
+                                LimitState* state = nullptr);
 
     // Streaming integrity test: verifies BLAKE2sp / CRC32 without retaining
     // output. Directory and link entries verify trivially (RAR_OK, no
     // callbacks). Error mapping as extract_entry_stream.
-    int test_entry_stream(size_t entry_index, const ReaderHooks& hooks);
+    int test_entry_stream(size_t entry_index, const ReaderHooks& hooks,
+                          const ExtractionLimits* limits = nullptr,
+                          LimitState* state = nullptr);
 
 private:
     bool scan_archive(const ReaderHooks& hooks, bool strict_volumes, int& status_out,
-                      std::string& detail_out);
+                      std::string& detail_out,
+                      const ExtractionLimits* limits = nullptr,
+                      LimitState* state = nullptr);
 
     // ── Streaming internals (v1.3.0) ─────────────────────────────────────────
     // Chain bookkeeping (docs/invariants.md §1): reader index of the last
@@ -166,6 +177,7 @@ private:
     struct SinkStatus {
         bool aborted{false};
         bool failed{false};
+        bool limit_exceeded{false};
     };
     // Workhorse: stream entries_[idx]'s payload (stored or compressed,
     // decrypting when `keys` != null) into `out_sink`, hashing and verifying

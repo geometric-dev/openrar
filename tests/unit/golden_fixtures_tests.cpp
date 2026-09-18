@@ -312,6 +312,92 @@ void test_golden_hello4_rejected() {
     std::cout << "[PASS] golden hello4.rar gracefully rejected (RAR4 non-goal)\n";
 }
 
+void test_golden_writer_and_mutator_fixtures() {
+    namespace fs = std::filesystem;
+    const fs::path fixtures_root = fs::path(OPENRAR_SOURCE_DIR) / "tests" / "fixtures" / "golden";
+    if (!fs::exists(fixtures_root)) {
+        return;
+    }
+
+    auto non_service_files = [](const archive::ArchiveReader& r) {
+        std::vector<const archive::ArchiveEntry*> res;
+        for (const auto& e : r.entries()) {
+            if (!e.header.is_service) res.push_back(&e);
+        }
+        return res;
+    };
+
+    // 1. Writer stored
+    {
+        fs::path p = fixtures_root / "writer" / "writer_stored=comp=m0.rar";
+        if (fs::exists(p)) {
+            archive::ArchiveReader r;
+            assert(r.open(p));
+            auto files = non_service_files(r);
+            assert(files.size() == 2);
+            for (const auto* e : files) assert(r.test_entry(*e));
+        }
+    }
+    // 2. Writer compressed
+    {
+        fs::path p = fixtures_root / "writer" / "writer_compressed=comp=m3.rar";
+        if (fs::exists(p)) {
+            archive::ArchiveReader r;
+            assert(r.open(p));
+            auto files = non_service_files(r);
+            assert(files.size() == 2);
+            for (const auto* e : files) assert(r.test_entry(*e));
+        }
+    }
+    // 3. Writer solid
+    {
+        fs::path p = fixtures_root / "writer" / "writer_solid=solid=1=comp=m3.rar";
+        if (fs::exists(p)) {
+            archive::ArchiveReader r;
+            assert(r.open(p));
+            auto files = non_service_files(r);
+            assert(files.size() == 2);
+            for (const auto* e : files) assert(r.test_entry(*e));
+        }
+    }
+    // 4. Mutator add file
+    {
+        fs::path p = fixtures_root / "mutator" / "mutator_add_file=action=add.rar";
+        if (fs::exists(p)) {
+            archive::ArchiveReader r;
+            assert(r.open(p));
+            auto files = non_service_files(r);
+            assert(files.size() == 3);
+            for (const auto* e : files) assert(r.test_entry(*e));
+        }
+    }
+    // 5. Mutator delete file
+    {
+        fs::path p = fixtures_root / "mutator" / "mutator_delete_file=action=del.rar";
+        if (fs::exists(p)) {
+            archive::ArchiveReader r;
+            assert(r.open(p));
+            auto files = non_service_files(r);
+            assert(files.size() == 1);
+            assert(files[0]->header.file_name == "hello.txt");
+            assert(r.test_entry(*files[0]));
+        }
+    }
+    // 6. Mutator lock
+    {
+        fs::path p = fixtures_root / "mutator" / "mutator_lock=action=lock.rar";
+        if (fs::exists(p)) {
+            archive::ArchiveReader r;
+            assert(r.open(p));
+            assert((r.main_block().arc_flags & format::MHFL_LOCK) != 0);
+            auto files = non_service_files(r);
+            assert(files.size() == 2);
+            for (const auto* e : files) assert(r.test_entry(*e));
+        }
+    }
+    std::cout << "[PASS] golden writer and mutator fixtures verified\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -326,6 +412,7 @@ int main() {
     test_golden_hello5_hp();
     test_golden_hello5_p_streaming_verify();
     test_golden_hello4_rejected();
+    test_golden_writer_and_mutator_fixtures();
     std::cout << "All golden-fixture tests PASSED!\n";
     return 0;
 }

@@ -2,6 +2,7 @@
 #define OPENRAR_ARCHIVE_ARCHIVE_MUTATOR_HPP
 
 #include "archive_reader.hpp"
+#include "../compress/compress_plan.hpp"
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -174,6 +175,12 @@ public:
 
     static bool convert_to_sfx(const std::filesystem::path& arc_path,
                                const std::filesystem::path& sfx_stub_path, std::string& err_detail);
+
+private:
+    // Stages of the write pipeline: planning resolves solid chaining and method decisions
+    // across all batch entries up front before execution begins.
+    static compress::CompressPlan plan_batch(const std::vector<PreparedAdd>& files, bool solid,
+                                             bool continue_solid_stream);
 };
 
 } // namespace openrar::archive
