@@ -587,21 +587,37 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     pl.done.assign(queue.size(), 0);
     pl.ok.assign(queue.size(), 0);
 
+    // Build compression and execution plan to determine per-entry workspace estimates.
+    std::vector<compress::EntryPlan> plan_reqs;
+    plan_reqs.reserve(queue.size());
+    for (const auto& q : queue) {
+        compress::EntryPlan ep;
+        ep.is_dir = q.is_dir || q.is_symlink || q.is_hardlink;
+        ep.method = ep.is_dir ? 0 : static_cast<uint32_t>(method);
+        ep.raw_size = q.file_size;
+        plan_reqs.push_back(ep);
+    }
+    auto comp_plan = compress::CompressPlan::plan_entries(plan_reqs, solid, method);
+    auto exec_plan = compress::ExecutionPlan::from_compress_plan(comp_plan);
+
     ThreadPool pool(threads);
 
     for (size_t i = 0; i < queue.size(); ++i) {
+        const core::uint64 est_ws = (i < exec_plan.entries.size())
+            ? exec_plan.entries[i].estimated_workspace_bytes
+            : queue[i].file_size;
         pool.submit([&pl, &queue, &prepared, i, method, &password, delete_source, times_mask,
-                     want_stm, want_acl, budget_bytes = PREPARE_BUDGET] {
+                     want_stm, want_acl, est_ws, budget_bytes = PREPARE_BUDGET] {
             std::unique_lock<std::mutex> lk(pl.mu);
             pl.cv.wait(lk, [&] { return pl.aborting || pl.admit_head == i; });
             if (pl.aborting) {
                 pl.done[i] = 1;
             } else {
-                // Record the charge before acquiring so an aborting writer can
+                // Record the workspace charge before acquiring so an aborting writer can
                 // always find (and release) it; a 1-byte minimum keeps empty
                 // files inside the budget without a special case.
                 const core::uint64 hold = std::max<core::uint64>(
-                    1, std::min<core::uint64>(queue[i].file_size, budget_bytes));
+                    1, std::min<core::uint64>(est_ws, budget_bytes));
                 pl.holds[i] = hold;
                 pl.cv.wait(lk, [&] { return pl.aborting || pl.budget >= hold; });
                 if (pl.aborting) {

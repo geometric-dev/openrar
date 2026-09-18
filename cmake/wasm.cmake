@@ -124,6 +124,6 @@ if(OPENRAR_INMEM_ARCHIVE)
         "-sENVIRONMENT=web,node"
         "-sFILESYSTEM=0"
         "-sALLOW_TABLE_GROWTH=1"
-        "-sEXPORTED_FUNCTIONS=['_openrar_archive_version','_openrar_archive_open','_openrar_archive_close','_openrar_archive_handle_list','_openrar_archive_handle_extract','_openrar_archive_handle_extract_all','_openrar_archive_handle_extract_all2','_openrar_archive_list','_openrar_archive_list_free','_openrar_archive_extract','_openrar_archive_extract_all','_openrar_archive_extract_all2','_openrar_archive_create','_openrar_archive_create2','_openrar_archive_get_error','_openrar_archive_last_error_code','_openrar_archive_alloc','_openrar_archive_free','_malloc','_free']"
+        "-sEXPORTED_FUNCTIONS=['_openrar_archive_version','_openrar_archive_open','_openrar_archive_close','_openrar_archive_handle_list','_openrar_archive_handle_extract','_openrar_archive_handle_extract_all','_openrar_archive_handle_extract_all2','_openrar_archive_handle_set_limits','_openrar_archive_list','_openrar_archive_list_free','_openrar_archive_extract','_openrar_archive_extract_all','_openrar_archive_extract_all2','_openrar_archive_create','_openrar_archive_create2','_openrar_archive_get_error','_openrar_archive_last_error_code','_openrar_archive_alloc','_openrar_archive_free','_malloc','_free']"
         "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','addFunction','removeFunction']")
 endif()

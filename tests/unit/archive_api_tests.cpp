@@ -466,6 +466,66 @@ static void test_create2_invalid_args() {
     inputs[0].is_dir = 0;
 }
 
+static void test_handle_set_limits() {
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> files = {
+        {"file1.txt", std::vector<uint8_t>(100, 'A')},
+        {"file2.txt", std::vector<uint8_t>(200, 'B')},
+    };
+    std::vector<uint8_t> rar;
+    int rc = openrar::archive::create_archive(files, rar, 0); // stored
+    CHECK(rc == 0);
+
+    uint32_t handle = openrar_archive_open(rar.data(), rar.size());
+    CHECK(handle != 0);
+
+    // 1. Limit member to 50 bytes. File 0 has 100 bytes -> must fail with RAR_ERR_LIMIT_EXCEEDED (-15).
+    rc = openrar_archive_handle_set_limits(handle, 50, UINT64_MAX, UINT64_MAX, UINT64_MAX);
+    CHECK(rc == openrar::wasm::RAR_OK);
+
+    uint8_t* out_ptr = nullptr;
+    size_t out_len = 0;
+    rc = openrar_archive_handle_extract(handle, 0, &out_ptr, &out_len);
+    CHECK(rc == openrar::wasm::RAR_ERR_LIMIT_EXCEEDED);
+    CHECK(openrar_archive_last_error_code() == openrar::wasm::RAR_ERR_LIMIT_EXCEEDED);
+    if (out_ptr) openrar_archive_free(out_ptr);
+
+    // 2. Raise member limit to 150, but total limit to 150.
+    rc = openrar_archive_handle_set_limits(handle, 150, 150, UINT64_MAX, UINT64_MAX);
+    CHECK(rc == openrar::wasm::RAR_OK);
+
+    // File 0 has 100 bytes -> within 150 member and 150 total. Succeeds.
+    out_ptr = nullptr;
+    out_len = 0;
+    rc = openrar_archive_handle_extract(handle, 0, &out_ptr, &out_len);
+    CHECK(rc == openrar::wasm::RAR_OK);
+    CHECK(out_len == 100);
+    if (out_ptr) openrar_archive_free(out_ptr);
+
+    // File 1 has 200 bytes -> cumulative 300 exceeds total limit of 150.
+    out_ptr = nullptr;
+    out_len = 0;
+    rc = openrar_archive_handle_extract(handle, 1, &out_ptr, &out_len);
+    CHECK(rc == openrar::wasm::RAR_ERR_LIMIT_EXCEEDED);
+    if (out_ptr) openrar_archive_free(out_ptr);
+
+    openrar_archive_close(handle);
+
+    // 3. One-shot extract_all with total limit exceeded
+    uint32_t h2 = openrar_archive_open(rar.data(), rar.size());
+    CHECK(h2 != 0);
+    rc = openrar_archive_handle_set_limits(h2, UINT64_MAX, 150, UINT64_MAX, UINT64_MAX);
+    CHECK(rc == openrar::wasm::RAR_OK);
+    uint8_t* buf = nullptr;
+    size_t buf_size = 0;
+    uint64_t* offsets = nullptr;
+    uint32_t offsets_count = 0;
+    rc = openrar_archive_handle_extract_all(h2, &buf, &buf_size, &offsets, &offsets_count);
+    CHECK(rc == openrar::wasm::RAR_ERR_LIMIT_EXCEEDED);
+    if (buf) openrar_archive_free(buf);
+    if (offsets) openrar_archive_free(offsets);
+    openrar_archive_close(h2);
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -490,6 +550,7 @@ int main() {
     test_create2_with_mtime_progress();
     test_extract_all2_cancel();
     test_create2_invalid_args();
+    test_handle_set_limits();
     if (fails) {
         std::fprintf(stderr, "%d failure(s)\n", fails);
         return 1;

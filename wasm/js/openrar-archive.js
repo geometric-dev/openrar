@@ -378,34 +378,36 @@ export async function listArchive(rar) {
 /**
  * Extract a single file by path.
  */
-export async function extractFile(rar, path) {
-  const m = await getArchiveModule();
-  const entries = await listArchive(rar);
-  const idx = entries.findIndex(e => e.path === path);
-  if (idx === -1) throw new RarError('INVALID_ARG', `entry not found: ${path}`);
-  return extractFileByIndex(rar, idx);
+function applyLimitsToHandle(m, handle, limits) {
+  if (!limits || typeof m._openrar_archive_handle_set_limits !== 'function') return;
+  const U64_MAX = 0xFFFFFFFFFFFFFFFFn;
+  const toBig = (v) => (v !== undefined && v !== null && v !== 0 ? BigInt(v) : U64_MAX);
+  const maxMember = toBig(limits.maxMemberBytes);
+  const maxTotal = toBig(limits.maxTotalBytes);
+  const maxHdrCount = toBig(limits.maxHeaderCount);
+  const maxHdrBytes = toBig(limits.maxHeaderBytes);
+  const rc = m.ccall('openrar_archive_handle_set_limits', 'number',
+    ['number', 'bigint', 'bigint', 'bigint', 'bigint'],
+    [handle, maxMember, maxTotal, maxHdrCount, maxHdrBytes]);
+  if (rc !== 0) throwIfError(rc, m);
 }
 
-export async function extractFileByIndex(rar, index) {
-  const m = await getArchiveModule();
-  const rarU8 = toUint8(rar);
-  const rarPtr = m._malloc(rarU8.length);
-  m.HEAPU8.set(rarU8, rarPtr);
-  const outPtrPtr = m._malloc(4);
-  const outLenPtr = m._malloc(4);
-  const rc = m.ccall('openrar_archive_extract', 'number',
-    ['number','number','number','number','number'],
-    [rarPtr, rarU8.length, index, outPtrPtr, outLenPtr]);
-  const outPtr = m.HEAPU32[outPtrPtr>>2];
-  const outLen = m.HEAPU32[outLenPtr>>2];
-  m._free(rarPtr); m._free(outPtrPtr); m._free(outLenPtr);
-  if (rc !== 0) {
-    if (outPtr) m._openrar_archive_free(outPtr);
-    throwIfError(rc, m);
+export async function extractFile(rar, path, opts = {}) {
+  const h = await openArchive(rar, opts);
+  try {
+    return await h.extract(path, opts);
+  } finally {
+    h.close();
   }
-  const result = safeRead(m, outPtr, outLen);
-  m._openrar_archive_free(outPtr);
-  return result;
+}
+
+export async function extractFileByIndex(rar, index, opts = {}) {
+  const h = await openArchive(rar, opts);
+  try {
+    return await h.extractByIndex(index, opts);
+  } finally {
+    h.close();
+  }
 }
 
 /**
@@ -419,10 +421,10 @@ export async function extractFileByIndex(rar, index) {
  *
  * @param {Uint8Array} rar
  * @param {{onProgress?:(done:number,total:number)=>void, signal?:AbortSignal,
- *          bulk?:boolean, maxOutputBytes?:number}} opts
+ *          bulk?:boolean, maxOutputBytes?:number, limits?:import('./openrar-archive.d.ts').ExtractionLimits}} opts
  */
 export async function extractAll(rar, opts = {}) {
-  const h = await openArchive(rar);
+  const h = await openArchive(rar, opts);
   try {
     return await h.extractAll(opts);
   } finally {
@@ -438,20 +440,43 @@ export class OpenRARArchive {
     this.entries = entries;
     this.rarBytes = rarBytes;
     this._closed = false;
+    this._limits = null;
+    this._module = null;
   }
   list() {
     if (this._closed) throw new RarError('INVALID_ARG', 'archive closed');
     return this.entries;
   }
-  async extract(path) {
+  /**
+   * Set resource extraction limits on this archive handle.
+   * @param {import('./openrar-archive.d.ts').ExtractionLimits} limits
+   */
+  setLimits(limits) {
+    if (this._closed) throw new RarError('INVALID_ARG', 'archive closed');
+    this._limits = limits;
+    if (this._module && typeof this._module._openrar_archive_handle_set_limits === 'function') {
+      applyLimitsToHandle(this._module, this.handle, limits);
+    }
+  }
+  async extract(path, opts = {}) {
     if (this._closed) throw new RarError('INVALID_ARG', 'archive closed');
     const idx = this.entries.findIndex(e => e.path === path);
     if (idx === -1) throw new RarError('INVALID_ARG', `entry not found: ${path}`);
-    return this.extractByIndex(idx);
+    return this.extractByIndex(idx, opts);
   }
-  async extractByIndex(index) {
+  async extractByIndex(index, opts = {}) {
     if (this._closed) throw new RarError('INVALID_ARG', 'archive closed');
+    const limits = opts.limits ?? this._limits;
+    const maxMember = limits?.maxMemberBytes ? Number(limits.maxMemberBytes) : 0;
+    if (maxMember > 0 && this.entries[index] && this.entries[index].size > maxMember) {
+      throw new RarError('LIMIT_EXCEEDED',
+        `entry ${this.entries[index].path} claims ${this.entries[index].size} bytes; exceeds maxMemberBytes ${maxMember}`, -15);
+    }
     const m = await getArchiveModule();
+    this._module = m;
+    if (limits && typeof m._openrar_archive_handle_set_limits === 'function') {
+      applyLimitsToHandle(m, this.handle, limits);
+    }
     const outPtrPtr = m._malloc(4);
     const outLenPtr = m._malloc(4);
     const rc = m.ccall('openrar_archive_handle_extract', 'number',
@@ -462,12 +487,22 @@ export class OpenRARArchive {
     if (rc !== 0) { if (outPtr) m._openrar_archive_free(outPtr); throwIfError(rc, m); }
     const result = safeRead(m, outPtr, outLen);
     m._openrar_archive_free(outPtr);
+    if (maxMember > 0 && result.length > maxMember) {
+      throw new RarError('LIMIT_EXCEEDED',
+        `entry ${this.entries[index].path} produced ${result.length} bytes; exceeds maxMemberBytes ${maxMember}`, -15);
+    }
     return result;
   }
   async extractAll(opts = {}) {
     if (this._closed) throw new RarError('INVALID_ARG', 'archive closed');
     const m = await getArchiveModule();
-    const maxOut = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    this._module = m;
+    const limits = opts.limits ?? this._limits;
+    if (limits && typeof m._openrar_archive_handle_set_limits === 'function') {
+      applyLimitsToHandle(m, this.handle, limits);
+    }
+    const maxOut = limits?.maxTotalBytes ? Number(limits.maxTotalBytes) : (opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES);
+    const maxMember = limits?.maxMemberBytes ? Number(limits.maxMemberBytes) : 0;
 
     if (opts.bulk) {
       // One-shot: single scan, single concatenated buffer (~2× payload peak).
@@ -494,9 +529,23 @@ export class OpenRARArchive {
         const buf = safeRead(m, bufPtr, bufSize);
         const view = new DataView(m.HEAPU8.buffer, m.HEAPU8.byteOffset, m.HEAPU8.byteLength);
         const result = new Map();
+        let cumBytes = 0;
         for (let i = 0; i < count; i++) {
           const off = Number(view.getBigUint64(offsetsPtr + i * 16, true));
           const sz = Number(view.getBigUint64(offsetsPtr + i * 16 + 8, true));
+          if (maxMember > 0 && sz > maxMember) {
+            m._openrar_archive_free(bufPtr);
+            m._openrar_archive_free(offsetsPtr);
+            throw new RarError('LIMIT_EXCEEDED',
+              `entry ${this.entries[i].path} extracted ${sz} bytes; exceeds maxMemberBytes ${maxMember}`, -15);
+          }
+          cumBytes += sz;
+          if (maxOut > 0 && cumBytes > maxOut) {
+            m._openrar_archive_free(bufPtr);
+            m._openrar_archive_free(offsetsPtr);
+            throw new RarError('LIMIT_EXCEEDED',
+              `cumulative extracted bytes ${cumBytes} exceeds maxTotalBytes ${maxOut}`, -15);
+          }
           result.set(this.entries[i].path, buf.subarray(off, off + sz).slice());
         }
         m._openrar_archive_free(bufPtr);
@@ -511,11 +560,19 @@ export class OpenRARArchive {
     // Default: per-entry extraction. Peak memory is the largest entry plus
     // the results map; progress and abort land between entries.
     let totalBytes = 0;
-    for (const e of this.entries) totalBytes += e.size;
+    for (const e of this.entries) {
+      if (maxMember > 0 && e.size > maxMember) {
+        throw new RarError('LIMIT_EXCEEDED',
+          `entry ${e.path} claims ${e.size} bytes; exceeds maxMemberBytes ${maxMember}`, -15);
+      }
+      totalBytes += e.size;
+    }
     if (maxOut > 0 && totalBytes > maxOut) {
-      throw new RarError('NOMEM',
+      const code = limits?.maxTotalBytes ? 'LIMIT_EXCEEDED' : 'NOMEM';
+      const numCode = limits?.maxTotalBytes ? -15 : -5;
+      throw new RarError(code,
         `archive claims ${totalBytes} uncompressed bytes; exceeds maxOutputBytes ${maxOut} ` +
-        `(pass a higher maxOutputBytes or bulk:true if this is expected)`, -5);
+        `(pass a higher maxOutputBytes or bulk:true if this is expected)`, numCode);
     }
     const result = new Map();
     let doneBytes = 0;
@@ -524,9 +581,13 @@ export class OpenRARArchive {
       if (opts.signal && opts.signal.aborted) {
         throw new RarError('ABORTED', `aborted after ${i}/${this.entries.length} entries`, -11);
       }
-      const bytes = await this.extractByIndex(i);
+      const bytes = await this.extractByIndex(i, { limits });
+      doneBytes += bytes.length;
+      if (maxOut > 0 && doneBytes > maxOut) {
+        throw new RarError('LIMIT_EXCEEDED',
+          `cumulative extracted bytes ${doneBytes} exceeds maxTotalBytes ${maxOut}`, -15);
+      }
       result.set(this.entries[i].path, bytes);
-      doneBytes += this.entries[i].size;
       if (opts.onProgress) opts.onProgress(doneBytes, totalBytes);
     }
     return result;
@@ -542,7 +603,7 @@ export class OpenRARArchive {
   get pathCount() { return this.entries ? this.entries.length : 0; }
 }
 
-export async function openArchive(rar) {
+export async function openArchive(rar, opts = {}) {
   const m = await getArchiveModule();
   const rarU8 = toUint8(rar);
   const rarPtr = m._malloc(rarU8.length);
@@ -572,7 +633,12 @@ export async function openArchive(rar) {
   }
   const entries = parseEntries(m, entriesPtr, count, pathsPtr);
   m.ccall('openrar_archive_list_free', null, ['number','number','number'], [entriesPtr, pathsPtr, 0]);
-  return new OpenRARArchive(handle, entries, rarU8);
+  const archive = new OpenRARArchive(handle, entries, rarU8);
+  archive._module = m;
+  if (opts.limits) {
+    archive.setLimits(opts.limits);
+  }
+  return archive;
 }
 
 export function destroy() {
