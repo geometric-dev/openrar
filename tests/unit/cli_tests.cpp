@@ -1,5 +1,6 @@
 #include "../../src/core/types.hpp"
 #include "../../src/archive/archive_mutator.hpp"
+#include "../../src/archive/archive_reader.hpp"
 #include "openrar/version.h"
 #include <algorithm>
 #include <cassert>
@@ -485,6 +486,193 @@ static void test_cli_hardlinks() {
     std::cout << "[PASS] CLI hardlink archiving (-oh) & extraction\n";
 }
 
+static void test_cli_v1_10_features() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_cli_110";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    fs::path f_a = temp_dir / "a.txt";
+    fs::path f_b = temp_dir / "b.txt";
+    fs::path f_c = temp_dir / "c.log";
+    {
+        std::ofstream fa(f_a, std::ios::binary);
+        fa << "payload alpha";
+        std::ofstream fb(f_b, std::ios::binary);
+        fb << "payload beta";
+        std::ofstream fc(f_c, std::ios::binary);
+        fc << "payload gamma log";
+    }
+
+    // 1. Test @listfile with UTF-8 BOM and comments
+    fs::path listfile = temp_dir / "files.lst";
+    {
+        std::ofstream fl(listfile, std::ios::binary);
+        // UTF-8 BOM
+        fl << "\xEF\xBB\xBF";
+        fl << "; This is a comment\n";
+        fl << "# Another comment\n";
+        fl << "// Slash comment\n";
+        fl << "\n";
+        fl << f_a.string() << "\n";
+        fl << "   " << f_b.string() << "   \r\n";
+    }
+
+    fs::path arc1 = temp_dir / "test_list.rar";
+    std::string cmd = get_cli_path() + " a -q " + arc1.string() + " @" + listfile.string() + " > " DEVNULL " 2>&1";
+    int rc = std::system(cmd.c_str());
+    assert(rc == 0);
+    assert(fs::exists(arc1));
+
+    // List bare to verify only a.txt and b.txt are present
+    fs::path list_out = temp_dir / "list.txt";
+    cmd = get_cli_path() + " lb " + arc1.string() + " > " + list_out.string();
+    rc = std::system(cmd.c_str());
+    assert(rc == 0);
+    {
+        std::ifstream lf(list_out);
+        std::string s;
+        std::vector<std::string> names;
+        while (std::getline(lf, s)) {
+            while (!s.empty() && (s.back() == '\r' || s.back() == ' ')) s.pop_back();
+            if (!s.empty()) names.push_back(s);
+        }
+        assert(names.size() == 2);
+    }
+
+    // 2. Test -x<pattern> exclusion
+    fs::path arc2 = temp_dir / "test_x.rar";
+    cmd = get_cli_path() + " a -q -x*.log " + arc2.string() + " " +
+          f_a.string() + " " + f_b.string() + " " + f_c.string() + " > " DEVNULL " 2>&1";
+    rc = std::system(cmd.c_str());
+    assert(rc == 0);
+
+    cmd = get_cli_path() + " lb " + arc2.string() + " > " + list_out.string();
+    rc = std::system(cmd.c_str());
+    assert(rc == 0);
+    {
+        std::ifstream lf(list_out);
+        std::string s;
+        std::vector<std::string> names;
+        while (std::getline(lf, s)) {
+            while (!s.empty() && (s.back() == '\r' || s.back() == ' ')) s.pop_back();
+            if (!s.empty()) names.push_back(s);
+        }
+        assert(names.size() == 2);
+        for (const auto& n : names) {
+            assert(n.find(".log") == std::string::npos);
+        }
+    }
+
+    // 3. Test -x@<listfile> exclusion
+    fs::path ex_list = temp_dir / "exclude.lst";
+    {
+        std::ofstream el(ex_list, std::ios::binary);
+        el << "; exclude file\n";
+        el << "*.txt\n";
+    }
+    fs::path arc3 = temp_dir / "test_xlist.rar";
+    cmd = get_cli_path() + " a -q -x@" + ex_list.string() + " " + arc3.string() + " " +
+          f_a.string() + " " + f_b.string() + " " + f_c.string() + " > " DEVNULL " 2>&1";
+    rc = std::system(cmd.c_str());
+    assert(rc == 0);
+
+    cmd = get_cli_path() + " lb " + arc3.string() + " > " + list_out.string();
+    rc = std::system(cmd.c_str());
+    assert(rc == 0);
+    {
+        std::ifstream lf(list_out);
+        std::string s;
+        std::vector<std::string> names;
+        while (std::getline(lf, s)) {
+            while (!s.empty() && (s.back() == '\r' || s.back() == ' ')) s.pop_back();
+            if (!s.empty()) names.push_back(s);
+        }
+        assert(names.size() == 1);
+        assert(names[0].find(".log") != std::string::npos);
+    }
+
+    // 4. Test 'p' (print to stdout)
+    fs::path p_out = temp_dir / "p_out.txt";
+    cmd = get_cli_path() + " p " + arc1.string() + " a.txt > " + p_out.string();
+    rc = std::system(cmd.c_str());
+    assert(rc == 0);
+    {
+        std::ifstream pf(p_out, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(pf)), std::istreambuf_iterator<char>());
+        assert(content == "payload alpha");
+    }
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] CLI v1.10 features: @listfile, -x exclusion, p stdout print\n";
+}
+
+void test_cli_dict_size_flag() {
+    namespace fs = std::filesystem;
+    fs::path temp_dir = "build/cli_test_dict";
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir);
+
+    fs::path src_file = temp_dir / "sample.bin";
+    {
+        std::ofstream f(src_file, std::ios::binary);
+        std::vector<char> buf(64 * 1024, 'X');
+        f.write(buf.data(), buf.size());
+    }
+
+    std::string exe = get_cli_path();
+
+    auto find_file = [](const openrar::archive::ArchiveReader& r) -> const openrar::archive::ArchiveEntry* {
+        for (const auto& e : r.entries()) {
+            if (!e.header.is_service) return &e;
+        }
+        return nullptr;
+    };
+
+    // 1. Valid -md16m with -m3
+    fs::path arc_16m = temp_dir / "test_16m.rar";
+    std::string cmd = exe + " a -q -m3 -md16m " + arc_16m.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+    {
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc_16m));
+        const auto* e = find_file(r);
+        assert(e != nullptr);
+        assert(e->header.win_size == 16 * 1024 * 1024);
+    }
+
+    // 2. Valid -md64m with -m5
+    fs::path arc_64m = temp_dir / "test_64m.rar";
+    cmd = exe + " a -q -m5 -md64m " + arc_64m.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+    {
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc_64m));
+        const auto* e = find_file(r);
+        assert(e != nullptr);
+        assert(e->header.win_size == 64 * 1024 * 1024);
+    }
+
+    // 3. Invalid -md not power of two (e.g. -md10m) -> fail
+    fs::path arc_bad1 = temp_dir / "bad1.rar";
+    cmd = exe + " a -q -md10m " + arc_bad1.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res != 0);
+
+    // 4. Invalid -md out of range (< 128k, e.g. -md64k) -> fail
+    fs::path arc_bad2 = temp_dir / "bad2.rar";
+    cmd = exe + " a -q -md64k " + arc_bad2.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res != 0);
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] CLI -md<size> dictionary configuration\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -504,6 +692,9 @@ int main() {
     test_cli_mt_batch_equivalence();
     test_cli_overwrite_modes();
     test_cli_help_switch_parity();
+    test_cli_v1_10_features();
+    test_cli_dict_size_flag();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
 }
+

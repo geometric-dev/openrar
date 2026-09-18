@@ -5,6 +5,33 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-09-18
+
+### Added
+
+- **Engine Streaming & Unbounded File Size**:
+  - Removed internal 1 GiB file size cap via 16 MiB spooling threshold (`SPOOL_MEMORY_THRESHOLD = 16 MiB`) enabling multi-gigabyte file mutations without unbounded memory consumption.
+  - RAII `SpoolFileGuard` ensuring guaranteed temporary file unlinking and zero temp leakage across exceptions, cancelation, and write aborts.
+  - In-flight AES-256-CBC encryption to spool when archive encryption is enabled, ensuring zero unencrypted plaintext touches disk.
+  - Large uncompressed files (> 16 MiB) stream directly from source path into archive writes without allocating intermediate disk spool files.
+  - Single-pass store streaming with in-flight CRC calculation and header back-patching, accelerating uncompressed `-m0` throughput from 74.7 MB/s to 373.9 MB/s (5x speedup, outperforming WinRAR 7.20 by 25.3%).
+  - Upgraded transfer and streaming buffers to 1 MiB across `copy_stream_region` and payload ingestion loops.
+- **Adaptive Dictionary Window Sizing & CLI `-md<size>` Switch**:
+  - Scaled default compression dictionaries: `-m3` to 8 MiB (was 2 MiB), `-m4` to 16 MiB (was 4 MiB), `-m5` to 64 MiB (was 16 MiB).
+  - Adaptive dictionary clamping for non-solid files: clamps window size down to the nearest power of two of file size (floor 128 KiB) to avoid allocating oversized dictionaries for small files.
+  - CLI `-md<size>` (e.g. `-md16m`, `-md64m`) supporting 128 KiB to 1 TiB dictionary sizes with dynamic thread concurrency throttling under `PREPARE_BUDGET` (1 GiB).
+  - Accurately gated compressor workspace memory estimation ($5W + 6\text{ MB}$) in `compress_plan.hpp`.
+- **True Cross-File Solid Compression Safety**:
+  - Enforced single-worker constraint (`threads = 1`) for solid batch compression in `run_batch_add`, eliminating cross-file dictionary race conditions.
+- **CLI Ergonomics & Parity**:
+  - `p` command: stream archive entries directly to stdout in raw binary mode (`_O_BINARY` on Windows) via `ArchiveReader::extract_entry_sink`.
+  - Positional `@<list>` listfile argument expansion with UTF-8 BOM removal and `#`, `;`, `//` comment stripping.
+  - `-x<pattern>` and `-x@<list>` file exclusion filtering supported across all CLI commands (`a`, `u`, `f`, `m`, `x`, `e`, `l`, `t`).
+- **C DLL ABI Additions**:
+  - `openrar_archive_handle_set_limits`: dynamic runtime extraction limits on open archive handles with `std::atomic<bool> busy` concurrency protection returning `RAR_ERR_BUSY = -14` during active extractions.
+  - ABI feature discovery bit `OPENRAR_ABI_FEATURE_SET_LIMITS = (1ull << 7)`.
+  - Static assertion parity between C DLL ABI and core engine `RAR_ERR_BUSY`.
+
 ## [1.9.3] - 2026-09-18
 
 ### Added

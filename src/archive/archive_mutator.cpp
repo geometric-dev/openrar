@@ -3,6 +3,7 @@
 #include "volume.hpp"
 #include "rar_errors.hpp" // RAR_* status codes for the mutation variants
 #include "../compress/compressor50.hpp"
+#include "../compress/stream_encoder.hpp"
 #include "../core/vint.hpp"
 #include "../format/header_writer.hpp"
 #include "../io/path_util.hpp"
@@ -56,14 +57,14 @@ struct TempFileCleanupGuard {
 bool copy_stream_region(io::FileStream& src, io::FileStream& dest, core::uint64 src_offset,
                         core::uint64 size) {
     src.seek(static_cast<core::int64>(src_offset), io::SeekOrigin::Begin);
-    core::byte buf[16384];
+    std::vector<core::byte> buf(1048576); // 1 MiB transfer buffer for mechanical sympathy
     core::uint64 remaining = size;
 
     while (remaining > 0) {
         size_t take =
-            static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
-        if (src.read(buf, take) != take) return false;
-        if (dest.write(buf, take) != take) return false;
+            static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(buf.size())));
+        if (src.read(buf.data(), take) != take) return false;
+        if (dest.write(buf.data(), take) != take) return false;
         remaining -= take;
     }
     return true;
@@ -711,13 +712,13 @@ static bool copy_sfx_stub(const std::filesystem::path& stub_path, io::FileStream
     core::uint64 sz = stub.size();
     if (sz > ArchiveMutator::MAX_SFX_SIZE) return false;
     if (sz == 0) return true;
-    core::byte buf[65536];
+    std::vector<core::byte> buf(262144);
     core::uint64 remaining = sz;
     while (remaining > 0) {
         size_t take =
-            static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
-        if (stub.read(buf, take) != take) return false;
-        if (out.write(buf, take) != take) return false;
+            static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(buf.size())));
+        if (stub.read(buf.data(), take) != take) return false;
+        if (out.write(buf.data(), take) != take) return false;
         remaining -= take;
     }
     return true;
@@ -727,17 +728,16 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                                       const std::string& arc_entry_name, int method,
                                       const std::string& password, PreparedAdd& out,
                                       core::uint32 times_mask, core::uint32 window_log2,
-                                      bool want_streams, bool want_acl) {
+                                      bool want_streams, bool want_acl, bool is_solid) {
     if (!std::filesystem::exists(src_file)) {
         return false;
     }
 
-    // Dictionary window: window_log2 1..4 → 128 KiB..1 MiB (create parity);
-    // 0 keeps the historical 2 MiB CLI default. Must match the win_size
-    // passed to Compressor50 and written into the header (mismatch makes
-    // decoders report checksum errors even for a valid LZ stream).
-    core::uint32 win_size = 0x200000u;
-    if (window_log2 >= 1 && window_log2 <= 4) {
+    // Dictionary window: window_log2 1..15 -> 128 KiB..2 GiB;
+    // 0 uses tuned defaults per method (8 MB for -m3, 64 MB for -m5).
+    // Must match the win_size passed to Compressor50 and written into the header.
+    core::uint32 win_size = 0x800000u;
+    if (window_log2 >= 1 && window_log2 <= 15) {
         win_size = 0x20000u << (window_log2 - 1);
     } else if (window_log2 == 0) {
         switch (method) {
@@ -751,84 +751,30 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
             win_size = 0x100000u;
             break; // 1 MB
         case 3:
-            win_size = 0x200000u;
-            break; // 2 MB
+            win_size = 0x800000u;
+            break; // 8 MB
         case 4:
-            win_size = 0x400000u;
-            break; // 4 MB
-        case 5:
             win_size = 0x1000000u;
             break; // 16 MB
+        case 5:
+            win_size = 0x4000000u;
+            break; // 64 MB
         default:
-            win_size = 0x200000u;
+            win_size = 0x800000u;
             break;
         }
     }
 
     core::uint64 file_sz = 0;
     core::uint32 crc = 0;
-    std::vector<core::byte> compressed_payload;
-    std::vector<core::byte> uncompressed;
-
-    {
-        io::FileStream src;
-        if (!src.open(src_file, io::FileMode::ReadOnly)) {
-            return false;
-        }
-        file_sz = src.size();
-        if (file_sz > 1024ULL * 1024ULL * 1024ULL) {
-            std::cerr << "Error: file size exceeds 1 GiB in-memory allocation limit\n";
-            return false;
-        }
-        if (file_sz > 0) {
-            uncompressed.resize(static_cast<size_t>(file_sz));
-            if (src.read(uncompressed.data(), uncompressed.size()) != uncompressed.size()) {
-                return false;
-            }
-            crypto::Crc32 crc_calc;
-            crc_calc.update(uncompressed.data(), uncompressed.size());
-            crc = crc_calc.get();
-
-            if (method > 0) {
-                if (compress::Compressor50::compress_buffer(uncompressed.data(),
-                                                            uncompressed.size(), compressed_payload,
-                                                            method, win_size)) {
-                    // Only use compressed payload if smaller than uncompressed
-                    if (compressed_payload.size() >= uncompressed.size()) {
-                        compressed_payload.clear();
-                        method = 0;
-                    }
-                } else {
-                    method = 0;
-                }
-            }
-        }
-        src.close();
-    }
-
-    // Materialize the payload we're actually going to write.
-    // For encrypted files we do this before building the header so pack_size
-    // reflects the padded ciphertext length.
+    bool is_spooled = false;
+    std::filesystem::path spool_path_used;
+    SpoolFileGuard spool_guard;
     std::vector<core::byte> payload_to_write;
-    if (file_sz > 0) {
-        if (!compressed_payload.empty())
-            payload_to_write = std::move(compressed_payload);
-        else
-            payload_to_write = std::move(uncompressed);
-    }
 
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
-    fb.unp_size = file_sz;
-    fb.pack_size = static_cast<core::int64>(payload_to_write.size());
     fb.attributes = 0x20;
-    fb.data_crc32 = crc;
-    fb.has_crc32 = true;
-    fb.method = static_cast<core::uint32>(method);
-    // Must match the win_size passed to Compressor50 above (previously
-    // hard-coded 4 MiB while the compressor defaulted to 2 MiB → interop
-    // checksum failures).
-    fb.win_size = (method > 0) ? win_size : 0;
     fb.unp_ver = 0;
     FileTimes times;
     if (get_file_times(src_file, times)) {
@@ -838,15 +784,279 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
             std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
     }
 
-    if (!password.empty()) {
-        if (!encrypt_file_payload(payload_to_write, fb, password)) {
-            // RNG failure — refuse to write a weakly encrypted archive.
+    {
+        io::FileStream src;
+        if (!src.open(src_file, io::FileMode::ReadOnly)) {
             return false;
+        }
+        file_sz = src.size();
+        fb.unp_size = file_sz;
+
+        if (window_log2 == 0 && !is_solid && method > 0 && file_sz > 0) {
+            core::uint32 file_pow2 = 0x20000u; // 128 KiB floor
+            while (file_pow2 < file_sz && file_pow2 < win_size) {
+                file_pow2 <<= 1;
+            }
+            win_size = std::min(win_size, file_pow2);
+        }
+
+        if (file_sz == 0) {
+            fb.pack_size = 0;
+            fb.data_crc32 = 0;
+            fb.has_crc32 = true;
+            fb.method = 0;
+            fb.win_size = 0;
+            src.close();
+        } else if (file_sz <= SPOOL_MEMORY_THRESHOLD) {
+            // Fast in-memory path for files <= 16 MiB
+            std::vector<core::byte> uncompressed(static_cast<size_t>(file_sz));
+            if (src.read(uncompressed.data(), uncompressed.size()) != uncompressed.size()) {
+                return false;
+            }
+            src.close();
+            crypto::Crc32 crc_calc;
+            crc_calc.update(uncompressed.data(), uncompressed.size());
+            crc = crc_calc.get();
+
+            std::vector<core::byte> compressed_payload;
+            if (method > 0) {
+                if (compress::Compressor50::compress_buffer(uncompressed.data(),
+                                                            uncompressed.size(), compressed_payload,
+                                                            method, win_size)) {
+                    if (compressed_payload.size() >= uncompressed.size()) {
+                        compressed_payload.clear();
+                        method = 0;
+                    }
+                } else {
+                    method = 0;
+                }
+            }
+
+            if (!compressed_payload.empty())
+                payload_to_write = std::move(compressed_payload);
+            else
+                payload_to_write = std::move(uncompressed);
+
+            fb.pack_size = static_cast<core::int64>(payload_to_write.size());
+            fb.data_crc32 = crc;
+            fb.has_crc32 = true;
+            fb.method = static_cast<core::uint32>(method);
+            fb.win_size = (method > 0) ? win_size : 0;
+
+            if (!password.empty()) {
+                if (!encrypt_file_payload(payload_to_write, fb, password)) {
+                    return false;
+                }
+            }
+        } else {
+            // Streaming path for files > 16 MiB
+            bool do_encrypt = !password.empty();
+            constexpr core::uint8 LG2_COUNT = 15;
+            constexpr size_t SALT_LEN = 16;
+            constexpr size_t IV_LEN = 16;
+            core::byte salt[SALT_LEN];
+            core::byte iv[IV_LEN];
+            core::byte iv_stream[IV_LEN];
+            crypto::Rar5Keys keys;
+            std::unique_ptr<crypto::Aes256> aes;
+            std::vector<core::byte> enc_residual;
+            core::uint64 spooled_pack_bytes = 0;
+
+            if (do_encrypt) {
+                if (!crypto::secure_random_bytes(salt, SALT_LEN) ||
+                    !crypto::secure_random_bytes(iv, IV_LEN)) {
+                    return false;
+                }
+                crypto::Pbkdf2Rar5::derive_keys(password, salt, SALT_LEN, 1U << LG2_COUNT, keys);
+                std::memcpy(iv_stream, iv, IV_LEN);
+                aes = std::make_unique<crypto::Aes256>(keys.aes_key);
+            }
+
+            if (method == 0 && !do_encrypt) {
+                // Uncompressed, unencrypted large file: no temp spool needed!
+                // Defer CRC32 calculation to write_batch_add_ex streaming pass.
+                // write_batch_add_ex will stream the payload directly into the archive
+                // in 1 MiB chunks while computing CRC32 on-the-fly, and back-patch the header.
+                // Total I/O drops from 3x to 2x (8.0 GiB vs 12.0 GiB for a 4.0 GiB file).
+                src.close();
+                fb.pack_size = static_cast<core::int64>(file_sz);
+                fb.data_crc32 = 0; // Deterministic placeholder for header back-patching
+                fb.has_crc32 = true;
+                fb.method = 0;
+                fb.win_size = 0;
+                out.needs_deferred_crc = true;
+            } else {
+                // Compressed or encrypted streaming to temporary spool file
+                std::filesystem::path spool_p = mutation_temp_path(src_file, "spool_tmp");
+                io::FileStream spool_out;
+                if (!spool_out.open(spool_p, io::FileMode::CreateNew)) {
+                    std::error_code ec;
+                    spool_p = mutation_temp_path(std::filesystem::temp_directory_path() / "openrar", "spool_tmp");
+                    std::filesystem::create_directories(spool_p.parent_path(), ec);
+                    if (!spool_out.open(spool_p, io::FileMode::CreateNew)) {
+                        return false;
+                    }
+                }
+                spool_guard.reset(spool_p);
+
+                auto write_spool_chunk = [&](const core::byte* data, size_t size) -> bool {
+                    if (size == 0) return true;
+                    if (!do_encrypt) {
+                        if (spool_out.write(data, size) != size) return false;
+                        spooled_pack_bytes += size;
+                        return true;
+                    }
+                    enc_residual.insert(enc_residual.end(), data, data + size);
+                    size_t complete_blocks = (enc_residual.size() / 16) * 16;
+                    if (complete_blocks > 0) {
+                        if (!aes->encrypt_cbc(enc_residual.data(), complete_blocks, iv_stream)) {
+                            return false;
+                        }
+                        if (spool_out.write(enc_residual.data(), complete_blocks) != complete_blocks) {
+                            return false;
+                        }
+                        spooled_pack_bytes += complete_blocks;
+                        enc_residual.erase(enc_residual.begin(), enc_residual.begin() + complete_blocks);
+                    }
+                    return true;
+                };
+
+                crypto::Crc32 crc_calc;
+                std::vector<core::byte> read_buf(1048576);
+                core::uint64 remaining = file_sz;
+
+                if (method > 0) {
+                    compress::StreamEncoder encoder(method, win_size);
+                    struct FlushCtx {
+                        decltype(write_spool_chunk)* writer;
+                        bool ok;
+                    } fctx{&write_spool_chunk, true};
+                    encoder.set_flush([](void* user, const core::byte* data, size_t size) -> int {
+                        auto* ctx = static_cast<FlushCtx*>(user);
+                        if (!(*ctx->writer)(data, size)) {
+                            ctx->ok = false;
+                            return -1;
+                        }
+                        return 0;
+                    }, &fctx);
+
+                    while (remaining > 0) {
+                        size_t to_read = static_cast<size_t>(std::min<core::uint64>(remaining, read_buf.size()));
+                        if (src.read(read_buf.data(), to_read) != to_read) return false;
+                        crc_calc.update(read_buf.data(), to_read);
+                        if (!encoder.feed(read_buf.data(), to_read) || !fctx.ok) return false;
+                        remaining -= to_read;
+                    }
+                    std::vector<core::byte> final_chunk;
+                    if (!encoder.finish(final_chunk) || !fctx.ok) return false;
+                    if (!final_chunk.empty()) {
+                        if (!write_spool_chunk(final_chunk.data(), final_chunk.size())) return false;
+                    }
+                    if (do_encrypt && !enc_residual.empty()) {
+                        size_t pad_need = 16 - enc_residual.size();
+                        enc_residual.insert(enc_residual.end(), pad_need, core::byte(0));
+                        if (!aes->encrypt_cbc(enc_residual.data(), 16, iv_stream)) return false;
+                        if (spool_out.write(enc_residual.data(), 16) != 16) return false;
+                        spooled_pack_bytes += 16;
+                        enc_residual.clear();
+                    }
+
+                    // Store fallback check
+                    if (spooled_pack_bytes >= file_sz) {
+                        method = 0;
+                        spool_out.close();
+                        spool_guard.cleanup(); // removes the compressed spool
+                        if (!do_encrypt) {
+                            // Unencrypted store fallback: no spool needed!
+                            spooled_pack_bytes = file_sz;
+                        } else {
+                            // Encrypted store fallback: stream read src_file, encrypt, and write to fresh spool
+                            if (!spool_out.open(spool_p, io::FileMode::CreateNew)) return false;
+                            spool_guard.reset(spool_p);
+                            src.seek(0, io::SeekOrigin::Begin);
+                            std::memcpy(iv_stream, iv, IV_LEN);
+                            aes = std::make_unique<crypto::Aes256>(keys.aes_key);
+                            spooled_pack_bytes = 0;
+                            remaining = file_sz;
+                            while (remaining > 0) {
+                                size_t to_read = static_cast<size_t>(std::min<core::uint64>(remaining, read_buf.size()));
+                                if (src.read(read_buf.data(), to_read) != to_read) return false;
+                                if (!write_spool_chunk(read_buf.data(), to_read)) return false;
+                                remaining -= to_read;
+                            }
+                            if (!enc_residual.empty()) {
+                                size_t pad_need = 16 - enc_residual.size();
+                                enc_residual.insert(enc_residual.end(), pad_need, core::byte(0));
+                                if (!aes->encrypt_cbc(enc_residual.data(), 16, iv_stream)) return false;
+                                if (spool_out.write(enc_residual.data(), 16) != 16) return false;
+                                spooled_pack_bytes += 16;
+                                enc_residual.clear();
+                            }
+                            spool_out.close();
+                            is_spooled = true;
+                            spool_path_used = spool_p;
+                            spool_guard.disarm();
+                        }
+                    } else {
+                        spool_out.close();
+                        is_spooled = true;
+                        spool_path_used = spool_p;
+                        spool_guard.disarm();
+                    }
+                } else {
+                    // method == 0 && do_encrypt: stream encrypt directly to spool
+                    while (remaining > 0) {
+                        size_t to_read = static_cast<size_t>(std::min<core::uint64>(remaining, read_buf.size()));
+                        if (src.read(read_buf.data(), to_read) != to_read) return false;
+                        crc_calc.update(read_buf.data(), to_read);
+                        if (!write_spool_chunk(read_buf.data(), to_read)) return false;
+                        remaining -= to_read;
+                    }
+                    if (!enc_residual.empty()) {
+                        size_t pad_need = 16 - enc_residual.size();
+                        enc_residual.insert(enc_residual.end(), pad_need, core::byte(0));
+                        if (!aes->encrypt_cbc(enc_residual.data(), 16, iv_stream)) return false;
+                        if (spool_out.write(enc_residual.data(), 16) != 16) return false;
+                        spooled_pack_bytes += 16;
+                        enc_residual.clear();
+                    }
+                    spool_out.close();
+                    is_spooled = true;
+                    spool_path_used = spool_p;
+                    spool_guard.disarm();
+                }
+
+                src.close();
+                crc = crc_calc.get();
+                fb.pack_size = static_cast<core::int64>(spooled_pack_bytes);
+                fb.data_crc32 = crc;
+                fb.has_crc32 = true;
+                fb.method = static_cast<core::uint32>(method);
+                fb.win_size = (method > 0) ? win_size : 0;
+                if (do_encrypt) {
+                    fb.is_encrypted = true;
+                    fb.crypt_version = 0;
+                    fb.crypt_flags = 0x01; // has psw_check
+                    fb.lg2_count = LG2_COUNT;
+                    std::memcpy(fb.salt.data(), salt, SALT_LEN);
+                    std::memcpy(fb.init_v.data(), iv, IV_LEN);
+                    fb.has_psw_check = true;
+                    std::memcpy(fb.psw_check.data(), keys.psw_check, sizeof(keys.psw_check));
+                    std::memcpy(fb.psw_check_csum.data(), keys.psw_check_csum, sizeof(keys.psw_check_csum));
+                }
+            }
         }
     }
 
     out.fb = std::move(fb);
-    out.payload = std::move(payload_to_write);
+    out.src_path = src_file;
+    if (is_spooled) {
+        out.spool_path = std::move(spool_path_used);
+        out.payload.clear();
+    } else {
+        out.payload = std::move(payload_to_write);
+        out.spool_path.clear();
+    }
 
     if (want_streams) {
         std::vector<io::StreamEntry> streams;
@@ -1373,6 +1583,101 @@ int ArchiveMutator::write_batch_add_ex(
                                              header_encrypt_mode ? &hcw : nullptr);
             if (!pf.payload.empty()) {
                 out.write(pf.payload.data(), pf.payload.size());
+            } else if (!pf.spool_path.empty()) {
+                io::FileStream spool_in;
+                if (!spool_in.open(pf.spool_path, io::FileMode::ReadOnly)) {
+                    out.close();
+                    std::filesystem::remove(tmp_path);
+                    detail_out = "cannot read spool file";
+                    return RAR_ERR_IO;
+                }
+                core::uint64 spool_sz = spool_in.size();
+                if (!copy_stream_region(spool_in, out, 0, spool_sz)) {
+                    spool_in.close();
+                    out.close();
+                    std::filesystem::remove(tmp_path);
+                    detail_out = "spool stream copy failed";
+                    return RAR_ERR_IO;
+                }
+                spool_in.close();
+                std::error_code ec;
+                std::filesystem::remove(pf.spool_path, ec);
+                pf.spool_path.clear();
+            } else if (pf.fb.method == 0 && pf.fb.unp_size > 0 && !pf.src_path.empty()) {
+                io::FileStream src_in;
+                if (!src_in.open(pf.src_path, io::FileMode::ReadOnly)) {
+                    out.close();
+                    std::filesystem::remove(tmp_path);
+                    detail_out = "cannot read source file for store copy";
+                    return RAR_ERR_IO;
+                }
+                if (pf.needs_deferred_crc) {
+                    crypto::Crc32 crc_calc;
+                    std::vector<core::byte> buf(1048576); // 1 MiB streaming buffer
+                    core::uint64 remaining = pf.fb.unp_size;
+                    while (remaining > 0) {
+                        size_t take = static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(buf.size())));
+                        if (src_in.read(buf.data(), take) != take) {
+                            src_in.close();
+                            out.close();
+                            std::filesystem::remove(tmp_path);
+                            detail_out = "source stream read failed";
+                            return RAR_ERR_IO;
+                        }
+                        if (out.write(buf.data(), take) != take) {
+                            src_in.close();
+                            out.close();
+                            std::filesystem::remove(tmp_path);
+                            detail_out = "archive write failed";
+                            return RAR_ERR_IO;
+                        }
+                        crc_calc.update(buf.data(), take);
+                        remaining -= take;
+                    }
+                    src_in.close();
+
+                    core::uint64 payload_end = out.tell();
+                    pf.fb.data_crc32 = crc_calc.get();
+                    auto updated_block_bytes = format::HeaderWriter::serialize_file_block(pf.fb, 0);
+                    if (updated_block_bytes.size() != block_bytes.size()) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "header size invariant broken on CRC back-patch";
+                        return RAR_ERR_IO;
+                    }
+                    if (want_qo && !qo_indices.empty()) {
+                        size_t arena_off = qo_indices.back().arena_offset;
+                        std::memcpy(&qo_arena[arena_off], updated_block_bytes.data(), updated_block_bytes.size());
+                    }
+                    if (!out.seek(static_cast<core::int64>(orig_pos), io::SeekOrigin::Begin)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "failed to seek to header for CRC back-patch";
+                        return RAR_ERR_IO;
+                    }
+                    if (!format::HeaderWriter::emit_block(out, updated_block_bytes,
+                                                          header_encrypt_mode ? &hcw : nullptr)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "failed to rewrite header for CRC back-patch";
+                        return RAR_ERR_IO;
+                    }
+                    if (!out.seek(static_cast<core::int64>(payload_end), io::SeekOrigin::Begin)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "failed to seek to payload end after CRC back-patch";
+                        return RAR_ERR_IO;
+                    }
+                } else {
+                    if (!copy_stream_region(src_in, out, 0, pf.fb.unp_size)) {
+                        src_in.close();
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "source stream copy failed";
+                        return RAR_ERR_IO;
+                    }
+                    src_in.close();
+                }
             }
             // Free the payload as soon as it is on disk so peak memory tracks
             // the in-flight preparation set, not the whole batch.
@@ -1572,10 +1877,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         io::FileStream src;
         if (!src.open(src_file, io::FileMode::ReadOnly)) return false;
         file_sz = src.size();
-        if (file_sz > 1024ULL * 1024ULL * 1024ULL) {
-            std::cerr << "Error: file size exceeds 1 GiB in-memory allocation limit\n";
-            return false;
-        }
+
         if (file_sz > 0) {
             uncompressed.resize(static_cast<size_t>(file_sz));
             if (src.read(uncompressed.data(), uncompressed.size()) != uncompressed.size())
