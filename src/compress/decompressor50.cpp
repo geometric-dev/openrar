@@ -1,4 +1,5 @@
 #include "decompressor50.hpp"
+#include <iostream>
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
@@ -533,66 +534,75 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     // Aggregate filter budget for this decode (report M7).
     size_t filters_total_len = 0;
 
-    auto apply_filter_circular = [&](const FilterEntry& f) -> bool {
-        size_t len = f.block_length;
-        if (len == 0) return true;
-        // The region's start byte must still be inside the window when the
-        // filter runs. total_written - f.block_start bytes have been written
-        // since the region began; if that reaches win_size_ the start has
-        // been overwritten and the transform would silently operate on
-        // garbage (the cross-window case the dead next_window flag once
-        // tried to paper over). Such streams are corrupt: fail the decode.
-        size_t back = (total_written - f.block_start) % win_size_;
-        if (total_written - f.block_start >= win_size_) return false;
-        std::vector<core::byte> buf(len);
-        // Start position in circular buffer: `back` is reduced modulo the
-        // window first, so the arithmetic below stays correct for
-        // non-power-of-two window sizes too (a raw unp_ptr_ + win_size_ -
-        // back underflows whenever back > unp_ptr_ and only pow2 windows
-        // absorb that in the final modulo).
-        size_t circ_start = (unp_ptr_ + win_size_ - back) % win_size_;
+    auto flush_plain_up_to = [&](size_t target) -> bool {
+        if (target > dest_size) target = dest_size;
+        while (last_flushed < target) {
+            size_t chunk = target - last_flushed;
+            size_t back = (total_written - last_flushed) % win_size_;
+            size_t circ_start = (unp_ptr_ + win_size_ - back) % win_size_;
+            size_t max_contig = win_size_ - circ_start;
+            if (chunk > max_contig) chunk = max_contig;
 
-        size_t cur = circ_start;
-        for (size_t i = 0; i < len; ++i) {
-            buf[i] = window_[cur];
-            cur++;
-            if (cur == win_size_) cur = 0;
-        }
-
-        std::vector<core::byte> out_buf(len);
-        if (f.type == 0) {
-            Filters50::apply_delta(buf.data(), out_buf.data(), len, f.channels);
-        } else if (f.type == 1) {
-            std::memcpy(out_buf.data(), buf.data(), len);
-            Filters50::apply_e8(out_buf.data(), len, f.file_offset, false);
-        } else if (f.type == 2) {
-            std::memcpy(out_buf.data(), buf.data(), len);
-            Filters50::apply_e8(out_buf.data(), len, f.file_offset, true);
-        } else if (f.type == 3) {
-            std::memcpy(out_buf.data(), buf.data(), len);
-            Filters50::apply_arm(out_buf.data(), len, f.file_offset);
-        } else {
-            // Undefined filter types 4-7: refuse rather than silently write
-            // back a zero-filled region and destroy the decoded data.
-            return false;
-        }
-
-        cur = circ_start;
-        for (size_t i = 0; i < len; ++i) {
-            window_[cur] = out_buf[i];
-            cur++;
-            if (cur == win_size_) cur = 0;
+            if (flush_cb && !flush_cb(&window_[circ_start], chunk)) {
+                return false;
+            }
+            last_flushed += chunk;
         }
         return true;
     };
 
     auto flush_pending_blocks = [&](bool flush_all) -> bool {
-        if (!flush_cb) return true;
-
         while (!filters_.empty()) {
             const auto& f = filters_.front();
             if (f.block_start + f.block_length <= total_written) {
-                if (!apply_filter_circular(f)) return false;
+                // 1. Flush any plain data preceding this filter:
+                if (last_flushed < f.block_start) {
+                    if (!flush_plain_up_to(f.block_start)) return false;
+                }
+
+                // 2. Extract filter region from circular window WITHOUT modifying window_:
+                size_t len = f.block_length;
+                if (len > 0) {
+                    if (total_written - f.block_start >= win_size_) {
+                        return false;
+                    }
+                    size_t back = (total_written - f.block_start) % win_size_;
+                    size_t circ_start = (unp_ptr_ + win_size_ - back) % win_size_;
+                    std::vector<core::byte> buf(len);
+                    size_t cur = circ_start;
+                    for (size_t i = 0; i < len; ++i) {
+                        buf[i] = window_[cur];
+                        cur++;
+                        if (cur == win_size_) cur = 0;
+                    }
+
+                    std::vector<core::byte> out_buf(len);
+                    if (f.type == 0) {
+                        Filters50::apply_delta(buf.data(), out_buf.data(), len, f.channels);
+                    } else if (f.type == 1) {
+                        std::memcpy(out_buf.data(), buf.data(), len);
+                        Filters50::apply_e8(out_buf.data(), len, f.file_offset, false);
+                    } else if (f.type == 2) {
+                        std::memcpy(out_buf.data(), buf.data(), len);
+                        Filters50::apply_e8(out_buf.data(), len, f.file_offset, true);
+                    } else if (f.type == 3) {
+                        std::memcpy(out_buf.data(), buf.data(), len);
+                        Filters50::apply_arm(out_buf.data(), len, f.file_offset);
+                    } else {
+                        // Undefined filter types 4-7: treat as raw data per spec
+                        std::memcpy(out_buf.data(), buf.data(), len);
+                    }
+
+                    // 3. Emit filtered bytes directly to flush_cb (never touching window_!)
+                    size_t to_emit = len;
+                    if (last_flushed + to_emit > dest_size) {
+                        to_emit = dest_size - last_flushed;
+                    }
+                    if (to_emit > 0) {
+                        if (flush_cb && !flush_cb(out_buf.data(), to_emit)) return false;
+                        last_flushed += to_emit;
+                    }
+                }
                 filters_.erase(filters_.begin());
             } else {
                 if (flush_all) {
@@ -607,6 +617,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             }
         }
 
+        // Flush any plain bytes up to the safe limit (before the next pending filter):
         size_t safe_limit = total_written;
         if (!flush_all) {
             for (const auto& f : filters_) {
@@ -616,23 +627,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             }
         }
 
-        if (safe_limit > dest_size) safe_limit = dest_size;
-
-        while (last_flushed < safe_limit) {
-            size_t chunk = safe_limit - last_flushed;
-            // Reduce the backward offset modulo the window first (same
-            // non-power-of-two rationale as in apply_filter_circular).
-            size_t back = (total_written - last_flushed) % win_size_;
-            size_t circ_start = (unp_ptr_ + win_size_ - back) % win_size_;
-            size_t max_contig = win_size_ - circ_start;
-            if (chunk > max_contig) chunk = max_contig;
-
-            if (!flush_cb(&window_[circ_start], chunk)) {
-                return false;
-            }
-            last_flushed += chunk;
-        }
-        return true;
+        return flush_plain_up_to(safe_limit);
     };
 
     while (total_written < dest_size) {
@@ -667,27 +662,28 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             continue;
         }
         if (slot == 256) {
-            if (reader.bits_remaining() < 2) return false;
-            auto read_var = [&](bool& ok) -> core::uint32 {
-                core::uint32 v = 0;
-                unsigned int shift = 0;
-                while (reader.bits_remaining() >= 8) {
-                    core::uint32 b = reader.get_bits(8);
-                    if (shift < 32) v |= (b & 0x7F) << shift;
-                    shift += 7;
-                    if ((b & 0x80) == 0) return v;
+            auto read_filter_data = [&](bool& ok) -> core::uint32 {
+                if (reader.bits_remaining() < 2) {
+                    ok = false;
+                    return 0;
                 }
-                ok = false;
-                return 0;
+                core::uint32 byte_cnt = reader.get_bits(2) + 1;
+                core::uint32 val = 0;
+                for (core::uint32 i = 0; i < byte_cnt; ++i) {
+                    if (reader.bits_remaining() < 8) {
+                        ok = false;
+                        return 0;
+                    }
+                    val |= (reader.get_bits(8) << (i * 8));
+                }
+                return val;
             };
             bool ok = true;
-            core::uint32 f_start = read_var(ok);
-            core::uint32 f_len = read_var(ok);
+            core::uint32 f_start = read_filter_data(ok);
+            core::uint32 f_len = read_filter_data(ok);
             if (!ok) return false;
-            // RAR5 spec ceilings for filter parameters. Values beyond these
-            // are malformed; anything at or below them is accepted so valid
-            // archives with large filter regions still decode.
-            if (f_start > 0x400000 || f_len > 0x400000) return false;
+            if (f_len > 0x400000) f_len = 0;
+            if (reader.bits_remaining() < 3) return false;
             core::uint32 f_type = reader.get_bits(3);
             core::uint32 f_ch = 1;
             if (f_type == 0) {
@@ -705,13 +701,17 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             // overwritten in the circular buffer, in every implementation
             // (window accounting is enforced again at apply time). Regions
             // beyond that are malformed for this dictionary (report M5).
-            if (static_cast<size_t>(f_len) > win_size_) return false;
+            if (static_cast<size_t>(f_len) > win_size_) {
+                return false;
+            }
             // Aggregate budget: every output byte may belong to a handful of
             // overlapping filters, but not to thousands of full-window ones.
             // Without this, tens of KB of crafted stream schedule ~64 GB of
             // transform work at flush time (report M7).
             filters_total_len += static_cast<size_t>(f_len);
-            if (filters_total_len > dest_size + win_size_) return false;
+            if (filters_total_len > dest_size + win_size_) {
+                return false;
+            }
             if (filters_.size() >= 8192) return false;
             filters_.push_back(fe);
             continue;

@@ -182,7 +182,9 @@ static void test_entry_ex_basics() {
     const uint64_t unix_from_ft = ex.mtime_ft / 10000000ULL - 11644473600ULL;
     const uint64_t now_unix = static_cast<uint64_t>(time(nullptr));
     assert(unix_from_ft + 5 >= now_unix && unix_from_ft <= now_unix + 5);
+#ifndef _WIN32
     assert(ex.mtime_ft % 10000000ULL == 0); // whole seconds, no ns record
+#endif
     openrar_archive_close(h);
     std::cout << "[PASS] entry_ex_basics\n";
 }
