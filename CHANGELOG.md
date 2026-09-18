@@ -5,6 +5,31 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.2] - 2026-09-18
+
+### Added
+
+- **7 Automated Interop Boundary Quality Gates (`tools/interop_gate.py`)**:
+  - Track 1: Solid mixed-stream invariants (`-s -m3` mixing 0B files, store fallbacks, and compressed files without dictionary corruption).
+  - Track 2: RAR5 executable filter decoding (`-mc`) across 512K/1M circular ring-buffer boundaries.
+  - Track 3: High-precision 64-bit Windows FILETIME timestamps with pre-1970 negative Unix epoch and post-2038 rollover protection.
+  - Track 4: Multi-byte UTF-8 password and key derivation (`-p` / `-hp`) across German umlauts, French accents, CJK characters, and 4-byte UTF-8 emojis.
+  - Track 5: QuickOpen (QO) table invalidation and locator stripping upon external mutation (`openrar d`, `u`, `f`, `k`).
+  - Track 6: Recovery volume (`.rev`) Cauchy erasure coding $GF(2^{16})$ parity compatibility with official WinRAR repair (`rar rc`).
+  - Track 7: 64-bit VINT size bounds and in-memory heap allocation exhaustion guards.
+- **Local UnRAR Integration (`dev\unrar`)**:
+  - Automatically discovers and prefers local `UnRAR.exe` builds alongside official WinRAR installations for zero-setup local conformance verification.
+
+### Fixed
+
+- **RAR5 Executable Filter Transform & Deserialization**:
+  - Fixed bitstream deserialization in `Decompressor50`: filter length and offset parameters now decode via official 2-bit length prefix + LE32 (`read_filter_data`), eliminating bitstream desynchronization previously caused by LEB128 parsing.
+  - Modified `flush_pending_blocks` to transform filtered data out-of-place directly into the output callback rather than writing back to `window_`, guaranteeing that subsequent LZ77 string matches reference raw un-transformed dictionary history.
+- **Pre-1970 Negative Timestamp Arithmetic Underflow**:
+  - Fixed Windows `FILETIME` conversion in `ArchiveMutator` to store native 64-bit FILETIME values directly (`fa.ftLastWriteTime`) with `is_unix = false` and spec-compliant extra flags (`0x02` mtime, `0x04` ctime, `0x08` atime), preventing year 1965 from wrapping to year 2101 in WinRAR.
+- **Windows CLI Argument Unicode Encoding**:
+  - Replaced ANSI `char* argv[]` argument ingestion on Windows with `CommandLineToArgvW(GetCommandLineW())` converted to UTF-8 in `main.cpp` and `sfx_main.cpp`, guaranteeing that non-ASCII CLI passwords match WinRAR UTF-8 key derivation.
+
 ## [1.9.0] - 2026-09-18
 
 ### Added
