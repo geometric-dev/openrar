@@ -687,7 +687,7 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                 offset += tf_read;
                 // Compat: legacy prototype format uses 0x01=mtime/0x02=ctime/0x04=atime (FILETIME 8B)
                 // Spec uses 0x01=Unix, 0x02=mtime,0x04=ctime,0x08=atime,0x10=ns
-                bool is_legacy = (tflags <= 0x07) && ((tflags & 0x18) == 0) &&
+                bool is_legacy = (tflags <= 0x07) && (tflags & 0x01) && !(tflags & 0x02) &&
                                  ((rec_end - offset) % 8 == 0) && (rec_end - offset) > 0;
                 if (is_legacy) {
                     if ((tflags & 0x01) && offset + 8 <= rec_end) {
