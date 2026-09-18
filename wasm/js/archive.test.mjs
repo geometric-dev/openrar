@@ -167,4 +167,31 @@ if (!existsSync(distJs)) {
     assert.deepEqual(bulk.get('x.bin'), perEntry.get('x.bin'));
     assert.deepEqual(bulk.get('y.bin'), perEntry.get('y.bin'));
   });
+
+  test('extractAll with ExtractionLimits enforces maxMemberBytes and maxTotalBytes', async () => {
+    const rar = await createArchive([
+      { path: 'file1.bin', data: new Uint8Array(64).fill(1) },
+      { path: 'file2.bin', data: new Uint8Array(64).fill(2) },
+    ]);
+    // Member limit exceeded
+    await assert.rejects(
+      extractAll(rar, { limits: { maxMemberBytes: 32 } }),
+      (e) => e.code === 'LIMIT_EXCEEDED' && e.numericCode === -15,
+    );
+    // Total limit exceeded
+    await assert.rejects(
+      extractAll(rar, { limits: { maxTotalBytes: 100 } }),
+      (e) => e.code === 'LIMIT_EXCEEDED' && e.numericCode === -15,
+    );
+    // OpenArchive handle-based member limit exceeded
+    const h = await openArchive(rar, { limits: { maxMemberBytes: 32 } });
+    try {
+      await assert.rejects(
+        h.extract('file1.bin'),
+        (e) => e.code === 'LIMIT_EXCEEDED' && e.numericCode === -15,
+      );
+    } finally {
+      h.close();
+    }
+  });
 }

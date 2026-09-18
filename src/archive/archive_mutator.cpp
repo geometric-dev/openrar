@@ -1016,6 +1016,7 @@ compress::CompressPlan ArchiveMutator::plan_batch(const std::vector<PreparedAdd>
         ep.is_dir = (pf.fb.file_flags & format::FHFL_DIRECTORY) != 0;
         ep.method = static_cast<uint32_t>(pf.fb.method);
         ep.dict_size = pf.fb.win_size;
+        ep.raw_size = pf.fb.unp_size;
         requests.push_back(ep);
     }
     return compress::CompressPlan::plan_entries(requests, solid, /*default_method=*/3,
@@ -1356,6 +1357,7 @@ int ArchiveMutator::write_batch_add_ex(
             req.is_dir = (pf.fb.file_flags & format::FHFL_DIRECTORY) != 0;
             req.method = static_cast<uint32_t>(pf.fb.method);
             req.dict_size = pf.fb.win_size;
+            req.raw_size = pf.fb.unp_size;
             compress::EntryPlan ep = plan.plan_next_entry(req);
 
             pf.fb.is_solid = ep.is_solid_chain;
