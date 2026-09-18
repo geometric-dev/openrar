@@ -21,7 +21,10 @@ enum BufferArchiveError : int {
     RAR_ERR_NOMEM = -5,
     RAR_ERR_IO = -6,
     RAR_ERR_BAD_PASSWORD = -7,
+    // -8 intentionally skipped (reserved; never assigned to preserve binary
+    //    compatibility with consumers that range-check known error codes).
     RAR_ERR_INVALID_ARG = -9,
+    // -10 intentionally skipped (reserved; same rationale as -8).
     RAR_ERR_ABORTED = -11,
     // Archive headers are encrypted (HEAD_CRYPT): a password is required
     // before any header can be read. Emitted only by list_file_stream and the
@@ -38,6 +41,12 @@ enum BufferArchiveError : int {
     // under it would fail opaquely on Windows). Emitted by the DLL mutation
     // exports only, up front before any temp file is created.
     RAR_ERR_BUSY = -14,
+    // A caller-imposed resource limit (ExtractionLimits) was exceeded: per-member
+    // output cap, cumulative total-output cap, or header count/byte cap. The value
+    // is assigned explicitly to prevent collisions with future additions and because
+    // the C ABI header and the JS TypeScript mirror must match this exact integer.
+    // Gaps at -8 and -10 are documented above. Next available slot: -16.
+    RAR_ERR_LIMIT_EXCEEDED = -15,
 };
 
 } // namespace openrar::archive

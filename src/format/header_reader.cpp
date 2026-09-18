@@ -548,6 +548,7 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
     if (name_len > body_size - offset) return false;
     out_block.file_name.assign(reinterpret_cast<const char*>(body + offset),
                                static_cast<size_t>(name_len));
+    if (!core::is_valid_utf8(out_block.file_name)) return false;
     offset += static_cast<size_t>(name_len);
 
     if (out_block.is_service) {

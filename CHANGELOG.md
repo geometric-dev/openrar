@@ -5,6 +5,27 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.3] - 2026-09-18
+
+### Added
+
+- **Resource Limits API (`ExtractionLimits`, `LimitState`, `RAR_ERR_LIMIT_EXCEEDED = -15`)**:
+  - Fine-grained resource limit enforcement in extraction pipeline: `max_member_bytes`, `max_total_bytes`, and `max_header_bytes`.
+  - In-flight dynamic budget tracking across streaming decompression chunks (`kStreamChunk = 64 KiB`) providing deterministic aborts against decompression bombs even with `FHFL_UNPUNKNOWN`.
+  - Cumulative header and decompression limits across multi-volume sets.
+  - Mirrored in C DLL ABI with `RAR_ERR_LIMIT_EXCEEDED = -15` (with static assertions in `abi_contract.hpp`) and TypeScript definitions in `wasm/js/openrar-archive.d.ts`.
+- **Formal Extraction Contract (`docs/EXTRACTION_CONTRACT.md`)**:
+  - Architectural contract specifying cancellation granularity, CRC/BLAKE2sp checksum verification ordering, solid archive replay semantics, memory and byte budget limits, and multi-volume boundaries.
+- **RFC 3629 UTF-8 Filename Validation Hardening**:
+  - Implemented strict RFC 3629 UTF-8 validator in `core::is_valid_utf8` rejecting non-shortest forms, surrogate code points (`U+D800`..`U+DFFF`), and out-of-range values.
+  - Enforced in `HeaderReader` for RAR5 file header filenames, rejecting corrupted or malicious archives with `RAR_ERR_BAD_DATA`.
+- **Golden Fixture Harness & Deterministic Tooling**:
+  - Cross-platform golden fixture suite with portable `=key=value` naming scheme to avoid Windows NTFS alternate data stream collisions (`tests/fixtures/README.md`).
+  - Automated generator (`tools/generate_golden.ps1`) and hash verifier (`tools/check_golden.ps1`) validating writer and mutator archives against companion `.sha256` files.
+  - CTest test harness integration in `tests/unit/golden_fixtures_tests.cpp`.
+- **Writer Plan/Schedule/Execute Separation (`src/compress/compress_plan.hpp`)**:
+  - Refactored `ArchiveMutator` and archive writing architecture cleanly separating pre-execution planning (`CompressPlan`, `ExecutionPlan`, `EntryPlan`), concurrency/resource scheduling, and low-level byte serialization.
+
 ## [1.9.2] - 2026-09-18
 
 ### Added

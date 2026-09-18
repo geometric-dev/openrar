@@ -1007,6 +1007,21 @@ bool ArchiveMutator::get_file_mtime(const std::filesystem::path& path, core::uin
     return true;
 }
 
+compress::CompressPlan ArchiveMutator::plan_batch(const std::vector<PreparedAdd>& files, bool solid,
+                                                  bool continue_solid_stream) {
+    std::vector<compress::EntryPlan> requests;
+    requests.reserve(files.size());
+    for (const auto& pf : files) {
+        compress::EntryPlan ep;
+        ep.is_dir = (pf.fb.file_flags & format::FHFL_DIRECTORY) != 0;
+        ep.method = static_cast<uint32_t>(pf.fb.method);
+        ep.dict_size = pf.fb.win_size;
+        requests.push_back(ep);
+    }
+    return compress::CompressPlan::plan_entries(requests, solid, /*default_method=*/3,
+                                                /*default_dict_size=*/0, continue_solid_stream);
+}
+
 int ArchiveMutator::write_batch_add_ex(
     const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
     const std::filesystem::path& sfx_stub_path, const std::string& password, bool encrypt_headers,
@@ -1323,11 +1338,13 @@ int ArchiveMutator::write_batch_add_ex(
         // not replaced until all writes succeed, so a mid-batch failure below
         // leaves the original untouched (all-or-nothing vs the old per-file
         // append which could leave a partially updated archive behind).
-        // Solid chain bookkeeping: the solid bit on a compressed entry means its
-        // LZ stream continues the previous compressed entry's stream. Directory
-        // and stored entries carry no LZ state, so they neither start nor continue
-        // the chain (and stay parallel-extractable).
-        bool seen_compressed_entry = continue_solid_stream;
+        // Plan stage: compute entry decisions (solid chaining, method, etc.)
+        // across the batch (Directive: Plan/Schedule/Execute separation).
+        compress::CompressPlan plan;
+        plan.solid = solid;
+        plan.continue_solid_stream = continue_solid_stream;
+        plan.seen_compressed_entry = continue_solid_stream;
+
         for (size_t i = 0; i < files.size(); ++i) {
             PreparedAdd& pf = files[i];
             // entry_name is caller-owned and filled before the prepare jobs run —
@@ -1335,14 +1352,13 @@ int ArchiveMutator::write_batch_add_ex(
             // after on_write has synchronized with the prepare job.
             if (on_write) on_write(i, pf.entry_name);
 
-            if (pf.fb.method > 0 && !(pf.fb.file_flags & format::FHFL_DIRECTORY)) {
-                // Appending to a solid archive continues its stream regardless
-                // of whether -s was passed again.
-                pf.fb.is_solid = (solid || continue_solid_stream) && seen_compressed_entry;
-                seen_compressed_entry = true;
-            } else {
-                pf.fb.is_solid = false;
-            }
+            compress::EntryPlan req;
+            req.is_dir = (pf.fb.file_flags & format::FHFL_DIRECTORY) != 0;
+            req.method = static_cast<uint32_t>(pf.fb.method);
+            req.dict_size = pf.fb.win_size;
+            compress::EntryPlan ep = plan.plan_next_entry(req);
+
+            pf.fb.is_solid = ep.is_solid_chain;
 
             core::uint64 orig_pos = out.tell();
             auto block_bytes = format::HeaderWriter::serialize_file_block(pf.fb, 0);
