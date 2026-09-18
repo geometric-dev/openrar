@@ -676,7 +676,8 @@ bool RecoveryWriter::write_rr_header(io::FileStream& dest, const std::vector<cor
     return write_rr_service_block(dest, parity, 0);
 }
 
-bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path, core::uint32 percent,
+bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
+                                       core::uint32 count_or_percent, bool is_percent,
                                        unsigned threads) {
     // ———— .rev recovery volumes (INTEGRITY_WRITE_SIDE.md §4.7) ————————————————
     // Every data volume is one RS16 data shard; each .rev file carries one
@@ -734,11 +735,17 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path, co
         }
     }
     const core::uint32 nd = static_cast<core::uint32>(chain.size());
-    if (nd == 0) return false;
+    if (nd < 2) return false;
 
-    // Parity count from the -rr percentage (1..1000, mirroring inline RR).
-    core::uint64 pct = percent < 1 ? 1 : (percent > 1000 ? 1000 : percent);
-    core::uint64 nr = (static_cast<core::uint64>(nd) * pct + 99) / 100;
+    // Parity count from percentage or absolute volume count
+    core::uint64 nr = 0;
+    if (is_percent) {
+        core::uint64 pct =
+            count_or_percent < 1 ? 1 : (count_or_percent > 1000 ? 1000 : count_or_percent);
+        nr = (static_cast<core::uint64>(nd) * pct + 99) / 100;
+    } else {
+        nr = count_or_percent < 1 ? 1 : count_or_percent;
+    }
     if (nr == 0) nr = 1;
     if (nd + nr > MAX_CHAIN) nr = MAX_CHAIN - nd;
     if (nr == 0) return false;
@@ -788,16 +795,21 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path, co
     };
     std::vector<RevOut> outs(static_cast<size_t>(nr));
 
-    // Early-failure cleanup for the creation loop below: iterations < up_to
-    // already created temp files, and the post-fold !ok cleanup does not run
-    // on these paths.
-    auto remove_created_rev_temps = [&outs](size_t up_to) {
-        std::error_code cec;
-        for (size_t k = 0; k <= up_to && k < outs.size(); ++k) {
-            outs[k].file.close();
-            std::filesystem::remove(outs[k].tmp_path, cec);
+    struct RevCleanupGuard {
+        std::vector<RevOut>* outs{nullptr};
+        bool disarmed{false};
+        ~RevCleanupGuard() {
+            if (!disarmed && outs) {
+                for (auto& o : *outs) {
+                    o.file.close();
+                    std::error_code ec;
+                    if (!o.tmp_path.empty()) std::filesystem::remove(o.tmp_path, ec);
+                    if (!o.final_path.empty()) std::filesystem::remove(o.final_path, ec);
+                }
+            }
         }
-    };
+    } rev_cleanup{&outs};
+
     for (core::uint32 j = 0; j < nr; ++j) {
         // .rev files restart the numbering: out.part01.rar -> out.part01.rev
         std::filesystem::path base = chain[0];
@@ -833,14 +845,12 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path, co
         // ".rev_tmp" name plus CreateAlways followed a pre-planted symlink.
         outs[j].tmp_path = recovery_temp_path(outs[j].final_path, "rev_tmp");
         if (!outs[j].file.open(outs[j].tmp_path, io::FileMode::CreateNew)) {
-            remove_created_rev_temps(j);
             return false;
         }
         // Reserve the header area up front; the payload rounds append behind
         // it and the real header (with the payload CRCs) is patched in below.
         std::vector<core::byte> placeholder(16 + body_size, 0);
         if (outs[j].file.write(placeholder.data(), placeholder.size()) != placeholder.size()) {
-            remove_created_rev_temps(j);
             return false;
         }
     }
@@ -944,13 +954,9 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path, co
     }
 
     if (!ok) {
-        for (auto& o : outs) {
-            o.file.close();
-            std::error_code ec;
-            std::filesystem::remove(o.tmp_path, ec);
-        }
         return false;
     }
+    rev_cleanup.disarmed = true;
     return true;
 }
 

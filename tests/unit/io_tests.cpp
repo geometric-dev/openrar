@@ -211,6 +211,112 @@ void test_ntfs_metadata() {
 #endif
 }
 
+void test_reparse_point_hardening() {
+#ifdef _WIN32
+    // 1. Buffer too small (< 8 bytes)
+    {
+        core::byte tiny[4] = {0};
+        io::RedirEntry redir;
+        assert(!io::parse_reparse_buffer(tiny, sizeof(tiny), redir));
+    }
+
+    // 2. ReparseDataLength exceeds buffer size
+    {
+        core::byte bad_len[16] = {0};
+        core::write_le32(bad_len, 0xA0000003);
+        core::write_le16(bad_len + 4, 100); // Claims 100 bytes data length
+        io::RedirEntry redir;
+        assert(!io::parse_reparse_buffer(bad_len, sizeof(bad_len), redir));
+    }
+
+    // 3. Out-of-bounds PrintNameOffset or SubstituteNameOffset
+    {
+        core::byte oob[32] = {0};
+        core::write_le32(oob, 0xA0000003);
+        core::write_le16(oob + 4, 24); // ReparseDataLength = 24
+        core::write_le16(oob + 8, 0);
+        core::write_le16(oob + 10, 4);
+        core::write_le16(oob + 12, 100);
+        core::write_le16(oob + 14, 4);
+        io::RedirEntry redir;
+        assert(!io::parse_reparse_buffer(oob, sizeof(oob), redir));
+    }
+
+    // 4. Odd-aligned offsets or lengths (must be 2-byte aligned for UTF-16 WCHAR)
+    {
+        core::byte unaligned[32] = {0};
+        core::write_le32(unaligned, 0xA0000003);
+        core::write_le16(unaligned + 4, 24);
+        core::write_le16(unaligned + 8, 1); // unaligned offset 1!
+        core::write_le16(unaligned + 10, 4);
+        core::write_le16(unaligned + 12, 6);
+        core::write_le16(unaligned + 14, 4);
+        io::RedirEntry redir;
+        assert(!io::parse_reparse_buffer(unaligned, sizeof(unaligned), redir));
+    }
+
+    // 5. Valid MountPoint buffer with \??\ NT prefix stripping
+    {
+        std::wstring nt_target = L"\\??\\C:\\TestTarget";
+        std::wstring print_target = L"C:\\TestTarget";
+        size_t sub_b = nt_target.size() * sizeof(wchar_t);
+        size_t prn_b = print_target.size() * sizeof(wchar_t);
+
+        std::vector<core::byte> valid(16 + sub_b + prn_b, 0);
+        core::write_le32(valid.data(), 0xA0000003); // IO_REPARSE_TAG_MOUNT_POINT
+        core::write_le16(valid.data() + 4, static_cast<core::uint16>(8 + sub_b + prn_b));
+        core::write_le16(valid.data() + 6, 0);
+
+        // SubstituteName
+        core::write_le16(valid.data() + 8, 0);
+        core::write_le16(valid.data() + 10, static_cast<core::uint16>(sub_b));
+        // PrintName
+        core::write_le16(valid.data() + 12, static_cast<core::uint16>(sub_b));
+        core::write_le16(valid.data() + 14, static_cast<core::uint16>(prn_b));
+
+        std::memcpy(valid.data() + 16, nt_target.data(), sub_b);
+        std::memcpy(valid.data() + 16 + sub_b, print_target.data(), prn_b);
+
+        io::RedirEntry redir;
+        assert(io::parse_reparse_buffer(valid.data(), valid.size(), redir));
+        assert(redir.type == io::RedirType::Junction);
+        assert(redir.is_directory);
+        assert(redir.target == "C:\\TestTarget");
+    }
+
+    // 6. Test unprivileged junction creation and read_reparse_info roundtrip
+    {
+        std::filesystem::path test_dir = "build/test_junc_dir";
+        std::filesystem::path link_dir = "build/test_junc_link";
+        std::error_code ec;
+        std::filesystem::remove(link_dir, ec);
+        std::filesystem::remove_all(test_dir, ec);
+        std::filesystem::create_directories(test_dir, ec);
+
+        std::filesystem::path abs_target = std::filesystem::absolute(test_dir);
+        io::RedirEntry junc_entry;
+        junc_entry.type = io::RedirType::Junction;
+        junc_entry.target = abs_target.string();
+        junc_entry.is_directory = true;
+
+        bool created = io::create_reparse_link(link_dir, junc_entry);
+        if (created) {
+            io::RedirEntry read_back;
+            bool read_ok = io::read_reparse_info(link_dir, read_back);
+            assert(read_ok);
+            assert(read_back.type == io::RedirType::Junction);
+            assert(read_back.is_directory);
+            std::filesystem::remove(link_dir, ec);
+        }
+        std::filesystem::remove_all(test_dir, ec);
+    }
+
+    std::cout << "[PASS] Reparse point parser hardening & unprivileged junction handling\n";
+#else
+    std::cout << "[SKIP] Reparse point hardening (non-Windows)\n";
+#endif
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -224,6 +330,7 @@ int main() {
     test_create_new_fails_if_exists();
     test_path_utils();
     test_ntfs_metadata();
+    test_reparse_point_hardening();
     std::cout << "All Milestone 2 I/O & Platform Primitives PASSED!\n";
     return 0;
 }

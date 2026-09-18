@@ -28,8 +28,14 @@ public:
     // the set is too large for the 16-bit codec. `threads` > 1 folds each
     // data chunk into the parity shards on a worker pool; output bytes are
     // identical to the serial run.
-    static bool write_rev_volumes(const std::filesystem::path& arc_path, core::uint32 percent,
+    static bool write_rev_volumes(const std::filesystem::path& arc_path,
+                                  core::uint32 count_or_percent,
+                                  bool is_percent,
                                   unsigned threads = 1);
+    static bool write_rev_volumes(const std::filesystem::path& arc_path, core::uint32 percent,
+                                  unsigned threads = 1) {
+        return write_rev_volumes(arc_path, percent, /*is_percent=*/true, threads);
+    }
     static bool patch_locator_recovery_offset(const std::filesystem::path& tmp_path,
                                               core::uint64 main_start, core::uint64 rr_offset);
 

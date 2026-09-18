@@ -37,6 +37,8 @@ Makefile.cmake
 *.rar
 !tests/*.rar
 !tools/testdata/*.rar
+!tests/fuzz/seeds/*
+!tests/fuzz/seeds/*.rev
 
 # CI smoke outputs
 tests/out_*/
@@ -53,6 +55,7 @@ tools/testrun/
 
 # Test failure dumps & parity artifacts
 *.rev
+!tests/fuzz/seeds/*.rev
 *.bad
 
 # Scratch, benchmark, and temporary test outputs

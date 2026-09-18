@@ -648,6 +648,89 @@ void test_b5_unrecoverable_inconsistent_corruption() {
     std::cout << "[PASS] Unrecoverable damage safely rejected without corrupting archive\n";
 }
 
+void test_rev_single_volume_rejection() {
+    namespace fs = std::filesystem;
+    fs::path dir = openrar::test::scratch_dir("recovery");
+    fs::path arc = dir / "single_test.rar";
+    std::error_code ec;
+    fs::remove(arc, ec);
+
+    {
+        io::FileStream f;
+        assert(f.open(arc, io::FileMode::CreateAlways));
+        const core::byte sig[] = {0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00};
+        assert(f.write(sig, sizeof(sig)) == sizeof(sig));
+    }
+
+    assert(!recovery::RecoveryWriter::write_rev_volumes(arc, 1, /*is_percent=*/false));
+    assert(!recovery::RecoveryWriter::write_rev_volumes(arc, 10, /*is_percent=*/true));
+
+    std::cout << "[PASS] write_rev_volumes rejects single-volume archive\n";
+}
+
+void test_rev_volumes_roundtrip() {
+    namespace fs = std::filesystem;
+    fs::path dir = openrar::test::scratch_dir("recovery");
+    fs::path src = dir / "multivol_src.bin";
+    fs::path arc_base = dir / "multivol.part1.rar";
+
+    std::error_code ec;
+    for (int i = 1; i <= 5; ++i) {
+        fs::remove(dir / ("multivol.part" + std::to_string(i) + ".rar"), ec);
+        fs::remove(dir / ("multivol.part" + std::to_string(i) + ".rev"), ec);
+    }
+    fs::remove(src, ec);
+
+    constexpr size_t SRC_SIZE = 30 * 1024;
+    std::vector<core::byte> payload(SRC_SIZE);
+    for (size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<core::byte>((i * 17 + 3) & 0xFF);
+    }
+
+    {
+        io::FileStream f;
+        assert(f.open(src, io::FileMode::CreateAlways));
+        assert(f.write(payload.data(), payload.size()) == payload.size());
+    }
+
+    assert(archive::ArchiveMutator::add_file_to_archive_vol(arc_base, src, "data.bin",
+                                                            /*method=*/0, /*vol_size=*/10 * 1024));
+
+    fs::path p1 = dir / "multivol.part1.rar";
+    fs::path p2 = dir / "multivol.part2.rar";
+    assert(fs::exists(p1));
+    assert(fs::exists(p2));
+
+    assert(recovery::RecoveryWriter::write_rev_volumes(p1, 1, /*is_percent=*/false, /*threads=*/2));
+    fs::path r1 = dir / "multivol.part1.rev";
+    assert(fs::exists(r1));
+
+    uintmax_t p2_size = fs::file_size(p2);
+    std::vector<core::byte> p2_saved(static_cast<size_t>(p2_size));
+    {
+        io::FileStream f;
+        assert(f.open(p2, io::FileMode::ReadOnly));
+        assert(f.read(p2_saved.data(), p2_saved.size()) == p2_saved.size());
+    }
+
+    fs::remove(p2, ec);
+    assert(!fs::exists(p2));
+
+    assert(recovery::RecoveryWriter::repair(p1));
+    assert(fs::exists(p2));
+
+    {
+        io::FileStream f;
+        assert(f.open(p2, io::FileMode::ReadOnly));
+        assert(f.size() == p2_size);
+        std::vector<core::byte> p2_reconstructed(static_cast<size_t>(p2_size));
+        assert(f.read(p2_reconstructed.data(), p2_reconstructed.size()) == p2_reconstructed.size());
+        assert(p2_reconstructed == p2_saved);
+    }
+
+    std::cout << "[PASS] Multi-threaded .rev volume generation and full volume reconstruction\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -668,6 +751,8 @@ int main() {
     test_b10_calculate_parity_buffer_size();
     test_b5_parity_only_corruption();
     test_b5_unrecoverable_inconsistent_corruption();
+    test_rev_single_volume_rejection();
+    test_rev_volumes_roundtrip();
     std::cout << "All Milestone 4 Recovery & Reed-Solomon Primitives PASSED!\n";
     return 0;
 }

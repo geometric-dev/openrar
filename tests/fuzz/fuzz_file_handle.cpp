@@ -268,6 +268,16 @@ int main() {
         std::error_code ec;
         if (fs::exists(p, ec)) corpus.push_back(read_file(p));
     }
+    fs::path seeds_dir = tests_dir / "tests" / "fuzz" / "seeds";
+    std::error_code sec;
+    if (fs::exists(seeds_dir, sec)) {
+        for (const auto& entry : fs::directory_iterator(seeds_dir, sec)) {
+            if (entry.is_regular_file()) {
+                auto b = read_file(entry.path());
+                if (!b.empty()) corpus.push_back(std::move(b));
+            }
+        }
+    }
     // Freshly built archives round out the valid-input side.
     {
         const uint8_t a[] = {'h', 'e', 'l', 'l', 'o'};

@@ -512,7 +512,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                          bool announce, unsigned threads, std::string* err_name = nullptr,
                          core::uint32 times_mask = archive::time_flags::MTIME, bool solid = false,
                          const std::vector<core::byte>* comment = nullptr, bool want_stm = false,
-                         bool want_acl = false, bool want_qo = true) {
+                         bool want_acl = false, bool want_qo = true, bool want_ams = false) {
     constexpr core::uint64 PREPARE_BUDGET = 1ull << 30; // in-flight prepare bytes
 
     std::vector<archive::ArchiveMutator::PreparedAdd> prepared(queue.size());
@@ -561,7 +561,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         Prog.note_file_done(queue[0].entry_name, queue[0].file_size);
         if (!archive::ArchiveMutator::write_batch_add(
                 arc_path, prepared, sfx_stub, password, encrypt_headers, {}, solid,
-                comment ? *comment : std::vector<core::byte>(), want_qo)) {
+                comment ? *comment : std::vector<core::byte>(), want_qo, want_ams)) {
             return 1;
         }
         if (announce && !g_quiet_mode && !is_vt_supported()) {
@@ -703,7 +703,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     try {
         ok = archive::ArchiveMutator::write_batch_add(
             arc_path, prepared, sfx_stub, password, encrypt_headers, on_write, solid,
-            comment ? *comment : std::vector<core::byte>(), want_qo);
+            comment ? *comment : std::vector<core::byte>(), want_qo, want_ams);
     } catch (const PrepareFailed&) {
         ok = false;
     } catch (...) {
@@ -737,7 +737,7 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                    io::ExcludePathMode ep_mode = io::ExcludePathMode::None,
                    bool recurse_subdirs = true, bool want_symlinks = false, bool freshen = false,
                    bool want_stm = false, bool want_acl = false, bool want_hardlinks = false,
-                   bool want_qo = true) {
+                   bool want_qo = true, bool want_ams = false) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return 1;
@@ -1185,10 +1185,10 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
             Prog.update_bytes(item.file_size);
         }
     } else {
-        int rc =
-            run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
-                          /*delete_source=*/false, /*announce=*/true, threads, nullptr, times_mask,
-                          solid, comment.empty() ? nullptr : &comment, want_stm, want_acl, want_qo);
+        int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
+                               /*delete_source=*/false, /*announce=*/true, threads, nullptr,
+                               times_mask, solid, comment.empty() ? nullptr : &comment, want_stm,
+                               want_acl, want_qo, want_ams);
         if (rc != 0) return rc;
     }
 
@@ -1780,6 +1780,10 @@ static int cli_main(int argc, char* argv[]) {
     bool keep_broken = false;     // -kb
     openrar::cli::OverwriteMode overwrite_mode = openrar::cli::OverwriteMode::Prompt;
     bool want_qo = true; // -qo, -qo+, -qo- (default: enabled)
+    bool want_ams = false; // -ams, -am
+    bool want_rv = false;  // -rv
+    openrar::core::uint32 rv_count_or_percent = 1;
+    bool rv_is_percent = false;
 
     for (const auto& s : switches) {
         if (sw_eq(s, "-plain") || sw_eq(s, "--plain") || sw_eq(s, "-idp") ||
@@ -1936,6 +1940,28 @@ static int cli_main(int argc, char* argv[]) {
             } else {
                 rr_percent = 3;
             }
+        } else if (sw_starts(s, "-rv")) {
+            want_rv = true;
+            std::string tail = s.substr(3);
+            if (!tail.empty() &&
+                (tail.back() == '%' || tail.back() == 'p' || tail.back() == 'P')) {
+                rv_is_percent = true;
+                tail.pop_back();
+            } else {
+                rv_is_percent = false;
+            }
+            if (!tail.empty()) {
+                try {
+                    rv_count_or_percent = static_cast<openrar::core::uint32>(std::stoul(tail));
+                } catch (...) {
+                    rv_count_or_percent = rv_is_percent ? 3 : 1;
+                }
+                if (rv_count_or_percent == 0) rv_count_or_percent = rv_is_percent ? 3 : 1;
+                if (rv_count_or_percent > 1000) rv_count_or_percent = 1000;
+            } else {
+                rv_count_or_percent = 1;
+                rv_is_percent = false;
+            }
         } else if (sw_eq(s, "-s")) {
             want_solid = true;
         } else if (sw_eq(s, "-ed")) {
@@ -1972,7 +1998,7 @@ static int cli_main(int argc, char* argv[]) {
         } else if (sw_eq(s, "-qo-")) {
             want_qo = false;
         } else if (sw_eq(s, "-am") || sw_eq(s, "-ams")) {
-            // Archive mutator switch accepted
+            want_ams = true;
         } else {
             // Unknown switches must not vanish silently: a mistyped
             // security-relevant switch would otherwise degrade to insecure
@@ -2078,7 +2104,7 @@ static int cli_main(int argc, char* argv[]) {
         std::string target_arc = want_sfx ? sfx_arc_path_str : arc_path;
         int rc = 0;
         if (files.empty()) {
-            if (std::filesystem::exists(target_arc) && (want_rr || want_lock)) {
+            if (std::filesystem::exists(target_arc) && (want_rr || want_rv || want_lock)) {
                 rc = 0;
             } else {
                 std::cerr << "No files specified for addition\n";
@@ -2089,7 +2115,7 @@ static int cli_main(int argc, char* argv[]) {
                                               password, want_header_encryption, threads, want_solid,
                                               comment, times_mask, no_dir_records, ep_mode,
                                               recurse_subdirs, want_symlinks, (cmd == "f"),
-                                              want_stm, want_acl, want_hardlinks, want_qo);
+                                              want_stm, want_acl, want_hardlinks, want_qo, want_ams);
         }
         if (rc == 0 && want_rr) {
             bool rr_ok;
@@ -2112,6 +2138,25 @@ static int cli_main(int argc, char* argv[]) {
                     std::cout << "Added .rev recovery volumes (" << rr_percent << "%)\n";
                 else
                     std::cout << "Added RR " << rr_percent << "% (0x1100B)\n";
+            }
+        }
+        if (rc == 0 && want_rv) {
+            bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;
+            if (!is_vol_set) {
+                std::cerr << "Cannot create recovery volumes for a non-volume archive\n";
+                return 1;
+            }
+            bool rv_ok = openrar::recovery::RecoveryWriter::write_rev_volumes(
+                target_arc, rv_count_or_percent, rv_is_percent, threads);
+            if (!rv_ok) {
+                std::cerr << "W: recovery volume creation failed\n";
+                return 1;
+            }
+            if (!openrar::cli::g_quiet_mode) {
+                if (rv_is_percent)
+                    std::cout << "Added .rev recovery volumes (" << rv_count_or_percent << "%)\n";
+                else
+                    std::cout << "Added .rev recovery volumes (" << rv_count_or_percent << ")\n";
             }
         }
         // -k locks after the archive (and any RR) is fully written, matching
@@ -2162,6 +2207,45 @@ static int cli_main(int argc, char* argv[]) {
         }
         if (!openrar::cli::g_quiet_mode) {
             std::cout << "Added RR " << rr_percent << "% (0x1100B)\n";
+        }
+        return 0;
+    } else if (cmd == "rv" || cmd.rfind("rv", 0) == 0) {
+        if (!std::filesystem::exists(arc_path)) {
+            std::cerr << "Cannot open " << arc_path << "\n";
+            return 1;
+        }
+        openrar::core::uint32 count_or_pct = 1;
+        bool is_pct = false;
+        if (cmd.size() > 2) {
+            std::string val = cmd.substr(2);
+            if (!val.empty() && (val.back() == '%' || val.back() == 'p' || val.back() == 'P')) {
+                is_pct = true;
+                val.pop_back();
+            }
+            if (!val.empty()) {
+                try {
+                    count_or_pct = static_cast<openrar::core::uint32>(std::stoul(val));
+                } catch (...) {
+                    count_or_pct = is_pct ? 3 : 1;
+                }
+                if (count_or_pct == 0) count_or_pct = is_pct ? 3 : 1;
+                if (count_or_pct > 1000) count_or_pct = 1000;
+            }
+        } else if (want_rv) {
+            count_or_pct = rv_count_or_percent;
+            is_pct = rv_is_percent;
+        }
+        bool ok = openrar::recovery::RecoveryWriter::write_rev_volumes(
+            arc_path, count_or_pct, is_pct, threads);
+        if (!ok) {
+            std::cerr << "Cannot create recovery volumes for a non-volume archive\n";
+            return 1;
+        }
+        if (!openrar::cli::g_quiet_mode) {
+            if (is_pct)
+                std::cout << "Created recovery volumes (" << count_or_pct << "%) for " << arc_path << "\n";
+            else
+                std::cout << "Created recovery volumes (" << count_or_pct << ") for " << arc_path << "\n";
         }
         return 0;
     } else if (cmd == "l" || cmd == "v") {

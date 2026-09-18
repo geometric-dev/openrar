@@ -206,7 +206,7 @@ describe('RAR5 writer structural output', () => {
   // under "Deferred (skip per 00:113)"). Flip the flag when the writer gains
   // quick-open / archive-metadata support; the assertions below are the
   // contract those features must satisfy.
-  const QO_METADATA_DEFERRED = true;
+  const QO_METADATA_DEFERRED = false;
 
   it('[metadata] embeds the metadata extra record into the main header', { skip: QO_METADATA_DEFERRED && 'MHEXTRA_METADATA writer support deferred per 00-overview.md' }, () => {
     const { parsed } = buildParsed(SCENARIOS.find((s) => s.name === 'meta'));
