@@ -13,10 +13,10 @@ inline uint64_t default_dict_size_for_method(uint32_t method) {
     case 0: return 0x20000ULL;    // 128 KB
     case 1: return 0x80000ULL;    // 512 KB
     case 2: return 0x100000ULL;   // 1 MB
-    case 3: return 0x200000ULL;   // 2 MB
-    case 4: return 0x400000ULL;   // 4 MB
-    case 5: return 0x1000000ULL;  // 16 MB
-    default: return 0x200000ULL;
+    case 3: return 0x800000ULL;   // 8 MB  (balanced speed, ratio & L3 cache)
+    case 4: return 0x1000000ULL;  // 16 MB
+    case 5: return 0x4000000ULL;  // 64 MB (matches WinRAR Best profile)
+    default: return 0x800000ULL;
     }
 }
 
@@ -67,9 +67,13 @@ struct CompressPlan {
             ep.is_solid_chain = (solid || continue_solid_stream) && seen_compressed_entry;
             seen_compressed_entry = true;
         }
-        uint64_t ws = ep.raw_size;
+        uint64_t ws = 0;
         if (ep.decision == EntryDecision::BlockStream) {
-            ws += (ep.dict_size * 2) + (64ULL * 1024ULL);
+            // Compressor50 allocates buf_ (win_size + 5 MB), head_ (512 KB), and prev_ (4 * win_size)
+            ws = (ep.dict_size * 5) + (6ULL * 1024ULL * 1024ULL);
+        } else {
+            // Stored: in-memory payload if < 16 MiB, otherwise 1 MiB streaming buffer
+            ws = std::min<uint64_t>(ep.raw_size, 16ULL * 1024ULL * 1024ULL);
         }
         if (ws == 0) ws = 1; // 1-byte floor keeps empty files inside budget tracking
         ep.estimated_workspace_bytes = ws;

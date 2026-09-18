@@ -13,6 +13,7 @@
 #include "openrar/openrar.hpp"
 
 #include "../../src/archive/archive_mutator.hpp"
+#include "../../src/archive/archive_reader.hpp"
 #include "../../src/crypto/crc32.hpp"
 #include "../../src/format/header_writer.hpp"
 #include "../../src/io/file_stream.hpp"
@@ -761,20 +762,20 @@ static void test_execution_plan_workspace_gating() {
     assert(ep.entries[0].decision == openrar::compress::EntryDecision::Stored);
     assert(ep.entries[0].estimated_workspace_bytes == 5000);
 
-    // Entry 1: Method 3 (2 MB dict)
+    // Entry 1: Method 3 (8 MB dict)
     assert(ep.entries[1].decision == openrar::compress::EntryDecision::BlockStream);
-    assert(ep.entries[1].dict_size == 0x200000ULL);
-    uint64_t expected_m3 = 10000 + (0x200000ULL * 2) + 65536;
+    assert(ep.entries[1].dict_size == 0x800000ULL);
+    uint64_t expected_m3 = (0x800000ULL * 5) + (6ULL * 1024ULL * 1024ULL);
     assert(ep.entries[1].estimated_workspace_bytes == expected_m3);
 
     // Entry 2: Directory (0 bytes -> 1 byte floor)
     assert(ep.entries[2].decision == openrar::compress::EntryDecision::Stored);
     assert(ep.entries[2].estimated_workspace_bytes == 1);
 
-    // Entry 3: Method 5 (16 MB dict)
+    // Entry 3: Method 5 (64 MB dict)
     assert(ep.entries[3].decision == openrar::compress::EntryDecision::BlockStream);
-    assert(ep.entries[3].dict_size == 0x1000000ULL);
-    uint64_t expected_m5 = 50000 + (0x1000000ULL * 2) + 65536;
+    assert(ep.entries[3].dict_size == 0x4000000ULL);
+    uint64_t expected_m5 = (0x4000000ULL * 5) + (6ULL * 1024ULL * 1024ULL);
     assert(ep.entries[3].estimated_workspace_bytes == expected_m5);
 
     // Cumulative and peak
@@ -782,6 +783,239 @@ static void test_execution_plan_workspace_gating() {
     assert(ep.estimated_workspace_bytes == (5000 + expected_m3 + 1 + expected_m5));
 
     std::cout << "[PASS] ExecutionPlan_WorkspaceGating\n";
+}
+
+static void test_streaming_and_spooling() {
+    fs::path dir = make_scratch_dir("spooling");
+    std::error_code ec;
+
+    // 1. Large stored file (17 MiB, method 0) -> direct stream without buffering
+    fs::path f_store = dir / "store_17m.dat";
+    {
+        std::ofstream fs(f_store, std::ios::binary);
+        std::vector<char> chunk(1024 * 1024, 'A');
+        for (int i = 0; i < 17; ++i) {
+            fs.write(chunk.data(), chunk.size());
+        }
+    }
+
+    ArchiveMutator::PreparedAdd prep_store;
+    prep_store.src_path = f_store;
+    prep_store.entry_name = "store_17m.dat";
+    bool ok = ArchiveMutator::prepare_add_file(f_store, "store_17m.dat", 0, "", prep_store);
+    assert(ok);
+    // Direct stream: payload empty and spool_path empty
+    assert(prep_store.payload.empty());
+    assert(prep_store.spool_path.empty());
+
+    fs::path arc_store = dir / "store.rar";
+    std::vector<ArchiveMutator::PreparedAdd> batch_store;
+    batch_store.push_back(std::move(prep_store));
+    ok = ArchiveMutator::write_batch_add(arc_store, batch_store);
+    assert(ok);
+    assert(fs::exists(arc_store));
+
+    // Verify extraction of stored file
+    engine::ArchiveReader reader_store;
+    assert(reader_store.open(arc_store));
+    assert(reader_store.entries().size() == 1);
+    fs::path out_store = dir / "store_out.dat";
+    assert(reader_store.extract_entry(reader_store.entries()[0], out_store));
+    assert(fs::file_size(out_store) == 17 * 1024 * 1024);
+
+    // 2. Large encrypted spooled file (> 16 MiB pseudo-random data with method 1)
+    fs::path f_rand = dir / "rand_17m.dat";
+    {
+        std::ofstream fs(f_rand, std::ios::binary);
+        std::vector<uint32_t> buf(256 * 1024);
+        uint32_t state = 123456789;
+        for (int i = 0; i < 17; ++i) { // 17 MiB total
+            for (size_t j = 0; j < buf.size(); ++j) {
+                state = state * 1664525u + 1013904223u;
+                buf[j] = state;
+            }
+            fs.write(reinterpret_cast<const char*>(buf.data()), buf.size() * sizeof(uint32_t));
+        }
+    }
+
+    ArchiveMutator::PreparedAdd prep_enc;
+    prep_enc.src_path = f_rand;
+    prep_enc.entry_name = "rand_17m.dat";
+    std::string psw = "SpoolPassword999";
+    ok = ArchiveMutator::prepare_add_file(f_rand, "rand_17m.dat", 1, psw, prep_enc);
+    assert(ok);
+    assert(prep_enc.payload.empty());
+    assert(!prep_enc.spool_path.empty());
+    assert(fs::exists(prep_enc.spool_path));
+
+    // Verify spool file has data
+    {
+        std::ifstream sf(prep_enc.spool_path, std::ios::binary);
+        std::vector<char> header_bytes(64);
+        sf.read(header_bytes.data(), header_bytes.size());
+        assert(sf.gcount() == 64);
+    }
+
+    fs::path arc_enc = dir / "enc.rar";
+    std::filesystem::path spool_temp_path = prep_enc.spool_path;
+    std::vector<ArchiveMutator::PreparedAdd> batch_enc;
+    batch_enc.push_back(std::move(prep_enc));
+    ok = ArchiveMutator::write_batch_add(arc_enc, batch_enc, {}, psw);
+    assert(ok);
+    assert(fs::exists(arc_enc));
+
+    // SpoolFileGuard must have cleaned up the spool file
+    assert(!fs::exists(spool_temp_path));
+
+    // Verify extraction with password
+    engine::ArchiveReader reader_enc;
+    assert(reader_enc.open(arc_enc, psw));
+    assert(reader_enc.entries().size() == 1);
+    fs::path out_enc = dir / "enc_out.dat";
+    assert(reader_enc.extract_entry(reader_enc.entries()[0], out_enc, psw));
+    assert(fs::file_size(out_enc) == 17 * 1024 * 1024);
+
+    // Verify bit-identical match between original rand file and extracted file
+    {
+        std::ifstream f1(f_rand, std::ios::binary);
+        std::ifstream f2(out_enc, std::ios::binary);
+        std::vector<char> b1(64 * 1024), b2(64 * 1024);
+        while (f1.read(b1.data(), b1.size())) {
+            assert(f2.read(b2.data(), b2.size()));
+            assert(std::memcmp(b1.data(), b2.data(), b1.size()) == 0);
+        }
+    }
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] StreamingAndSpooling\n";
+}
+
+static void test_deferred_store_and_adaptive_clamping() {
+    fs::path dir = make_scratch_dir("deferred_and_adaptive");
+    std::error_code ec;
+
+    // 1. Adaptive clamping:
+    // Create a 32 KiB file
+    fs::path f_32k = dir / "f_32k.bin";
+    std::vector<uint8_t> data_32k = make_pattern(32 * 1024, 42);
+    write_bytes(f_32k, data_32k);
+
+    // Auto window_log2 (0) with method 3 -> clamps to 128 KiB (floor)
+    {
+        ArchiveMutator::PreparedAdd prep;
+        bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 3, "", prep,
+                                                   openrar::archive::time_flags::MTIME, 0, false, false, false);
+        assert(ok);
+        assert(prep.fb.win_size == 128 * 1024);
+    }
+
+    // Explicit window_log2 = 2 (256 KiB) with method 3 -> honors 256 KiB
+    {
+        ArchiveMutator::PreparedAdd prep;
+        bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 3, "", prep,
+                                                   openrar::archive::time_flags::MTIME, 2, false, false, false);
+        assert(ok);
+        assert(prep.fb.win_size == 256 * 1024);
+    }
+
+    // Auto window_log2 (0) with method 5 -> clamps to 128 KiB
+    {
+        ArchiveMutator::PreparedAdd prep;
+        bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 5, "", prep,
+                                                   openrar::archive::time_flags::MTIME, 0, false, false, false);
+        assert(ok);
+        assert(prep.fb.win_size == 128 * 1024);
+    }
+
+    // Solid archive with auto window_log2 (0) and method 3 -> does NOT clamp, stays 8 MiB
+    {
+        ArchiveMutator::PreparedAdd prep;
+        bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 3, "", prep,
+                                                   openrar::archive::time_flags::MTIME, 0, false, false, true);
+        assert(ok);
+        assert(prep.fb.win_size == 8 * 1024 * 1024);
+    }
+
+    // Solid archive with auto window_log2 (0) and method 5 -> does NOT clamp, stays 64 MiB
+    {
+        ArchiveMutator::PreparedAdd prep;
+        bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 5, "", prep,
+                                                   openrar::archive::time_flags::MTIME, 0, false, false, true);
+        assert(ok);
+        assert(prep.fb.win_size == 64 * 1024 * 1024);
+    }
+
+    // 1 MiB file with auto window_log2 (0) and method 5 -> clamps to 1 MiB
+    fs::path f_1m = dir / "f_1m.bin";
+    std::vector<uint8_t> data_1m = make_pattern(1024 * 1024, 99);
+    write_bytes(f_1m, data_1m);
+    {
+        ArchiveMutator::PreparedAdd prep;
+        bool ok = ArchiveMutator::prepare_add_file(f_1m, "f_1m.bin", 5, "", prep,
+                                                   openrar::archive::time_flags::MTIME, 0, false, false, false);
+        assert(ok);
+        assert(prep.fb.win_size == 1024 * 1024);
+    }
+
+    // 2. Deferred CRC on stored file:
+    // Create an 18 MiB file (> SPOOL_MEMORY_THRESHOLD = 16 MiB)
+    fs::path f_18m = dir / "f_18m.bin";
+    openrar::crypto::Crc32 expected_crc_calc;
+    {
+        std::ofstream fs(f_18m, std::ios::binary);
+        std::vector<char> chunk(1024 * 1024);
+        for (size_t i = 0; i < chunk.size(); ++i) {
+            chunk[i] = static_cast<char>((i * 7 + 13) & 0xFF);
+        }
+        for (int i = 0; i < 18; ++i) {
+            chunk[0] = static_cast<char>(i);
+            fs.write(chunk.data(), chunk.size());
+            expected_crc_calc.update(chunk.data(), chunk.size());
+        }
+    }
+    uint32_t expected_crc = expected_crc_calc.get();
+
+    ArchiveMutator::PreparedAdd prep_store;
+    prep_store.src_path = f_18m;
+    prep_store.entry_name = "f_18m.bin";
+    bool ok = ArchiveMutator::prepare_add_file(f_18m, "f_18m.bin", 0, "", prep_store);
+    assert(ok);
+    assert(prep_store.needs_deferred_crc);
+    assert(prep_store.fb.has_crc32);
+    assert(prep_store.fb.data_crc32 == 0); // Placeholder before write
+
+    fs::path arc_path = dir / "test_deferred_crc.rar";
+    std::vector<ArchiveMutator::PreparedAdd> batch;
+    batch.push_back(std::move(prep_store));
+    ok = ArchiveMutator::write_batch_add(arc_path, batch);
+    assert(ok);
+    assert(fs::exists(arc_path));
+
+    // Verify written archive header has back-patched CRC
+    engine::ArchiveReader reader;
+    assert(reader.open(arc_path));
+    assert(reader.entries().size() == 1);
+    const auto& entry = reader.entries()[0];
+    assert(entry.header.has_crc32);
+    assert(entry.header.data_crc32 == expected_crc);
+    assert(reader.test_entry(entry));
+
+    // Verify extraction bit-identical
+    fs::path extracted = dir / "f_18m_extracted.bin";
+    assert(reader.extract_entry(entry, extracted));
+    assert(fs::file_size(extracted) == 18 * 1024 * 1024);
+    {
+        std::ifstream f1(f_18m, std::ios::binary);
+        std::ifstream f2(extracted, std::ios::binary);
+        std::vector<char> b1(1024 * 1024), b2(1024 * 1024);
+        while (f1.read(b1.data(), b1.size())) {
+            assert(f2.read(b2.data(), b2.size()));
+            assert(std::memcmp(b1.data(), b2.data(), b1.size()) == 0);
+        }
+    }
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] DeferredStoreAndAdaptiveClamping\n";
 }
 
 int main() {
@@ -809,6 +1043,9 @@ int main() {
     test_mutator_plan_solid_chain_three_files();
     test_mutator_plan_output_bit_identical();
     test_execution_plan_workspace_gating();
+    test_streaming_and_spooling();
+    test_deferred_store_and_adaptive_clamping();
     std::cout << "ALL MUTATION TESTS PASSED\n";
     return 0;
 }
+

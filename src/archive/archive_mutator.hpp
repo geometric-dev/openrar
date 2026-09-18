@@ -69,17 +69,66 @@ public:
                                      const std::string& password = "",
                                      bool encrypt_headers = false);
 
+    // Spool guard ensuring temporary spool files are unlinked on any unwound
+    // exception, error, or early abort.
+    class SpoolFileGuard {
+    public:
+        explicit SpoolFileGuard(std::filesystem::path path = {}) : path_(std::move(path)) {}
+        ~SpoolFileGuard() { cleanup(); }
+        SpoolFileGuard(const SpoolFileGuard&) = delete;
+        SpoolFileGuard& operator=(const SpoolFileGuard&) = delete;
+        SpoolFileGuard(SpoolFileGuard&& other) noexcept : path_(std::move(other.path_)) { other.path_.clear(); }
+        SpoolFileGuard& operator=(SpoolFileGuard&& other) noexcept {
+            if (this != &other) {
+                cleanup();
+                path_ = std::move(other.path_);
+                other.path_.clear();
+            }
+            return *this;
+        }
+        void disarm() noexcept { path_.clear(); }
+        void commit() noexcept { disarm(); }
+        void reset(std::filesystem::path p) { cleanup(); path_ = std::move(p); }
+        const std::filesystem::path& path() const noexcept { return path_; }
+        void cleanup() noexcept {
+            if (!path_.empty()) {
+                std::error_code ec;
+                std::filesystem::remove(path_, ec);
+                path_.clear();
+            }
+        }
+    private:
+        std::filesystem::path path_;
+    };
+
+    static constexpr size_t SPOOL_MEMORY_THRESHOLD = 16 * 1024 * 1024; // 16 MiB
+
     // Fully prepared payload for batch archive creation: everything the CLI
     // can compute without touching the archive file (read + CRC + compress +
     // optional per-file encryption). Parallel-safe: preparation is a pure
     // per-file computation with no shared state.
     struct PreparedAdd {
         format::FileBlock fb;
-        std::vector<core::byte> payload; // packed (possibly encrypted) data
-        std::filesystem::path src_path;  // original file, removed for move after success
+        std::vector<core::byte> payload;    // packed (possibly encrypted) data if in memory
+        std::filesystem::path spool_path;   // path to spooled payload on disk if > threshold
+        std::filesystem::path src_path;     // original file, removed for move after success
         std::string entry_name;
         bool delete_source{false};
+        bool needs_deferred_crc{false};
         std::vector<PreparedAdd> child_services;
+
+        PreparedAdd() = default;
+        ~PreparedAdd() {
+            if (!spool_path.empty()) {
+                std::error_code ec;
+                std::filesystem::remove(spool_path, ec);
+                spool_path.clear();
+            }
+        }
+        PreparedAdd(const PreparedAdd&) = delete;
+        PreparedAdd& operator=(const PreparedAdd&) = delete;
+        PreparedAdd(PreparedAdd&&) noexcept = default;
+        PreparedAdd& operator=(PreparedAdd&&) noexcept = default;
     };
 
     // Stage 1 of batch add: read + CRC + compress (+ store fallback) + encrypt
@@ -96,7 +145,7 @@ public:
                                  const std::string& password, PreparedAdd& out,
                                  core::uint32 times_mask = time_flags::MTIME,
                                  core::uint32 window_log2 = 0, bool want_streams = false,
-                                 bool want_acl = false);
+                                 bool want_acl = false, bool is_solid = false);
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,
     // no data area) carrying the directory's timestamps. Encryption does not
