@@ -19,6 +19,7 @@ static void test_version() {
     assert(openrar_package_version_string() != nullptr);
     assert(std::string(openrar_package_version_string()) == OPENRAR_VERSION_STRING);
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_PACKAGE_VERSION) != 0);
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_SET_LIMITS) != 0);
     std::cout << "PASS test_version\n";
 }
 
@@ -704,6 +705,56 @@ static void test_b1_durable_write_collision() {
     std::cout << "PASS test_b1_durable_write_collision\n";
 }
 
+static void test_archive_handle_set_limits() {
+    // Invalid handle returns RAR_ERR_INVALID_ARG (-9)
+    assert(openrar_archive_handle_set_limits(0, 10, 100, 10, 1000) == RAR_ERR_INVALID_ARG);
+    assert(openrar_archive_handle_set_limits(999999, 10, 100, 10, 1000) == RAR_ERR_INVALID_ARG);
+
+    const char* paths[] = {"small.txt", "large.txt"};
+    const uint8_t data1[] = "12345"; // 5 bytes
+    const uint8_t data2[] = "12345678901234567890"; // 20 bytes
+    const uint8_t* datas[] = {data1, data2};
+    size_t sizes[] = {sizeof(data1) - 1, sizeof(data2) - 1};
+    const uint8_t* path_ptrs[] = {reinterpret_cast<const uint8_t*>(paths[0]),
+                                  reinterpret_cast<const uint8_t*>(paths[1])};
+
+    uint8_t* rar = nullptr;
+    size_t rar_len = 0;
+    int rc = openrar_archive_create(path_ptrs, datas, sizes, 2, 0, 4, &rar, &rar_len);
+    assert(rc == 0 && rar && rar_len > 0);
+
+    uint32_t h = openrar_archive_open(rar, rar_len);
+    assert(h != 0);
+
+    // Set max member bytes to 10. Member 0 (5 bytes) succeeds, member 1 (20 bytes) fails with RAR_ERR_LIMIT_EXCEEDED (-15).
+    rc = openrar_archive_handle_set_limits(h, 10, 100, 10, 1000);
+    assert(rc == 0);
+
+    uint8_t* out0 = nullptr;
+    size_t len0 = 0;
+    rc = openrar_archive_handle_extract(h, 0, &out0, &len0);
+    assert(rc == 0 && len0 == 5);
+    openrar_free(out0);
+
+    uint8_t* out1 = nullptr;
+    size_t len1 = 0;
+    rc = openrar_archive_handle_extract(h, 1, &out1, &len1);
+    assert(rc == RAR_ERR_LIMIT_EXCEEDED);
+    assert(out1 == nullptr);
+
+    // Now raise limit to 50 bytes and retry member 1
+    rc = openrar_archive_handle_set_limits(h, 50, 100, 10, 1000);
+    assert(rc == 0);
+
+    rc = openrar_archive_handle_extract(h, 1, &out1, &len1);
+    assert(rc == 0 && len1 == 20);
+    openrar_free(out1);
+
+    openrar_archive_close(h);
+    openrar_free(rar);
+    std::cout << "PASS test_archive_handle_set_limits\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -731,6 +782,7 @@ int main() {
     test_file_helpers();
     test_b4_empty_archive_extract_all();
     test_b1_durable_write_collision();
+    test_archive_handle_set_limits();
     std::cout << "ALL DLL TESTS PASSED\n";
     return 0;
 }

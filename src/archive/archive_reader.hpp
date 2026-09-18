@@ -129,6 +129,13 @@ public:
                              const ExtractionLimits* limits = nullptr,
                              LimitState* state = nullptr);
 
+    // Stream entries_[entry_index]'s payload into a caller-supplied sink function.
+    int extract_entry_sink(size_t entry_index,
+                           const std::function<bool(const core::byte*, size_t)>& out_sink,
+                           const ReaderHooks& hooks = {},
+                           const ExtractionLimits* limits = nullptr,
+                           LimitState* state = nullptr);
+
     // Extract into memory (preview path). Fails with RAR_ERR_NOMEM when the
     // uncompressed size exceeds max_bytes (checked before any work).
     int extract_entry_to_memory(size_t entry_index, std::vector<core::byte>& out,

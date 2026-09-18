@@ -1172,10 +1172,11 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
     return RAR_OK;
 }
 
-int ArchiveReader::extract_entry_stream(size_t entry_index, io::FileStream& out,
-                                        const ReaderHooks& hooks,
-                                        const ExtractionLimits* limits,
-                                        LimitState* state) {
+int ArchiveReader::extract_entry_sink(size_t entry_index,
+                                      const std::function<bool(const core::byte*, size_t)>& out_sink,
+                                      const ReaderHooks& hooks,
+                                      const ExtractionLimits* limits,
+                                      LimitState* state) {
     bad_password_ = false;
     if (entry_index >= entries_.size()) return RAR_ERR_INVALID_ARG;
     const ArchiveEntry& entry = entries_[entry_index];
@@ -1225,7 +1226,7 @@ int ArchiveReader::extract_entry_stream(size_t entry_index, io::FileStream& out,
                 state->member_out += n;
                 state->total_out += n;
             }
-            if (out.write(p, n) != n) {
+            if (!out_sink(p, n)) {
                 st.failed = true;
                 return false;
             }
@@ -1235,6 +1236,18 @@ int ArchiveReader::extract_entry_stream(size_t entry_index, io::FileStream& out,
     secure_zero(&keys, sizeof(keys));
     if (rc == RAR_OK && total == 0) hooks.emit(0, 0);
     return rc;
+}
+
+int ArchiveReader::extract_entry_stream(size_t entry_index, io::FileStream& out,
+                                        const ReaderHooks& hooks,
+                                        const ExtractionLimits* limits,
+                                        LimitState* state) {
+    return extract_entry_sink(
+        entry_index,
+        [&](const core::byte* p, size_t n) -> bool {
+            return out.write(p, n) == n;
+        },
+        hooks, limits, state);
 }
 
 int ArchiveReader::extract_entry_to_memory(size_t entry_index, std::vector<core::byte>& out,

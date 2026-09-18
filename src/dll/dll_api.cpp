@@ -131,6 +131,15 @@ struct ArchiveHandleBase {
         set_error("archive info requires a file-mode handle");
         return RAR_ERR_UNSUPPORTED_FEATURE;
     }
+    std::atomic<bool> busy{false};
+    virtual int set_limits(uint64_t max_member_bytes, uint64_t max_total_bytes,
+                           uint64_t max_header_count, uint64_t max_header_bytes) = 0;
+};
+
+struct BusyGuard {
+    std::atomic<bool>& flag;
+    explicit BusyGuard(std::atomic<bool>& f) : flag(f) { flag.store(true, std::memory_order_release); }
+    ~BusyGuard() { flag.store(false, std::memory_order_release); }
 };
 openrar::api::HandleTable<ArchiveHandleBase> g_handles;
 
@@ -286,6 +295,23 @@ struct BufferArchiveHandle : ArchiveHandleBase {
     std::vector<uint8_t> data;
     openrar::archive::BufferArchive ba;
     std::vector<openrar::archive::BufferArchiveEntry> entries;
+    openrar::archive::ExtractionLimits limits;
+    openrar::archive::LimitState limit_state;
+    bool has_limits{false};
+
+    int set_limits(uint64_t max_member_bytes, uint64_t max_total_bytes,
+                   uint64_t max_header_count, uint64_t max_header_bytes) override {
+        if (busy.load(std::memory_order_acquire)) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
+        limits.max_member_output_bytes = max_member_bytes;
+        limits.max_total_output_bytes = max_total_bytes;
+        limits.max_header_count = max_header_count;
+        limits.max_header_bytes = max_header_bytes;
+        has_limits = true;
+        return RAR_OK;
+    }
 
     int list(uint32_t* count, void** entries_out, void** paths_out,
              size_t* paths_size_out) override {
@@ -296,9 +322,14 @@ struct BufferArchiveHandle : ArchiveHandleBase {
             set_error("entry_index OOR");
             return RAR_ERR_INVALID_ARG;
         }
+        BusyGuard bg(busy);
         std::vector<uint8_t> out;
-        int rc = ba.extract(data.data(), data.size(), entry_index, out);
-        if (rc != RAR_OK) return rc;
+        int rc = ba.extract(data.data(), data.size(), entry_index, out,
+                            has_limits ? &limits : nullptr, &limit_state);
+        if (rc != RAR_OK) {
+            if (rc == RAR_ERR_LIMIT_EXCEEDED) set_error("resource limit exceeded");
+            return rc;
+        }
         *out_ptr = openrar::api::heap_dup(out.data(), out.size());
         if (!*out_ptr && !out.empty()) {
             set_error("oom");
@@ -309,9 +340,14 @@ struct BufferArchiveHandle : ArchiveHandleBase {
     }
     int extract_all(uint8_t** buf_out_ptr, size_t* buf_size_out, uint64_t** offsets_out_ptr,
                     uint32_t* offsets_count_out) override {
+        BusyGuard bg(busy);
         std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
-        int rc = ba.extract_all(data.data(), data.size(), files);
-        if (rc != RAR_OK) return rc;
+        int rc = ba.extract_all(data.data(), data.size(), files, nullptr, nullptr, nullptr, nullptr,
+                                has_limits ? &limits : nullptr, &limit_state);
+        if (rc != RAR_OK) {
+            if (rc == RAR_ERR_LIMIT_EXCEEDED) set_error("resource limit exceeded");
+            return rc;
+        }
 
         if (files.empty()) {
             *buf_out_ptr = nullptr;
@@ -366,6 +402,7 @@ struct BufferArchiveHandle : ArchiveHandleBase {
             set_error("entry_index OOR");
             return RAR_ERR_INVALID_ARG;
         }
+        BusyGuard bg(busy);
         ListCallbackCtx ctx{progress, cancel, user};
         if (ctx.cancel && ctx.cancel(ctx.user)) return RAR_ERR_ABORTED;
         const auto& e = entries[entry_index];
@@ -377,8 +414,12 @@ struct BufferArchiveHandle : ArchiveHandleBase {
             return RAR_OK;
         }
         std::vector<uint8_t> out;
-        int rc = ba.extract(data.data(), data.size(), entry_index, out);
-        if (rc != RAR_OK) return rc;
+        int rc = ba.extract(data.data(), data.size(), entry_index, out,
+                            has_limits ? &limits : nullptr, &limit_state);
+        if (rc != RAR_OK) {
+            if (rc == RAR_ERR_LIMIT_EXCEEDED) set_error("resource limit exceeded");
+            return rc;
+        }
         if (ctx.progress) ctx.progress(ctx.user, 0, total);
         rc = durable_write_to(std::filesystem::u8path(dest_path), [&](openrar::io::FileStream& f) {
             if (!out.empty() && f.write(out.data(), out.size()) != out.size()) return RAR_ERR_IO;
@@ -389,8 +430,6 @@ struct BufferArchiveHandle : ArchiveHandleBase {
         return RAR_OK;
     }
     int test(uint32_t, openrar_progress_cb, openrar_cancel_cb, void*) override {
-        // No streaming test exists for the buffer surface (extraction
-        // materializes the entry anyway; BufferArchive has no verify-only path).
         set_error("test is not supported on buffer handles");
         return RAR_ERR_UNSUPPORTED_FEATURE;
     }
@@ -404,7 +443,23 @@ struct FileArchiveHandle : ArchiveHandleBase {
     std::vector<openrar::archive::BufferArchiveEntry> entries;
     // DLL entry index → reader entries() index.
     std::vector<size_t> reader_index;
+    openrar::archive::ExtractionLimits limits;
     openrar::archive::LimitState limit_state;
+    bool has_limits{false};
+
+    int set_limits(uint64_t max_member_bytes, uint64_t max_total_bytes,
+                   uint64_t max_header_count, uint64_t max_header_bytes) override {
+        if (busy.load(std::memory_order_acquire)) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
+        limits.max_member_output_bytes = max_member_bytes;
+        limits.max_total_output_bytes = max_total_bytes;
+        limits.max_header_count = max_header_count;
+        limits.max_header_bytes = max_header_bytes;
+        has_limits = true;
+        return RAR_OK;
+    }
 
     std::filesystem::path path() const override { return reader->path(); }
 
@@ -450,10 +505,11 @@ struct FileArchiveHandle : ArchiveHandleBase {
             set_error("entry_index OOR");
             return RAR_ERR_INVALID_ARG;
         }
+        BusyGuard bg(busy);
         std::vector<uint8_t> out;
         int rc = reader->extract_entry_to_memory(reader_index[entry_index], out,
                                                  OPENRAR_MAX_HEAP_EXTRACT_SIZE, {},
-                                                 nullptr, &limit_state);
+                                                 has_limits ? &limits : nullptr, &limit_state);
         if (rc != RAR_OK) {
             if (rc == RAR_ERR_LIMIT_EXCEEDED)
                 set_error("resource limit exceeded");
@@ -482,6 +538,7 @@ struct FileArchiveHandle : ArchiveHandleBase {
             set_error("entry_index OOR");
             return RAR_ERR_INVALID_ARG;
         }
+        BusyGuard bg(busy);
         ListCallbackCtx ctx{progress, cancel, user};
         openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
         const auto& re = reader->entries()[reader_index[entry_index]];
@@ -510,7 +567,8 @@ struct FileArchiveHandle : ArchiveHandleBase {
             }
         }
         return durable_write_to(dest, [&](openrar::io::FileStream& f) {
-            int rc = reader->extract_entry_stream(reader_index[entry_index], f, hooks, nullptr, &limit_state);
+            int rc = reader->extract_entry_stream(reader_index[entry_index], f, hooks,
+                                                 has_limits ? &limits : nullptr, &limit_state);
             if (rc == RAR_ERR_LIMIT_EXCEEDED) set_error("resource limit exceeded");
             return rc;
         });
@@ -521,9 +579,11 @@ struct FileArchiveHandle : ArchiveHandleBase {
             set_error("entry_index OOR");
             return RAR_ERR_INVALID_ARG;
         }
+        BusyGuard bg(busy);
         ListCallbackCtx ctx{progress, cancel, user};
         openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
-        int rc = reader->test_entry_stream(reader_index[entry_index], hooks, nullptr, &limit_state);
+        int rc = reader->test_entry_stream(reader_index[entry_index], hooks,
+                                           has_limits ? &limits : nullptr, &limit_state);
         if (rc == RAR_ERR_LIMIT_EXCEEDED)
             set_error("resource limit exceeded");
         else if (rc == RAR_ERR_MISSING_VOLUME)
@@ -677,6 +737,8 @@ struct FileArchiveHandle : ArchiveHandleBase {
 };
 } // namespace
 
+static_assert(static_cast<int>(RAR_ERR_BUSY) == -14,
+              "RAR_ERR_BUSY must be -14 to match openrar_dll.h and rar_errors.hpp");
 static_assert(static_cast<int>(RAR_ERR_LIMIT_EXCEEDED) == -15,
               "RAR_ERR_LIMIT_EXCEEDED must be -15 to match openrar_dll.h and RarErrorCode.ts");
 
@@ -695,7 +757,7 @@ uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
     return OPENRAR_ABI_FEATURE_LIST_PROGRESS | OPENRAR_ABI_FEATURE_LIST_PASSWORD |
            OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS | OPENRAR_ABI_FEATURE_FILE_HANDLE |
            OPENRAR_ABI_FEATURE_MUTATION | OPENRAR_ABI_FEATURE_ENTRY_EX |
-           OPENRAR_ABI_FEATURE_PACKAGE_VERSION;
+           OPENRAR_ABI_FEATURE_PACKAGE_VERSION | OPENRAR_ABI_FEATURE_SET_LIMITS;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1221,6 +1283,27 @@ int OPENRAR_DLL_CALL openrar_archive_handle_test(uint32_t handle, uint32_t entry
     } catch (...) {
         set_error("unknown C++ exception");
         return RAR_ERR_IO;
+    }
+}
+
+int OPENRAR_DLL_CALL openrar_archive_handle_set_limits(uint32_t handle,
+                                                      uint64_t max_member_bytes,
+                                                      uint64_t max_total_bytes,
+                                                      uint64_t max_header_count,
+                                                      uint64_t max_header_bytes) {
+    try {
+        auto h = g_handles.pin(handle);
+        if (!h) {
+            set_error("invalid handle");
+            return RAR_ERR_INVALID_ARG;
+        }
+        return h->set_limits(max_member_bytes, max_total_bytes, max_header_count, max_header_bytes);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_NOMEM;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_NOMEM;
     }
 }
 

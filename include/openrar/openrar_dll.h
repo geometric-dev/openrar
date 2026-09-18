@@ -79,6 +79,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 //                                 archive_add_files_file            (v1.4.0)
 //   bit 5  ENTRY_EX               handle_entry_ex / handle_info     (v1.5.0)
 //   bit 6  PACKAGE_VERSION        openrar_package_version_string    (v1.7.0)
+//   bit 7  SET_LIMITS             openrar_archive_handle_set_limits (v1.10.0)
 // Reserve convention: future open-time options (e.g. codepage override,
 // custom volume search callbacks) ship as openrar_archive_open_file_ex
 // behind a new bit, never as signature changes to open_file.
@@ -89,6 +90,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 #define OPENRAR_ABI_FEATURE_MUTATION (1ull << 4)             // mutation exports below
 #define OPENRAR_ABI_FEATURE_ENTRY_EX (1ull << 5)             // metadata exports below
 #define OPENRAR_ABI_FEATURE_PACKAGE_VERSION (1ull << 6)      // openrar_package_version_string
+#define OPENRAR_ABI_FEATURE_SET_LIMITS (1ull << 7)           // openrar_archive_handle_set_limits
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -277,6 +279,16 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_stream_set_progress(uint32_t handle
                                                                  void* user);
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_stream_set_cancel(uint32_t handle,
                                                                openrar_cancel_cb cb, void* user);
+
+// ── Resource limits (additive; v1.10.0) ──────────────────────────────────────
+// Configures caller-imposed extraction limits for an open archive handle.
+// Any limit set to UINT64_MAX is considered unlimited.
+// Returns RAR_OK on success, RAR_ERR_INVALID_ARG if handle is invalid,
+// or RAR_ERR_BUSY if an operation is currently executing on the handle.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_handle_set_limits(uint32_t handle, uint64_t max_member_bytes,
+                                  uint64_t max_total_bytes, uint64_t max_header_count,
+                                  uint64_t max_header_bytes);
 
 // ── Listing with progress / cancel (_ex variants; additive) ──────────────────
 // Byte-based progress: done = archive bytes consumed (includes any SFX
