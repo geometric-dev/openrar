@@ -296,12 +296,14 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
                 if (has_atime) tflags |= 0x08;
                 if (has_ns) tflags |= 0x10;
             } else {
-                // Legacy FILETIME mapping 0x01=mtime,0x02=ctime,0x04=atime to keep old archives readable
-                // Spec 01-headers would use 0x02/0x04/0x08 with unix=0, but that collides with legacy ctime/atime
-                // Use legacy for compatibility so format_tests roundtrip passes
-                if (has_mtime) tflags |= 0x01;
-                if (has_ctime) tflags |= 0x02;
-                if (has_atime) tflags |= 0x04;
+                // Official RAR5 spec for Windows FILETIME:
+                // Bit 0 = 0 (Windows FILETIME, 8 bytes per field)
+                // Bit 1 = mtime present (0x02)
+                // Bit 2 = ctime present (0x04)
+                // Bit 3 = atime present (0x08)
+                if (has_mtime) tflags |= 0x02;
+                if (has_ctime) tflags |= 0x04;
+                if (has_atime) tflags |= 0x08;
             }
 
             std::vector<core::byte> htime_content;

@@ -17,6 +17,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <shellapi.h>
 #include <io.h>
 #else
 #include <unistd.h>
@@ -427,9 +428,39 @@ static int sfx_main_impl(int argc, char* argv[]) {
     }
 }
 
+#ifdef _WIN32
+static std::string wide_to_utf8(const wchar_t* wstr) {
+    if (!wstr || !*wstr) return {};
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+    if (size_needed <= 1) return {};
+    std::string str(size_needed - 1, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &str[0], size_needed, nullptr, nullptr);
+    return str;
+}
+#endif
+
 int main(int argc, char* argv[]) {
     // L10: see sfx_main_impl - no exception may escape main() uncaught.
     try {
+#ifdef _WIN32
+        int wargc = 0;
+        LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+        if (wargv) {
+            std::vector<std::string> utf8_args;
+            std::vector<char*> utf8_argv;
+            utf8_args.reserve(wargc);
+            utf8_argv.reserve(wargc + 1);
+            for (int i = 0; i < wargc; ++i) {
+                utf8_args.push_back(wide_to_utf8(wargv[i]));
+            }
+            LocalFree(wargv);
+            for (auto& s : utf8_args) {
+                utf8_argv.push_back(&s[0]);
+            }
+            utf8_argv.push_back(nullptr);
+            return sfx_main_impl(wargc, utf8_argv.data());
+        }
+#endif
         return sfx_main_impl(argc, argv);
     } catch (const std::exception& e) {
         std::cerr << "openrar: error: " << e.what() << "\n";

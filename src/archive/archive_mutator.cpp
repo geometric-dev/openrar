@@ -18,6 +18,7 @@
 #include <cctype>
 #include <cstring>
 #include <filesystem>
+#include <iostream>
 #include <unordered_map>
 
 #ifdef _WIN32
@@ -75,6 +76,12 @@ struct FileTimes {
     core::uint64 mtime{0};
     core::uint64 ctime{0};
     core::uint64 atime{0};
+#ifdef _WIN32
+    core::uint64 mtime_win{0};
+    core::uint64 ctime_win{0};
+    core::uint64 atime_win{0};
+    bool has_win_times{false};
+#endif
 };
 
 bool get_file_times(const std::filesystem::path& path, FileTimes& out) {
@@ -86,11 +93,24 @@ bool get_file_times(const std::filesystem::path& path, FileTimes& out) {
         ul.LowPart = ft.dwLowDateTime;
         ul.HighPart = ft.dwHighDateTime;
         if (ul.QuadPart == 0) return 0; // unset on this filesystem
-        return static_cast<core::uint64>(ul.QuadPart / 10000000ULL) - 11644473600ULL;
+        const core::uint64 EPOCH_DIFFERENCE = 11644473600ULL;
+        core::uint64 sec = ul.QuadPart / 10000000ULL;
+        if (sec < EPOCH_DIFFERENCE) return 0; // Pre-1970 clamps utime to 0 to prevent uint64 underflow
+        return sec - EPOCH_DIFFERENCE;
+    };
+    auto to_win = [](const FILETIME& ft) -> core::uint64 {
+        ULARGE_INTEGER ul;
+        ul.LowPart = ft.dwLowDateTime;
+        ul.HighPart = ft.dwHighDateTime;
+        return ul.QuadPart;
     };
     out.mtime = to_unix(fa.ftLastWriteTime);
     out.ctime = to_unix(fa.ftCreationTime);
     out.atime = to_unix(fa.ftLastAccessTime);
+    out.mtime_win = to_win(fa.ftLastWriteTime);
+    out.ctime_win = to_win(fa.ftCreationTime);
+    out.atime_win = to_win(fa.ftLastAccessTime);
+    out.has_win_times = true;
     return true;
 #else
     struct stat st;
@@ -107,6 +127,15 @@ bool get_file_times(const std::filesystem::path& path, FileTimes& out) {
 // header writer's presence logic, matching the existing field semantics.
 void apply_file_times(format::FileBlock& fb, const FileTimes& times, core::uint32 times_mask) {
     fb.utime_unix = static_cast<core::uint32>(times.mtime);
+#ifdef _WIN32
+    if (times.has_win_times) {
+        fb.htime_is_unix = false;
+        if (times_mask & time_flags::MTIME) fb.mtime_win = times.mtime_win;
+        if (times_mask & time_flags::CTIME) fb.ctime_win = times.ctime_win;
+        if (times_mask & time_flags::ATIME) fb.atime_win = times.atime_win;
+        return;
+    }
+#endif
     if (times_mask & time_flags::MTIME)
         fb.htime_mtime_unix = static_cast<core::uint32>(times.mtime);
     if (times_mask & time_flags::CTIME)
@@ -747,6 +776,10 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
             return false;
         }
         file_sz = src.size();
+        if (file_sz > 1024ULL * 1024ULL * 1024ULL) {
+            std::cerr << "Error: file size exceeds 1 GiB in-memory allocation limit\n";
+            return false;
+        }
         if (file_sz > 0) {
             uncompressed.resize(static_cast<size_t>(file_sz));
             if (src.read(uncompressed.data(), uncompressed.size()) != uncompressed.size()) {
@@ -1521,6 +1554,10 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         io::FileStream src;
         if (!src.open(src_file, io::FileMode::ReadOnly)) return false;
         file_sz = src.size();
+        if (file_sz > 1024ULL * 1024ULL * 1024ULL) {
+            std::cerr << "Error: file size exceeds 1 GiB in-memory allocation limit\n";
+            return false;
+        }
         if (file_sz > 0) {
             uncompressed.resize(static_cast<size_t>(file_sz));
             if (src.read(uncompressed.data(), uncompressed.size()) != uncompressed.size())
