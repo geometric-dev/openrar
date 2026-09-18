@@ -7,9 +7,17 @@ Checks:
   2. Cross-decode vs reference unrar (if available):
      - openrar archive must be decodable by unrar
      - unrar/WinRAR archive must be decodable by openrar
-  3. Spec invariant: table encoding is absolute (not delta) - verified via
-     producing an archive and checking that cross-decode succeeds (paired-bug
-     would pass 1 but fail 2).
+     - absolute table encoding invariant
+  3. Compression methods m1-m5 full-dictionary & wrap-around:
+     - Active codec stress (1.25x dict, straddle tokens across circular buffer)
+     - Explicit openrar lt Method: m assertion (fail if silently downgraded to 0)
+     - Reference unpack (UnRAR x) + SHA-256 byte-for-byte verification
+     - Incompressible fallback stress (pure random payload -> Method: 0 assertion)
+     - Bidirectional symmetry (rar.exe a -m{m} -> openrar x byte-for-byte match)
+     - Solid multi-file dictionary retention across boundary (-s -m3)
+  4. Unit & compression tests via ctest
+  5. Multivolume roundtrip (store + compressed)
+  6. SFX read + create
 
 CI: rar.exe is not available in GitHub Actions, so this gate is LOCAL ONLY
 for src/compress/* changes. In CI we fall back to self-roundtrip + ctest.
@@ -17,7 +25,7 @@ for src/compress/* changes. In CI we fall back to self-roundtrip + ctest.
 Usage: python tools/interop_gate.py [--quick]  (quick skips 50MB bench)
 Exit 0 = pass, 1 = fail.
 """
-import os, sys, subprocess, hashlib, tempfile, shutil, pathlib
+import os, sys, subprocess, hashlib, tempfile, shutil, pathlib, random
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OPENRAR = ROOT / "build" / "openrar64" / "Release" / "openrar.exe"
@@ -55,6 +63,22 @@ def sha256(p):
         for c in iter(lambda: f.read(1<<20), b""): h.update(c)
     return h.hexdigest()
 
+def find_extracted(d, name):
+    p = d / name
+    if p.exists(): return p
+    cands = list(d.rglob(name))
+    return cands[0] if cands else None
+
+def parse_lt_method(output):
+    for line in output.splitlines():
+        s = line.strip()
+        if s.startswith("Method:"):
+            parts = s.split()
+            if len(parts) >= 2:
+                try: return int(parts[1])
+                except ValueError: pass
+    return None
+
 def run(cmd, cwd=None):
     r = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return r.returncode, r.stdout, r.stderr
@@ -69,7 +93,7 @@ def ensure_build():
     return find_openrar() is not None
 
 def test_self_roundtrip(openrar):
-    print("[1/3] Self-roundtrip hash...", flush=True)
+    print("[1/6] Self-roundtrip hash...", flush=True)
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         src = td / "payload.bin"
@@ -106,7 +130,7 @@ def test_self_roundtrip(openrar):
         print(f"  OK hash {h0[:16]}..."); return True
 
 def test_cross(openrar, unrar, rar):
-    print("[2/3] Cross-interop vs reference unrar...", flush=True)
+    print("[2/6] Cross-interop vs reference unrar...", flush=True)
     has_ref = unrar is not None or rar is not None
     if not has_ref:
         print("  SKIP: no UnRAR/rar.exe found (CI fallback) - checking spec invariant via table delta probe")
@@ -178,8 +202,207 @@ def test_cross(openrar, unrar, rar):
             print("  SKIP: no rar.exe to create ref archive")
     return ok
 
+def test_methods_interop(openrar, unrar, rar):
+    print("[3/6] Compression methods m1-m5 full-dictionary & wrap-around...", flush=True)
+    has_ref = unrar is not None or rar is not None
+    ref_decompress = unrar or rar
+
+    # Method configurations: (method, dict_size, payload_size, extra_openrar_flags, extra_rar_flags)
+    # Sizing payload at 1.25x dict_size guarantees circular ring-buffer boundary wrap-around.
+    # For m5, -md4m bounds the dictionary window to 4 MiB for sub-second test execution.
+    configs = [
+        (1, 512 * 1024, 640 * 1024, [], ["-md512k"]),
+        (2, 1024 * 1024, 1280 * 1024, [], ["-md1024k"]),
+        (3, 2048 * 1024, 2560 * 1024, [], ["-md2048k"]),
+        (4, 4096 * 1024, 5120 * 1024, [], ["-md4096k"]),
+        (5, 4096 * 1024, 5120 * 1024, ["-md4m"], ["-md4096k"]),
+    ]
+
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+
+        # --- 1. Active Codec Stress + Wrap-Around with Straddle Tokens ---
+        print("  -> Active codec stress (1.25x dict, straddle tokens, Method assertion)...")
+        for m, dict_sz, payload_sz, or_flags, rar_flags in configs:
+            rng = random.Random(0xC0FFEE + m)
+            chunk = rng.randbytes(1024)
+            buf = bytearray(chunk * (payload_sz // len(chunk)))
+            tok = f"STRADDLE_TOKEN_M{m}_WRAP!".encode("ascii")
+            buf[dict_sz - 32 : dict_sz - 32 + len(tok)] = tok
+            buf[dict_sz + 32 : dict_sz + 32 + len(tok)] = tok
+            src = td / f"active_m{m}.bin"
+            src.write_bytes(buf)
+            h0 = sha256(src)
+
+            arc = td / f"active_m{m}.rar"
+            rc, out, err = run([openrar, "a", f"-m{m}"] + or_flags + [str(arc), str(src)], cwd=str(td))
+            if rc != 0:
+                print(f"  FAIL: openrar a -m{m} rc={rc}\n{out}\n{err}")
+                return False
+
+            rc, out, err = run([openrar, "lt", str(arc)])
+            if rc != 0:
+                print(f"  FAIL: openrar lt active_m{m} rc={rc}\n{out}\n{err}")
+                return False
+            detected_m = parse_lt_method(out)
+            if detected_m != m:
+                print(f"  FAIL: openrar lt active_m{m} expected Method: {m}, got {detected_m} (downgraded?)")
+                return False
+
+            if ref_decompress:
+                outdir = td / f"unrar_act_{m}"
+                outdir.mkdir()
+                rc, out, err = run([ref_decompress, "x", "-y", str(arc), str(outdir) + os.sep])
+                if rc != 0:
+                    print(f"  FAIL: reference x active_m{m} rc={rc}\n{out}\n{err}")
+                    return False
+                dec = find_extracted(outdir, f"active_m{m}.bin")
+                if not dec or sha256(dec) != h0:
+                    print(f"  FAIL: reference extracted hash mismatch on active_m{m}")
+                    return False
+
+            # Also verify self-extraction
+            outdir_self = td / f"self_act_{m}"
+            outdir_self.mkdir()
+            rc, out, err = run([openrar, "x", "-y", str(arc), str(outdir_self) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: openrar x active_m{m} rc={rc}\n{out}\n{err}")
+                return False
+            dec_self = find_extracted(outdir_self, f"active_m{m}.bin")
+            if not dec_self or sha256(dec_self) != h0:
+                print(f"  FAIL: openrar extracted hash mismatch on active_m{m}")
+                return False
+            print(f"    OK active m{m} (1.25x dict wrap-around verified)")
+
+        # --- 2. Incompressible Fallback Stress (Store Fallback) ---
+        print("  -> Incompressible fallback stress (pure random dict-size payload)...")
+        for m, dict_sz, payload_sz, or_flags, rar_flags in configs:
+            rng = random.Random(0xC0FFEE + 100 + m)
+            src = td / f"rnd_m{m}.bin"
+            src.write_bytes(rng.randbytes(dict_sz))
+            h0 = sha256(src)
+
+            arc = td / f"rnd_m{m}.rar"
+            rc, out, err = run([openrar, "a", f"-m{m}"] + or_flags + [str(arc), str(src)], cwd=str(td))
+            if rc != 0:
+                print(f"  FAIL: openrar a rnd_m{m} rc={rc}\n{out}\n{err}")
+                return False
+
+            rc, out, err = run([openrar, "lt", str(arc)])
+            if rc != 0:
+                print(f"  FAIL: openrar lt rnd_m{m} rc={rc}\n{out}\n{err}")
+                return False
+            detected_m = parse_lt_method(out)
+            if detected_m != 0:
+                print(f"  FAIL: openrar lt rnd_m{m} expected Method: 0 fallback, got {detected_m}")
+                return False
+
+            if ref_decompress:
+                outdir = td / f"unrar_rnd_{m}"
+                outdir.mkdir()
+                rc, out, err = run([ref_decompress, "x", "-y", str(arc), str(outdir) + os.sep])
+                if rc != 0:
+                    print(f"  FAIL: reference x rnd_m{m} rc={rc}\n{out}\n{err}")
+                    return False
+                dec = find_extracted(outdir, f"rnd_m{m}.bin")
+                if not dec or sha256(dec) != h0:
+                    print(f"  FAIL: reference extracted hash mismatch on rnd_m{m}")
+                    return False
+            print(f"    OK fallback m{m} (correctly downgraded to Method: 0)")
+
+        # --- 3. Bidirectional Symmetry (rar.exe a -m{m} -> openrar x) ---
+        if rar:
+            print("  -> Bidirectional symmetry (rar.exe a -m{m} -> openrar x)...")
+            for m, dict_sz, payload_sz, or_flags, rar_flags in configs:
+                src = td / f"active_m{m}.bin"
+                h0 = sha256(src)
+                arc = td / f"rar_m{m}.rar"
+                rc, out, err = run([rar, "a", "-ep", f"-m{m}"] + rar_flags + [str(arc), str(src)], cwd=str(td))
+                if rc != 0:
+                    print(f"  FAIL: rar a -m{m} rc={rc}\n{out}\n{err}")
+                    return False
+
+                outdir = td / f"openrar_from_rar_{m}"
+                outdir.mkdir()
+                rc, out, err = run([openrar, "x", "-y", str(arc), str(outdir) + os.sep])
+                if rc != 0:
+                    print(f"  FAIL: openrar x from rar_m{m} rc={rc}\n{out}\n{err}")
+                    return False
+                dec = find_extracted(outdir, f"active_m{m}.bin")
+                if not dec or sha256(dec) != h0:
+                    print(f"  FAIL: hash mismatch on rar_m{m}")
+                    return False
+                print(f"    OK bidirectional m{m}")
+        else:
+            print("  SKIP: rar.exe not found (skipping bidirectional create)")
+
+        # --- 4. Solid Multi-File Cross-Boundary History Stress ---
+        print("  -> Solid multi-file dictionary retention across file boundary (-s -m3)...")
+        rng = random.Random(0xC0FFEE + 999)
+        shared = b"SHARED_SOLID_DICTIONARY_HISTORY_CROSS_FILE_TOKEN!" * 200
+        f1 = td / "solid_f1.bin"
+        f2 = td / "solid_f2.bin"
+        f1.write_bytes(rng.randbytes(256 * 1024) + shared)
+        f2.write_bytes(shared + rng.randbytes(128 * 1024) + shared)
+        h1, h2 = sha256(f1), sha256(f2)
+
+        arc = td / "solid_openrar.rar"
+        rc, out, err = run([openrar, "a", "-s", "-m3", str(arc), str(f1), str(f2)], cwd=str(td))
+        if rc != 0:
+            print(f"  FAIL: openrar a -s -m3 rc={rc}\n{out}\n{err}")
+            return False
+
+        if ref_decompress:
+            outdir = td / "unrar_solid"
+            outdir.mkdir()
+            rc, out, err = run([ref_decompress, "x", "-y", str(arc), str(outdir) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: reference x solid rc={rc}\n{out}\n{err}")
+                return False
+            dec1 = find_extracted(outdir, "solid_f1.bin")
+            dec2 = find_extracted(outdir, "solid_f2.bin")
+            if not dec1 or not dec2 or sha256(dec1) != h1 or sha256(dec2) != h2:
+                print("  FAIL: solid extraction hash mismatch")
+                return False
+
+        # Self-extract solid
+        outdir_self = td / "self_solid"
+        outdir_self.mkdir()
+        rc, out, err = run([openrar, "x", "-y", str(arc), str(outdir_self) + os.sep])
+        if rc != 0:
+            print(f"  FAIL: openrar x solid rc={rc}\n{out}\n{err}")
+            return False
+        dec1_s = find_extracted(outdir_self, "solid_f1.bin")
+        dec2_s = find_extracted(outdir_self, "solid_f2.bin")
+        if not dec1_s or not dec2_s or sha256(dec1_s) != h1 or sha256(dec2_s) != h2:
+            print("  FAIL: openrar self solid hash mismatch")
+            return False
+
+        if rar:
+            arc_rar = td / "solid_rar.rar"
+            rc, out, err = run([rar, "a", "-s", "-ep", "-m3", str(arc_rar), str(f1), str(f2)], cwd=str(td))
+            if rc != 0:
+                print(f"  FAIL: rar a -s -ep -m3 rc={rc}\n{out}\n{err}")
+                return False
+            outdir_rar = td / "openrar_from_solid_rar"
+            outdir_rar.mkdir()
+            rc, out, err = run([openrar, "x", "-y", str(arc_rar), str(outdir_rar) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: openrar x solid_rar rc={rc}\n{out}\n{err}")
+                return False
+            dec1_r = find_extracted(outdir_rar, "solid_f1.bin")
+            dec2_r = find_extracted(outdir_rar, "solid_f2.bin")
+            if not dec1_r or not dec2_r or sha256(dec1_r) != h1 or sha256(dec2_r) != h2:
+                print("  FAIL: openrar from solid_rar hash mismatch")
+                return False
+
+        print("    OK solid multi-file cross-boundary retention verified")
+
+    print("  OK methods m1-m5 full-dictionary & wrap-around")
+    return True
+
 def test_multivolume(openrar, rar):
-    print("[4/5] Multivoluume roundtrip (store + compressed)...", flush=True)
+    print("[5/6] Multivolume roundtrip (store + compressed)...", flush=True)
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         # incompressible payload ensures split is on packed stream
@@ -245,7 +468,7 @@ def test_multivolume(openrar, rar):
         return True
 
 def test_sfx(openrar):
-    print("[5/5] SFX read + create...", flush=True)
+    print("[6/6] SFX read + create...", flush=True)
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         src = td / "hello.txt"
@@ -310,7 +533,7 @@ def test_sfx(openrar):
         return True
 
 def test_ctest():
-    print("[3/5] ctest compress_tests...", flush=True)
+    print("[4/6] ctest compress_tests...", flush=True)
     # Prefer Release, fallback Debug
     for cfg in ["Release", "Debug"]:
         bd = ROOT / "build"
@@ -346,6 +569,9 @@ def main():
         sys.exit(1)
     if not test_cross(openrar, unrar, rar):
         print("\nINTEROP GATE FAILED: spec divergence detected in absolute tables.")
+        sys.exit(1)
+    if not test_methods_interop(openrar, unrar, rar):
+        print("\nINTEROP GATE FAILED: methods m1-m5 full-dictionary and wrap-around.")
         sys.exit(1)
     if not test_ctest():
         sys.exit(1)
