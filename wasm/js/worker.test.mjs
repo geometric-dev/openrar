@@ -4,9 +4,19 @@
 // browsers via docs/wasm-examples.md and check-exports.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createOpenRARWorker } from './worker-host.mjs';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import url from 'node:url';
 
-test('worker handle round-trips compress/decompress', async () => {
+const here = path.dirname(url.fileURLToPath(import.meta.url));
+const distJs = path.join(here, '../dist/openrar.js');
+
+if (!existsSync(distJs)) {
+  test('wasm/dist/openrar.js missing — run `emcmake cmake --preset wasm && cmake --build --preset wasm`', { skip: true }, () => {});
+} else {
+  const { createOpenRARWorker } = await import('./worker-host.mjs');
+
+  test('worker handle round-trips compress/decompress', async () => {
   const wr = createOpenRARWorker();
   try {
     const src = new Uint8Array(4096);
@@ -37,3 +47,5 @@ test('worker handle drives the archive API', async () => {
     wr.terminate();
   }
 });
+}
+

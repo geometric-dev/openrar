@@ -130,6 +130,13 @@ struct MainBlock {
     // signature, producing a corrupt locator that WinRAR will reject).
     core::int64 locator_qo_offset{-1};
     core::int64 locator_rr_offset{-1};
+
+    // Metadata extra record (MHEXTRA_METADATA, 0x02)
+    bool has_metadata{false};
+    std::string metadata_name;
+    core::uint64 metadata_ctime{0};      // Windows FILETIME or Unix timestamp
+    bool metadata_is_unix_time{false};   // Flag bit 0x04
+    bool metadata_is_nanoseconds{false}; // Flag bit 0x08
 };
 
 // Dictionary limits per spec 01-headers.md:95

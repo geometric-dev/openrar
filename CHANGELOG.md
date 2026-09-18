@@ -5,6 +5,34 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-09-18
+
+### Added
+
+- **`MHEXTRA_METADATA` Serialization & Mutation Preservation (`-ams` / `-am`)**:
+  - Full deserialization in `HeaderReader::parse_main_block` and serialization in
+    `HeaderWriter::write_main_block` for RAR5 main header extra record `0x02`.
+  - Encodes archive software identity, nanosecond-precision ctime, and Unix epoch flags.
+  - Complete mutation inheritance in `ArchiveMutator`: archive mutations (`d`, `u`,
+    `f`, `m`, `k`, `s`, `-rr`) preserve `MHEXTRA_METADATA` from the original archive
+    unless explicitly overridden.
+  - Conformance test enabled in `tools/tests/format.tests.mjs` with 110/110 passing suite.
+- **Dedicated Recovery Volumes (`-rv[N]` & `rv[N]`)**:
+  - Support for `-rv[N]` switch and `rv[N]` standalone command for multi-volume recovery volume sets (`.rev` files).
+  - Multi-threaded RS16 Cauchy parity computation (`-mt`) with deterministic byte output.
+  - Strict validation: fast fail with diagnostic error message when attempting to generate recovery volumes on single-volume archives.
+  - Robust RAII `RevCleanupGuard` ensuring `.rev` temporary files and incomplete artifacts are scrubbed on error or exception.
+- **Win32 Reparse Point & Junction Hardening**:
+  - Unprivileged creation of Windows directory junctions using `FSCTL_SET_REPARSE_POINT` with mandatory `\??\` NT namespace prefix for `SubstituteName` and Win32 path for `PrintName`.
+  - Defensive parser hardening: strict bounds checking for `PrintNameOffset`, `PrintNameLength`, `SubstituteNameOffset`, `SubstituteNameLength` against `bytes_returned` and `ReparseDataLength`.
+  - Traversal breakout protection: added `is_reparse_or_symlink()` inspecting `FILE_ATTRIBUTE_REPARSE_POINT` to prevent directory junctions from bypassing `has_symlink_parent()` extraction sandboxing.
+- **Fuzzing Harness Expansion & Seed Corpus**:
+  - Expanded `fuzz_archive` and `fuzz_file_handle` harnesses to ingest seed corpora dynamically.
+  - Generated comprehensive seed corpus for QuickOpen, metadata extra records, recovery records, and recovery volume sets.
+- **WASM / JS Packaging & TypeScript Validation Polish**:
+  - Guarded Worker tests against missing build artifacts for headless/non-emscripten environments.
+  - Maintained complete TypeScript definitions for the in-memory archive API.
+
 ## [1.8.0] - 2026-09-17
 
 ### Added

@@ -373,11 +373,45 @@ bool HeaderReader::parse_main_header(const core::byte* body, size_t body_size,
                     }
                 }
             } else if (rec_type == MHEXTRA_METADATA) {
-                // 0x02 Metadata — name + time, not needed for extraction; skip but validate.
-                // Layout: Flags vint (0x01 name, 0x02 time, 0x04 Unix else FILETIME, 0x08 ns)
-                // If name flag set: NameLen vint + bytes (strip trailing 0x00 padding)
-                // If time flag set: 4 or 8 bytes per flags.
-                // We skip the payload; correct skipping is offset=rec_end.
+                size_t cur = offset;
+                core::uint64 meta_flags = 0;
+                size_t rb = 0;
+                if (core::read_vint(body + cur, rec_end - cur, meta_flags, rb)) {
+                    cur += rb;
+                    out_block.has_metadata = true;
+                    out_block.metadata_is_unix_time = (meta_flags & 0x04) != 0;
+                    out_block.metadata_is_nanoseconds = (meta_flags & 0x08) != 0;
+                    if (meta_flags & 0x01) {
+                        core::uint64 name_len = 0;
+                        if (core::read_vint(body + cur, rec_end - cur, name_len, rb)) {
+                            cur += rb;
+                            if (cur + name_len <= rec_end) {
+                                out_block.metadata_name.assign(
+                                    reinterpret_cast<const char*>(body + cur),
+                                    static_cast<size_t>(name_len));
+                                size_t null_pos = out_block.metadata_name.find('\0');
+                                if (null_pos != std::string::npos) {
+                                    out_block.metadata_name.resize(null_pos);
+                                }
+                                cur += static_cast<size_t>(name_len);
+                            }
+                        }
+                    }
+                    if (meta_flags & 0x02) {
+                        if (out_block.metadata_is_unix_time) {
+                            if (out_block.metadata_is_nanoseconds && cur + 8 <= rec_end) {
+                                out_block.metadata_ctime = core::read_le64(body + cur);
+                                cur += 8;
+                            } else if (!out_block.metadata_is_nanoseconds && cur + 4 <= rec_end) {
+                                out_block.metadata_ctime = core::read_le32(body + cur);
+                                cur += 4;
+                            }
+                        } else if (cur + 8 <= rec_end) {
+                            out_block.metadata_ctime = core::read_le64(body + cur);
+                            cur += 8;
+                        }
+                    }
+                }
             }
             offset = rec_end;
             if (offset <= old_offset) return false;
