@@ -73,9 +73,26 @@ export type ArchiveBytes = Uint8Array | ArrayBuffer | ArrayBufferView | string;
 
 export function listArchive(rar: ArchiveBytes): Promise<RarEntry[]>;
 
-export function extractFile(rar: ArchiveBytes, path: string): Promise<Uint8Array>;
+export interface ExtractionLimits {
+  /** Maximum uncompressed bytes allowed for any single member/entry. */
+  maxMemberBytes?: number | bigint;
+  /** Maximum cumulative uncompressed bytes allowed across all extracted entries. */
+  maxTotalBytes?: number | bigint;
+  /** Maximum cumulative header count allowed across all parsed headers. */
+  maxHeaderCount?: number | bigint;
+  /** Maximum cumulative header bytes allowed across all parsed headers. */
+  maxHeaderBytes?: number | bigint;
+}
 
-export function extractFileByIndex(rar: ArchiveBytes, index: number): Promise<Uint8Array>;
+export interface ExtractEntryOptions {
+  /** Resource limits enforced during extraction. */
+  limits?: ExtractionLimits;
+}
+
+export interface OpenArchiveOptions {
+  /** Resource limits applied to this archive handle. */
+  limits?: ExtractionLimits;
+}
 
 export interface ExtractAllOptions {
   /** Cumulative monotonic (bytes done, bytes total). */
@@ -88,7 +105,13 @@ export interface ExtractAllOptions {
   bulk?: boolean;
   /** Bomb guard: refuse archives claiming more uncompressed bytes. Default 512 MiB; 0 disables. */
   maxOutputBytes?: number;
+  /** Resource limits enforced during extraction. */
+  limits?: ExtractionLimits;
 }
+
+export function extractFile(rar: ArchiveBytes, path: string, opts?: ExtractEntryOptions): Promise<Uint8Array>;
+
+export function extractFileByIndex(rar: ArchiveBytes, index: number, opts?: ExtractEntryOptions): Promise<Uint8Array>;
 
 export function extractAll(rar: ArchiveBytes, opts?: ExtractAllOptions): Promise<Map<string, Uint8Array>>;
 
@@ -99,14 +122,15 @@ export function extractAll(rar: ArchiveBytes, opts?: ExtractAllOptions): Promise
 export class OpenRARArchive {
   private constructor(handle: number, entries: RarEntry[], rarBytes: Uint8Array);
   list(): RarEntry[];
-  extract(path: string): Promise<Uint8Array>;
-  extractByIndex(index: number): Promise<Uint8Array>;
+  extract(path: string, opts?: ExtractEntryOptions): Promise<Uint8Array>;
+  extractByIndex(index: number, opts?: ExtractEntryOptions): Promise<Uint8Array>;
   extractAll(opts?: ExtractAllOptions): Promise<Map<string, Uint8Array>>;
+  setLimits(limits: ExtractionLimits): void;
   close(): void;
   get pathCount(): number;
 }
 
-export function openArchive(rar: ArchiveBytes): Promise<OpenRARArchive>;
+export function openArchive(rar: ArchiveBytes, opts?: OpenArchiveOptions): Promise<OpenRARArchive>;
 
 export function validateArchivePath(path: string): { ok: true } | { ok: false; reason: string };
 
@@ -129,6 +153,7 @@ export interface RawArchiveModule {
   _openrar_archive_handle_extract(handle: number, index: number, outPtrPtr: number, outLenPtr: number): number;
   _openrar_archive_handle_extract_all(handle: number, bufPtrPtr: number, bufSizePtr: number, offsetsPtrPtr: number, countPtr: number): number;
   _openrar_archive_handle_extract_all2(handle: number, hooks: number, bufPtrPtr: number, bufSizePtr: number, offsetsPtrPtr: number, countPtr: number): number;
+  _openrar_archive_handle_set_limits?(handle: number, maxMemberBytes: number | bigint, maxTotalBytes: number | bigint, maxHeaderCount: number | bigint, maxHeaderBytes: number | bigint): number;
   _openrar_archive_get_error(buf: number, len: number): number;
   _openrar_archive_last_error_code(): number;
   _openrar_archive_alloc(n: number): number;

@@ -46,6 +46,7 @@ using openrar::api::RAR_ERR_CRC_MISMATCH;
 using openrar::api::RAR_ERR_ENCRYPTED;
 using openrar::api::RAR_ERR_INVALID_ARG;
 using openrar::api::RAR_ERR_IO;
+using openrar::api::RAR_ERR_LIMIT_EXCEEDED;
 using openrar::api::RAR_ERR_MISSING_VOLUME;
 using openrar::api::RAR_ERR_NOMEM;
 using openrar::api::RAR_ERR_NOT_RAR;
@@ -205,6 +206,12 @@ int openrar_archive_handle_extract(uint32_t handle, uint32_t entry_index, uint8_
                                    size_t* out_len);
 int openrar_archive_handle_extract_all(uint32_t handle, uint8_t** buf_out_ptr, size_t* buf_size_out,
                                        uint64_t** offsets_out_ptr, uint32_t* offsets_count_out);
+
+// Set extraction resource limits on an open archive handle. Limits are cumulative
+// across extractions on the handle. UINT64_MAX leaves that limit unconstrained.
+int openrar_archive_handle_set_limits(uint32_t handle, uint64_t max_member_bytes,
+                                      uint64_t max_total_bytes, uint64_t max_header_count,
+                                      uint64_t max_header_bytes);
 
 // Allocate / free WASM heap memory. Same semantics as the block codec's
 // openrar_alloc / openrar_free. Returned pointers must be freed with the

@@ -454,6 +454,8 @@ struct ArchiveHandle {
     openrar::archive::BufferArchive ba;
     std::vector<openrar::archive::BufferArchiveEntry> entries;
     openrar::archive::LimitState limit_state;
+    openrar::archive::ExtractionLimits limits;
+    bool has_limits{false};
 };
 // Shared contract table: pin() hands out a shared_ptr so work and host
 // callbacks run with NO table lock held (report L12).
@@ -570,7 +572,8 @@ int openrar_archive_handle_extract(uint32_t handle, uint32_t entry_index, uint8_
             return RAR_ERR_INVALID_ARG;
         }
         std::vector<uint8_t> out;
-        int rc = h->ba.extract(h->data.data(), h->data.size(), entry_index, out, nullptr, &h->limit_state);
+        int rc = h->ba.extract(h->data.data(), h->data.size(), entry_index, out,
+                               h->has_limits ? &h->limits : nullptr, &h->limit_state);
         if (rc != RAR_OK) return fail_code(rc);
         *out_ptr = openrar::api::heap_dup(out.data(), out.size());
         if (!*out_ptr && !out.empty()) {
@@ -619,10 +622,36 @@ int openrar_archive_handle_extract_all2(uint32_t handle, const ArchiveHooks* hoo
         int rc = h->ba.extract_all(
             h->data.data(), h->data.size(), files, hooks ? hooks->progress : nullptr,
             hooks ? hooks->progress_user : nullptr, hooks ? hooks->cancel : nullptr,
-            hooks ? hooks->cancel_user : nullptr, nullptr, &h->limit_state);
+            hooks ? hooks->cancel_user : nullptr,
+            h->has_limits ? &h->limits : nullptr, &h->limit_state);
         if (rc != RAR_OK) return fail_code(rc);
         return pack_extract_all(files, buf_out_ptr, buf_size_out, offsets_out_ptr,
                                 offsets_count_out);
+    } catch (const std::exception& e) {
+        set_error(RAR_ERR_NOMEM, e.what());
+        return RAR_ERR_NOMEM;
+    } catch (...) {
+        set_error(RAR_ERR_NOMEM, "unknown C++ exception");
+        return RAR_ERR_NOMEM;
+    }
+}
+
+int openrar_archive_handle_set_limits(uint32_t handle, uint64_t max_member_bytes,
+                                      uint64_t max_total_bytes, uint64_t max_header_count,
+                                      uint64_t max_header_bytes) {
+    g_err.reset_code();
+    try {
+        auto h = g_handles.pin(handle);
+        if (!h) {
+            set_error(RAR_ERR_INVALID_ARG, "invalid handle");
+            return RAR_ERR_INVALID_ARG;
+        }
+        h->limits.max_member_output_bytes = max_member_bytes;
+        h->limits.max_total_output_bytes = max_total_bytes;
+        h->limits.max_header_count = max_header_count;
+        h->limits.max_header_bytes = max_header_bytes;
+        h->has_limits = true;
+        return RAR_OK;
     } catch (const std::exception& e) {
         set_error(RAR_ERR_NOMEM, e.what());
         return RAR_ERR_NOMEM;

@@ -7,6 +7,19 @@
 
 namespace openrar::compress {
 
+// Default dictionary size helper for RAR5 compression methods 0-5.
+inline uint64_t default_dict_size_for_method(uint32_t method) {
+    switch (method) {
+    case 0: return 0x20000ULL;    // 128 KB
+    case 1: return 0x80000ULL;    // 512 KB
+    case 2: return 0x100000ULL;   // 1 MB
+    case 3: return 0x200000ULL;   // 2 MB
+    case 4: return 0x400000ULL;   // 4 MB
+    case 5: return 0x1000000ULL;  // 16 MB
+    default: return 0x200000ULL;
+    }
+}
+
 // Decision on how a single entry payload is encoded into the archive.
 enum class EntryDecision {
     Stored,       // Method 0 (uncompressed copy)
@@ -21,6 +34,8 @@ struct EntryPlan {
     uint32_t method{0};          // 0–5
     bool is_solid_chain{false};  // member continues solid state from previous compressed entry
     bool is_dir{false};          // directory record (no data payload)
+    uint64_t raw_size{0};        // input uncompressed size
+    uint64_t estimated_workspace_bytes{0}; // estimated workspace RAM to prepare/compress
 };
 
 // Full compression plan constructed from batch parameters and entry metadata.
@@ -43,11 +58,21 @@ struct CompressPlan {
         if (ep.is_dir || ep.method == 0) {
             ep.decision = EntryDecision::Stored;
             ep.is_solid_chain = false;
+            ep.dict_size = 0;
         } else {
             ep.decision = EntryDecision::BlockStream;
+            if (ep.dict_size == 0) {
+                ep.dict_size = (dict_size != 0) ? dict_size : default_dict_size_for_method(ep.method);
+            }
             ep.is_solid_chain = (solid || continue_solid_stream) && seen_compressed_entry;
             seen_compressed_entry = true;
         }
+        uint64_t ws = ep.raw_size;
+        if (ep.decision == EntryDecision::BlockStream) {
+            ws += (ep.dict_size * 2) + (64ULL * 1024ULL);
+        }
+        if (ws == 0) ws = 1; // 1-byte floor keeps empty files inside budget tracking
+        ep.estimated_workspace_bytes = ws;
         entries.push_back(ep);
         return ep;
     }
@@ -73,7 +98,24 @@ struct CompressPlan {
 struct ExecutionPlan {
     // Resolved from CompressPlan; includes workspace estimates for admission gating.
     std::vector<EntryPlan> entries;
-    uint64_t estimated_workspace_bytes{0};
+    uint64_t estimated_workspace_bytes{0}; // Cumulative estimated workspace across all entries
+    uint64_t peak_entry_workspace{0};      // Peak single-entry workspace
+
+    static ExecutionPlan from_compress_plan(const CompressPlan& cp) {
+        ExecutionPlan ep;
+        ep.entries = cp.entries;
+        uint64_t total = 0;
+        uint64_t peak = 0;
+        for (const auto& entry : ep.entries) {
+            total += entry.estimated_workspace_bytes;
+            if (entry.estimated_workspace_bytes > peak) {
+                peak = entry.estimated_workspace_bytes;
+            }
+        }
+        ep.estimated_workspace_bytes = total;
+        ep.peak_entry_workspace = peak;
+        return ep;
+    }
 };
 
 } // namespace openrar::compress

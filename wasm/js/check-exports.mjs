@@ -26,6 +26,7 @@ const REQUIRED = {
     '_openrar_archive_version', '_openrar_archive_open', '_openrar_archive_close',
     '_openrar_archive_handle_list', '_openrar_archive_handle_extract',
     '_openrar_archive_handle_extract_all', '_openrar_archive_handle_extract_all2',
+    '_openrar_archive_handle_set_limits',
     '_openrar_archive_list', '_openrar_archive_list_free',
     '_openrar_archive_extract', '_openrar_archive_extract_all',
     '_openrar_archive_extract_all2', '_openrar_archive_create',

@@ -721,6 +721,69 @@ static void test_mutator_plan_output_bit_identical() {
     std::cout << "[PASS] MutatorPlan_OutputBitIdentical\n";
 }
 
+static void test_execution_plan_workspace_gating() {
+    std::cout << "Starting test_execution_plan_workspace_gating...\n" << std::flush;
+    std::vector<openrar::compress::EntryPlan> reqs;
+    {
+        openrar::compress::EntryPlan ep;
+        ep.is_dir = false;
+        ep.method = 0; // Stored
+        ep.raw_size = 5000;
+        reqs.push_back(ep);
+    }
+    {
+        openrar::compress::EntryPlan ep;
+        ep.is_dir = false;
+        ep.method = 3; // Normal (2 MB dict)
+        ep.raw_size = 10000;
+        reqs.push_back(ep);
+    }
+    {
+        openrar::compress::EntryPlan ep;
+        ep.is_dir = true;
+        ep.method = 0;
+        ep.raw_size = 0;
+        reqs.push_back(ep);
+    }
+    {
+        openrar::compress::EntryPlan ep;
+        ep.is_dir = false;
+        ep.method = 5; // Best (16 MB dict)
+        ep.raw_size = 50000;
+        reqs.push_back(ep);
+    }
+
+    auto cp = openrar::compress::CompressPlan::plan_entries(reqs, false, 3);
+    auto ep = openrar::compress::ExecutionPlan::from_compress_plan(cp);
+
+    assert(ep.entries.size() == 4);
+    // Entry 0: Stored
+    assert(ep.entries[0].decision == openrar::compress::EntryDecision::Stored);
+    assert(ep.entries[0].estimated_workspace_bytes == 5000);
+
+    // Entry 1: Method 3 (2 MB dict)
+    assert(ep.entries[1].decision == openrar::compress::EntryDecision::BlockStream);
+    assert(ep.entries[1].dict_size == 0x200000ULL);
+    uint64_t expected_m3 = 10000 + (0x200000ULL * 2) + 65536;
+    assert(ep.entries[1].estimated_workspace_bytes == expected_m3);
+
+    // Entry 2: Directory (0 bytes -> 1 byte floor)
+    assert(ep.entries[2].decision == openrar::compress::EntryDecision::Stored);
+    assert(ep.entries[2].estimated_workspace_bytes == 1);
+
+    // Entry 3: Method 5 (16 MB dict)
+    assert(ep.entries[3].decision == openrar::compress::EntryDecision::BlockStream);
+    assert(ep.entries[3].dict_size == 0x1000000ULL);
+    uint64_t expected_m5 = 50000 + (0x1000000ULL * 2) + 65536;
+    assert(ep.entries[3].estimated_workspace_bytes == expected_m5);
+
+    // Cumulative and peak
+    assert(ep.peak_entry_workspace == expected_m5);
+    assert(ep.estimated_workspace_bytes == (5000 + expected_m3 + 1 + expected_m5));
+
+    std::cout << "[PASS] ExecutionPlan_WorkspaceGating\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr under ctest (piped stdio).
@@ -745,6 +808,7 @@ int main() {
     test_mutator_plan_single_file_compressed();
     test_mutator_plan_solid_chain_three_files();
     test_mutator_plan_output_bit_identical();
+    test_execution_plan_workspace_gating();
     std::cout << "ALL MUTATION TESTS PASSED\n";
     return 0;
 }
