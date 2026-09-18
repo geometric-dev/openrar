@@ -16,6 +16,8 @@
 #include "../../src/crypto/crc32.hpp"
 #include "../../src/format/header_writer.hpp"
 #include "../../src/io/file_stream.hpp"
+#include "../../src/compress/compress_plan.hpp"
+#include "../../src/crypto/sha256.hpp"
 
 #include <cassert>
 #include <cstring>
@@ -644,6 +646,81 @@ static void test_cpp_wrapper() {
     std::cout << "[PASS] cpp_wrapper\n";
 }
 
+// ── 12. Plan/Schedule/Execute separation unit tests ──────────────────────────
+static void test_mutator_plan_single_file_stored() {
+    std::cout << "Starting test_mutator_plan_single_file_stored...\n" << std::flush;
+    std::vector<openrar::compress::EntryPlan> reqs(1);
+    reqs[0].method = 0;
+    reqs[0].is_dir = false;
+    auto plan = openrar::compress::CompressPlan::plan_entries(reqs, false);
+    assert(plan.entries.size() == 1);
+    assert(plan.entries[0].decision == openrar::compress::EntryDecision::Stored);
+    assert(!plan.entries[0].is_solid_chain);
+    std::cout << "[PASS] MutatorPlan_SingleFileStored\n";
+}
+
+static void test_mutator_plan_single_file_compressed() {
+    std::cout << "Starting test_mutator_plan_single_file_compressed...\n" << std::flush;
+    std::vector<openrar::compress::EntryPlan> reqs(1);
+    reqs[0].method = 3;
+    reqs[0].is_dir = false;
+    auto plan = openrar::compress::CompressPlan::plan_entries(reqs, false);
+    assert(plan.entries.size() == 1);
+    assert(plan.entries[0].decision == openrar::compress::EntryDecision::BlockStream);
+    assert(!plan.entries[0].is_solid_chain);
+    std::cout << "[PASS] MutatorPlan_SingleFileCompressed\n";
+}
+
+static void test_mutator_plan_solid_chain_three_files() {
+    std::cout << "Starting test_mutator_plan_solid_chain_three_files...\n" << std::flush;
+    std::vector<openrar::compress::EntryPlan> reqs(3);
+    reqs[0].method = 3; reqs[0].is_dir = false;
+    reqs[1].method = 0; reqs[1].is_dir = false; // stored
+    reqs[2].method = 3; reqs[2].is_dir = false;
+    auto plan = openrar::compress::CompressPlan::plan_entries(reqs, /*solid_mode=*/true);
+    assert(plan.entries.size() == 3);
+    assert(plan.entries[0].decision == openrar::compress::EntryDecision::BlockStream);
+    assert(!plan.entries[0].is_solid_chain); // first entry starts chain
+    assert(plan.entries[1].decision == openrar::compress::EntryDecision::Stored);
+    assert(!plan.entries[1].is_solid_chain); // stored entry never solid
+    assert(plan.entries[2].decision == openrar::compress::EntryDecision::BlockStream);
+    assert(plan.entries[2].is_solid_chain);  // second compressed entry continues chain
+    std::cout << "[PASS] MutatorPlan_SolidChain_ThreeFiles\n";
+}
+
+static void test_mutator_plan_output_bit_identical() {
+    std::cout << "Starting test_mutator_plan_output_bit_identical...\n" << std::flush;
+    const fs::path fixtures_root = fs::path(OPENRAR_SOURCE_DIR) / "tests" / "fixtures" / "golden" / "writer";
+    const fs::path golden_solid = fixtures_root / "writer_solid=solid=1=comp=m3.rar";
+    const fs::path golden_sha = fixtures_root / "writer_solid=solid=1=comp=m3.rar.sha256";
+    if (!fs::exists(golden_solid) || !fs::exists(golden_sha)) {
+        std::cout << "[SKIP] golden solid archive not found\n";
+        return;
+    }
+
+    std::ifstream sf(golden_sha);
+    std::string expected_sha;
+    sf >> expected_sha;
+
+    std::ifstream gf(golden_solid, std::ios::binary);
+    std::vector<uint8_t> gbytes((std::istreambuf_iterator<char>(gf)), std::istreambuf_iterator<char>());
+    uint8_t digest[32];
+    openrar::crypto::Sha256::compute(gbytes.data(), gbytes.size(), digest);
+    char hex[65];
+    for (size_t i = 0; i < 32; ++i) {
+        std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    }
+    hex[64] = '\0';
+    assert(std::string(hex) == expected_sha);
+
+    openrar::archive::ArchiveReader r;
+    assert(r.open(golden_solid));
+    assert(r.entries().size() >= 2);
+    for (const auto& e : r.entries()) assert(r.test_entry(e));
+
+    std::cout << "[PASS] MutatorPlan_OutputBitIdentical\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr under ctest (piped stdio).
@@ -664,6 +741,10 @@ int main() {
     test_comment_preserved_qo_stripped();
     test_add_directory_record();
     test_cpp_wrapper();
+    test_mutator_plan_single_file_stored();
+    test_mutator_plan_single_file_compressed();
+    test_mutator_plan_solid_chain_three_files();
+    test_mutator_plan_output_bit_identical();
     std::cout << "ALL MUTATION TESTS PASSED\n";
     return 0;
 }

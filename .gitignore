@@ -36,6 +36,7 @@ Makefile.cmake
 # Local test archives and scratch files (keep committed smoke archives)
 *.rar
 !tests/*.rar
+!tests/fixtures/**/*.rar
 !tools/testdata/*.rar
 !tests/fuzz/seeds/*
 !tests/fuzz/seeds/*.rev

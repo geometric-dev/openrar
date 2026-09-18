@@ -24,7 +24,9 @@ export type RarErrorCode =
   /** C ABI -13 (RAR_ERR_MISSING_VOLUME): a member of a multi-volume set is absent. */
   | 'MISSING_VOLUME'
   /** C ABI -14 (RAR_ERR_BUSY): the handle/worker is busy with another operation. */
-  | 'BUSY';
+  | 'BUSY'
+  /** C ABI -15 (RAR_ERR_LIMIT_EXCEEDED): caller-imposed resource limit exceeded. */
+  | 'LIMIT_EXCEEDED';
 
 export class RarError extends Error {
   readonly code: RarErrorCode;

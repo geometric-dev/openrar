@@ -114,7 +114,10 @@ enum RarError {
     RAR_ERR_NOMEM = -5,
     RAR_ERR_IO = -6,
     RAR_ERR_BAD_PASSWORD = -7,
+    /* -8 intentionally skipped (reserved; never assigned to preserve binary
+       compatibility with consumers that range-check known error codes). */
     RAR_ERR_INVALID_ARG = -9,
+    /* -10 intentionally skipped (reserved; same rationale as -8). */
     RAR_ERR_ABORTED = -11,
     // Archive headers are encrypted (HEAD_CRYPT): a password is required
     // before any header can be read. Returned only by the _ex listing exports
@@ -131,7 +134,13 @@ enum RarError {
     // mutator's atomic replace would fail opaquely on Windows). Returned up
     // front by the mutation exports below, before any temp file exists;
     // close every handle on the archive, then retry.
-    RAR_ERR_BUSY = -14
+    RAR_ERR_BUSY = -14,
+    // A caller-imposed resource limit (ExtractionLimits) was exceeded: per-member
+    // output cap, cumulative total-output cap, or header count/byte cap.
+    // Value is explicit so C consumers can safely compare without including
+    // src/archive/rar_errors.hpp. Gaps at -8 and -10 are documented above.
+    // Next available slot: -16.
+    RAR_ERR_LIMIT_EXCEEDED = -15
 };
 
 // Error details are thread_local state: openrar_last_error and

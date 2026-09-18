@@ -404,6 +404,7 @@ struct FileArchiveHandle : ArchiveHandleBase {
     std::vector<openrar::archive::BufferArchiveEntry> entries;
     // DLL entry index → reader entries() index.
     std::vector<size_t> reader_index;
+    openrar::archive::LimitState limit_state;
 
     std::filesystem::path path() const override { return reader->path(); }
 
@@ -451,11 +452,15 @@ struct FileArchiveHandle : ArchiveHandleBase {
         }
         std::vector<uint8_t> out;
         int rc = reader->extract_entry_to_memory(reader_index[entry_index], out,
-                                                 OPENRAR_MAX_HEAP_EXTRACT_SIZE, {});
+                                                 OPENRAR_MAX_HEAP_EXTRACT_SIZE, {},
+                                                 nullptr, &limit_state);
         if (rc != RAR_OK) {
-            set_error(rc == RAR_ERR_NOMEM ? "entry exceeds the 256 MiB in-memory extract cap; use "
-                                            "openrar_archive_handle_extract_to_path"
-                                          : "extract failed");
+            if (rc == RAR_ERR_LIMIT_EXCEEDED)
+                set_error("resource limit exceeded");
+            else
+                set_error(rc == RAR_ERR_NOMEM ? "entry exceeds the 256 MiB in-memory extract cap; use "
+                                                "openrar_archive_handle_extract_to_path"
+                                              : "extract failed");
             return rc;
         }
         *out_ptr = openrar::api::heap_dup(out.data(), out.size());
@@ -505,7 +510,9 @@ struct FileArchiveHandle : ArchiveHandleBase {
             }
         }
         return durable_write_to(dest, [&](openrar::io::FileStream& f) {
-            return reader->extract_entry_stream(reader_index[entry_index], f, hooks);
+            int rc = reader->extract_entry_stream(reader_index[entry_index], f, hooks, nullptr, &limit_state);
+            if (rc == RAR_ERR_LIMIT_EXCEEDED) set_error("resource limit exceeded");
+            return rc;
         });
     }
     int test(uint32_t entry_index, openrar_progress_cb progress, openrar_cancel_cb cancel,
@@ -516,8 +523,10 @@ struct FileArchiveHandle : ArchiveHandleBase {
         }
         ListCallbackCtx ctx{progress, cancel, user};
         openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
-        int rc = reader->test_entry_stream(reader_index[entry_index], hooks);
-        if (rc == RAR_ERR_MISSING_VOLUME)
+        int rc = reader->test_entry_stream(reader_index[entry_index], hooks, nullptr, &limit_state);
+        if (rc == RAR_ERR_LIMIT_EXCEEDED)
+            set_error("resource limit exceeded");
+        else if (rc == RAR_ERR_MISSING_VOLUME)
             set_error("missing volume: " + openrar::io::u8_str(reader->missing_volume_path()));
         else if (rc == RAR_ERR_BAD_PASSWORD)
             set_error("wrong password for encrypted entry");
@@ -667,6 +676,9 @@ struct FileArchiveHandle : ArchiveHandleBase {
     }
 };
 } // namespace
+
+static_assert(static_cast<int>(RAR_ERR_LIMIT_EXCEEDED) == -15,
+              "RAR_ERR_LIMIT_EXCEEDED must be -15 to match openrar_dll.h and RarErrorCode.ts");
 
 extern "C" {
 
