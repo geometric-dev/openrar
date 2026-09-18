@@ -978,7 +978,7 @@ int ArchiveMutator::write_batch_add_ex(
     const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
     const std::filesystem::path& sfx_stub_path, const std::string& password, bool encrypt_headers,
     const std::function<void(size_t, const std::string&)>& on_write, bool solid,
-    const std::vector<core::byte>& comment, std::string& detail_out, bool want_qo) {
+    const std::vector<core::byte>& comment, std::string& detail_out, bool want_qo, bool want_ams) {
     if (files.empty()) {
         detail_out = "no input files";
         return RAR_ERR_INVALID_ARG;
@@ -1133,6 +1133,21 @@ int ArchiveMutator::write_batch_add_ex(
 
             written_main_block = reader.main_block();
             written_main_block.has_locator = false;
+            if (want_ams) {
+                written_main_block.has_metadata = true;
+                written_main_block.metadata_name = arc_path.filename().string();
+#ifdef _WIN32
+                FILETIME ft;
+                GetSystemTimeAsFileTime(&ft);
+                written_main_block.metadata_ctime =
+                    (static_cast<core::uint64>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+#else
+                core::uint64 now_unix = static_cast<core::uint64>(std::time(nullptr));
+                written_main_block.metadata_ctime = (now_unix + 11644473600ULL) * 10000000ULL;
+#endif
+                written_main_block.metadata_is_unix_time = false;
+                written_main_block.metadata_is_nanoseconds = false;
+            }
             if (want_qo) {
                 written_main_block.has_locator = true;
                 written_main_block.locator_qo_offset = 0;
@@ -1208,6 +1223,21 @@ int ArchiveMutator::write_batch_add_ex(
 
             written_main_block = format::MainBlock{};
             written_main_block.arc_flags = solid ? format::MHFL_SOLID : 0;
+            if (want_ams) {
+                written_main_block.has_metadata = true;
+                written_main_block.metadata_name = arc_path.filename().string();
+#ifdef _WIN32
+                FILETIME ft;
+                GetSystemTimeAsFileTime(&ft);
+                written_main_block.metadata_ctime =
+                    (static_cast<core::uint64>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+#else
+                core::uint64 now_unix = static_cast<core::uint64>(std::time(nullptr));
+                written_main_block.metadata_ctime = (now_unix + 11644473600ULL) * 10000000ULL;
+#endif
+                written_main_block.metadata_is_unix_time = false;
+                written_main_block.metadata_is_nanoseconds = false;
+            }
             if (want_qo && !header_encrypt_mode) {
                 written_main_block.has_locator = true;
                 written_main_block.locator_qo_offset = 0;
@@ -1447,10 +1477,10 @@ bool ArchiveMutator::write_batch_add(
     const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
     const std::filesystem::path& sfx_stub_path, const std::string& password, bool encrypt_headers,
     const std::function<void(size_t, const std::string&)>& on_write, bool solid,
-    const std::vector<core::byte>& comment, bool want_qo) {
+    const std::vector<core::byte>& comment, bool want_qo, bool want_ams) {
     std::string detail;
     return write_batch_add_ex(arc_path, files, sfx_stub_path, password, encrypt_headers, on_write,
-                              solid, comment, detail, want_qo) == RAR_OK;
+                              solid, comment, detail, want_qo, want_ams) == RAR_OK;
 }
 
 static bool add_or_move_file(const std::filesystem::path& arc_path,

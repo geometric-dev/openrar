@@ -53,6 +53,9 @@ bool write_security_descriptor(const std::filesystem::path& path, const void* sd
 // Read Reparse Point / Symlink target
 bool read_reparse_info(const std::filesystem::path& path, RedirEntry& out_redir);
 
+// Validate and parse raw REPARSE_DATA_BUFFER bytes (hardened against corrupted/malicious buffers)
+bool parse_reparse_buffer(const core::byte* data, size_t size, RedirEntry& out_redir);
+
 // Create Reparse Point / Symlink link
 bool create_reparse_link(const std::filesystem::path& link_path, const RedirEntry& redir);
 

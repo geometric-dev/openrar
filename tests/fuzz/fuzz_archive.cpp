@@ -134,6 +134,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 #ifndef OPENRAR_USE_LIBFUZZER
 
 #include <random>
+#include <filesystem>
+#include <fstream>
 
 int main() {
     // Deterministic sweep: seeds + byte flips + truncations, then a digest
@@ -141,6 +143,22 @@ int main() {
     std::mt19937 rng(2026);
     std::vector<std::vector<uint8_t>> cases;
     cases.emplace_back(std::vector<uint8_t>{'R', 'a', 'r', '!', 0x1a, 0x00, 0x00, 0x00});
+
+    std::filesystem::path seed_dir = "tests/fuzz/seeds";
+    std::error_code sec;
+    if (std::filesystem::exists(seed_dir, sec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(seed_dir, sec)) {
+            if (entry.is_regular_file()) {
+                std::ifstream f(entry.path(), std::ios::binary);
+                if (f) {
+                    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                               std::istreambuf_iterator<char>());
+                    if (!bytes.empty()) cases.push_back(std::move(bytes));
+                }
+            }
+        }
+    }
+
     for (int i = 0; i < 64; i++) {
         size_t n = 1 + (rng() % 4096);
         std::vector<uint8_t> blob(n);

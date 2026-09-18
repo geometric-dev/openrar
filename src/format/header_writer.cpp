@@ -141,6 +141,45 @@ bool HeaderWriter::write_main_block(io::FileStream& dest, const MainBlock& block
         }
     }
 
+    if (block.has_metadata) {
+        std::vector<core::byte> meta_payload;
+        core::uint64 flags = 0;
+        if (!block.metadata_name.empty()) flags |= 0x01;
+        if (block.metadata_ctime != 0) flags |= 0x02;
+        if (block.metadata_is_unix_time) flags |= 0x04;
+        if (block.metadata_is_nanoseconds) flags |= 0x08;
+
+        core::push_vint(meta_payload, flags);
+        if (flags & 0x01) {
+            core::push_vint(meta_payload, block.metadata_name.size());
+            meta_payload.insert(meta_payload.end(), block.metadata_name.begin(),
+                                block.metadata_name.end());
+        }
+        if (flags & 0x02) {
+            if (block.metadata_is_unix_time) {
+                if (block.metadata_is_nanoseconds) {
+                    for (int b = 0; b < 8; ++b) {
+                        meta_payload.push_back(
+                            static_cast<core::byte>((block.metadata_ctime >> (8 * b)) & 0xFF));
+                    }
+                } else {
+                    core::uint32 sec = static_cast<core::uint32>(block.metadata_ctime);
+                    for (int b = 0; b < 4; ++b) {
+                        meta_payload.push_back(static_cast<core::byte>((sec >> (8 * b)) & 0xFF));
+                    }
+                }
+            } else {
+                for (int b = 0; b < 8; ++b) {
+                    meta_payload.push_back(
+                        static_cast<core::byte>((block.metadata_ctime >> (8 * b)) & 0xFF));
+                }
+            }
+        }
+        core::push_vint(extra, 1 + meta_payload.size());
+        extra.push_back(MHEXTRA_METADATA);
+        extra.insert(extra.end(), meta_payload.begin(), meta_payload.end());
+    }
+
     core::uint64 common_flags = extra.empty() ? 0 : HFL_EXTRA;
 
     std::vector<core::byte> body;

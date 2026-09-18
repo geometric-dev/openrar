@@ -244,4 +244,84 @@ describe('RAR 5.0 Recovery Records (-rr) & Repair (r)', () => {
     assert.equal(resExt.code, 0,
       `Extraction failed after double -rr: ${resExt.output}`);
   });
+
+  it('rejects recovery volumes (-rv and rv) on single-volume archives', () => {
+    const tree = freshDir('rec-rv-single-tree');
+    makeFixtureTree(tree);
+    const out = freshDir('rec-rv-single-out');
+    const arc = join(out, 'single.rar');
+
+    // 1. Creation with -rv on single volume must fail
+    const resAdd = runTool(OUR_EXE, ['a', '-y', '-m0', '-rv2', arc, '.'], tree);
+    assert.notEqual(resAdd.code, 0, 'Creating recovery volumes on single archive must fail');
+
+    // 2. Create normal single volume archive
+    const resAddNormal = runTool(OUR_EXE, ['a', '-y', '-m0', arc, '.'], tree);
+    assert.equal(resAddNormal.code, 0, 'Normal archive creation should succeed');
+
+    // 3. Standalone rv command on single volume must fail
+    const resRv = runTool(OUR_EXE, ['rv1', arc], out);
+    assert.notEqual(resRv.code, 0, 'rv command on single volume archive must fail');
+  });
+
+  it('creates recovery volumes with -rv and reconstructs missing volume on repair (r)', () => {
+    const tree = freshDir('rec-rv-tree');
+    // Generate ~35 KB of data to span multiple 10 KB volumes
+    writeFileSync(join(tree, 'payload.bin'), Buffer.alloc(35 * 1024, 0x5a));
+    const out = freshDir('rec-rv-out');
+    const arc = join(out, 'volset.part1.rar');
+
+    // 1. Create multi-volume set with -rv1 (1 parity volume)
+    const resAdd = runTool(OUR_EXE, ['a', '-y', '-m0', '-v10k', '-rv1', arc, '.'], tree);
+    assert.equal(resAdd.code, 0, `Volume creation with -rv failed: ${resAdd.output}`);
+
+    const part1 = join(out, 'volset.part1.rar');
+    const part2 = join(out, 'volset.part2.rar');
+    const rev1 = join(out, 'volset.part1.rev');
+
+    assert.ok(existsSync(part1), 'volset.part1.rar must exist');
+    assert.ok(existsSync(part2), 'volset.part2.rar must exist');
+    assert.ok(existsSync(rev1), 'volset.part1.rev must exist');
+
+    // 2. Save original part2 bytes and delete part2
+    const originalPart2 = readFileSync(part2);
+    rmSync(part2);
+    assert.ok(!existsSync(part2), 'volset.part2.rar must be deleted');
+
+    // 3. Run repair (r) on part1
+    const resRepair = runTool(OUR_EXE, ['r', '-y', part1], out);
+    assert.equal(resRepair.code, 0, `Repair with .rev failed: ${resRepair.output}`);
+    assert.ok(existsSync(part2), 'volset.part2.rar must be reconstructed by repair');
+
+    // 4. Verify reconstructed part2 is byte-identical
+    const reconstructedPart2 = readFileSync(part2);
+    assert.deepEqual(reconstructedPart2, originalPart2, 'Reconstructed part2 must be byte-identical');
+
+    // 5. Test extraction of the reconstructed volume set
+    const extDir = freshDir('rec-rv-ext');
+    const resExt = runTool(OUR_EXE, ['x', '-y', part1, extDir + DIR_SEP], out);
+    assert.equal(resExt.code, 0, `Extraction of reconstructed set failed: ${resExt.output}`);
+    const extracted = readFileSync(join(extDir, 'payload.bin'));
+    assert.equal(extracted.length, 35 * 1024, 'Extracted payload must have correct size');
+  });
+
+  it('generates recovery volumes via standalone rv command', () => {
+    const tree = freshDir('rec-rv-cmd-tree');
+    writeFileSync(join(tree, 'payload.bin'), Buffer.alloc(25 * 1024, 0x42));
+    const out = freshDir('rec-rv-cmd-out');
+    const arc = join(out, 'cmdset.part1.rar');
+
+    // 1. Create multi-volume set without -rv
+    const resAdd = runTool(OUR_EXE, ['a', '-y', '-m0', '-v10k', arc, '.'], tree);
+    assert.equal(resAdd.code, 0, `Volume creation failed: ${resAdd.output}`);
+
+    const rev1 = join(out, 'cmdset.part1.rev');
+    assert.ok(!existsSync(rev1), 'cmdset.part1.rev must not exist initially');
+
+    // 2. Run standalone rv command
+    const resRv = runTool(OUR_EXE, ['rv1', arc], out);
+    assert.equal(resRv.code, 0, `rv command failed: ${resRv.output}`);
+    assert.ok(existsSync(rev1), 'cmdset.part1.rev must exist after rv command');
+  });
 });
+

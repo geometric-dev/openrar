@@ -15,9 +15,16 @@
 #include <cctype>
 #include <cstring>
 #include <iostream>
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <unistd.h>
 #endif
+#include "../io/win32_meta.hpp"
 
 namespace openrar::archive {
 
@@ -1512,16 +1519,25 @@ bool is_relative_symlink_safe(const std::string& arc_name, const std::string& ta
     }
     return dotdots <= depth;
 }
-bool has_symlink_parent(const std::filesystem::path& dest_path) {
+bool is_reparse_or_symlink(const std::filesystem::path& p) {
+#ifdef _WIN32
+    DWORD attr = GetFileAttributesW(p.wstring().c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        return true;
+    }
+#endif
     std::error_code ec;
+    auto st = std::filesystem::symlink_status(p, ec);
+    return !ec && std::filesystem::is_symlink(st);
+}
+bool has_symlink_parent(const std::filesystem::path& dest_path) {
     std::filesystem::path parent = dest_path.parent_path();
     for (auto p = parent; !p.empty(); p = p.parent_path()) {
         if (p == p.root_path() || p.parent_path() == p) break;
         // Direct children of the system root (such as /var or /tmp on macOS)
         // are system-level symlinks and must not fail archive extraction.
         if (p.is_absolute() && p.parent_path() == p.root_path()) break;
-        auto st = std::filesystem::symlink_status(p, ec);
-        if (!ec && std::filesystem::is_symlink(st)) return true;
+        if (is_reparse_or_symlink(p)) return true;
     }
     return false;
 }
@@ -1624,8 +1640,7 @@ void ArchiveReader::convert_self_links(const std::filesystem::path& dest_path) {
     for (const auto& link : links_created_) {
         for (auto anc = parent; !anc.empty(); anc = anc.parent_path()) {
             if (anc == link) {
-                auto st = std::filesystem::symlink_status(link, ec);
-                if (!ec && std::filesystem::is_symlink(st)) {
+                if (is_reparse_or_symlink(link)) {
                     std::filesystem::remove(link, ec);
                     std::filesystem::create_directories(link, ec);
                 }
@@ -1726,23 +1741,34 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
 #endif
         } else if (rtype == 2 || rtype == 3) { // WINSYMLINK / JUNCTION
 #ifdef _WIN32
-            std::error_code ec2;
             std::filesystem::path p_native(native_target);
             if (rtype == 3) {
-                std::filesystem::create_directory_symlink(p_native, dest_path, ec2);
+                // Directory Junction: unprivileged reparse point creation
+                io::RedirEntry re;
+                re.type = io::RedirType::Junction;
+                re.target = p_native.is_absolute()
+                                ? p_native.string()
+                                : (dest_path.parent_path() / p_native).lexically_normal().string();
+                re.is_directory = true;
+                if (!io::create_reparse_link(dest_path, re)) {
+                    std::cerr << "W: failed to create junction: "
+                              << dest_path.generic_string() << "\n";
+                    return false;
+                }
             } else {
+                std::error_code ec2;
                 if (is_dir_target)
                     std::filesystem::create_directory_symlink(p_native, dest_path, ec2);
                 else
                     std::filesystem::create_symlink(p_native, dest_path, ec2);
-            }
-            if (ec2) {
-                if (ec2.value() == 1314) { // ERROR_PRIVILEGE_NOT_HELD
-                    std::cerr << "W: symlink privilege not held; skipping link: "
-                              << dest_path.generic_string() << "\n";
-                    return true;
+                if (ec2) {
+                    if (ec2.value() == 1314) { // ERROR_PRIVILEGE_NOT_HELD
+                        std::cerr << "W: symlink privilege not held; skipping link: "
+                                  << dest_path.generic_string() << "\n";
+                        return true;
+                    }
+                    return false;
                 }
-                return false;
             }
             links_created_.push_back(dest_path);
             return true;
