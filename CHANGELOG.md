@@ -5,6 +5,34 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-09-19
+
+### Added
+
+- **RAR5 File Versioning (`-ver[n]`) & Historical Version Pipeline**:
+  - Implemented RAR5 file versioning support according to format specification and WinRAR parity.
+  - Extra record `0x04` (`FHEXTRA_VERSION`) handling:
+    - Encodes 64-bit VINT flags (`0x00` default) and 64-bit VINT version number.
+    - Historical versions carry `has_file_version = true` and `file_version = 1, 2, ...`.
+    - Active unversioned entries represent the latest active revision without `FHEXTRA_VERSION`.
+  - Zero-recompression mutating pipeline in `ArchiveMutator::write_batch_add` & `write_batch_add_ex`:
+    - Converting active entries into historical versions promotes existing entries without recompression or re-encoding.
+    - Zero-overhead payload byte copying via `copy_stream_region` directly from existing offsets, preserving bit-exact payload CRC32 and memory efficiency.
+    - Pruning enforcement with `-vern`: limits total historical versions to $n$, pruning oldest historical versions while preserving solid chain invariants.
+- **CLI `-ver[n]` Switch & Extraction Semantics**:
+  - Added `-ver` argument parsing precedence strictly evaluated before `-v` to prevent volume switch collisions.
+  - Archive listing (`l`, `lt`) appends `;version` to historical versions and outputs `File version: <v>` in technical listings.
+  - Extraction semantics:
+    - Default extraction (`x` / `e`): extracts only latest active versions, skipping historical versions unless explicitly targeted by name with `;`.
+    - `-ver`: extracts all versions with `;version` suffixes appended to avoid file collisions on disk.
+    - `-verN`: extracts specifically version $N$ without suffix.
+- **Additive DLL ABI Flag (`OPENRAR_ENTRY_FLAG_HAS_VERSION`)**:
+  - Added `OPENRAR_ENTRY_FLAG_HAS_VERSION = (1u << 9)` in `include/openrar/openrar_dll.h`.
+  - Populated in `FileArchiveHandle::entry_ex` while preserving frozen 64-byte `openrar_archive_entry_t` struct layout.
+- **Comprehensive Test Suite & Dual-Oracle Cross-Validation**:
+  - Authored `tools/tests/versioning.tests.mjs` verifying version accumulation, `-vern` pruning, default extraction, `-ver` multi-extraction, and targeted version extraction.
+  - Verified bidirectional compatibility against official WinRAR 7.20 (`rar.exe` and `UnRAR.exe`).
+
 ## [1.15.0] - 2026-09-19
 
 ### Added
