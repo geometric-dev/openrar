@@ -728,7 +728,8 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                                       const std::string& arc_entry_name, int method,
                                       const std::string& password, PreparedAdd& out,
                                       core::uint32 times_mask, core::uint64 dict_size,
-                                      bool want_streams, bool want_acl, bool is_solid) {
+                                      bool want_streams, bool want_acl, bool is_solid,
+                                      bool direct_stream) {
     if (!std::filesystem::exists(src_file)) {
         return false;
     }
@@ -890,6 +891,19 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                 fb.method = 0;
                 fb.win_size = 0;
                 out.needs_deferred_crc = true;
+            } else if (method > 0 && !do_encrypt && direct_stream) {
+                // Direct-to-archive streaming compression via fixed-width vint back-patching:
+                // No temp spool needed! write_batch_add_ex will stream-compress directly into
+                // the archive in 1 MiB chunks, compute CRC32 on-the-fly, and back-patch the
+                // 10-byte fixed-width vint header. Eliminates intermediate disk spooling.
+                src.close();
+                fb.pack_size = 0;  // 10-byte fixed vint placeholder
+                fb.data_crc32 = 0; // Deterministic placeholder for header back-patching
+                fb.has_crc32 = true;
+                fb.method = static_cast<core::uint32>(method);
+                fb.win_size = win_size;
+                fb.unp_ver = (win_size > (1ULL * 1024 * 1024 * 1024) || is_non_pow2) ? 1 : 0;
+                out.needs_direct_stream = true;
             } else {
                 // Compressed or encrypted streaming to temporary spool file
                 std::filesystem::path spool_p = mutation_temp_path(src_file, "spool_tmp");
@@ -1579,14 +1593,20 @@ int ArchiveMutator::write_batch_add_ex(
             pf.fb.is_solid = ep.is_solid_chain;
 
             core::uint64 orig_pos = out.tell();
-            auto block_bytes = format::HeaderWriter::serialize_file_block(pf.fb, 0);
+            auto block_bytes = format::HeaderWriter::serialize_file_block(
+                pf.fb, 0, pf.needs_direct_stream);
             if (want_qo) {
                 size_t offset = qo_arena.size();
                 qo_arena.insert(qo_arena.end(), block_bytes.begin(), block_bytes.end());
                 qo_indices.push_back({orig_pos, offset, block_bytes.size()});
             }
-            format::HeaderWriter::emit_block(out, block_bytes,
-                                             header_encrypt_mode ? &hcw : nullptr);
+            if (!format::HeaderWriter::emit_block(out, block_bytes,
+                                                  header_encrypt_mode ? &hcw : nullptr)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "rewrite failed";
+                return RAR_ERR_IO;
+            }
             if (!pf.payload.empty()) {
                 out.write(pf.payload.data(), pf.payload.size());
             } else if (!pf.spool_path.empty()) {
@@ -1609,6 +1629,164 @@ int ArchiveMutator::write_batch_add_ex(
                 std::error_code ec;
                 std::filesystem::remove(pf.spool_path, ec);
                 pf.spool_path.clear();
+            } else if (pf.needs_direct_stream && pf.fb.unp_size > 0 && !pf.src_path.empty()) {
+                io::FileStream src_in;
+                if (!src_in.open(pf.src_path, io::FileMode::ReadOnly)) {
+                    out.close();
+                    std::filesystem::remove(tmp_path);
+                    detail_out = "cannot read source file for direct streaming compression";
+                    return RAR_ERR_IO;
+                }
+
+                core::uint64 actual_pack_size = 0;
+                crypto::Crc32 crc_calc;
+                bool stream_ok = true;
+
+                struct DirectFlushCtx {
+                    io::FileStream* out_stream;
+                    core::uint64* pack_bytes;
+                    bool ok;
+                } fctx{&out, &actual_pack_size, true};
+
+                compress::StreamEncoder encoder(pf.fb.method, pf.fb.win_size);
+                encoder.set_flush([](void* user, const core::byte* data, size_t size) -> int {
+                    auto* ctx = static_cast<DirectFlushCtx*>(user);
+                    if (size > 0) {
+                        if (ctx->out_stream->write(data, size) != size) {
+                            ctx->ok = false;
+                            return -1;
+                        }
+                        *(ctx->pack_bytes) += size;
+                    }
+                    return 0;
+                }, &fctx);
+
+                std::vector<core::byte> read_buf(1048576); // 1 MiB streaming buffer
+                core::uint64 remaining = pf.fb.unp_size;
+                while (remaining > 0) {
+                    size_t to_read = static_cast<size_t>(std::min<core::uint64>(remaining, read_buf.size()));
+                    if (src_in.read(read_buf.data(), to_read) != to_read) {
+                        stream_ok = false;
+                        break;
+                    }
+                    crc_calc.update(read_buf.data(), to_read);
+                    if (!encoder.feed(read_buf.data(), to_read) || !fctx.ok) {
+                        stream_ok = false;
+                        break;
+                    }
+                    remaining -= to_read;
+                }
+
+                if (stream_ok) {
+                    std::vector<core::byte> final_chunk;
+                    if (!encoder.finish(final_chunk) || !fctx.ok) {
+                        stream_ok = false;
+                    } else if (!final_chunk.empty()) {
+                        if (out.write(final_chunk.data(), final_chunk.size()) != final_chunk.size()) {
+                            stream_ok = false;
+                        } else {
+                            actual_pack_size += final_chunk.size();
+                        }
+                    }
+                }
+
+                src_in.close();
+
+                if (!stream_ok) {
+                    out.close();
+                    std::filesystem::remove(tmp_path);
+                    detail_out = "direct streaming compression failed";
+                    return RAR_ERR_IO;
+                }
+
+                if (actual_pack_size >= pf.fb.unp_size) {
+                    // Store fallback: compression expanded. Truncate to orig_pos and write store-mode entry.
+                    if (!out.seek(static_cast<core::int64>(orig_pos), io::SeekOrigin::Begin) ||
+                        !out.truncate(orig_pos)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "failed to truncate archive for store fallback";
+                        return RAR_ERR_IO;
+                    }
+
+                    pf.fb.method = 0;
+                    pf.fb.win_size = 0;
+                    pf.fb.unp_ver = 0;
+                    pf.fb.pack_size = static_cast<core::int64>(pf.fb.unp_size);
+                    pf.fb.data_crc32 = crc_calc.get();
+
+                    auto store_block_bytes = format::HeaderWriter::serialize_file_block(pf.fb, 0, false);
+                    if (!format::HeaderWriter::emit_block(out, store_block_bytes,
+                                                          header_encrypt_mode ? &hcw : nullptr)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "failed to write store header on compression expansion";
+                        return RAR_ERR_IO;
+                    }
+
+                    if (want_qo && !qo_indices.empty()) {
+                        qo_arena.resize(qo_indices.back().arena_offset);
+                        size_t offset = qo_arena.size();
+                        qo_arena.insert(qo_arena.end(), store_block_bytes.begin(), store_block_bytes.end());
+                        qo_indices.back() = {orig_pos, offset, store_block_bytes.size()};
+                    }
+
+                    if (!src_in.open(pf.src_path, io::FileMode::ReadOnly)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "cannot reopen source file for store fallback";
+                        return RAR_ERR_IO;
+                    }
+
+                    if (!copy_stream_region(src_in, out, 0, pf.fb.unp_size)) {
+                        src_in.close();
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "source copy failed during store fallback";
+                        return RAR_ERR_IO;
+                    }
+                    src_in.close();
+                } else {
+                    // Normal compression succeeded: back-patch FileBlock header with exact pack_size and CRC32
+                    core::uint64 payload_end = out.tell();
+                    pf.fb.pack_size = static_cast<core::int64>(actual_pack_size);
+                    pf.fb.data_crc32 = crc_calc.get();
+
+                    auto updated_block_bytes = format::HeaderWriter::serialize_file_block(pf.fb, 0, true);
+                    if (updated_block_bytes.size() != block_bytes.size()) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "header size invariant broken on streaming pack_size back-patch";
+                        return RAR_ERR_IO;
+                    }
+
+                    if (want_qo && !qo_indices.empty()) {
+                        size_t arena_off = qo_indices.back().arena_offset;
+                        std::memcpy(&qo_arena[arena_off], updated_block_bytes.data(), updated_block_bytes.size());
+                    }
+
+                    if (!out.seek(static_cast<core::int64>(orig_pos), io::SeekOrigin::Begin)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "failed to seek to header for pack_size back-patch";
+                        return RAR_ERR_IO;
+                    }
+
+                    if (!format::HeaderWriter::emit_block(out, updated_block_bytes,
+                                                          header_encrypt_mode ? &hcw : nullptr)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "failed to rewrite header for pack_size back-patch";
+                        return RAR_ERR_IO;
+                    }
+
+                    if (!out.seek(static_cast<core::int64>(payload_end), io::SeekOrigin::Begin)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "failed to seek to payload end after pack_size back-patch";
+                        return RAR_ERR_IO;
+                    }
+                }
             } else if (pf.fb.method == 0 && pf.fb.unp_size > 0 && !pf.src_path.empty()) {
                 io::FileStream src_in;
                 if (!src_in.open(pf.src_path, io::FileMode::ReadOnly)) {
@@ -1855,7 +2033,8 @@ static bool add_or_move_file(const std::filesystem::path& arc_path,
     prepared.entry_name = arc_entry_name;
     prepared.src_path = src_file;
     if (!ArchiveMutator::prepare_add_file(src_file, arc_entry_name, method, password, prepared,
-                                          time_flags::MTIME, dict_size)) {
+                                          time_flags::MTIME, dict_size, false, false, false,
+                                          /*direct_stream=*/true)) {
         return false;
     }
     prepared.delete_source = delete_source;

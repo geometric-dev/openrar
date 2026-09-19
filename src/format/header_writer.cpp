@@ -205,7 +205,8 @@ bool HeaderWriter::write_file_block(io::FileStream& dest, const FileBlock& block
 }
 
 std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& block,
-                                                           core::uint64 extra_head_flags) {
+                                                           core::uint64 extra_head_flags,
+                                                           bool fixed_pack_size_vint) {
     std::vector<core::byte> extra;
 
     // Encryption Extra Record
@@ -395,7 +396,11 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
         core::push_vint(body, extra.size());
     }
     if (block.pack_size >= 0) {
-        core::push_vint(body, static_cast<core::uint64>(block.pack_size));
+        if (fixed_pack_size_vint) {
+            core::push_vint_fixed(body, static_cast<core::uint64>(block.pack_size), 10);
+        } else {
+            core::push_vint(body, static_cast<core::uint64>(block.pack_size));
+        }
     }
 
     core::uint64 eff_file_flags = block.file_flags;
@@ -451,8 +456,9 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
 }
 
 bool HeaderWriter::write_file_block(io::FileStream& dest, const FileBlock& block,
-                                    core::uint64 extra_head_flags, HeaderCryptWriter* crypt) {
-    auto wrapped = serialize_file_block(block, extra_head_flags);
+                                    core::uint64 extra_head_flags, HeaderCryptWriter* crypt,
+                                    bool fixed_pack_size_vint) {
+    auto wrapped = serialize_file_block(block, extra_head_flags, fixed_pack_size_vint);
     return emit_block(dest, wrapped, crypt);
 }
 

@@ -740,7 +740,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             else
                 okv = archive::ArchiveMutator::prepare_add_file(
                     queue[0].src_path, queue[0].entry_name, method, password, prepared[0],
-                    times_mask, dict_size, want_stm, want_acl, solid);
+                    times_mask, dict_size, want_stm, want_acl, solid, /*direct_stream=*/true);
         } catch (...) {
             okv = false;
         }
