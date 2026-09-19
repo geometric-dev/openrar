@@ -1,10 +1,12 @@
 #include "../../src/archive/archive_reader.hpp"
+#include "../../src/archive/archive_mutator.hpp"
 #include "../../src/archive/volume.hpp"
 #include "../../src/core/types.hpp"
 #include "../../src/format/header_writer.hpp"
 #include "../../src/io/file_stream.hpp"
 
 #include <cassert>
+#include <cstring>
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
@@ -165,6 +167,84 @@ void test_scan_terminates_at_z99_ceiling() {
     std::cout << "[PASS] scan stops at the .z99 ceiling (no self-referential chain)\n";
 }
 
+void test_streaming_multivolume_creation() {
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "test_vol_stream";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+
+    // Create a 250 KiB test file that will span multiple small volumes (e.g. 32 KiB each)
+    std::vector<uint8_t> payload(250 * 1024);
+    for (size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<uint8_t>((i * 7 + 13) ^ (i >> 8));
+    }
+    fs::path src = dir / "stream_src.bin";
+    {
+        io::FileStream s;
+        assert(s.open(src, io::FileMode::CreateAlways));
+        assert(s.write(payload.data(), payload.size()) == payload.size());
+    }
+
+    // 1. Test compressed multi-volume creation (method 3, 32 KiB volume size, 128 KiB dictionary)
+    fs::path arc_base = dir / "multi.rar";
+    bool ok = archive::ArchiveMutator::add_file_to_archive_vol(
+        arc_base, src, "stream_src.bin", 3, 32 * 1024, "", false, 128 * 1024);
+    assert(ok);
+
+    fs::path part1 = dir / "multi.part01.rar";
+    assert(fs::exists(part1));
+
+    // Open via ArchiveReader and verify extraction across volumes
+    {
+        archive::ArchiveReader reader;
+        assert(reader.open(part1));
+        assert(reader.is_volume());
+        assert(reader.entries().size() == 1);
+        assert(reader.test_entry(reader.entries()[0]));
+
+        fs::path dest = dir / "extracted_comp.bin";
+        assert(reader.extract_entry(reader.entries()[0], dest));
+        assert(fs::file_size(dest) == payload.size());
+
+        std::vector<uint8_t> readback(payload.size());
+        io::FileStream in;
+        assert(in.open(dest, io::FileMode::ReadOnly));
+        assert(in.read(readback.data(), readback.size()) == readback.size());
+        assert(readback == payload);
+    }
+
+    // 2. Test store mode (method 0) multi-volume creation with zero RAM buffering
+    fs::path arc_store = dir / "store_multi.rar";
+    ok = archive::ArchiveMutator::add_file_to_archive_vol(
+        arc_store, src, "store_src.bin", 0, 32 * 1024, "");
+    assert(ok);
+
+    fs::path store_part1 = dir / "store_multi.part01.rar";
+    assert(fs::exists(store_part1));
+
+    {
+        archive::ArchiveReader reader;
+        assert(reader.open(store_part1));
+        assert(reader.is_volume());
+        assert(reader.entries().size() == 1);
+        assert(reader.test_entry(reader.entries()[0]));
+
+        fs::path dest = dir / "extracted_store.bin";
+        assert(reader.extract_entry(reader.entries()[0], dest));
+        assert(fs::file_size(dest) == payload.size());
+
+        std::vector<uint8_t> readback(payload.size());
+        io::FileStream in;
+        assert(in.open(dest, io::FileMode::ReadOnly));
+        assert(in.read(readback.data(), readback.size()) == readback.size());
+        assert(readback == payload);
+    }
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] streaming multivolume creation (compressed and store) roundtrip\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -179,6 +259,7 @@ int main() {
     test_first_volume_name();
     test_new_style_numbering();
     test_scan_terminates_at_z99_ceiling();
+    test_streaming_multivolume_creation();
     std::cout << "All volume naming tests PASSED!\n";
     return 0;
 }

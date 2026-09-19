@@ -52,14 +52,15 @@ public:
                                     const std::string& arc_entry_name, int method = 3,
                                     const std::filesystem::path& sfx_stub_path = {},
                                     core::uint64 vol_size = 0, const std::string& password = "",
-                                    bool encrypt_headers = false, bool solid = false);
+                                    bool encrypt_headers = false, bool solid = false,
+                                    core::uint64 dict_size = 0);
 
     // Volume-aware add ( -v )
     static bool add_file_to_archive_vol(const std::filesystem::path& arc_path,
                                         const std::filesystem::path& src_file,
                                         const std::string& arc_entry_name, int method,
                                         core::uint64 vol_size, const std::string& password = "",
-                                        bool solid = false);
+                                        bool solid = false, core::uint64 dict_size = 0);
 
     // Move file to archive and delete from disk upon success (command 'm')
     static bool move_file_to_archive(const std::filesystem::path& arc_path,
@@ -68,6 +69,12 @@ public:
                                      const std::filesystem::path& sfx_stub_path = {},
                                      const std::string& password = "",
                                      bool encrypt_headers = false);
+
+    static bool move_file_to_archive_vol(const std::filesystem::path& arc_path,
+                                         const std::filesystem::path& src_file,
+                                         const std::string& arc_entry_name, int method,
+                                         core::uint64 vol_size, const std::string& password = "",
+                                         bool solid = false, core::uint64 dict_size = 0);
 
     // Spool guard ensuring temporary spool files are unlinked on any unwound
     // exception, error, or early abort.

@@ -1392,10 +1392,10 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
             if (!sfx_stub.empty())
                 ok = archive::ArchiveMutator::add_file_to_archive(
                     arc_path, item.src_path, item.entry_name, method, sfx_stub, vol_size, password,
-                    /*encrypt_headers=*/false, solid);
+                    /*encrypt_headers=*/false, solid, dict_size);
             else
                 ok = archive::ArchiveMutator::add_file_to_archive_vol(
-                    arc_path, item.src_path, item.entry_name, method, vol_size, password, solid);
+                    arc_path, item.src_path, item.entry_name, method, vol_size, password, solid, dict_size);
             if (!ok) {
                 if (!g_quiet_mode && !is_vt_supported()) std::cout << "FAILED\n";
                 return 1;
@@ -1913,7 +1913,7 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
         // Volume chain rewrite is inherently sequential (see add_to_archive).
         for (const auto& item : queue) {
             bool ok = archive::ArchiveMutator::move_file_to_archive_vol(
-                arc_path, item.src_path, item.entry_name, method, vol_size, password);
+                arc_path, item.src_path, item.entry_name, method, vol_size, password, /*solid=*/false, dict_size);
             if (!ok) {
                 std::cerr << "Failed moving " << item.src_path.string() << " to " << arc_path
                           << "\n";
