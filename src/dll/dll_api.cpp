@@ -633,6 +633,7 @@ struct FileArchiveHandle : ArchiveHandleBase {
         if (out->ctime_ft) flags |= OPENRAR_ENTRY_FLAG_HAS_CTIME;
         if (out->atime_ft) flags |= OPENRAR_ENTRY_FLAG_HAS_ATIME;
         if (h.file_flags & openrar::format::FHFL_DIRECTORY) flags |= OPENRAR_ENTRY_FLAG_DIRECTORY;
+        if (h.has_file_version) flags |= OPENRAR_ENTRY_FLAG_HAS_VERSION;
         out->flags = flags;
         out->win_size =
             h.win_size > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(h.win_size);
