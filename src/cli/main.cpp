@@ -759,7 +759,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         Prog.note_file_done(queue[0].entry_name, queue[0].file_size);
         if (!archive::ArchiveMutator::write_batch_add(
                 arc_path, prepared, sfx_stub, password, encrypt_headers, {}, solid,
-                comment ? *comment : std::vector<core::byte>(), want_qo, want_ams)) {
+                comment ? *comment : std::vector<core::byte>(), want_qo, want_ams, filter_cfg)) {
             return 1;
         }
         if (announce && !g_quiet_mode && !is_vt_supported()) {
@@ -920,7 +920,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     try {
         ok = archive::ArchiveMutator::write_batch_add(
             arc_path, prepared, sfx_stub, password, encrypt_headers, on_write, solid,
-            comment ? *comment : std::vector<core::byte>(), want_qo, want_ams);
+            comment ? *comment : std::vector<core::byte>(), want_qo, want_ams, filter_cfg);
     } catch (const PrepareFailed&) {
         ok = false;
     } catch (...) {

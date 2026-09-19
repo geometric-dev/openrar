@@ -26,7 +26,8 @@ namespace openrar::compress {
 // Thread-compatible per-instance (no internal locking; one caller at a time).
 class StreamEncoder {
 public:
-    StreamEncoder(int method = 3, size_t win_size = 4 * 1024 * 1024);
+    StreamEncoder(int method = 3, size_t win_size = 4 * 1024 * 1024,
+                  const FilterConfig& filter_cfg = {});
     ~StreamEncoder() = default;
 
     StreamEncoder(const StreamEncoder&) = delete;
@@ -75,6 +76,7 @@ public:
 private:
     int method_;
     size_t win_size_;
+    FilterConfig filter_cfg_{};
     std::vector<core::byte> output_;    // accumulated output when no flush sink
     std::vector<core::byte> scratch_;   // per-feed block bytes from the packer
     Compressor50 packer_;

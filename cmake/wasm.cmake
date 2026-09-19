@@ -43,7 +43,7 @@ target_link_options(openrar_wasm PRIVATE
     "-sMODULARIZE=1"
     "-sEXPORT_NAME=createOpenRAR"
     "-sEXPORT_ES6=1"
-    "-sEXPORTED_FUNCTIONS=['_openrar_version','_openrar_alloc','_openrar_free','_openrar_compress','_openrar_compress2','_openrar_decompress','_openrar_decompress2','_openrar_stream_create','_openrar_stream_feed','_openrar_stream_finish','_openrar_stream_free','_openrar_stream_decompress_create','_openrar_stream_decompress_feed','_openrar_stream_decompress_finish','_openrar_stream_decompress_pull','_openrar_stream_decompress_free','_malloc','_free']"
+    "-sEXPORTED_FUNCTIONS=['_openrar_version','_openrar_alloc','_openrar_free','_openrar_compress','_openrar_compress2','_openrar_decompress','_openrar_decompress2','_openrar_stream_create','_openrar_stream_create_ex','_openrar_stream_feed','_openrar_stream_pull','_openrar_stream_finish','_openrar_stream_free','_openrar_stream_decompress_create','_openrar_stream_decompress_feed','_openrar_stream_decompress_finish','_openrar_stream_decompress_pull','_openrar_stream_decompress_free','_malloc','_free']"
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString']"
     "-sENVIRONMENT=web,node"
     "-sFILESYSTEM=0"

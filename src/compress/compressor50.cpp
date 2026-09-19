@@ -241,6 +241,7 @@ void Compressor50::reset_state() {
     active_filter_ = FilterType::None;
     filter_channels_ = 1;
     filter_emitted_until_ = 0;
+    file_start_pos_ = 0;
     is_large_window_ = false;
     head_.clear();
     prev_.clear();
@@ -308,6 +309,7 @@ bool Compressor50::begin_stream(int method, size_t win_size) {
     if (win_size == 0) win_size = 0x200000;
     streaming_ = true;
     stream_finished_ = false;
+    file_start_pos_ = 0;
     begin_archive(nullptr, method, win_size);
     src_size_ = 0; // grows with every feed: every loaded byte is valid input
     init_match_params();
@@ -318,6 +320,10 @@ bool Compressor50::begin_stream(int method, size_t win_size) {
 int Compressor50::feed(const core::byte* data, size_t n) {
     if (!streaming_ || stream_finished_) return -1;
     if (!data && n != 0) return -1;
+    if (active_filter_ == FilterType::None && filter_config_.mode != FilterMode::DisableAll &&
+        cur_ == 0 && n >= 64) {
+        active_filter_ = Filters50::detect_filter(data, n, filter_channels_, filter_config_);
+    }
     const core::byte* p = data;
     size_t left = n;
     while (left > 0) {
@@ -373,8 +379,12 @@ void Compressor50::start_file(io::FileStream* src, core::uint64 src_file_size,
         pos_base_ = 0;
         src_loaded_ = 0;
         reset_old_dist();
+        file_start_pos_ = 0;
+        filter_emitted_until_ = 0;
     } else {
         src_size_ = src_loaded_ + src_file_size;
+        file_start_pos_ = cur_;
+        filter_emitted_until_ = cur_;
     }
     unhashed_pos_ = cur_;
 }
@@ -1152,6 +1162,28 @@ int Compressor50::process_available(bool final) {
             core::uint32 chunk_len = static_cast<core::uint32>(
                 std::min<core::uint64>(src_size_ - filter_emitted_until_, max_chunk));
             if (chunk_len > 0) {
+                if (!external_buf_ && filter_emitted_until_ >= pos_base_) {
+                    size_t buf_off = static_cast<size_t>(filter_emitted_until_ - pos_base_);
+                    size_t avail_in_buf = (src_loaded_ > filter_emitted_until_)
+                                              ? static_cast<size_t>(src_loaded_ - filter_emitted_until_)
+                                              : 0;
+                    size_t trans_len = std::min<size_t>(chunk_len, avail_in_buf);
+                    if (trans_len > 0) {
+                        core::uint64 file_rel_offset = filter_emitted_until_ - file_start_pos_;
+                        if (active_filter_ == FilterType::E8) {
+                            Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset, false);
+                        } else if (active_filter_ == FilterType::E8E9) {
+                            Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset, true);
+                        } else if (active_filter_ == FilterType::Arm) {
+                            Filters50::encode_arm(buf_.data() + buf_off, trans_len, file_rel_offset);
+                        } else if (active_filter_ == FilterType::Delta) {
+                            std::vector<core::byte> tmp(trans_len);
+                            Filters50::encode_delta(buf_.data() + buf_off, tmp.data(), trans_len,
+                                                   filter_channels_);
+                            std::memcpy(buf_.data() + buf_off, tmp.data(), trans_len);
+                        }
+                    }
+                }
                 FilterToken ft;
                 ft.block_start = 0;
                 ft.block_length = chunk_len;

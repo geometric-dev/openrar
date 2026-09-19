@@ -185,6 +185,20 @@ export function base64Decode(s) {
   return out;
 }
 
+/**
+ * Translate human-readable filter mode string to OpenRAR filter flags.
+ * @param {'auto' | 'none' | 'e8' | 'arm' | 'delta'} [mode]
+ * @returns {number}
+ */
+export function filterModeToFlags(mode) {
+  if (!mode || mode === 'auto') return 0;
+  if (mode === 'none' || mode === 'off') return 1; // DISABLE_ALL
+  if (mode === 'e8') return 2; // FORCE_E8
+  if (mode === 'arm') return 8; // FORCE_ARM
+  if (mode === 'delta') return 32; // FORCE_DELTA
+  return 0;
+}
+
 // ── OpenRAR: high-level handle ─────────────────────────────────────────────
 
 /**
@@ -345,7 +359,7 @@ export class OpenRAR {
    * {@link decompressStreamChunks}.
    *
    * @param {ReadableStream<Uint8Array>} readable
-   * @param {{method?:number, winSize?:number, signal?:AbortSignal}} [opts]
+   * @param {{method?:number, winSize?:number, filterMode?:string, signal?:AbortSignal}} [opts]
    * @returns {Promise<Uint8Array>}
    */
   async compressStream(readable, opts = {}) {
@@ -355,7 +369,13 @@ export class OpenRAR {
     const winSize = opts.winSize ?? DEFAULT_WIN_SIZE;
     assertMethod(method);
     assertWinSize(winSize);
-    const handle = m.ccall('openrar_stream_create', 'number', ['number', 'number'], [method, winSize]);
+    const filterFlags = filterModeToFlags(opts.filterMode);
+    let handle = 0;
+    if (filterFlags !== 0 && typeof m._openrar_stream_create_ex === 'function') {
+      handle = m.ccall('openrar_stream_create_ex', 'number', ['number', 'number', 'number'], [method, winSize, filterFlags]);
+    } else {
+      handle = m.ccall('openrar_stream_create', 'number', ['number', 'number'], [method, winSize]);
+    }
     if (!handle) throw new Error('openrar: failed to create streaming encoder');
     try {
       const reader = readable.getReader();
@@ -400,7 +420,7 @@ export class OpenRAR {
    * as blocks are completed. Memory is bounded by the window size + chunk size.
    *
    * @param {ReadableStream<Uint8Array>} readable
-   * @param {{method?:number, winSize?:number, signal?:AbortSignal}} [opts]
+   * @param {{method?:number, winSize?:number, filterMode?:string, signal?:AbortSignal}} [opts]
    * @returns {AsyncGenerator<Uint8Array, void, unknown>}
    */
   async *compressStreamChunks(readable, opts = {}) {
@@ -410,7 +430,13 @@ export class OpenRAR {
     const winSize = opts.winSize ?? DEFAULT_WIN_SIZE;
     assertMethod(method);
     assertWinSize(winSize);
-    const handle = m.ccall('openrar_stream_create', 'number', ['number', 'number'], [method, winSize]);
+    const filterFlags = filterModeToFlags(opts.filterMode);
+    let handle = 0;
+    if (filterFlags !== 0 && typeof m._openrar_stream_create_ex === 'function') {
+      handle = m.ccall('openrar_stream_create_ex', 'number', ['number', 'number', 'number'], [method, winSize, filterFlags]);
+    } else {
+      handle = m.ccall('openrar_stream_create', 'number', ['number', 'number'], [method, winSize]);
+    }
     if (!handle) throw new Error('openrar: failed to create streaming encoder');
     try {
       const reader = readable.getReader();
