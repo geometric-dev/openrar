@@ -48,6 +48,13 @@ int openrar_compress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr, siz
                       int method, size_t win_size);
 int openrar_decompress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr, size_t* out_len,
                         size_t win_size);
+
+// Streaming decoder
+uint32_t openrar_stream_decompress_create(size_t win_size);
+int openrar_stream_decompress_feed(uint32_t handle, const uint8_t* src, size_t n);
+int openrar_stream_decompress_finish(uint32_t handle, uint8_t** out_ptr, size_t* out_len);
+int openrar_stream_decompress_pull(uint32_t handle, uint8_t** out_ptr, size_t* out_len);
+void openrar_stream_decompress_free(uint32_t handle);
 }
 
 #endif // OPENRAR_WASM_API_HPP

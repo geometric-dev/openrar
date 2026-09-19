@@ -474,9 +474,19 @@ bool Decompressor50::decompress(BitReader::InputCallback src_cb, size_t src_size
     return decompress_internal(reader, dest_size, solid, flush_cb, out_written, out_finished);
 }
 
+bool Decompressor50::decompress_block(const core::byte* src, size_t src_size,
+                                      OutputCallback flush_cb, size_t* out_written,
+                                      bool* out_finished, bool solid) {
+    if (src_size == 0) return true;
+    if (src == nullptr) return false;
+    BitReader reader(src, src_size);
+    return decompress_internal(reader, static_cast<size_t>(-1), solid, flush_cb, out_written,
+                               out_finished, /*single_block=*/true);
+}
+
 bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bool solid,
                                          OutputCallback flush_cb, size_t* out_written,
-                                         bool* out_finished) {
+                                         bool* out_finished, bool single_block) {
     if (out_written) *out_written = 0;
     if (out_finished) *out_finished = false;
 
@@ -633,6 +643,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     while (total_written < dest_size) {
         size_t cb = cur_bit();
         if (cb >= end_bit) {
+            if (single_block) break;
             if (header.last_block_in_file) break;
             if (!read_block_header(reader, header)) break;
             if (!read_tables(reader, header)) return false;
@@ -641,6 +652,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             continue;
         }
         if (reader.bits_remaining() < 1) {
+            if (single_block) break;
             if (header.last_block_in_file) break;
             if (!read_block_header(reader, header)) break;
             if (!read_tables(reader, header)) return false;
@@ -836,7 +848,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     // here would let callers write silently truncated output, so fail instead.
     // (dest_size may be SIZE_MAX when the caller streams unknown-length output;
     // in that case a genuine stream end is only ever reached on LastBlock.)
-    if (total_written < dest_size && !header.last_block_in_file) return false;
+    if (!single_block && total_written < dest_size && !header.last_block_in_file) return false;
 
     if (out_written) *out_written = total_written;
     if (out_finished) *out_finished = header.last_block_in_file;

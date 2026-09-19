@@ -279,7 +279,19 @@ static void test_abi_features() {
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_LIST_PROGRESS) != 0);
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_LIST_PASSWORD) != 0);
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS) != 0);
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_REPAIR) != 0);
     std::cout << "PASS test_abi_features\n";
+}
+
+static void test_archive_repair() {
+    // Null arc_path returns RAR_ERR_INVALID_ARG
+    assert(openrar_archive_repair(nullptr, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
+    // Non-existent path returns RAR_ERR_IO
+    assert(openrar_archive_repair("non_existent_archive_file_12345.rar", nullptr, nullptr, nullptr) == RAR_ERR_IO);
+    // Cancelled callback returns RAR_ERR_ABORTED
+    auto cancel_now = [](void*) -> int { return 1; };
+    assert(openrar_archive_repair("non_existent_archive_file_12345.rar", nullptr, cancel_now, nullptr) == RAR_ERR_ABORTED);
+    std::cout << "PASS test_archive_repair\n";
 }
 
 struct ExProgressLog {
@@ -783,6 +795,7 @@ int main() {
     test_b4_empty_archive_extract_all();
     test_b1_durable_write_collision();
     test_archive_handle_set_limits();
+    test_archive_repair();
     std::cout << "ALL DLL TESTS PASSED\n";
     return 0;
 }

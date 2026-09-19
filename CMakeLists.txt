@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 # commit counter since the current MAJOR.MINOR line's anchor tag - see
 # docs/versioning.md).
 # wasm/js/package.json and CHANGELOG.md are synced at release time.
-project(openrar VERSION 1.10.0 LANGUAGES CXX)
+project(openrar VERSION 1.11.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,6 +43,7 @@ set(OPENRAR_CORE_SOURCES
     src/compress/compressor50.cpp
     src/compress/decompressor50.cpp
     src/compress/stream_encoder.cpp
+    src/compress/stream_decoder.cpp
     src/archive/archive_reader.cpp
     src/archive/archive_mutator.cpp
     src/archive/volume.cpp
@@ -74,6 +75,7 @@ option(OPENRAR_WARNINGS_AS_ERRORS "Treat compiler warnings as errors (/WX, -Werr
 set(OPENRAR_DLL_SOURCES
     src/archive/buffer_archive.cpp
     src/compress/stream_encoder.cpp
+    src/compress/stream_decoder.cpp
     src/dll/dll_api.cpp
 )
 

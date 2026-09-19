@@ -132,6 +132,14 @@ public:
                     bool solid = false, OutputCallback flush_cb = nullptr,
                     size_t* out_written = nullptr, bool* out_finished = nullptr);
 
+    // Decompresses exactly one compressed RAR 5.0 block.
+    // If solid is true, dictionary history and active tables carry over.
+    bool decompress_block(const core::byte* src, size_t src_size,
+                          OutputCallback flush_cb = nullptr,
+                          size_t* out_written = nullptr,
+                          bool* out_finished = nullptr,
+                          bool solid = false);
+
     // Streams the decompressed output into a growing vector until the RAR5
     // stream terminates on a LastBlock flag. Uses decompress() internally
     // with a geometric grow-and-retry strategy so we never require callers
@@ -187,7 +195,8 @@ private:
     bool flush_pending(bool flush_all, OutputCallback cb);
 
     bool decompress_internal(BitReader& reader, size_t dest_size, bool solid,
-                             OutputCallback flush_cb, size_t* out_written, bool* out_finished);
+                             OutputCallback flush_cb, size_t* out_written, bool* out_finished,
+                             bool single_block = false);
 
     size_t win_size_;
     size_t win_mask_;

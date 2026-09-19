@@ -2,6 +2,7 @@
 #include "../compress/compressor50.hpp"
 #include "../compress/decompressor50.hpp"
 #include "../compress/stream_encoder.hpp"
+#include "../compress/stream_decoder.hpp"
 
 #include <exception>
 #include <cstdlib>
@@ -187,6 +188,82 @@ int openrar_decompress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr, s
     } catch (...) {
         return 0;
     }
+}
+
+// -- Streaming decoder (v1.11) -----------------------------------------------
+namespace openrar::wasm {
+namespace {
+openrar::api::HandleTable<openrar::compress::StreamDecoder> g_stream_decoders;
+} // namespace
+} // namespace openrar::wasm
+
+uint32_t openrar_stream_decompress_create(size_t win_size) {
+    try {
+        if (win_size == 0) win_size = 1024 * 1024;
+        if (win_size > openrar::wasm::MAX_WIN_SIZE) return 0;
+        auto dec = std::make_shared<openrar::compress::StreamDecoder>(win_size);
+        if (!dec->is_valid()) return 0;
+        return openrar::wasm::g_stream_decoders.insert(dec);
+    } catch (...) {
+        return 0;
+    }
+}
+
+int openrar_stream_decompress_feed(uint32_t handle, const uint8_t* src, size_t n) {
+    try {
+        if (!src && n != 0) return -1;
+        auto dec = openrar::wasm::g_stream_decoders.pin(handle);
+        if (!dec) return -1;
+        return dec->feed(src, n) ? 0 : -1;
+    } catch (...) {
+        return -1;
+    }
+}
+
+int openrar_stream_decompress_finish(uint32_t handle, uint8_t** out_ptr, size_t* out_len) {
+    try {
+        if (!out_ptr || !out_len) return -1;
+        *out_ptr = nullptr;
+        *out_len = 0;
+        auto dec = openrar::wasm::g_stream_decoders.pin(handle);
+        if (!dec) return -1;
+        std::vector<uint8_t> out;
+        if (!dec->finish(out)) return -1;
+        uint8_t* buf = static_cast<uint8_t*>(std::malloc(out.size() > 0 ? out.size() : 1));
+        if (!buf && !out.empty()) return -1;
+        if (!out.empty()) std::memcpy(buf, out.data(), out.size());
+        *out_ptr = out.empty() ? nullptr : buf;
+        *out_len = out.size();
+        if (out.empty()) std::free(buf);
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+int openrar_stream_decompress_pull(uint32_t handle, uint8_t** out_ptr, size_t* out_len) {
+    try {
+        if (!out_ptr || !out_len) return -1;
+        *out_ptr = nullptr;
+        *out_len = 0;
+        auto dec = openrar::wasm::g_stream_decoders.pin(handle);
+        if (!dec) return -1;
+        std::vector<uint8_t> out;
+        if (!dec->take_output(out)) return -1;
+        if (out.empty()) return 0;
+        uint8_t* buf = static_cast<uint8_t*>(std::malloc(out.size()));
+        if (!buf) return -1;
+        std::memcpy(buf, out.data(), out.size());
+        *out_ptr = buf;
+        *out_len = out.size();
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+void openrar_stream_decompress_free(uint32_t handle) {
+    openrar::wasm::g_stream_decoders.erase(handle);
 }
 
 } // extern "C"
