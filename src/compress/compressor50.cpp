@@ -237,6 +237,11 @@ void Compressor50::reset_state() {
     token_seq_.clear();
     lit_bytes_.clear();
     match_tokens_.clear();
+    is_large_window_ = false;
+    head_.clear();
+    prev_.clear();
+    head64_.clear();
+    prev64_.clear();
     reset_old_dist();
     hash_crc32_.reset();
     hash_blake2_.reset();
@@ -272,8 +277,18 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
     buf_.resize(buf_size_);
     buf_data_ = buf_.data();
 
-    head_.assign(HASH_SIZE, static_cast<core::uint32>(-1));
-    prev_.assign(win_size_, static_cast<core::uint32>(-1));
+    is_large_window_ = (win_size_ > 4ULL * 1024 * 1024 * 1024);
+    if (is_large_window_) {
+        head_.clear();
+        prev_.clear();
+        head64_.assign(HASH_SIZE, static_cast<core::uint64>(-1));
+        prev64_.assign(win_size_, static_cast<core::uint64>(-1));
+    } else {
+        head64_.clear();
+        prev64_.clear();
+        head_.assign(HASH_SIZE, static_cast<core::uint32>(-1));
+        prev_.assign(win_size_, static_cast<core::uint32>(-1));
+    }
 
     cur_ = 0;
     pos_base_ = 0;
@@ -422,8 +437,13 @@ core::uint32 Compressor50::calc_hash(core::uint64 pos) {
 void Compressor50::insert_position(core::uint64 pos) {
     if (pos + 4 > src_loaded_ || pos < pos_base_) return;
     core::uint32 h = calc_hash(pos);
-    prev_[static_cast<size_t>(pos & (win_size_ - 1))] = head_[h];
-    head_[h] = static_cast<core::uint32>(pos & 0xffffffff);
+    if (is_large_window_) {
+        prev64_[static_cast<size_t>(pos & (win_size_ - 1))] = head64_[h];
+        head64_[h] = pos;
+    } else {
+        prev_[static_cast<size_t>(pos & (win_size_ - 1))] = head_[h];
+        head_[h] = static_cast<core::uint32>(pos & 0xffffffff);
+    }
 }
 
 size_t Compressor50::match_length(core::uint64 pos, core::uint64 cand, size_t cap) {
@@ -438,7 +458,15 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
     if (pos + 4 > src_loaded_ || pos < pos_base_) return best;
 
     core::uint32 h = calc_hash(pos);
-    core::int64 cand = reconstruct_pos(pos, head_[h]);
+    core::int64 cand = -1;
+    if (is_large_window_) {
+        core::uint64 hpos = head64_[h];
+        if (hpos != static_cast<core::uint64>(-1) && pos >= hpos && (pos - hpos) <= max_dist_) {
+            cand = static_cast<core::int64>(hpos);
+        }
+    } else {
+        cand = reconstruct_pos(pos, head_[h]);
+    }
     core::uint32 chain = max_chain;
     size_t limit = avail_at(pos);
     if (limit > MAX_LZ_MATCH + 3) limit = MAX_LZ_MATCH + 3;
@@ -458,20 +486,34 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
         const core::byte* buf_cand =
             &buf_data_[static_cast<size_t>(static_cast<core::uint64>(cand) - pos_base_)];
 
-        core::uint32 next = prev_[static_cast<size_t>(cand) & win_mask];
-        if (next != 0xffffffff) {
+        core::int64 next_cand = -1;
+        if (is_large_window_) {
+            core::uint64 next64 = prev64_[static_cast<size_t>(cand) & win_mask];
+            if (next64 != static_cast<core::uint64>(-1)) {
 #if defined(__GNUC__) || defined(__clang__)
-            __builtin_prefetch(&prev_[next & win_mask]);
+                __builtin_prefetch(&prev64_[static_cast<size_t>(next64) & win_mask]);
 #endif
+                if (pos >= next64 && (pos - next64) <= max_dist_) {
+                    next_cand = static_cast<core::int64>(next64);
+                }
+            }
+        } else {
+            core::uint32 next = prev_[static_cast<size_t>(cand) & win_mask];
+            if (next != 0xffffffff) {
+#if defined(__GNUC__) || defined(__clang__)
+                __builtin_prefetch(&prev_[next & win_mask]);
+#endif
+            }
+            next_cand = reconstruct_pos(pos, next);
         }
 
         if (best.length > 0) {
             if (best.length < limit && buf_cand[best.length] != buf_pos[best.length]) {
-                cand = reconstruct_pos(pos, next);
+                cand = next_cand;
                 continue;
             }
             if (buf_cand[0] != buf_pos[0]) {
-                cand = reconstruct_pos(pos, next);
+                cand = next_cand;
                 continue;
             }
         }
@@ -480,11 +522,11 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
             core::uint32 c4;
             std::memcpy(&c4, buf_cand, 4);
             if (c4 != p4) {
-                cand = reconstruct_pos(pos, next);
+                cand = next_cand;
                 continue;
             }
         } else if (limit >= 3 && (buf_cand[1] != buf_pos[1] || buf_cand[2] != buf_pos[2])) {
-            cand = reconstruct_pos(pos, next);
+            cand = next_cand;
             continue;
         }
 
@@ -494,7 +536,7 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
             best.candidate = cand;
             if (len >= nice_len || len >= limit) break;
         }
-        cand = reconstruct_pos(pos, next);
+        cand = next_cand;
     }
     if (best.length < MIN_MATCH) best.length = 0;
     return best;

@@ -509,26 +509,42 @@ void test_rr_thread_determinism() {
 
 void test_b10_calculate_parity_buffer_size() {
     using namespace openrar::recovery;
-    // B10 overflow test: 65536 * 1048576 = 68719476736 (64 GiB) > 2 GiB cap
-    auto overflow = calculate_parity_buffer_size(65536, 1048576);
-    assert(!overflow.has_value());
 
     // Zero checks
     assert(!calculate_parity_buffer_size(0, 512).has_value());
     assert(!calculate_parity_buffer_size(512, 0).has_value());
     assert(!calculate_parity_buffer_size(0, 0).has_value());
 
-    // Valid sizes within 2 GiB cap
+    // Valid sizes within 2 GiB
     auto valid_small = calculate_parity_buffer_size(10, 512);
     assert(valid_small.has_value());
     assert(valid_small.value() == 5120);
 
-    auto valid_max = calculate_parity_buffer_size(2048, 1024 * 1024); // 2 GiB exactly
-    assert(valid_max.has_value());
-    assert(valid_max.value() == 2ULL * 1024 * 1024 * 1024);
+    auto valid_2g = calculate_parity_buffer_size(2048, 1024 * 1024); // 2 GiB exactly
+    assert(valid_2g.has_value());
+    assert(valid_2g.value() == 2ULL * 1024 * 1024 * 1024);
 
-    auto over_cap = calculate_parity_buffer_size(2049, 1024 * 1024); // > 2 GiB
-    assert(!over_cap.has_value());
+#if defined(__EMSCRIPTEN__) || defined(_M_IX86) || defined(__i386__)
+    // 32-bit cap: > 2 GiB fails
+    auto over_cap_32 = calculate_parity_buffer_size(2049, 1024 * 1024);
+    assert(!over_cap_32.has_value());
+#else
+    // 64-bit native cap: supports multi-gigabyte parity up to 64 GiB
+    auto valid_4g = calculate_parity_buffer_size(4096, 1024 * 1024); // 4 GiB
+    assert(valid_4g.has_value());
+    assert(valid_4g.value() == 4ULL * 1024 * 1024 * 1024);
+
+    auto valid_64g = calculate_parity_buffer_size(65536, 1024 * 1024); // 64 GiB exactly
+    assert(valid_64g.has_value());
+    assert(valid_64g.value() == 64ULL * 1024 * 1024 * 1024);
+
+    auto over_cap_64 = calculate_parity_buffer_size(65537, 1024 * 1024); // > 64 GiB fails
+    assert(!over_cap_64.has_value());
+#endif
+
+    // Overflow check: product overflow beyond uint64
+    auto overflow = calculate_parity_buffer_size(0xFFFFFFFFFFFFFFFFULL, 2);
+    assert(!overflow.has_value());
 
     std::cout << "[PASS] calculate_parity_buffer_size overflow and bounds checks\n";
 }
