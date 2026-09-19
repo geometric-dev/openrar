@@ -39,6 +39,13 @@ public:
     // flush sink is set (then out is empty and all bytes went to the sink).
     bool finish(std::vector<core::byte>& out);
 
+    // Pull accumulated output blocks produced so far (for incremental chunk streaming).
+    bool take_output(std::vector<core::byte>& out) {
+        out = std::move(output_);
+        output_.clear();
+        return true;
+    }
+
     void reset();
 
     size_t total_input() const { return total_in_; }
@@ -68,7 +75,6 @@ public:
 private:
     int method_;
     size_t win_size_;
-    std::vector<core::byte> input_buf_; // STORE (method 0) staging only
     std::vector<core::byte> output_;    // accumulated output when no flush sink
     std::vector<core::byte> scratch_;   // per-feed block bytes from the packer
     Compressor50 packer_;

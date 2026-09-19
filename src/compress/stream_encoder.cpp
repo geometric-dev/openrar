@@ -36,9 +36,16 @@ bool StreamEncoder::feed(const core::byte* src, size_t n) {
     if (cancel_cb_ && cancel_cb_(cancel_user_)) return false;
 
     if (method_ == 0) {
-        // STORE cannot be framed as blocks — stage and pass through at finish.
-        input_buf_.insert(input_buf_.end(), src, src + n);
         total_in_ += n;
+        if (flush_cb_) {
+            if (flush_cb_(flush_user_, src, n) != 0) {
+                finished_ = true;
+                aborted_ = true;
+                return false;
+            }
+        } else {
+            output_.insert(output_.end(), src, src + n);
+        }
         if (progress_cb_) progress_cb_(progress_user_, total_in_, total_in_);
         return true;
     }
@@ -66,9 +73,7 @@ bool StreamEncoder::finish(std::vector<core::byte>& out) {
     if (cancel_cb_ && cancel_cb_(cancel_user_)) return false;
 
     if (method_ == 0) {
-        // Passthrough: the "compressed" bytes are the input bytes unchanged.
-        output_.insert(output_.end(), input_buf_.begin(), input_buf_.end());
-        input_buf_.clear();
+        // STORE bytes were already routed to flush_cb_ or accumulated in output_ during feed().
     } else if (started_) {
         if (packer_.finish_stream() < 0) return false;
         drain();
@@ -90,7 +95,6 @@ bool StreamEncoder::finish(std::vector<core::byte>& out) {
 }
 
 void StreamEncoder::reset() {
-    input_buf_.clear();
     output_.clear();
     scratch_.clear();
     packer_ = Compressor50();
