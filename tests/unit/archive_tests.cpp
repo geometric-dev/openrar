@@ -1113,6 +1113,65 @@ void test_invalid_utf8_filename_rejected() {
     std::cout << "[PASS] test_invalid_utf8_filename_rejected\n";
 }
 
+void test_decompressor_bad_alloc_returns_nomem() {
+    std::cout << "Starting test_decompressor_bad_alloc_returns_nomem...\n" << std::flush;
+    namespace fs = std::filesystem;
+    fs::path dir = "build/test_bad_alloc_nomem";
+    fs::path arc = dir / "huge_win.rar";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    fs::remove(arc, ec);
+
+    // Create an archive with a valid 64 GiB window (within ALLOC_LIMIT on 64-bit)
+    // but when decompress_internal allocates window_.assign(64 GiB, 0), it triggers
+    // std::bad_alloc on hosts without 64 GiB committed RAM, which must return RAR_ERR_NOMEM (-5)
+    // instead of misleading RAR_ERR_TRUNCATED (-3).
+    {
+        io::FileStream out;
+        assert(out.open(arc, io::FileMode::CreateAlways));
+        assert(HeaderWriter::write_signature(out));
+        MainBlock mb;
+        assert(HeaderWriter::write_main_block(out, mb));
+
+        FileBlock fb;
+        fb.file_name = "huge_win.bin";
+        fb.unp_size = 1024;
+        fb.pack_size = 8;
+        fb.method = 3;
+        fb.win_size = 64ULL * 1024 * 1024 * 1024; // 64 GiB
+        fb.unp_ver = 1;
+        fb.has_crc32 = true;
+        fb.data_crc32 = 0x12345678;
+        assert(HeaderWriter::write_file_block(out, fb));
+
+        core::byte payload[8] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07};
+        assert(out.write(payload, sizeof(payload)) == sizeof(payload));
+
+        EndArcBlock eb;
+        assert(HeaderWriter::write_end_block(out, eb));
+    }
+
+    ArchiveReader reader;
+    int status = 0;
+    std::string detail;
+    assert(reader.open_ex(arc, "", status, detail));
+    assert(reader.entries().size() == 1);
+
+    ReaderHooks hooks;
+#if !defined(__EMSCRIPTEN__) && !defined(__wasm__) && !defined(_M_IX86) && !defined(__i386__)
+    // On 64-bit platforms: window is <= 64 GiB ALLOC_LIMIT, so window allocation throws bad_alloc -> RAR_ERR_NOMEM
+    int rc = reader.test_entry_stream(0, hooks);
+    assert(rc == RAR_ERR_NOMEM);
+#else
+    // On 32-bit platforms: 64 GiB exceeds 1 GiB ALLOC_LIMIT -> RAR_ERR_LIMIT_EXCEEDED
+    int rc = reader.test_entry_stream(0, hooks);
+    assert(rc == RAR_ERR_LIMIT_EXCEEDED);
+#endif
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] decompressor bad_alloc returns RAR_ERR_NOMEM (-5)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -1141,6 +1200,7 @@ int main() {
     test_extraction_limits_header_count_cap();
     test_extraction_limits_header_count_cumulative_across_volumes();
     test_invalid_utf8_filename_rejected();
+    test_decompressor_bad_alloc_returns_nomem();
     std::cout << "All Milestone 5 Archive Operations & Mutation Primitives PASSED!\n";
     return 0;
 }

@@ -145,8 +145,13 @@ inline constexpr core::uint64 RAR_DICT_BASE = 128ULL * 1024;
 inline constexpr core::uint64 RAR_DICT_MAX_V0 = RAR_DICT_BASE << 15; // 4096 MiB = 4294967296
 inline constexpr core::uint64 RAR_DICT_MAX_V1 = RAR_DICT_BASE << 23; // 1 TiB = 1099511627776
 inline constexpr core::uint64 RAR_DICT_SPEC_MAX_ABSOLUTE = RAR_DICT_MAX_V1;
+#if defined(__EMSCRIPTEN__) || defined(__wasm__) || defined(_M_IX86) || defined(__i386__)
 inline constexpr size_t RAR_DICT_ALLOC_LIMIT =
-    1ULL * 1024 * 1024 * 1024; // implementation alloc limit 1 GiB
+    1ULL * 1024 * 1024 * 1024; // implementation alloc limit 1 GiB on 32-bit / WASM
+#else
+inline constexpr size_t RAR_DICT_ALLOC_LIMIT =
+    64ULL * 1024 * 1024 * 1024; // implementation alloc limit 64 GiB on 64-bit native
+#endif
 
 inline bool is_dictionary_too_large_for_alloc(core::uint64 win_size) {
     return win_size > RAR_DICT_ALLOC_LIMIT;

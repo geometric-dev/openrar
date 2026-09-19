@@ -727,42 +727,45 @@ static bool copy_sfx_stub(const std::filesystem::path& stub_path, io::FileStream
 bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                                       const std::string& arc_entry_name, int method,
                                       const std::string& password, PreparedAdd& out,
-                                      core::uint32 times_mask, core::uint32 window_log2,
+                                      core::uint32 times_mask, core::uint64 dict_size,
                                       bool want_streams, bool want_acl, bool is_solid) {
     if (!std::filesystem::exists(src_file)) {
         return false;
     }
 
-    // Dictionary window: window_log2 1..15 -> 128 KiB..2 GiB;
-    // 0 uses tuned defaults per method (8 MB for -m3, 64 MB for -m5).
+    // Dictionary window: dict_size 1..15 -> 128 KiB..2 GiB (backward compatibility);
+    // 0 uses tuned defaults per method (8 MB for -m3, 64 MB for -m5);
+    // > 15 is treated directly as exact byte sizes (supporting non-power-of-two and > 2 GiB).
     // Must match the win_size passed to Compressor50 and written into the header.
-    core::uint32 win_size = 0x800000u;
-    if (window_log2 >= 1 && window_log2 <= 15) {
-        win_size = 0x20000u << (window_log2 - 1);
-    } else if (window_log2 == 0) {
+    core::uint64 win_size = 0x800000ULL;
+    if (dict_size >= 1 && dict_size <= 15) {
+        win_size = 0x20000ULL << (dict_size - 1);
+    } else if (dict_size == 0) {
         switch (method) {
         case 0:
-            win_size = 0x20000u;
+            win_size = 0x20000ULL;
             break; // 128 KB
         case 1:
-            win_size = 0x80000u;
+            win_size = 0x80000ULL;
             break; // 512 KB
         case 2:
-            win_size = 0x100000u;
+            win_size = 0x100000ULL;
             break; // 1 MB
         case 3:
-            win_size = 0x800000u;
+            win_size = 0x800000ULL;
             break; // 8 MB
         case 4:
-            win_size = 0x1000000u;
+            win_size = 0x1000000ULL;
             break; // 16 MB
         case 5:
-            win_size = 0x4000000u;
+            win_size = 0x4000000ULL;
             break; // 64 MB
         default:
-            win_size = 0x800000u;
+            win_size = 0x800000ULL;
             break;
         }
+    } else {
+        win_size = dict_size;
     }
 
     core::uint64 file_sz = 0;
@@ -793,8 +796,8 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
         file_sz = src.size();
         fb.unp_size = file_sz;
 
-        if (window_log2 == 0 && !is_solid && method > 0 && file_sz > 0) {
-            core::uint32 file_pow2 = 0x20000u; // 128 KiB floor
+        if (dict_size == 0 && !is_solid && method > 0 && file_sz > 0) {
+            core::uint64 file_pow2 = 0x20000ULL; // 128 KiB floor
             while (file_pow2 < file_sz && file_pow2 < win_size) {
                 file_pow2 <<= 1;
             }
