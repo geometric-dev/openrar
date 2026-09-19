@@ -62,7 +62,11 @@ static_assert(static_cast<int>(openrar::archive::RAR_ERR_LIMIT_EXCEEDED) == -15,
 // Largest accepted dictionary window. MUST stay uint64_t: as size_t the
 // 4 GiB value truncates to 0 on wasm32, which made "win > cap" reject every
 // call in every wasm build while native builds passed.
+#if defined(__EMSCRIPTEN__) || defined(__wasm__) || defined(_M_IX86) || defined(__i386__)
 inline constexpr uint64_t MAX_WIN_SIZE = 4ULL * 1024 * 1024 * 1024;
+#else
+inline constexpr uint64_t MAX_WIN_SIZE = 64ULL * 1024 * 1024 * 1024; // 64 GiB on 64-bit
+#endif
 
 // Stable 64-byte list-entry layout shared by the DLL and WASM surfaces.
 // All fields fixed-width — identical on every target. Consumers must verify

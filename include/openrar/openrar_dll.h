@@ -2,7 +2,7 @@
 #define OPENRAR_DLL_OPENRAR_DLL_H
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  openrar_dll.h — Public C ABI for openrar.dll / libopenrar.so
+//  openrar_dll.h — Public C ABI for openrar.dll / libopenrar.so (v1.12.0)
 //  Hybrid D: stable C core with header-only C++ wrapper (include/openrar/openrar.hpp).
 //  CMake integration: find_package(openrar) provides target openrar::openrar_dll.
 //  Public include path: #include <openrar/openrar_dll.h> (or <openrar/openrar.hpp>).

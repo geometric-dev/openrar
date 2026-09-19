@@ -5,6 +5,41 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-09-19
+
+### Added
+
+- **Elimination of Arbitrary Memory & Window Ceilings**:
+  - Uncapped `ALLOC_LIMIT` in `Decompressor50` and `format::headers` to **64 GiB** on 64-bit native hosts (`sizeof(void*) >= 8`), matching WinRAR 7.0 max profile, while preserving defensive 1 GiB / 2 GiB bounds on 32-bit / Emscripten WASM.
+  - Raised `MAX_WIN_SIZE` in ABI contract (`src/api/abi_contract.hpp`) and C DLL (`src/dll/dll_api.cpp`) to 64 GiB on 64-bit native platforms.
+  - Implemented lazy window allocation in `Decompressor50` with `try/catch(const std::bad_alloc&)` mapping allocation exhaustion to `DecompressErrorCode::AllocationFailed`.
+- **64-Bit Distance Bit Decoding**:
+  - Implemented `core::uint64 BitReader::get_bits64(unsigned int count)` leveraging the 64-bit accumulator register (`acc_`).
+  - Fixed 32-bit distance truncation bug in `Decompressor50::decompress_internal`: extra-distance slots 68–79 (`d_bits > 36`, distances $> 4\text{ GiB}$) now decode via `get_bits64(d_bits - 4)` into `core::uint64 extra` without truncation or assertion failures.
+- **Exact Byte Dictionary Parameterization**:
+  - Modernized `ArchiveMutator::prepare_add_file` to accept `core::uint64 dict_size` directly instead of a lossy `window_log2`.
+  - Maintained backward compatibility: inputs 1..15 decode to `0x20000ULL << (val - 1)`, while values > 15 are treated directly as byte counts.
+  - Removed 15-iteration cap loop in CLI `main.cpp`, passing `opt_dict_size` directly to preserve fractional non-power-of-two dictionaries (`-mdx48m`, `-mdx96m`) and large dictionaries (`-md4g`..`-md64g`).
+- **Archive Reader Error Fidelity**:
+  - `ArchiveReader` and `BufferArchive` explicitly map decompressor `AllocationFailed` to `RAR_ERR_NOMEM (-5)` instead of falling through to misleading `RAR_ERR_TRUNCATED (-3)`.
+  - Oversized dictionaries cleanly map to `RAR_ERR_LIMIT_EXCEEDED (-15)`.
+
+## [1.11.0] - 2026-09-19
+
+### Added
+
+- **Incremental Streaming Decompressor (`StreamDecoder`) & WASM API**:
+  - Bounded memory decoder architecture decoupling bit-reading from stream chunk boundaries via stateful input FIFO staging (`in_queue_`).
+  - Native WebAssembly C ABI exports (`openrar_stream_decompress_*`) and async TypeScript generators (`decompressStream`, `decompressStreamChunks`).
+  - Enforced defensive 64 MiB window allocation ceiling under `__EMSCRIPTEN__` to prevent linear memory exhaustion.
+- **RAR7 Format Level Emission (`unp_ver = 1`) & Fractional Dictionaries**:
+  - Exact formula serialization for RAR7 dictionary fractions `(win_size - pow2) * 32 / pow2` with 31 ceiling clamp in `HeaderWriter`.
+  - Decoupled `unp_ver` from distance slot table sizing: `TABLE_SIZEX = 446` reserved strictly for $> 4\text{ GiB}$ dictionaries, retaining `TABLE_SIZE = 430` for intermediate non-power-of-two dictionaries $\le 4\text{ GiB}$.
+- **Multi-Volume `.rev` Cauchy Parity Repair in C DLL ABI**:
+  - Added `openrar_archive_repair` and ABI feature bit `OPENRAR_ABI_FEATURE_REPAIR = (1ull << 8)` supporting inline Recovery Records and external Cauchy Reed-Solomon `.rev` parity reconstruction.
+- **Vectorized SIMD Match Acceleration**:
+  - Boundary-guarded AVX2, SSE2, and ARM Neon match-finding loops in `src/compress/arch/match_simd.hpp`.
+
 ## [1.10.0] - 2026-09-18
 
 ### Added

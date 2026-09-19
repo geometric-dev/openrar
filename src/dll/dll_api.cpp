@@ -834,8 +834,7 @@ int OPENRAR_DLL_CALL openrar_decompress2(const uint8_t* src, size_t src_len, uin
                                          size_t* out_len, size_t win_size) {
     try {
         if (!out_ptr || !out_len) return 0;
-        constexpr size_t MAX_WIN = 4ULL * 1024 * 1024 * 1024;
-        if (win_size > MAX_WIN) return 0;
+        if (win_size > openrar::api::MAX_WIN_SIZE) return 0;
         *out_ptr = nullptr;
         *out_len = 0;
         if (src_len == 0) return 1;

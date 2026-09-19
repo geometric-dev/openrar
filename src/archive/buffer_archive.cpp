@@ -691,6 +691,12 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
         size_t win = e.win_size > 0 ? static_cast<size_t>(e.win_size) : 32 * 1024 * 1024;
         compress::Decompressor50 unpacker(win);
         if (!unpacker.decompress_to_vector(payload, static_cast<size_t>(e.data_size), out)) {
+            if (unpacker.last_error() == compress::DecompressErrorCode::AllocationFailed) {
+                return RAR_ERR_NOMEM;
+            }
+            if (unpacker.last_error() == compress::DecompressErrorCode::DictionaryTooLarge) {
+                return RAR_ERR_LIMIT_EXCEEDED;
+            }
             return RAR_ERR_TRUNCATED;
         }
         if (out.size() != e.size) {

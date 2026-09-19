@@ -14,6 +14,7 @@
 
 namespace openrar::compress {
 class Decompressor50;
+enum class DecompressErrorCode;
 }
 
 namespace openrar::crypto {
@@ -241,6 +242,7 @@ private:
     // reflects the archive position (any skip/failure invalidates it).
     std::unique_ptr<compress::Decompressor50> solid_unpacker_;
     bool solid_chain_ok_{false};
+    compress::DecompressErrorCode last_decompress_error_{};
 
     // M9: symlinks/junctions this reader created during the current
     // extraction session. convert_self_links() may replace only these with

@@ -19,6 +19,7 @@ public:
     core::uint32 peek_bits(unsigned int count);
     core::uint64 peek_bits64(unsigned int count);
     core::uint32 get_bits(unsigned int count);
+    core::uint64 get_bits64(unsigned int count);
     void consume_bits(unsigned int count);
     void align_byte();
 
@@ -87,8 +88,13 @@ enum class DecompressErrorCode {
 
 class Decompressor50 {
 public:
-    // Implementation alloc limit 1 GiB; larger dictionaries fail instead of truncating.
+#if defined(__EMSCRIPTEN__) || defined(__wasm__) || defined(_M_IX86) || defined(__i386__)
+    // Implementation alloc limit 1 GiB on 32-bit/WASM; larger dictionaries fail instead of truncating.
     static constexpr size_t ALLOC_LIMIT = 1ULL * 1024 * 1024 * 1024;
+#else
+    // Implementation alloc limit 64 GiB on 64-bit; larger dictionaries fail instead of truncating.
+    static constexpr size_t ALLOC_LIMIT = 64ULL * 1024 * 1024 * 1024;
+#endif
     // Spec max per 01-headers.md:95 : 128 KiB << N  ; version0 N<=15 (4096 MiB), version1 N<=23 (1 TB) with FCI_DICT_FRACT
     static constexpr core::uint64 SPEC_MAX_V0 = 128ULL * 1024 << 15;
     static constexpr core::uint64 SPEC_MAX_V1 = 128ULL * 1024 << 23;

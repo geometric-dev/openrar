@@ -1051,6 +1051,7 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
                                   SinkStatus& status, const ReaderHooks& hooks) {
     const ArchiveEntry& entry = entries_[idx];
     const uint64_t total = entry.header.unp_size;
+    last_decompress_error_ = compress::DecompressErrorCode::Ok;
 
     // Hash selection mirrors test_entry: a present BLAKE2sp record is
     // authoritative; the header CRC32 beside it is not evaluated.
@@ -1150,6 +1151,10 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
                 rc = RAR_ERR_MISSING_VOLUME;
             } else if (src.error())
                 rc = RAR_ERR_IO;
+            else if (last_decompress_error_ == compress::DecompressErrorCode::AllocationFailed)
+                rc = RAR_ERR_NOMEM;
+            else if (last_decompress_error_ == compress::DecompressErrorCode::DictionaryTooLarge)
+                rc = RAR_ERR_LIMIT_EXCEEDED;
             else
                 rc = RAR_ERR_TRUNCATED;
         }
@@ -1482,6 +1487,7 @@ bool ArchiveReader::select_unpacker(const ArchiveEntry& entry, UnpackerSelection
             if (!solid_unpacker_ || solid_unpacker_->win_size() < win) {
                 solid_unpacker_ = std::make_unique<compress::Decompressor50>(win);
                 if (solid_unpacker_->last_error() != compress::DecompressErrorCode::Ok) {
+                    last_decompress_error_ = solid_unpacker_->last_error();
                     solid_unpacker_.reset();
                     solid_chain_ok_ = false;
                     return false;
@@ -1496,6 +1502,7 @@ bool ArchiveReader::select_unpacker(const ArchiveEntry& entry, UnpackerSelection
         }
         sel.local = std::make_unique<compress::Decompressor50>(win);
         if (sel.local->last_error() != compress::DecompressErrorCode::Ok) {
+            last_decompress_error_ = sel.local->last_error();
             return false;
         }
         sel.unpacker = sel.local.get();
@@ -1512,6 +1519,9 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry, const core::byt
     if (!select_unpacker(entry, sel)) return false;
     bool ok = sel.unpacker->decompress(src, src_size, static_cast<size_t>(entry.header.unp_size),
                                        sel.solid, flush_cb);
+    if (!ok) {
+        last_decompress_error_ = sel.unpacker->last_error();
+    }
     if (chain) solid_chain_ok_ = ok;
     return ok;
 }
@@ -1525,6 +1535,9 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry,
     if (!select_unpacker(entry, sel)) return false;
     bool ok = sel.unpacker->decompress(src_cb, src_size, static_cast<size_t>(entry.header.unp_size),
                                        sel.solid, flush_cb);
+    if (!ok) {
+        last_decompress_error_ = sel.unpacker->last_error();
+    }
     if (chain) solid_chain_ok_ = ok;
     return ok;
 }

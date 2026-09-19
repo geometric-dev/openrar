@@ -78,6 +78,26 @@ core::uint32 BitReader::get_bits(unsigned int count) {
     return val;
 }
 
+core::uint64 BitReader::get_bits64(unsigned int count) {
+    if (count == 0) return 0;
+    if (count > 64) count = 64;
+    if (n_ < count) refill();
+    if (n_ >= count) {
+        core::uint64 val = (count == 64) ? acc_ : ((acc_ >> (n_ - count)) & ((core::uint64(1) << count) - 1));
+        consume_bits(count);
+        return val;
+    }
+    if (count > 32) {
+        unsigned int high_count = count - 32;
+        core::uint64 high = get_bits64(high_count);
+        core::uint64 low = get_bits64(32);
+        return (high << 32) | low;
+    }
+    core::uint64 val = peek_bits64(count);
+    consume_bits(count);
+    return val;
+}
+
 void BitReader::consume_bits(unsigned int count) {
     if (count == 0) return;
     if (n_ < count) refill();
@@ -207,14 +227,8 @@ Decompressor50::Decompressor50(size_t win_size)
         last_error_str_ = "dictionary too large";
     }
     std::fill(std::begin(old_dist_), std::end(old_dist_), static_cast<size_t>(-1));
-    // INTENDED (capability cap, report Q16): use_extra_dist_ enables the
-    // RAR7 446-symbol table whose extra distance slots 68-79 need d_bits up
-    // to 38. It can never be true in this build: ALLOC_LIMIT (1 GiB) refuses
-    // any window above 1 GiB, far below the 4 GiB threshold here, so the
-    // d_bits > 32 decode path in decompress_internal is dead by design.
-    // Keep the extra-distance code; the assert at the decode site trips
-    // loudly if the alloc limit is ever raised past 4 GiB, since
-    // BitReader::get_bits silently truncates reads wider than 32 bits.
+    // use_extra_dist_ enables the RAR7 446-symbol table whose extra distance
+    // slots 68-79 need d_bits up to 38 for windows > 4 GiB.
     use_extra_dist_ = (win_size_ > (4ULL * 1024 * 1024 * 1024));
     cur_table_size_ = use_extra_dist_ ? 446 : 430;
 }
@@ -496,6 +510,11 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
         try {
             window_.assign(win_size_, 0);
             window_ready_ = true;
+        } catch (const std::bad_alloc&) {
+            last_error_ = DecompressErrorCode::AllocationFailed;
+            last_error_str_ = "dictionary too large: allocation failed";
+            window_.clear();
+            return false;
         } catch (...) {
             last_error_ = DecompressErrorCode::AllocationFailed;
             last_error_str_ = "dictionary too large: allocation failed";
@@ -767,23 +786,13 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
                 if (d_bits >= 4) {
                     if (d_bits > 4) {
                         if (reader.bits_remaining() < d_bits - 4) return false;
-                        // Unreachable while ALLOC_LIMIT caps windows at 1 GiB:
-                        // extra-distance slots need win_size > 4 GiB (see the
-                        // use_extra_dist_ note in the constructor, report Q16).
-                        // d_bits > 36 would make get_bits(d_bits - 4) read
-                        // wider than 32 bits and silently truncate. Debug
-                        // trip-wire for anyone raising the alloc limit.
-                        assert(d_bits <= 32 &&
-                               "extra-distance decode reached: ALLOC_LIMIT no longer caps windows "
-                               "below 4 GiB; get_bits would truncate >32-bit reads");
+                        core::uint64 extra = 0;
                         if (d_bits > 36) {
-                            core::uint32 extra =
-                                static_cast<core::uint32>(reader.get_bits(d_bits - 4));
-                            distance += static_cast<size_t>(extra) << 4;
+                            extra = reader.get_bits64(d_bits - 4);
                         } else {
-                            core::uint32 extra = reader.get_bits(d_bits - 4);
-                            distance += static_cast<size_t>(extra) << 4;
+                            extra = reader.get_bits(d_bits - 4);
                         }
+                        distance += static_cast<size_t>(extra) << 4;
                     }
                     if (reader.bits_remaining() < 1) return false;
                     core::uint32 low = ldd_decoder_.decode(reader);
