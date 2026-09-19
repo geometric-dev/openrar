@@ -1506,7 +1506,8 @@ int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
                 }
             } else if (!openrar::archive::ArchiveMutator::prepare_add_file(
                            p.src_path, name, method, /*password=*/"", p,
-                           openrar::archive::time_flags::MTIME, window_log2)) {
+                           openrar::archive::time_flags::MTIME, window_log2,
+                           false, false, false, /*direct_stream=*/true)) {
                 set_error("cannot read " + std::string(src_paths[i]));
                 return RAR_ERR_IO;
             }
@@ -1601,7 +1602,8 @@ int OPENRAR_DLL_CALL openrar_archive_create_file_ex(
             } else if (!openrar::archive::ArchiveMutator::prepare_add_file(
                            p.src_path, name, method, password, p,
                            openrar::archive::time_flags::MTIME, dict_size,
-                           /*want_streams=*/false, /*want_acl=*/false, solid != 0)) {
+                           /*want_streams=*/false, /*want_acl=*/false, solid != 0,
+                           /*direct_stream=*/true)) {
                 set_error("cannot read " + std::string(src_paths[i]));
                 return RAR_ERR_IO;
             }

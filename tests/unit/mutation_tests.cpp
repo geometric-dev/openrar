@@ -1018,6 +1018,145 @@ static void test_deferred_store_and_adaptive_clamping() {
     std::cout << "[PASS] DeferredStoreAndAdaptiveClamping\n";
 }
 
+static void test_direct_stream_compression_and_backpatch() {
+    fs::path dir = make_scratch_dir("direct_stream");
+    std::error_code ec;
+
+    // 1. Large compressible file (> 16 MiB SPOOL_MEMORY_THRESHOLD)
+    // 18 MiB repetitive data
+    fs::path f_18m = dir / "f_18m_compress.bin";
+    openrar::crypto::Crc32 expected_crc_calc;
+    {
+        std::ofstream fs(f_18m, std::ios::binary);
+        std::vector<char> chunk(1024 * 1024);
+        for (size_t i = 0; i < chunk.size(); ++i) {
+            chunk[i] = static_cast<char>((i % 256) ^ 0x5A);
+        }
+        for (int i = 0; i < 18; ++i) {
+            fs.write(chunk.data(), chunk.size());
+            expected_crc_calc.update(chunk.data(), chunk.size());
+        }
+    }
+    uint32_t expected_crc = expected_crc_calc.get();
+
+    ArchiveMutator::PreparedAdd prep;
+    prep.src_path = f_18m;
+    prep.entry_name = "f_18m_compress.bin";
+    bool ok = ArchiveMutator::prepare_add_file(f_18m, "f_18m_compress.bin", 3, "", prep,
+                                               openrar::archive::time_flags::MTIME, 0, false, false, false,
+                                               /*direct_stream=*/true);
+    assert(ok);
+    assert(prep.needs_direct_stream);
+    assert(prep.spool_path.empty());
+    assert(prep.payload.empty());
+    assert(prep.fb.pack_size == 0); // Placeholder
+    assert(prep.fb.data_crc32 == 0); // Placeholder
+
+    fs::path arc_path = dir / "direct_stream.rar";
+    std::vector<ArchiveMutator::PreparedAdd> batch;
+    batch.push_back(std::move(prep));
+    ok = ArchiveMutator::write_batch_add(arc_path, batch);
+    assert(ok);
+    assert(fs::exists(arc_path));
+
+    // Verify written archive with ArchiveReader
+    {
+        engine::ArchiveReader reader;
+        assert(reader.open(arc_path));
+        assert(reader.entries().size() == 1);
+        const auto& entry = reader.entries()[0];
+        assert(entry.header.has_crc32);
+        assert(entry.header.data_crc32 == expected_crc);
+        assert(entry.header.unp_size == 18 * 1024 * 1024);
+        assert(entry.header.pack_size < 18 * 1024 * 1024);
+        assert(entry.header.pack_size > 0);
+        assert(reader.test_entry(entry));
+
+        fs::path extracted = dir / "extracted_18m.bin";
+        assert(reader.extract_entry(entry, extracted));
+        assert(fs::file_size(extracted) == 18 * 1024 * 1024);
+
+        std::ifstream f1(f_18m, std::ios::binary);
+        std::ifstream f2(extracted, std::ios::binary);
+        std::vector<char> b1(1024 * 1024), b2(1024 * 1024);
+        while (f1.read(b1.data(), b1.size())) {
+            assert(f2.read(b2.data(), b2.size()));
+            assert(std::memcmp(b1.data(), b2.data(), b1.size()) == 0);
+        }
+    }
+
+    // 2. Incompressible file (> 16 MiB) with compression method 1 to verify store fallback
+    fs::path f_rand = dir / "rand_17m.bin";
+    openrar::crypto::Crc32 rand_crc_calc;
+    {
+        std::ofstream fs(f_rand, std::ios::binary);
+        std::vector<uint32_t> buf(256 * 1024);
+        uint32_t state = 987654321;
+        for (int i = 0; i < 17; ++i) { // 17 MiB random data
+            for (size_t j = 0; j < buf.size(); ++j) {
+                state = state * 1664525u + 1013904223u;
+                buf[j] = state;
+            }
+            fs.write(reinterpret_cast<const char*>(buf.data()), buf.size() * sizeof(uint32_t));
+            rand_crc_calc.update(buf.data(), buf.size() * sizeof(uint32_t));
+        }
+    }
+    uint32_t rand_crc = rand_crc_calc.get();
+
+    ArchiveMutator::PreparedAdd prep_rand;
+    prep_rand.src_path = f_rand;
+    prep_rand.entry_name = "rand_17m.bin";
+    ok = ArchiveMutator::prepare_add_file(f_rand, "rand_17m.bin", 1, "", prep_rand,
+                                          openrar::archive::time_flags::MTIME, 0, false, false, false,
+                                          /*direct_stream=*/true);
+    assert(ok);
+    assert(prep_rand.needs_direct_stream);
+
+    fs::path arc_fallback = dir / "store_fallback.rar";
+    std::vector<ArchiveMutator::PreparedAdd> batch_fallback;
+    batch_fallback.push_back(std::move(prep_rand));
+    ok = ArchiveMutator::write_batch_add(arc_fallback, batch_fallback);
+    assert(ok);
+    assert(fs::exists(arc_fallback));
+
+    {
+        engine::ArchiveReader reader;
+        assert(reader.open(arc_fallback));
+        assert(reader.entries().size() == 1);
+        const auto& entry = reader.entries()[0];
+        assert(entry.header.method == 0); // Downgraded to store because compression expanded
+        assert(entry.header.unp_size == 17 * 1024 * 1024);
+        assert(entry.header.pack_size == 17 * 1024 * 1024);
+        assert(entry.header.data_crc32 == rand_crc);
+        assert(reader.test_entry(entry));
+
+        fs::path extracted_rand = dir / "extracted_rand.bin";
+        assert(reader.extract_entry(entry, extracted_rand));
+        assert(fs::file_size(extracted_rand) == 17 * 1024 * 1024);
+    }
+
+    // 3. Test openrar_archive_create_file on 18 MiB file (using direct streaming through DLL)
+    fs::path arc_dll = dir / "dll_direct.rar";
+    std::string s_src = f_18m.string();
+    const char* src_p = s_src.c_str();
+    const char* arc_n = "dll_18m.bin";
+    int rc = openrar_archive_create_file(arc_dll.string().c_str(), &src_p, &arc_n, 1, 3, 0);
+    assert(rc == RAR_OK);
+    assert(fs::exists(arc_dll));
+    {
+        engine::ArchiveReader reader;
+        assert(reader.open(arc_dll));
+        assert(reader.entries().size() == 1);
+        const auto& entry = reader.entries()[0];
+        assert(entry.header.has_crc32);
+        assert(entry.header.data_crc32 == expected_crc);
+        assert(reader.test_entry(entry));
+    }
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] DirectStreamCompressionAndBackpatch\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr under ctest (piped stdio).
@@ -1045,6 +1184,7 @@ int main() {
     test_execution_plan_workspace_gating();
     test_streaming_and_spooling();
     test_deferred_store_and_adaptive_clamping();
+    test_direct_stream_compression_and_backpatch();
     std::cout << "ALL MUTATION TESTS PASSED\n";
     return 0;
 }
