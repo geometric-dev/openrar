@@ -318,38 +318,106 @@ def test_track1_solid_mixed(openrar, unrar, rar):
     return True
 
 def test_track2_filters(openrar, unrar, rar):
-    print("[5/13] Track 2: WinRAR Executable Filter Decoding (-mc)...", flush=True)
-    if not rar:
-        print("  SKIP: rar.exe not found for -mc archive creation")
-        return True
+    print("[5/13] Track 2: WinRAR Executable & Delta Filter Bi-Directional Interop (-mc)...", flush=True)
+    ref_decompress = unrar or rar
 
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
-        src = td / "test.exe"
-        # 650 KiB x86 stream with repeated relative CALL (0xE8) and JMP (0xE9)
+        # 1. x86 Executable filter payload
+        src_exe = td / "test.exe"
         chunk = bytearray()
         for i in range(130000):
             op = 0xE8 if (i % 2 == 0) else 0xE9
             disp = (i * 0x10) & 0xFFFFFFFF
             chunk.extend([op, disp & 0xFF, (disp >> 8) & 0xFF, (disp >> 16) & 0xFF, (disp >> 24) & 0xFF])
-        src.write_bytes(chunk)
-        h0 = sha256(src)
+        src_exe.write_bytes(chunk)
+        h0_exe = sha256(src_exe)
 
-        arc = td / "filter_test.rar"
-        rc, out, err = run([rar, "a", "-ep", "-mc", "-md512k", str(arc), str(src)], cwd=str(td))
+        # 2. Audio/RGB Multi-channel Delta filter payload
+        src_delta = td / "test.pcm"
+        delta_chunk = bytearray()
+        import math
+        for i in range(50000):
+            left = int(math.sin(i * 0.05) * 30000) & 0xFFFF
+            right = int(math.cos(i * 0.05) * 30000) & 0xFFFF
+            delta_chunk.extend([left & 0xFF, (left >> 8) & 0xFF, right & 0xFF, (right >> 8) & 0xFF])
+        src_delta.write_bytes(delta_chunk)
+        h0_delta = sha256(src_delta)
+
+        # Part A: WinRAR creates -> OpenRAR extracts (if rar.exe present)
+        if rar:
+            arc_rar = td / "filter_test_rar.rar"
+            rc, out, err = run([rar, "a", "-ep", "-mc", "-md512k", str(arc_rar), str(src_exe)], cwd=str(td))
+            if rc != 0:
+                print(f"  FAIL: rar a -mc rc={rc}\n{out}\n{err}"); return False
+            out_dir = td / "out_openrar_from_rar"
+            out_dir.mkdir()
+            rc, out, err = run([openrar, "x", "-y", str(arc_rar), str(out_dir) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: openrar x filter_test_rar.rar rc={rc}\n{out}\n{err}"); return False
+            dec = find_extracted(out_dir, "test.exe")
+            if not dec or sha256(dec) != h0_exe:
+                print("  FAIL: hash mismatch on OpenRAR decoding WinRAR filter archive"); return False
+
+        # Part B: OpenRAR creates (-mcE+) -> Self extract & Reference UnRAR extracts
+        arc_e8 = td / "openrar_e8.rar"
+        rc, out, err = run([openrar, "a", "-y", "-mcE+", str(arc_e8), str(src_exe)], cwd=str(td))
         if rc != 0:
-            print(f"  FAIL: rar a -mc rc={rc}\n{out}\n{err}"); return False
-
-        out_dir = td / "out"
-        out_dir.mkdir()
-        rc, out, err = run([openrar, "x", "-y", str(arc), str(out_dir) + os.sep])
+            print(f"  FAIL: openrar a -mcE+ rc={rc}\n{out}\n{err}"); return False
+        
+        # OpenRAR self-test
+        rc, out, err = run([openrar, "t", "-y", str(arc_e8)])
         if rc != 0:
-            print(f"  FAIL: openrar x filter_test.rar rc={rc}\n{out}\n{err}"); return False
-        dec = find_extracted(out_dir, "test.exe")
-        if not dec or sha256(dec) != h0:
-            print("  FAIL: hash mismatch on decompressed executable filter payload"); return False
+            print(f"  FAIL: openrar t openrar_e8.rar rc={rc}\n{out}\n{err}"); return False
 
-    print("  OK Track 2 executable filter circular decoding")
+        # Reference UnRAR extracts OpenRAR's E8 filtered archive
+        if ref_decompress:
+            out_unrar_e8 = td / "out_unrar_e8"
+            out_unrar_e8.mkdir()
+            rc, out, err = run([ref_decompress, "x", "-y", str(arc_e8), str(out_unrar_e8) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: reference x openrar_e8.rar rc={rc}\n{out}\n{err}"); return False
+            dec = find_extracted(out_unrar_e8, "test.exe")
+            if not dec or sha256(dec) != h0_exe:
+                print("  FAIL: hash mismatch on reference UnRAR extracting OpenRAR -mcE+ archive"); return False
+
+        # Part C: OpenRAR creates (-mcD+) -> Self extract & Reference UnRAR extracts
+        arc_delta = td / "openrar_delta.rar"
+        rc, out, err = run([openrar, "a", "-y", "-mcD+", str(arc_delta), str(src_delta)], cwd=str(td))
+        if rc != 0:
+            print(f"  FAIL: openrar a -mcD+ rc={rc}\n{out}\n{err}"); return False
+
+        rc, out, err = run([openrar, "t", "-y", str(arc_delta)])
+        if rc != 0:
+            print(f"  FAIL: openrar t openrar_delta.rar rc={rc}\n{out}\n{err}"); return False
+
+        if ref_decompress:
+            out_unrar_delta = td / "out_unrar_delta"
+            out_unrar_delta.mkdir()
+            rc, out, err = run([ref_decompress, "x", "-y", str(arc_delta), str(out_unrar_delta) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: reference x openrar_delta.rar rc={rc}\n{out}\n{err}"); return False
+            dec = find_extracted(out_unrar_delta, "test.pcm")
+            if not dec or sha256(dec) != h0_delta:
+                print("  FAIL: hash mismatch on reference UnRAR extracting OpenRAR -mcD+ archive"); return False
+
+        # Part D: OpenRAR creates (-mc-) -> Global disable
+        arc_mc_off = td / "openrar_mc_off.rar"
+        rc, out, err = run([openrar, "a", "-y", "-mc-", str(arc_mc_off), str(src_exe)], cwd=str(td))
+        if rc != 0:
+            print(f"  FAIL: openrar a -mc- rc={rc}\n{out}\n{err}"); return False
+
+        if ref_decompress:
+            out_unrar_off = td / "out_unrar_off"
+            out_unrar_off.mkdir()
+            rc, out, err = run([ref_decompress, "x", "-y", str(arc_mc_off), str(out_unrar_off) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: reference x openrar_mc_off.rar rc={rc}\n{out}\n{err}"); return False
+            dec = find_extracted(out_unrar_off, "test.exe")
+            if not dec or sha256(dec) != h0_exe:
+                print("  FAIL: hash mismatch on reference UnRAR extracting OpenRAR -mc- archive"); return False
+
+    print("  OK Track 2 executable & delta filter bidirectional interop")
     return True
 
 def test_track3_timestamps(openrar, unrar):
