@@ -1258,7 +1258,8 @@ int ArchiveMutator::write_batch_add_ex(
     const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
     const std::filesystem::path& sfx_stub_path, const std::string& password, bool encrypt_headers,
     const std::function<void(size_t, const std::string&)>& on_write, bool solid,
-    const std::vector<core::byte>& comment, std::string& detail_out, bool want_qo, bool want_ams) {
+    const std::vector<core::byte>& comment, std::string& detail_out, bool want_qo, bool want_ams,
+    const compress::FilterConfig& filter_cfg) {
     if (files.empty()) {
         detail_out = "no input files";
         return RAR_ERR_INVALID_ARG;
@@ -1649,7 +1650,7 @@ int ArchiveMutator::write_batch_add_ex(
                     bool ok;
                 } fctx{&out, &actual_pack_size, true};
 
-                compress::StreamEncoder encoder(pf.fb.method, pf.fb.win_size);
+                compress::StreamEncoder encoder(pf.fb.method, pf.fb.win_size, filter_cfg);
                 encoder.set_flush([](void* user, const core::byte* data, size_t size) -> int {
                     auto* ctx = static_cast<DirectFlushCtx*>(user);
                     if (size > 0) {
@@ -2018,10 +2019,11 @@ bool ArchiveMutator::write_batch_add(
     const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
     const std::filesystem::path& sfx_stub_path, const std::string& password, bool encrypt_headers,
     const std::function<void(size_t, const std::string&)>& on_write, bool solid,
-    const std::vector<core::byte>& comment, bool want_qo, bool want_ams) {
+    const std::vector<core::byte>& comment, bool want_qo, bool want_ams,
+    const compress::FilterConfig& filter_cfg) {
     std::string detail;
     return write_batch_add_ex(arc_path, files, sfx_stub_path, password, encrypt_headers, on_write,
-                              solid, comment, detail, want_qo, want_ams) == RAR_OK;
+                              solid, comment, detail, want_qo, want_ams, filter_cfg) == RAR_OK;
 }
 
 static bool add_or_move_file(const std::filesystem::path& arc_path,
@@ -2043,7 +2045,8 @@ static bool add_or_move_file(const std::filesystem::path& arc_path,
     std::vector<ArchiveMutator::PreparedAdd> batch;
     batch.push_back(std::move(prepared));
     return ArchiveMutator::write_batch_add(arc_path, batch, sfx_stub_path, password,
-                                           encrypt_headers);
+                                           encrypt_headers, {}, false, {}, false, false,
+                                           filter_cfg);
 }
 
 bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_path,

@@ -252,6 +252,7 @@ private:
     FilterType active_filter_{FilterType::None};
     core::uint8 filter_channels_{1};
     core::uint64 filter_emitted_until_{0};
+    core::uint64 file_start_pos_{0};
     std::vector<core::byte> block_mem_;
     core::uint32 freq_ld_[NC], freq_dd_[DCX], freq_ldd_[LDC], freq_rd_[RC], freq_bd_[BC];
     core::byte len_ld_[NC], len_dd_[DCX], len_ldd_[LDC], len_rd_[RC], len_bd_[BC];
