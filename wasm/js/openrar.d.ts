@@ -109,6 +109,15 @@ export declare class OpenRAR {
   ): Promise<Uint8Array>;
 
   /**
+   * Compress a ReadableStream incrementally, yielding compressed chunks as blocks are completed.
+   * Memory is bounded by the window size + chunk size.
+   */
+  compressStreamChunks(
+    readable: ReadableStream<Uint8Array>,
+    opts?: { method?: CompressionMethod; winSize?: number; signal?: AbortSignal },
+  ): AsyncGenerator<Uint8Array, void, unknown>;
+
+  /**
    * Decompress a ReadableStream incrementally, returning the concatenated uncompressed bytes.
    */
   decompressStream(

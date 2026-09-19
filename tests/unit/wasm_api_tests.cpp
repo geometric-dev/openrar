@@ -159,6 +159,105 @@ static void test_decompress_raw_clears_on_failure() {
     CHECK(out.size() == prior);
 }
 
+static void test_stream_compress_roundtrip() {
+    auto src = make_payload(64 * 1024);
+    uint32_t handle = openrar_stream_create(3, 1024 * 1024);
+    CHECK(handle != 0);
+
+    for (size_t off = 0; off < src.size(); off += 8192) {
+        size_t n = std::min<size_t>(8192, src.size() - off);
+        int rc = openrar_stream_feed(handle, src.data() + off, n);
+        CHECK(rc == 0);
+    }
+
+    uint8_t* comp_ptr = nullptr;
+    size_t comp_len = 0;
+    int rc = openrar_stream_finish(handle, &comp_ptr, &comp_len);
+    CHECK(rc == 0);
+    CHECK(comp_ptr != nullptr);
+    CHECK(comp_len > 0);
+    openrar_stream_free(handle);
+
+    uint32_t dec_handle = openrar_stream_decompress_create(1024 * 1024);
+    CHECK(dec_handle != 0);
+    rc = openrar_stream_decompress_feed(dec_handle, comp_ptr, comp_len);
+    CHECK(rc == 0);
+
+    uint8_t* out_ptr = nullptr;
+    size_t out_len = 0;
+    rc = openrar_stream_decompress_finish(dec_handle, &out_ptr, &out_len);
+    CHECK(rc == 0);
+    CHECK(out_len == src.size());
+    CHECK(std::memcmp(out_ptr, src.data(), src.size()) == 0);
+
+    openrar_free(comp_ptr);
+    openrar_free(out_ptr);
+    openrar_stream_decompress_free(dec_handle);
+}
+
+static void test_stream_compress_incremental_pull() {
+    auto src = make_payload(128 * 1024);
+    uint32_t handle = openrar_stream_compress_new(3, 1024 * 1024);
+    CHECK(handle != 0);
+
+    std::vector<uint8_t> all_comp;
+    for (size_t off = 0; off < src.size(); off += 16384) {
+        size_t n = std::min<size_t>(16384, src.size() - off);
+        CHECK(openrar_stream_compress_feed(handle, src.data() + off, n) == 0);
+        uint8_t* chunk = nullptr;
+        size_t chunk_len = 0;
+        CHECK(openrar_stream_compress_pull(handle, &chunk, &chunk_len) == 0);
+        if (chunk_len > 0 && chunk) {
+            all_comp.insert(all_comp.end(), chunk, chunk + chunk_len);
+            openrar_free(chunk);
+        }
+    }
+    uint8_t* final_chunk = nullptr;
+    size_t final_len = 0;
+    CHECK(openrar_stream_compress_finish(handle, &final_chunk, &final_len) == 0);
+    if (final_len > 0 && final_chunk) {
+        all_comp.insert(all_comp.end(), final_chunk, final_chunk + final_len);
+        openrar_free(final_chunk);
+    }
+    openrar_stream_compress_free(handle);
+    CHECK(!all_comp.empty());
+
+    uint8_t* restored = nullptr;
+    size_t restored_len = 0;
+    CHECK(openrar_decompress2(all_comp.data(), all_comp.size(), &restored, &restored_len, 1024 * 1024) == 1);
+    CHECK(restored_len == src.size());
+    CHECK(std::memcmp(restored, src.data(), src.size()) == 0);
+    openrar_free(restored);
+}
+
+static void test_stream_compress_store() {
+    auto src = make_payload(32 * 1024);
+    uint32_t handle = openrar_stream_create(0, 1024 * 1024);
+    CHECK(handle != 0);
+
+    std::vector<uint8_t> all_chunks;
+    for (size_t off = 0; off < src.size(); off += 4096) {
+        size_t n = std::min<size_t>(4096, src.size() - off);
+        CHECK(openrar_stream_feed(handle, src.data() + off, n) == 0);
+        uint8_t* chunk = nullptr;
+        size_t chunk_len = 0;
+        CHECK(openrar_stream_pull(handle, &chunk, &chunk_len) == 0);
+        if (chunk_len > 0 && chunk) {
+            all_chunks.insert(all_chunks.end(), chunk, chunk + chunk_len);
+            openrar_free(chunk);
+        }
+    }
+    uint8_t* final_chunk = nullptr;
+    size_t final_len = 0;
+    CHECK(openrar_stream_finish(handle, &final_chunk, &final_len) == 0);
+    if (final_len > 0 && final_chunk) {
+        all_chunks.insert(all_chunks.end(), final_chunk, final_chunk + final_len);
+        openrar_free(final_chunk);
+    }
+    openrar_stream_free(handle);
+    CHECK(all_chunks == src);
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -176,6 +275,9 @@ int main() {
     test_oversize_win_size_rejected();
     test_decompress_corrupt_returns_empty();
     test_decompress_raw_clears_on_failure();
+    test_stream_compress_roundtrip();
+    test_stream_compress_incremental_pull();
+    test_stream_compress_store();
     if (fails) {
         std::fprintf(stderr, "%d failure(s)\n", fails);
         return 1;

@@ -355,23 +355,6 @@ export class OpenRAR {
     const winSize = opts.winSize ?? DEFAULT_WIN_SIZE;
     assertMethod(method);
     assertWinSize(winSize);
-    if (method === CompressionMethod.STORE) {
-      // STORE cannot be framed incrementally; buffer and passthrough.
-      const chunks = [];
-      let total = 0;
-      const reader = readable.getReader();
-      for (;;) {
-        if (opts.signal && opts.signal.aborted) throw new Error('openrar: aborted');
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        total += value.length;
-      }
-      const all = new Uint8Array(total);
-      let off = 0;
-      for (const c of chunks) { all.set(c, off); off += c.length; }
-      return all;
-    }
     const handle = m.ccall('openrar_stream_create', 'number', ['number', 'number'], [method, winSize]);
     if (!handle) throw new Error('openrar: failed to create streaming encoder');
     try {
@@ -403,6 +386,72 @@ export class OpenRAR {
         const out = safeRead(m, outPtr, len);
         m._openrar_free(outPtr);
         return out;
+      } finally {
+        m._free(outPtrSlot);
+        m._free(outLenSlot);
+      }
+    } finally {
+      m.ccall('openrar_stream_free', null, ['number'], [handle]);
+    }
+  }
+
+  /**
+   * Compress a WHATWG ReadableStream incrementally, yielding compressed chunks
+   * as blocks are completed. Memory is bounded by the window size + chunk size.
+   *
+   * @param {ReadableStream<Uint8Array>} readable
+   * @param {{method?:number, winSize?:number, signal?:AbortSignal}} [opts]
+   * @returns {AsyncGenerator<Uint8Array, void, unknown>}
+   */
+  async *compressStreamChunks(readable, opts = {}) {
+    await this.ready;
+    const m = this.module; // throws if destroyed
+    const method = opts.method ?? CompressionMethod.NORMAL;
+    const winSize = opts.winSize ?? DEFAULT_WIN_SIZE;
+    assertMethod(method);
+    assertWinSize(winSize);
+    const handle = m.ccall('openrar_stream_create', 'number', ['number', 'number'], [method, winSize]);
+    if (!handle) throw new Error('openrar: failed to create streaming encoder');
+    try {
+      const reader = readable.getReader();
+      const outPtrSlot = m._malloc(4);
+      const outLenSlot = m._malloc(4);
+      try {
+        for (;;) {
+          if (opts.signal && opts.signal.aborted) throw new Error('openrar: aborted');
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value || value.length === 0) continue;
+          const ptr = m._openrar_alloc(value.length);
+          try {
+            m.HEAPU8.set(value, ptr);
+            const rc = m.ccall('openrar_stream_feed', 'number', ['number', 'number', 'number'],
+              [handle, ptr, value.length]);
+            if (rc !== 0) throw new Error('openrar: streaming compression failed');
+          } finally {
+            m._openrar_free(ptr);
+          }
+          const pullRc = m.ccall('openrar_stream_pull', 'number', ['number', 'number', 'number'],
+            [handle, outPtrSlot, outLenSlot]);
+          if (pullRc !== 0) throw new Error('openrar: streaming compression pull failed');
+          const len = m.HEAPU32[outLenSlot >>> 2];
+          const outPtr = m.HEAPU32[outPtrSlot >>> 2];
+          if (len > 0 && outPtr !== 0) {
+            const chunk = safeRead(m, outPtr, len);
+            m._openrar_free(outPtr);
+            yield chunk;
+          }
+        }
+        const rc = m.ccall('openrar_stream_finish', 'number', ['number', 'number', 'number'],
+          [handle, outPtrSlot, outLenSlot]);
+        if (rc !== 0) throw new Error('openrar: streaming compression failed at finish');
+        const len = m.HEAPU32[outLenSlot >>> 2];
+        const outPtr = m.HEAPU32[outPtrSlot >>> 2];
+        if (len > 0 && outPtr !== 0) {
+          const chunk = safeRead(m, outPtr, len);
+          m._openrar_free(outPtr);
+          yield chunk;
+        }
       } finally {
         m._free(outPtrSlot);
         m._free(outLenSlot);

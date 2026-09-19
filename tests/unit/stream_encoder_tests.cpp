@@ -194,6 +194,81 @@ void test_store_passthrough() {
     CHECK(got == src); // STORE: output == input
 }
 
+void test_store_flush_sink() {
+    const std::vector<uint8_t> src = pattern_payload(200 * 1024, 101);
+    openrar::compress::StreamEncoder enc(0, 1024 * 1024);
+    std::vector<uint8_t> flushed;
+    size_t calls = 0;
+    enc.set_flush(
+        [](void* u, const openrar::core::byte* data, size_t size) -> int {
+            auto* p = static_cast<std::pair<std::vector<uint8_t>*, size_t*>*>(u);
+            p->first->insert(p->first->end(), data, data + size);
+            (*p->second)++;
+            return 0;
+        },
+        new std::pair<std::vector<uint8_t>*, size_t*>(&flushed, &calls));
+
+    const size_t chunk_size = 16 * 1024;
+    for (size_t off = 0; off < src.size(); off += chunk_size) {
+        const size_t n = std::min<size_t>(chunk_size, src.size() - off);
+        CHECK(enc.feed(src.data() + off, n));
+    }
+    std::vector<uint8_t> out;
+    CHECK(enc.finish(out));
+    // Zero-buffer invariant: all bytes routed incrementally to flush_cb_, out is empty!
+    CHECK(out.empty());
+    CHECK(flushed == src);
+    CHECK(calls == (src.size() + chunk_size - 1) / chunk_size);
+
+    // Test sink abort on store mode
+    openrar::compress::StreamEncoder enc_abort(0, 1024 * 1024);
+    enc_abort.set_flush(
+        [](void*, const openrar::core::byte*, size_t) -> int {
+            return -1; // Abort sink
+        },
+        nullptr);
+    CHECK(!enc_abort.feed(src.data(), 1024)); // feed returns false
+    CHECK(enc_abort.is_finished());
+    std::vector<uint8_t> out_abort;
+    CHECK(!enc_abort.finish(out_abort)); // finish returns false
+}
+
+void test_stream_encoder_incremental_pull() {
+    const std::vector<uint8_t> src = pattern_payload(300 * 1024, 555);
+    const size_t win = 1024 * 1024;
+    const std::vector<uint8_t> expected = one_shot(src, 3, win);
+
+    openrar::compress::StreamEncoder enc(3, win);
+    std::vector<uint8_t> pulled;
+    for (size_t off = 0; off < src.size(); off += 32 * 1024) {
+        const size_t n = std::min<size_t>(32 * 1024, src.size() - off);
+        CHECK(enc.feed(src.data() + off, n));
+        std::vector<openrar::core::byte> chunk;
+        CHECK(enc.take_output(chunk));
+        pulled.insert(pulled.end(), chunk.begin(), chunk.end());
+    }
+    std::vector<uint8_t> final_chunk;
+    CHECK(enc.finish(final_chunk));
+    pulled.insert(pulled.end(), final_chunk.begin(), final_chunk.end());
+    CHECK(pulled == expected);
+    CHECK(round_trip(pulled, src));
+
+    // Also test take_output on method 0 (Store)
+    openrar::compress::StreamEncoder enc_store(0, win);
+    std::vector<uint8_t> pulled_store;
+    for (size_t off = 0; off < src.size(); off += 20 * 1024) {
+        const size_t n = std::min<size_t>(20 * 1024, src.size() - off);
+        CHECK(enc_store.feed(src.data() + off, n));
+        std::vector<openrar::core::byte> chunk;
+        CHECK(enc_store.take_output(chunk));
+        pulled_store.insert(pulled_store.end(), chunk.begin(), chunk.end());
+    }
+    std::vector<uint8_t> final_store;
+    CHECK(enc_store.finish(final_store));
+    pulled_store.insert(pulled_store.end(), final_store.begin(), final_store.end());
+    CHECK(pulled_store == src);
+}
+
 void test_stream_decoder_roundtrip() {
     const std::vector<uint8_t> src = pattern_payload(120 * 1024, 777);
     for (int method : {1, 3, 5}) {
@@ -275,6 +350,8 @@ int main() {
     test_cancel_and_progress();
     test_flush_sink();
     test_store_passthrough();
+    test_store_flush_sink();
+    test_stream_encoder_incremental_pull();
     test_stream_decoder_roundtrip();
     test_stream_decoder_incremental_pull();
     test_stream_decoder_store();
