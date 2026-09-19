@@ -5,6 +5,35 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] - 2026-09-19
+
+### Added
+
+- **Pre-Processing Filter Pipeline & Compression Ratio Parity**:
+  - Implemented full forward filter transform pipeline in `Filters50` (`encode_e8`, `encode_arm`, `encode_delta`) matching RAR5 specification and WinRAR 7.20 bitstream rules.
+  - Added x86 CALL/JMP (`E8`, `E8E9`) jump address translation with circular dictionary wrap-around and relative offset calculation.
+  - Added ARM BL relative instruction translation with PC-relative branch decoding.
+  - Added multi-byte / multi-channel delta transform (`Delta`) with automatic channel detection (1..32 channels) and stride-based difference filtering for raw audio, imagery, and columnar binary data.
+  - Integrated in-band filter token emission in `Compressor50` (`FilterToken`, slot 256 execution records, block length vint encoding) with bounded sliding window invariants.
+- **First-Class `-mc` Switch Engine in CLI**:
+  - Added full support for the WinRAR `-mc` switch family:
+    - `-mc-`: Disable all pre-processing filters.
+    - `-mc[param]E[+|-]`: Configure / force / disable x86 executable filter (`E8`/`E8E9`).
+    - `-mc[param]A[+|-]`: Configure / force / disable ARM branch filter.
+    - `-mc[param]D[+|-]`: Configure / force / disable multi-channel delta filter with channel stride override (e.g. `-mc16:4D+`).
+    - `-mc[param]L[+|-]` & `-mc[param]X[+|-]`: Tolerant acceptance for long-range and exhaustive matching switches.
+    - Compound multi-filter switch syntax support (e.g. `-mcE+D-`).
+- **Additive DLL API Filter Negotiation (`OPENRAR_ABI_FEATURE_FILTERS`)**:
+  - Exported `openrar_archive_create_file_opts` under new additive feature bit `OPENRAR_ABI_FEATURE_FILTERS = (1ull << 10)` in `include/openrar/openrar_dll.h`.
+  - Added bitmask flags `OPENRAR_FILTER_DISABLE_ALL`, `OPENRAR_FILTER_FORCE_E8`, `OPENRAR_FILTER_DISABLE_E8`, `OPENRAR_FILTER_FORCE_ARM`, `OPENRAR_FILTER_DISABLE_ARM`, `OPENRAR_FILTER_FORCE_DELTA`, and `OPENRAR_FILTER_DISABLE_DELTA`.
+  - Preserved strict backward ABI stability (`OPENRAR_DLL_API_VERSION = 1`, 64-byte `openrar_archive_entry_t` unchanged).
+- **Solid Archive & `StreamEncoder` Filter Invariants**:
+  - Enforced per-file filter isolation in solid archives: filter token bounds and transforms strictly reset at entry boundaries while preserving continuous LZ sliding dictionary history across solid chains.
+  - Integrated in-place filter transformations into `StreamEncoder` and `Compressor50` bounded memory windows, producing bit-identical compressed streams with zero unbounded RAM growth.
+  - Added WASM / C API streaming encoder export `openrar_stream_create_ex(method, win_size, filter_flags)` and updated npm package (`wasm/js/openrar.js`, `openrar.d.ts`) with `filterMode: 'auto' | 'none' | 'e8' | 'arm' | 'delta'` in `compressStream` and `compressStreamChunks`.
+- **Dual-Oracle Cross-Validation**:
+  - Expanded dual-oracle interop gate (Track 2) with full bidirectional filter test matrix against official WinRAR 7.20 (`rar.exe`) and UnRAR 7.20 (`UnRAR.exe`).
+
 ## [1.14.0] - 2026-09-19
 
 ### Added
