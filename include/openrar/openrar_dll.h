@@ -97,6 +97,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 #define OPENRAR_ABI_FEATURE_REPAIR (1ull << 8)               // openrar_archive_repair
 #define OPENRAR_ABI_FEATURE_CREATE (1ull << 9)               // openrar_archive_create_file / create_file_ex
 #define OPENRAR_ABI_FEATURE_FILTERS (1ull << 10)             // openrar_archive_create_file_opts / filter controls
+#define OPENRAR_ABI_FEATURE_OWNER (1ull << 11)               // openrar_archive_handle_entry_owner / owner controls
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -610,6 +611,7 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
 #define OPENRAR_ENTRY_FLAG_HAS_ATIME (1u << 7)
 #define OPENRAR_ENTRY_FLAG_DIRECTORY (1u << 8)
 #define OPENRAR_ENTRY_FLAG_HAS_VERSION (1u << 9)
+#define OPENRAR_ENTRY_FLAG_HAS_OWNER (1u << 10)
 
 #pragma pack(push, 1)
 typedef struct {
@@ -648,6 +650,33 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_entry_ex(uint32_t ha
 
 // Free helper for extra_out (openrar_free is also valid).
 OPENRAR_DLL_API void OPENRAR_DLL_CALL openrar_archive_entry_ex_free(void* extra);
+
+// ── POSIX ownership (v1.17.0) ────────────────────────────────────────────────
+#define OPENRAR_OWNER_FLAG_HAS_UID (1u << 0)
+#define OPENRAR_OWNER_FLAG_HAS_GID (1u << 1)
+#define OPENRAR_OWNER_FLAG_HAS_USER (1u << 2)
+#define OPENRAR_OWNER_FLAG_HAS_GROUP (1u << 3)
+
+#pragma pack(push, 1)
+typedef struct {
+    uint64_t uid;
+    uint64_t gid;
+    uint32_t flags; // Bitmask of OPENRAR_OWNER_FLAG_*
+} openrar_entry_owner_t; // 20 bytes packed
+#pragma pack(pop)
+
+// Query POSIX ownership information (FHEXTRA_OWNER) for entry_index.
+// If the entry carries ownership records, owner_out receives the numeric UID/GID
+// and flags, and if username_out/groupname_out are non-NULL, they receive malloc'd
+// NUL-terminated UTF-8 strings (free with openrar_archive_entry_owner_free).
+// If the entry has no owner extra, owner_out receives 0s, strings receive NULL,
+// and RAR_OK is returned.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_entry_owner(
+    uint32_t handle, uint32_t entry_index, openrar_entry_owner_t* owner_out,
+    char** username_out, char** groupname_out);
+
+// Free helper for username_out and groupname_out strings (openrar_free is also valid).
+OPENRAR_DLL_API void OPENRAR_DLL_CALL openrar_archive_entry_owner_free(char* str);
 
 // Archive-level properties of the handle's volume set.
 #pragma pack(push, 1)

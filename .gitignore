@@ -71,5 +71,6 @@ alt/
 test_match.cpp
 test_small.txt
 
-# Local debug scratch files
-
+# Python cache
+__pycache__/
+*.pyc

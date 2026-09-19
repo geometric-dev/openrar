@@ -725,13 +725,51 @@ static bool copy_sfx_stub(const std::filesystem::path& stub_path, io::FileStream
     return true;
 }
 
+static void apply_owner_overrides(format::FileBlock& fb, const std::string& default_group,
+                                    const std::string& default_user) {
+    if (!default_group.empty()) {
+        fb.has_owner = true;
+        bool all_digits = std::all_of(default_group.begin(), default_group.end(), [](char c) {
+            return std::isdigit(static_cast<unsigned char>(c));
+        });
+        if (all_digits) {
+            try {
+                fb.owner_gid = std::stoull(default_group);
+                fb.has_owner_gid = true;
+            } catch (...) {
+                fb.owner_group = default_group;
+            }
+        } else {
+            fb.owner_group = default_group;
+        }
+    }
+    if (!default_user.empty()) {
+        fb.has_owner = true;
+        bool all_digits = std::all_of(default_user.begin(), default_user.end(), [](char c) {
+            return std::isdigit(static_cast<unsigned char>(c));
+        });
+        if (all_digits) {
+            try {
+                fb.owner_uid = std::stoull(default_user);
+                fb.has_owner_uid = true;
+            } catch (...) {
+                fb.owner_user = default_user;
+            }
+        } else {
+            fb.owner_user = default_user;
+        }
+    }
+}
+
 bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                                       const std::string& arc_entry_name, int method,
                                       const std::string& password, PreparedAdd& out,
                                       core::uint32 times_mask, core::uint64 dict_size,
                                       bool want_streams, bool want_acl, bool is_solid,
                                       bool direct_stream,
-                                      const compress::FilterConfig& filter_cfg) {
+                                      const compress::FilterConfig& filter_cfg,
+                                      const std::string& default_group,
+                                      const std::string& default_user) {
     if (!std::filesystem::exists(src_file)) {
         return false;
     }
@@ -1070,6 +1108,7 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
         }
     }
 
+    apply_owner_overrides(fb, default_group, default_user);
     out.fb = std::move(fb);
     out.src_path = src_file;
     if (is_spooled) {
@@ -1142,7 +1181,9 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
 
 bool ArchiveMutator::prepare_add_dir(const std::filesystem::path& src_dir,
                                      const std::string& arc_entry_name, PreparedAdd& out,
-                                     core::uint32 times_mask, [[maybe_unused]] bool want_acl) {
+                                     core::uint32 times_mask, [[maybe_unused]] bool want_acl,
+                                     const std::string& default_group,
+                                     const std::string& default_user) {
     std::error_code ec;
     if (!std::filesystem::is_directory(src_dir, ec)) return false;
 
@@ -1164,6 +1205,7 @@ bool ArchiveMutator::prepare_add_dir(const std::filesystem::path& src_dir,
         apply_unix_owner(fb, src_dir);
     }
 #endif
+    apply_owner_overrides(fb, default_group, default_user);
 
     // entry_name/src_path stay caller-owned (see prepare_add_file, M4).
     out.fb = std::move(fb);
@@ -1174,7 +1216,9 @@ bool ArchiveMutator::prepare_add_symlink(const std::filesystem::path& src_symlin
                                          const std::string& arc_entry_name,
                                          const std::string& target, bool is_dir_target,
                                          PreparedAdd& out, core::uint32 times_mask,
-                                         [[maybe_unused]] bool want_acl) {
+                                         [[maybe_unused]] bool want_acl,
+                                         const std::string& default_group,
+                                         const std::string& default_user) {
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
     fb.unp_size = 0;
@@ -1199,6 +1243,7 @@ bool ArchiveMutator::prepare_add_symlink(const std::filesystem::path& src_symlin
         apply_unix_owner(fb, src_symlink);
     }
 #endif
+    apply_owner_overrides(fb, default_group, default_user);
     out.fb = std::move(fb);
     return true;
 }
@@ -1206,7 +1251,9 @@ bool ArchiveMutator::prepare_add_symlink(const std::filesystem::path& src_symlin
 bool ArchiveMutator::prepare_add_hardlink(const std::filesystem::path& src_file,
                                           const std::string& arc_entry_name,
                                           const std::string& target, PreparedAdd& out,
-                                          core::uint32 times_mask, [[maybe_unused]] bool want_acl) {
+                                          core::uint32 times_mask, [[maybe_unused]] bool want_acl,
+                                          const std::string& default_group,
+                                          const std::string& default_user) {
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
     fb.unp_size = 0;
@@ -1227,6 +1274,7 @@ bool ArchiveMutator::prepare_add_hardlink(const std::filesystem::path& src_file,
         apply_unix_owner(fb, src_file);
     }
 #endif
+    apply_owner_overrides(fb, default_group, default_user);
     out.fb = std::move(fb);
     out.payload.clear();
     return true;

@@ -390,6 +390,16 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
                 if (entry.header.has_file_version) {
                     std::cout << "  File version: " << entry.header.file_version << "\n";
                 }
+                if (entry.header.has_owner) {
+                    if (!entry.header.owner_user.empty() || !entry.header.owner_group.empty()) {
+                        std::cout << "  User/Group:  " << entry.header.owner_user << " / "
+                                  << entry.header.owner_group << "\n";
+                    }
+                    if (entry.header.has_owner_uid || entry.header.has_owner_gid) {
+                        std::cout << "  UID/GID:     " << entry.header.owner_uid << " / "
+                                  << entry.header.owner_gid << "\n";
+                    }
+                }
                 std::cout << "\n";
             } else {
                 std::cout << "    ..A....  " << entry.header.unp_size << "  "
@@ -696,7 +706,9 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                          bool want_acl = false, bool want_qo = true, bool want_ams = false,
                          core::uint64 dict_size = 0,
                          const compress::FilterConfig& filter_cfg = {},
-                         int max_versions = -1) {
+                         int max_versions = -1,
+                         const std::string& default_group = "",
+                         const std::string& default_user = "") {
     const core::uint64 total_ram = get_total_physical_memory();
     const core::uint64 prepare_budget = std::clamp<core::uint64>(
         total_ram / 4, 1ULL << 30, 32ULL * 1024ULL * 1024ULL * 1024ULL); // 25% of RAM, 1-32 GiB
@@ -742,19 +754,21 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             if (queue[0].is_hardlink)
                 okv = archive::ArchiveMutator::prepare_add_hardlink(
                     queue[0].src_path, queue[0].entry_name, queue[0].hardlink_target, prepared[0],
-                    times_mask, want_acl);
+                    times_mask, want_acl, default_group, default_user);
             else if (queue[0].is_symlink)
                 okv = archive::ArchiveMutator::prepare_add_symlink(
                     queue[0].src_path, queue[0].entry_name, queue[0].symlink_target,
-                    queue[0].is_dir_target, prepared[0], times_mask, want_acl);
+                    queue[0].is_dir_target, prepared[0], times_mask, want_acl, default_group,
+                    default_user);
             else if (queue[0].is_dir)
                 okv = archive::ArchiveMutator::prepare_add_dir(
-                    queue[0].src_path, queue[0].entry_name, prepared[0], times_mask, want_acl);
+                    queue[0].src_path, queue[0].entry_name, prepared[0], times_mask, want_acl,
+                    default_group, default_user);
             else
                 okv = archive::ArchiveMutator::prepare_add_file(
                     queue[0].src_path, queue[0].entry_name, method, password, prepared[0],
                     times_mask, dict_size, want_stm, want_acl, solid, /*direct_stream=*/true,
-                    filter_cfg);
+                    filter_cfg, default_group, default_user);
         } catch (...) {
             okv = false;
         }
@@ -816,7 +830,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             : queue[i].file_size;
         pool.submit([&pl, &queue, &prepared, i, method, &password, delete_source, times_mask,
                      want_stm, want_acl, est_ws, budget_bytes = prepare_budget, dict_size, solid,
-                     &filter_cfg] {
+                     &filter_cfg, &default_group, &default_user] {
             std::unique_lock<std::mutex> lk(pl.mu);
             pl.cv.wait(lk, [&] { return pl.aborting || pl.admit_head == i; });
             if (pl.aborting) {
@@ -843,20 +857,21 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                         if (queue[i].is_hardlink)
                             okv = archive::ArchiveMutator::prepare_add_hardlink(
                                 queue[i].src_path, queue[i].entry_name, queue[i].hardlink_target,
-                                prepared[i], times_mask, want_acl);
+                                prepared[i], times_mask, want_acl, default_group, default_user);
                         else if (queue[i].is_symlink)
                             okv = archive::ArchiveMutator::prepare_add_symlink(
                                 queue[i].src_path, queue[i].entry_name, queue[i].symlink_target,
-                                queue[i].is_dir_target, prepared[i], times_mask, want_acl);
+                                queue[i].is_dir_target, prepared[i], times_mask, want_acl,
+                                default_group, default_user);
                         else if (queue[i].is_dir)
                             okv = archive::ArchiveMutator::prepare_add_dir(
                                 queue[i].src_path, queue[i].entry_name, prepared[i], times_mask,
-                                want_acl);
+                                want_acl, default_group, default_user);
                         else
                             okv = archive::ArchiveMutator::prepare_add_file(
                                 queue[i].src_path, queue[i].entry_name, method, password,
                                 prepared[i], times_mask, dict_size, want_stm, want_acl, solid,
-                                /*direct_stream=*/false, filter_cfg);
+                                /*direct_stream=*/false, filter_cfg, default_group, default_user);
                     } catch (...) {
                         // std::filesystem throws on sources that vanish or
                         // become unreadable after the scan; same handling as
@@ -968,7 +983,9 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                    const std::vector<std::string>& exclude_patterns = {},
                    core::uint64 dict_size = 0,
                    const compress::FilterConfig& filter_cfg = {},
-                   int max_versions = -1) {
+                   int max_versions = -1,
+                   const std::string& default_group = "",
+                   const std::string& default_user = "") {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return 1;
@@ -1425,7 +1442,8 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
         int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
                                /*delete_source=*/false, /*announce=*/true, threads, nullptr,
                                times_mask, solid, comment.empty() ? nullptr : &comment, want_stm,
-                               want_acl, want_qo, want_ams, dict_size, filter_cfg, max_versions);
+                               want_acl, want_qo, want_ams, dict_size, filter_cfg, max_versions,
+                               default_group, default_user);
         if (rc != 0) return rc;
     }
 
@@ -1453,7 +1471,8 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     bool extract_symlinks = true,
                     const std::vector<std::string>& exclude_patterns = {},
                     int extract_version = -1,
-                    const std::vector<std::string>& file_patterns = {}) {
+                    const std::vector<std::string>& file_patterns = {},
+                    [[maybe_unused]] bool restore_owner = false) {
     archive::ArchiveReader reader;
     reader.set_keep_broken(keep_broken);
     reader.set_extract_symlinks(extract_symlinks);
@@ -1706,7 +1725,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             }
         }
 #ifndef _WIN32
-        if (j.entry && j.entry->header.has_owner) {
+        if ((restore_owner || ::geteuid() == 0) && j.entry && j.entry->header.has_owner) {
             uid_t uid = static_cast<uid_t>(-1);
             gid_t gid = static_cast<gid_t>(-1);
             if (j.entry->header.has_owner_uid) {
@@ -2198,6 +2217,9 @@ static int cli_main(int argc, char* argv[]) {
     bool want_versioning = false; // -ver
     int max_versions = -1;        // -1 = disabled, 0 = unlimited, >0 = limit
     int extract_version = -1;     // -1 = default, 0 = all versions (-ver), >0 = specific (-verN)
+    bool want_og = false;         // -og
+    std::string opt_group;
+    std::string opt_user;
 
     for (const auto& s : switches) {
         if (sw_eq(s, "-plain") || sw_eq(s, "--plain") || sw_eq(s, "-idp") ||
@@ -2422,6 +2444,14 @@ static int cli_main(int argc, char* argv[]) {
                 sfx_name_raw = sfx_name_raw.substr(1);
         } else if (sw_eq(s, "-ow") || sw_starts(s, "-ow")) {
             want_acl = true;
+        } else if (sw_starts(s, "-og")) {
+            want_og = true;
+            opt_group = s.substr(3);
+        } else if (sw_starts(s, "--group=")) {
+            want_og = true;
+            opt_group = s.substr(8);
+        } else if (sw_starts(s, "--owner=")) {
+            opt_user = s.substr(8);
         } else if (sw_eq(s, "-os") || sw_starts(s, "-os")) {
             want_stm = true;
         } else if (sw_eq(s, "-qo") || sw_eq(s, "-qo+")) {
@@ -2561,7 +2591,7 @@ static int cli_main(int argc, char* argv[]) {
                                               recurse_subdirs, want_symlinks, (cmd == "f"),
                                               want_stm, want_acl, want_hardlinks, want_qo, want_ams,
                                               exclude_patterns, opt_dict_size, opt_filter_cfg,
-                                              max_versions);
+                                              max_versions, opt_group, opt_user);
         }
         if (rc == 0 && want_rr) {
             bool rr_ok;
@@ -2643,7 +2673,7 @@ static int cli_main(int argc, char* argv[]) {
         }
         return openrar::cli::extract_archive(arc_path, dest, cmd == "x", password, threads, keep_broken,
                                              overwrite_mode, extract_symlinks, exclude_patterns,
-                                             extract_version, file_patterns);
+                                             extract_version, file_patterns, (want_acl || want_og));
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
     } else if (cmd == "rr" || cmd.rfind("rr", 0) == 0) {
