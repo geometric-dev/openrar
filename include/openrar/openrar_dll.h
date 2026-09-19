@@ -2,7 +2,7 @@
 #define OPENRAR_DLL_OPENRAR_DLL_H
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  openrar_dll.h — Public C ABI for openrar.dll / libopenrar.so (v1.12.0)
+//  openrar_dll.h — Public C ABI for openrar.dll / libopenrar.so (v1.13.0)
 //  Hybrid D: stable C core with header-only C++ wrapper (include/openrar/openrar.hpp).
 //  CMake integration: find_package(openrar) provides target openrar::openrar_dll.
 //  Public include path: #include <openrar/openrar_dll.h> (or <openrar/openrar.hpp>).
@@ -81,6 +81,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 //   bit 6  PACKAGE_VERSION        openrar_package_version_string    (v1.7.0)
 //   bit 7  SET_LIMITS             openrar_archive_handle_set_limits (v1.10.0)
 //   bit 8  REPAIR                 openrar_archive_repair            (v1.11.0)
+//   bit 9  CREATE                 openrar_archive_create_file       (v1.14.0)
 // Reserve convention: future open-time options (e.g. codepage override,
 // custom volume search callbacks) ship as openrar_archive_open_file_ex
 // behind a new bit, never as signature changes to open_file.
@@ -93,6 +94,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 #define OPENRAR_ABI_FEATURE_PACKAGE_VERSION (1ull << 6)      // openrar_package_version_string
 #define OPENRAR_ABI_FEATURE_SET_LIMITS (1ull << 7)           // openrar_archive_handle_set_limits
 #define OPENRAR_ABI_FEATURE_REPAIR (1ull << 8)               // openrar_archive_repair
+#define OPENRAR_ABI_FEATURE_CREATE (1ull << 9)               // openrar_archive_create_file / create_file_ex
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -537,6 +539,43 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* 
                                                                     const char* const* arc_names,
                                                                     uint32_t file_count, int method,
                                                                     uint32_t window_log2);
+
+// ── Native archive creation (free functions; additive; v1.14.0) ─────────────
+// Creates a new RAR5 archive on disk directly from source files, without
+// requiring an existing archive.
+//
+// Parameters:
+//   arc_path       — destination archive path (.rar).
+//   src_paths      — array of source file/directory paths on disk.
+//   arc_names      — array of entry names inside the archive ('\' normalized to '/').
+//   file_count     — count of entries in src_paths / arc_names (must be > 0).
+//   method         — compression level 0..5 (0=store, 1=fastest, 2=fast, 3=normal, 4=good, 5=best).
+//   dict_size      — dictionary window size: 0 for tuned defaults per method (8 MB for -m3,
+//                    64 MB for -m5), 1..15 for legacy log2 (128 KiB..2 GiB), > 15 for exact bytes
+//                    (up to 64 GiB on 64-bit platforms).
+//
+// openrar_archive_create_file_ex adds optional encryption and solid chaining:
+//   password_utf8   — UTF-8 password string, or NULL / "" for no encryption.
+//   encrypt_headers — non-zero to encrypt headers (-hp; requires non-empty password).
+//   solid           — non-zero to compress entries in a solid LZ chain (-s).
+//   progress/cancel — optional callbacks covering file commit and cancellation.
+//
+// Durability: writes to arc_path + ".openrar-tmp.<pid>.<seq>", flushes, and
+// atomically replaces arc_path on completion. On abort or failure, the temp
+// file is cleaned up and arc_path is untouched.
+//
+// Errors: RAR_ERR_INVALID_ARG on null args / empty batch / method not in 0..5;
+// RAR_ERR_BUSY (-14) if an open file-mode handle in this process holds arc_path;
+// RAR_ERR_IO on missing src files or filesystem errors; RAR_ERR_NOMEM on allocation failure.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file(
+    const char* arc_path, const char* const* src_paths, const char* const* arc_names,
+    uint32_t file_count, int method, uint64_t dict_size);
+
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file_ex(
+    const char* arc_path, const char* const* src_paths, const char* const* arc_names,
+    uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
+    int encrypt_headers, int solid, openrar_progress_cb progress, openrar_cancel_cb cancel,
+    void* user);
 
 // ── Extended metadata (file-mode handles; additive) ─────────────────────────
 // The 64-byte entry struct is frozen (shared WASM contract); these queries

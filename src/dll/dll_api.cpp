@@ -759,7 +759,7 @@ uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
            OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS | OPENRAR_ABI_FEATURE_FILE_HANDLE |
            OPENRAR_ABI_FEATURE_MUTATION | OPENRAR_ABI_FEATURE_ENTRY_EX |
            OPENRAR_ABI_FEATURE_PACKAGE_VERSION | OPENRAR_ABI_FEATURE_SET_LIMITS |
-           OPENRAR_ABI_FEATURE_REPAIR;
+           OPENRAR_ABI_FEATURE_REPAIR | OPENRAR_ABI_FEATURE_CREATE;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1319,19 +1319,23 @@ namespace {
 // (RAR_ERR_BUSY — open_file keeps the volume open with FILE_SHARE_READ, so
 // the mutator's atomic replace over it fails opaquely on Windows; failing
 // up front beats a sharing violation mid-rename).
-int mutation_precheck(const char* arc_path) {
+int mutation_precheck(const char* arc_path, bool must_exist = true) {
     std::error_code ec;
     const std::filesystem::path arc = std::filesystem::u8path(arc_path);
-    if (!std::filesystem::exists(arc, ec) || ec) {
-        set_error("archive not found");
-        return RAR_ERR_IO;
+    if (must_exist) {
+        if (!std::filesystem::exists(arc, ec) || ec) {
+            set_error("archive not found");
+            return RAR_ERR_IO;
+        }
     }
-    for (const auto& h : g_handles.snapshot()) {
-        const std::filesystem::path p = h->path();
-        if (p.empty()) continue; // buffer handles hold no file
-        if (paths_same_file(p, arc)) {
-            set_error("archive is open in a handle; close it before mutating");
-            return RAR_ERR_BUSY;
+    if (std::filesystem::exists(arc, ec) && !ec) {
+        for (const auto& h : g_handles.snapshot()) {
+            const std::filesystem::path p = h->path();
+            if (p.empty()) continue; // buffer handles hold no file
+            if (paths_same_file(p, arc)) {
+                set_error("archive is open in a handle; close it before mutating");
+                return RAR_ERR_BUSY;
+            }
         }
     }
     return RAR_OK;
@@ -1450,18 +1454,18 @@ int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
             return RAR_ERR_INVALID_ARG;
         }
         if (method != 0 && method != 3 && method != 5) {
-            set_error("method must be 0,3,5");
+            set_error("method must be 0 (store), 3 (normal) or 5 (best)");
             return RAR_ERR_INVALID_ARG;
         }
-        if (window_log2 < 1 || window_log2 > 4) {
-            set_error("window_log2 must be 1..4");
+        if (method != 0 && (window_log2 < 1 || window_log2 > 4)) {
+            set_error("window_log2 must be 1..4 (128 KiB .. 1 MiB)");
             return RAR_ERR_INVALID_ARG;
         }
-        int pre = mutation_precheck(arc_path);
+        int pre = mutation_precheck(arc_path, /*must_exist=*/true);
         if (pre != RAR_OK) return pre;
 
         const std::filesystem::path arc = std::filesystem::u8path(arc_path);
-        {
+        if (std::filesystem::exists(arc)) {
             std::unique_ptr<openrar::archive::ArchiveReader> reader;
             std::string detail;
             int cls = mutation_open(arc, reader, detail);
@@ -1484,6 +1488,13 @@ int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
             }
             std::string name(arc_names[i]);
             std::replace(name.begin(), name.end(), '\\', '/');
+            while (!name.empty() && (name[0] == '/' || name[0] == '\\')) {
+                name.erase(0, 1);
+            }
+            if (name.empty()) {
+                set_error("invalid entry name");
+                return RAR_ERR_INVALID_ARG;
+            }
             openrar::archive::ArchiveMutator::PreparedAdd p;
             p.entry_name = name;
             p.src_path = std::filesystem::u8path(src_paths[i]);
@@ -1509,6 +1520,109 @@ int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
                                                                  /*solid=*/false, {}, detail);
         if (rc != RAR_OK) set_error(detail.empty() ? "add failed" : detail);
         return rc;
+    } catch (const std::bad_alloc&) {
+        set_error("out of memory");
+        return RAR_ERR_NOMEM;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+
+int OPENRAR_DLL_CALL openrar_archive_create_file(
+    const char* arc_path, const char* const* src_paths, const char* const* arc_names,
+    uint32_t file_count, int method, uint64_t dict_size) {
+    return openrar_archive_create_file_ex(arc_path, src_paths, arc_names, file_count, method,
+                                          dict_size, nullptr, 0, 0, nullptr, nullptr, nullptr);
+}
+
+int OPENRAR_DLL_CALL openrar_archive_create_file_ex(
+    const char* arc_path, const char* const* src_paths, const char* const* arc_names,
+    uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
+    int encrypt_headers, int solid, openrar_progress_cb progress, openrar_cancel_cb cancel,
+    void* user) {
+    try {
+        if (!arc_path || !src_paths || !arc_names || file_count == 0) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        if (method < 0 || method > 5) {
+            set_error("method must be 0..5");
+            return RAR_ERR_INVALID_ARG;
+        }
+        if (encrypt_headers && (!password_utf8 || password_utf8[0] == '\0')) {
+            set_error("header encryption requires a password");
+            return RAR_ERR_INVALID_ARG;
+        }
+        if (cancel && cancel(user)) {
+            set_error("aborted");
+            return RAR_ERR_ABORTED;
+        }
+        int pre = mutation_precheck(arc_path, /*must_exist=*/false);
+        if (pre != RAR_OK) return pre;
+
+        const std::filesystem::path arc = std::filesystem::u8path(arc_path);
+
+        std::string password = password_utf8 ? password_utf8 : "";
+
+        std::vector<openrar::archive::ArchiveMutator::PreparedAdd> batch;
+        batch.reserve(file_count);
+        for (uint32_t i = 0; i < file_count; ++i) {
+            if (cancel && cancel(user)) {
+                set_error("aborted");
+                return RAR_ERR_ABORTED;
+            }
+            if (!src_paths[i] || !arc_names[i] || arc_names[i][0] == '\0') {
+                set_error("null argument");
+                return RAR_ERR_INVALID_ARG;
+            }
+            std::string name(arc_names[i]);
+            std::replace(name.begin(), name.end(), '\\', '/');
+            while (!name.empty() && (name[0] == '/' || name[0] == '\\')) {
+                name.erase(0, 1);
+            }
+            if (name.empty()) {
+                set_error("invalid entry name");
+                return RAR_ERR_INVALID_ARG;
+            }
+
+            openrar::archive::ArchiveMutator::PreparedAdd p;
+            p.entry_name = name;
+            p.src_path = std::filesystem::u8path(src_paths[i]);
+            std::error_code ec;
+            if (std::filesystem::is_directory(p.src_path, ec)) {
+                if (!openrar::archive::ArchiveMutator::prepare_add_dir(p.src_path, name, p)) {
+                    set_error("cannot add directory " + std::string(src_paths[i]));
+                    return RAR_ERR_IO;
+                }
+            } else if (!openrar::archive::ArchiveMutator::prepare_add_file(
+                           p.src_path, name, method, password, p,
+                           openrar::archive::time_flags::MTIME, dict_size,
+                           /*want_streams=*/false, /*want_acl=*/false, solid != 0)) {
+                set_error("cannot read " + std::string(src_paths[i]));
+                return RAR_ERR_IO;
+            }
+            batch.push_back(std::move(p));
+        }
+
+        std::function<void(size_t, const std::string&)> on_write;
+        if (progress) {
+            on_write = [&](size_t idx, const std::string&) {
+                progress(user, static_cast<uint64_t>(idx + 1), static_cast<uint64_t>(file_count));
+            };
+        }
+
+        std::string detail;
+        int rc = openrar::archive::ArchiveMutator::write_batch_add_ex(
+            arc, batch, {}, password, encrypt_headers != 0, on_write, solid != 0, {}, detail);
+        if (rc != RAR_OK) set_error(detail.empty() ? "create failed" : detail);
+        return rc;
+    } catch (const std::bad_alloc&) {
+        set_error("out of memory");
+        return RAR_ERR_NOMEM;
     } catch (const std::exception& e) {
         set_error(e.what());
         return RAR_ERR_IO;

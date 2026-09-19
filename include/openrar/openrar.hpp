@@ -488,6 +488,37 @@ public:
     }
     uint32_t native_handle() const { return h_; }
 
+    // Create a new RAR5 archive on disk directly from source files (v1.14.0)
+    static void create(const std::filesystem::path& arc_path,
+                       const std::vector<std::pair<std::filesystem::path, std::string>>& entries,
+                       int method = 3, uint64_t dict_size = 0,
+                       const std::string& password = "", bool encrypt_headers = false,
+                       bool solid = false) {
+        if (entries.empty()) throw std::invalid_argument("entries cannot be empty");
+        std::vector<std::string> src_str;
+        std::vector<std::string> arc_str;
+        src_str.reserve(entries.size());
+        arc_str.reserve(entries.size());
+        std::vector<const char*> src_ptrs;
+        std::vector<const char*> arc_ptrs;
+        src_ptrs.reserve(entries.size());
+        arc_ptrs.reserve(entries.size());
+        for (const auto& [src, name] : entries) {
+            src_str.push_back(detail::u8_str(src));
+            arc_str.push_back(name);
+        }
+        for (size_t i = 0; i < entries.size(); ++i) {
+            src_ptrs.push_back(src_str[i].c_str());
+            arc_ptrs.push_back(arc_str[i].c_str());
+        }
+        int rc = openrar_archive_create_file_ex(
+            detail::u8_str(arc_path).c_str(), src_ptrs.data(), arc_ptrs.data(),
+            static_cast<uint32_t>(entries.size()), method, dict_size,
+            password.empty() ? nullptr : password.c_str(), encrypt_headers ? 1 : 0,
+            solid ? 1 : 0, nullptr, nullptr, nullptr);
+        check(rc);
+    }
+
 private:
     void fail_if_null() {
         if (h_ == 0) {
@@ -498,6 +529,16 @@ private:
     }
     uint32_t h_{0};
 };
+
+using Archive = ArchiveHandle;
+
+inline void create_archive_file(const std::filesystem::path& arc_path,
+                                const std::vector<std::pair<std::filesystem::path, std::string>>& entries,
+                                int method = 3, uint64_t dict_size = 0,
+                                const std::string& password = "", bool encrypt_headers = false,
+                                bool solid = false) {
+    ArchiveHandle::create(arc_path, entries, method, dict_size, password, encrypt_headers, solid);
+}
 
 // Streaming encoder RAII
 class StreamEncoder {
