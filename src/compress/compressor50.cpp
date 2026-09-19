@@ -1361,14 +1361,25 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
     }
     dest.clear();
 
+    // For single-buffer compression, clamp internal compressor window to input size
+    // (with 128 KiB floor) to avoid huge memory allocations when win_size is e.g. 4 GiB..64 GiB.
+    size_t comp_win_size = win_size;
+    if (src_size > 0 && src_size < win_size) {
+        size_t pow2_sz = 0x20000;
+        while (pow2_sz < src_size && pow2_sz < win_size) {
+            pow2_sz <<= 1;
+        }
+        comp_win_size = std::min(win_size, pow2_sz);
+    }
+
     core::uint8 detected_channels = 1;
     FilterType detected_filter =
         Filters50::detect_filter(src, src_size, detected_channels, filter_cfg);
 
     if (detected_filter == FilterType::None) {
-        if (src_size <= win_size + 0x400000) {
+        if (src_size <= comp_win_size + 0x400000) {
             Compressor50 packer;
-            packer.begin_archive(nullptr, method, win_size);
+            packer.begin_archive(nullptr, method, comp_win_size);
             packer.set_external_buffer(src, src_size);
             packer.set_memory_dest(&dest);
             if (packer.compress() < 0) {
@@ -1379,7 +1390,7 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
         }
 
         Compressor50 packer;
-        packer.init(nullptr, nullptr, method, src_size, win_size);
+        packer.init(nullptr, nullptr, method, src_size, comp_win_size);
         packer.mem_src_ptr_ = src;
         packer.mem_src_size_ = src_size;
         packer.mem_src_pos_ = 0;
@@ -1418,9 +1429,9 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
         chunk_start += chunk_len;
     }
 
-    if (src_size <= win_size + 0x400000) {
+    if (src_size <= comp_win_size + 0x400000) {
         Compressor50 packer;
-        packer.begin_archive(nullptr, method, win_size);
+        packer.begin_archive(nullptr, method, comp_win_size);
         packer.set_filter_config(filter_cfg);
         packer.set_active_filter(detected_filter, detected_channels);
         packer.set_external_buffer(filtered.data(), src_size);
@@ -1433,7 +1444,7 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
     }
 
     Compressor50 packer;
-    packer.init(nullptr, nullptr, method, src_size, win_size);
+    packer.init(nullptr, nullptr, method, src_size, comp_win_size);
     packer.set_filter_config(filter_cfg);
     packer.set_active_filter(detected_filter, detected_channels);
     packer.mem_src_ptr_ = filtered.data();

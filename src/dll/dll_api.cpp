@@ -759,7 +759,8 @@ uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
            OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS | OPENRAR_ABI_FEATURE_FILE_HANDLE |
            OPENRAR_ABI_FEATURE_MUTATION | OPENRAR_ABI_FEATURE_ENTRY_EX |
            OPENRAR_ABI_FEATURE_PACKAGE_VERSION | OPENRAR_ABI_FEATURE_SET_LIMITS |
-           OPENRAR_ABI_FEATURE_REPAIR | OPENRAR_ABI_FEATURE_CREATE;
+           OPENRAR_ABI_FEATURE_REPAIR | OPENRAR_ABI_FEATURE_CREATE |
+           OPENRAR_ABI_FEATURE_FILTERS;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1540,11 +1541,41 @@ int OPENRAR_DLL_CALL openrar_archive_create_file(
                                           dict_size, nullptr, 0, 0, nullptr, nullptr, nullptr);
 }
 
+static openrar::compress::FilterConfig filter_cfg_from_flags(uint32_t flags) {
+    openrar::compress::FilterConfig cfg;
+    if (flags & OPENRAR_FILTER_DISABLE_ALL) {
+        cfg.mode = openrar::compress::FilterMode::DisableAll;
+        return cfg;
+    }
+    if (flags & OPENRAR_FILTER_FORCE_E8) cfg.e8_override = 1;
+    else if (flags & OPENRAR_FILTER_DISABLE_E8) cfg.e8_override = -1;
+
+    if (flags & OPENRAR_FILTER_FORCE_ARM) cfg.arm_override = 1;
+    else if (flags & OPENRAR_FILTER_DISABLE_ARM) cfg.arm_override = -1;
+
+    if (flags & OPENRAR_FILTER_FORCE_DELTA) cfg.delta_override = 1;
+    else if (flags & OPENRAR_FILTER_DISABLE_DELTA) cfg.delta_override = -1;
+
+    return cfg;
+}
+
 int OPENRAR_DLL_CALL openrar_archive_create_file_ex(
     const char* arc_path, const char* const* src_paths, const char* const* arc_names,
     uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
     int encrypt_headers, int solid, openrar_progress_cb progress, openrar_cancel_cb cancel,
     void* user) {
+    uint32_t filter_flags = static_cast<uint32_t>((solid >> 8) & 0xFF);
+    int is_solid = solid & 0xFF;
+    return openrar_archive_create_file_opts(arc_path, src_paths, arc_names, file_count, method,
+                                           dict_size, password_utf8, encrypt_headers, is_solid,
+                                           filter_flags, progress, cancel, user);
+}
+
+int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
+    const char* arc_path, const char* const* src_paths, const char* const* arc_names,
+    uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
+    int encrypt_headers, int solid, uint32_t filter_flags, openrar_progress_cb progress,
+    openrar_cancel_cb cancel, void* user) {
     try {
         if (!arc_path || !src_paths || !arc_names || file_count == 0) {
             set_error("null argument");
@@ -1568,6 +1599,7 @@ int OPENRAR_DLL_CALL openrar_archive_create_file_ex(
         const std::filesystem::path arc = std::filesystem::u8path(arc_path);
 
         std::string password = password_utf8 ? password_utf8 : "";
+        openrar::compress::FilterConfig filter_cfg = filter_cfg_from_flags(filter_flags);
 
         std::vector<openrar::archive::ArchiveMutator::PreparedAdd> batch;
         batch.reserve(file_count);
@@ -1603,7 +1635,7 @@ int OPENRAR_DLL_CALL openrar_archive_create_file_ex(
                            p.src_path, name, method, password, p,
                            openrar::archive::time_flags::MTIME, dict_size,
                            /*want_streams=*/false, /*want_acl=*/false, solid != 0,
-                           /*direct_stream=*/true)) {
+                           /*direct_stream=*/true, filter_cfg)) {
                 set_error("cannot read " + std::string(src_paths[i]));
                 return RAR_ERR_IO;
             }
