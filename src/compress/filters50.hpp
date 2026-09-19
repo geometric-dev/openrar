@@ -36,6 +36,16 @@ public:
     // Delta audio/image channel decorrelation inverse (returns false if channels invalid)
     static bool apply_delta(const core::byte* src, core::byte* dest, size_t size,
                             core::uint8 channels);
+
+    // Forward filter transforms (compression side: transforms uncompressed data to pre-filtered representation)
+    static void encode_e8(core::byte* data, size_t size, core::uint64 file_offset,
+                          bool include_e9 = false);
+    static void encode_e8_scalar(core::byte* data, size_t size, core::uint64 file_offset,
+                                 bool include_e9 = false);
+    static void encode_arm(core::byte* data, size_t size, core::uint64 file_offset);
+    static void encode_arm_scalar(core::byte* data, size_t size, core::uint64 file_offset);
+    static bool encode_delta(const core::byte* src, core::byte* dest, size_t size,
+                             core::uint8 channels);
 };
 
 } // namespace openrar::compress
