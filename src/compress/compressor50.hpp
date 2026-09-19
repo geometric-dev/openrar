@@ -5,6 +5,7 @@
 #include "../crypto/crc32.hpp"
 #include "../crypto/blake2sp.hpp"
 #include "../io/file_stream.hpp"
+#include "filters50.hpp"
 
 #include <vector>
 #include <cstring>
@@ -233,13 +234,24 @@ private:
     std::vector<core::uint64> prev64_;
     bool is_large_window_{false};
 
-    // Split token storage: literals go in lit_bytes_ (1 byte each) and
-    // match/rep tokens in match_tokens_ (8 bytes each).  token_seq_ records
-    // the interleaved order (0 = literal, 1 = match/rep) so emit_tokens can
-    // replay them in sequence.  This avoids wasting 6 bytes per literal.
-    std::vector<core::byte> token_seq_;           // 0 = literal, 1 = match/rep
+    // Split token storage: literals go in lit_bytes_ (1 byte each),
+    // match/rep tokens in match_tokens_ (8 bytes each), and filters in filter_tokens_.
+    // token_seq_ records the interleaved order:
+    // 0 = literal, 1 = match/rep, 2 = filter
+    struct FilterToken {
+        core::uint32 block_start{0};
+        core::uint32 block_length{0};
+        core::uint8 type{0};
+        core::uint8 channels{1};
+    };
+    std::vector<core::byte> token_seq_;           // 0 = literal, 1 = match/rep, 2 = filter
     std::vector<core::byte> lit_bytes_;           // literal byte values
     std::vector<Compressor50Token> match_tokens_; // match/rep data
+    std::vector<FilterToken> filter_tokens_;      // filter descriptors (slot 256)
+    FilterConfig filter_config_{};
+    FilterType active_filter_{FilterType::None};
+    core::uint8 filter_channels_{1};
+    core::uint64 filter_emitted_until_{0};
     std::vector<core::byte> block_mem_;
     core::uint32 freq_ld_[NC], freq_dd_[DCX], freq_ldd_[LDC], freq_rd_[RC], freq_bd_[BC];
     core::byte len_ld_[NC], len_dd_[DCX], len_ldd_[LDC], len_rd_[RC], len_bd_[BC];
@@ -340,6 +352,9 @@ private:
     void make_tables();
     void emit_table(BitOutput& local_out);
     void emit_tokens(BitOutput& local_out);
+    void add_filter(const FilterToken& ft);
+    void emit_filter_data(BitOutput& out, core::uint32 val);
+    void apply_pending_filter(core::uint64 up_to);
     void consume_source(core::uint64 from, core::uint64 to) {
         if (from < to) {
             const core::byte* data = &buf_data_[static_cast<size_t>(from - pos_base_)];
@@ -352,6 +367,15 @@ private:
 public:
     Compressor50();
     ~Compressor50() = default;
+
+    void set_filter_config(const FilterConfig& cfg) { filter_config_ = cfg; }
+    const FilterConfig& get_filter_config() const { return filter_config_; }
+    FilterType get_active_filter() const { return active_filter_; }
+    void set_active_filter(FilterType type, core::uint8 channels = 1) {
+        active_filter_ = type;
+        filter_channels_ = channels;
+        filter_emitted_until_ = 0;
+    }
 
     void set_memory_dest(std::vector<core::byte>* mem) { mem_out_ = mem; }
 
@@ -376,7 +400,8 @@ public:
 
     static bool compress_buffer(const core::byte* src, size_t src_size,
                                 std::vector<core::byte>& dest, int method = 3,
-                                size_t win_size = 0x200000);
+                                size_t win_size = 0x200000,
+                                const FilterConfig& filter_cfg = {});
 
     // ── Streaming (incremental) compression ─────────────────────────────────
     // Path-A design (docs/streaming-considerations.md §7): the compressor

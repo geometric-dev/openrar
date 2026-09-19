@@ -1401,6 +1401,202 @@ void test_stream_encoder_chunking_invariance() {
     std::cout << "[PASS] StreamEncoder chunking invariance (byte-identical output)\n";
 }
 
+// ── Phase 2: Pre-processing filter tests ─────────────────────────────────────
+
+// Build a synthetic x86-style binary: MZ+PE header → CALL E8 instructions with
+// relative offsets pointing to nearby addresses. WinRAR's filter heuristic
+// should detect this as E8 via the PE machine type.
+static std::vector<core::byte> make_x86_binary(size_t n_calls) {
+    std::vector<core::byte> data(n_calls * 5 + 256, 0x90); // NOP sled
+    // MZ header stub
+    data[0] = 'M'; data[1] = 'Z';
+    core::write_le32(data.data() + 0x3C, 64); // PE header at offset 64
+    // PE header
+    data[64] = 'P'; data[65] = 'E'; data[66] = 0; data[67] = 0;
+    core::write_le16(data.data() + 68, 0x8664); // x86_64 machine
+    // Insert CALL (E8) instructions with local relative addresses
+    for (size_t i = 0; i < n_calls; ++i) {
+        size_t off = 128 + i * 5;
+        if (off + 5 > data.size()) break;
+        data[off] = 0xE8;
+        // Local relative call within +/- 16 MB
+        core::int32 rel = static_cast<core::int32>((i * 1234567) % 0x01000000u);
+        core::write_le32(data.data() + off + 1, static_cast<core::uint32>(rel));
+    }
+    return data;
+}
+
+// Build a synthetic ARM binary: fake ELF + 32-bit ARM BL instructions
+static std::vector<core::byte> make_arm_binary(size_t n_branches) {
+    // word-aligned size
+    size_t data_size = std::max<size_t>((128 + n_branches * 4 + 255) & ~3u, 512);
+    std::vector<core::byte> data(data_size, 0);
+    // ELF header with ARM machine type
+    data[0] = 0x7F; data[1] = 'E'; data[2] = 'L'; data[3] = 'F';
+    data[4] = 1; // 32-bit
+    core::write_le16(data.data() + 0x12, 0x28); // EM_ARM
+    // Insert BL instructions: high byte 0xEB, low 24 bits = local offset within +-2MB
+    for (size_t i = 0; i < n_branches; ++i) {
+        size_t off = 128 + i * 4;
+        if (off + 4 > data.size()) break;
+        core::uint32 instr = 0xEB000000u | (static_cast<core::uint32>(i * 37) & 0x0007FFFFu);
+        core::write_le32(data.data() + off, instr);
+    }
+    return data;
+}
+
+// Build a synthetic 16-bit stereo PCM WAV
+static std::vector<core::byte> make_wav_pcm(size_t n_samples) {
+    size_t data_bytes = n_samples * 4; // 16-bit stereo = 4 bytes per sample
+    size_t file_size = 44 + data_bytes;
+    std::vector<core::byte> data(file_size, 0);
+    // RIFF header
+    std::memcpy(data.data(), "RIFF", 4);
+    core::write_le32(data.data() + 4, static_cast<core::uint32>(file_size - 8));
+    std::memcpy(data.data() + 8, "WAVEfmt ", 8);
+    core::write_le32(data.data() + 16, 16); // fmt chunk size
+    core::write_le16(data.data() + 20, 1);  // PCM format
+    core::write_le16(data.data() + 22, 2);  // 2 channels (stereo)
+    core::write_le32(data.data() + 24, 44100); // sample rate
+    core::write_le32(data.data() + 28, 44100 * 4); // byte rate
+    core::write_le16(data.data() + 32, 4);  // block align
+    core::write_le16(data.data() + 34, 16); // bits per sample
+    std::memcpy(data.data() + 36, "data", 4);
+    core::write_le32(data.data() + 40, static_cast<core::uint32>(data_bytes));
+    // Generate a sine-like waveform (correlated samples → good for delta)
+    for (size_t i = 0; i < n_samples; ++i) {
+        int16_t val = static_cast<int16_t>((i * 317) % 32768);
+        core::write_le16(data.data() + 44 + i * 4, static_cast<core::uint16>(val));
+        core::write_le16(data.data() + 44 + i * 4 + 2, static_cast<core::uint16>(val / 2));
+    }
+    return data;
+}
+
+void test_filter_detect_e8_binary() {
+    std::cout << "[+] test_filter_detect_e8_binary" << std::endl;
+    auto bin = make_x86_binary(200);
+    core::uint8 channels = 0;
+    FilterType ft = Filters50::detect_filter(bin.data(), bin.size(), channels);
+    assert(ft == FilterType::E8);
+    assert(channels == 1);
+    std::cout << "    - E8 detection from PE header: OK" << std::endl;
+}
+
+void test_filter_detect_arm_binary() {
+    std::cout << "[+] test_filter_detect_arm_binary" << std::endl;
+    auto bin = make_arm_binary(200);
+    core::uint8 channels = 0;
+    FilterType ft = Filters50::detect_filter(bin.data(), bin.size(), channels);
+    assert(ft == FilterType::Arm);
+    assert(channels == 1);
+    std::cout << "    - ARM detection from ELF header: OK" << std::endl;
+}
+
+void test_filter_detect_delta_wav() {
+    std::cout << "[+] test_filter_detect_delta_wav" << std::endl;
+    auto wav = make_wav_pcm(8000);
+    core::uint8 channels = 0;
+    FilterType ft = Filters50::detect_filter(wav.data(), wav.size(), channels);
+    assert(ft == FilterType::Delta);
+    assert(channels == 4); // 2ch * 16bit / 8 = 4 bytes stride
+    std::cout << "    - Delta detection from WAV header: OK (channels=" << (int)channels << ")" << std::endl;
+}
+
+void test_filter_detect_disable_all() {
+    std::cout << "[+] test_filter_detect_disable_all" << std::endl;
+    auto bin = make_x86_binary(200);
+    core::uint8 channels = 0;
+    FilterConfig cfg;
+    cfg.mode = FilterMode::DisableAll;
+    FilterType ft = Filters50::detect_filter(bin.data(), bin.size(), channels, cfg);
+    assert(ft == FilterType::None);
+    std::cout << "    - DisableAll bypasses detection: OK" << std::endl;
+}
+
+void test_filter_e8_roundtrip() {
+    std::cout << "[+] test_filter_e8_roundtrip" << std::endl;
+    auto original = make_x86_binary(500);
+    std::vector<core::byte> compressed;
+    assert(Compressor50::compress_buffer(original.data(), original.size(), compressed, 3,
+                                          4 * 1024 * 1024));
+    assert(!compressed.empty());
+    Decompressor50 dec(4 * 1024 * 1024);
+    assert(dec.last_error() == DecompressErrorCode::Ok);
+    std::vector<core::byte> decompressed;
+    assert(dec.decompress_to_vector(compressed.data(), compressed.size(), decompressed, false));
+    assert(decompressed.size() == original.size());
+    assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+    std::cout << "    - E8 compress→decompress roundtrip: OK (" << original.size() << " → " << compressed.size() << ")" << std::endl;
+}
+
+void test_filter_arm_roundtrip() {
+    std::cout << "[+] test_filter_arm_roundtrip" << std::endl;
+    auto original = make_arm_binary(500);
+    std::vector<core::byte> compressed;
+    assert(Compressor50::compress_buffer(original.data(), original.size(), compressed, 3,
+                                          4 * 1024 * 1024));
+    assert(!compressed.empty());
+    Decompressor50 dec(4 * 1024 * 1024);
+    assert(dec.last_error() == DecompressErrorCode::Ok);
+    std::vector<core::byte> decompressed;
+    assert(dec.decompress_to_vector(compressed.data(), compressed.size(), decompressed, false));
+    assert(decompressed.size() == original.size());
+    assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+    std::cout << "    - ARM compress→decompress roundtrip: OK (" << original.size() << " → " << compressed.size() << ")" << std::endl;
+}
+
+void test_filter_delta_roundtrip() {
+    std::cout << "[+] test_filter_delta_roundtrip" << std::endl;
+    auto original = make_wav_pcm(16000);
+    std::vector<core::byte> compressed;
+    assert(Compressor50::compress_buffer(original.data(), original.size(), compressed, 3,
+                                          4 * 1024 * 1024));
+    assert(!compressed.empty());
+    Decompressor50 dec(4 * 1024 * 1024);
+    assert(dec.last_error() == DecompressErrorCode::Ok);
+    std::vector<core::byte> decompressed;
+    assert(dec.decompress_to_vector(compressed.data(), compressed.size(), decompressed, false));
+    assert(decompressed.size() == original.size());
+    assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+    std::cout << "    - Delta compress→decompress roundtrip: OK (" << original.size() << " → " << compressed.size() << ")" << std::endl;
+}
+
+void test_filter_improves_compression() {
+    std::cout << "[+] test_filter_improves_compression" << std::endl;
+    auto original = make_x86_binary(2000);
+
+    // With filters (auto-detect)
+    std::vector<core::byte> with_filter;
+    assert(Compressor50::compress_buffer(original.data(), original.size(), with_filter, 3,
+                                          4 * 1024 * 1024));
+
+    // Without filters (disabled)
+    FilterConfig no_filter;
+    no_filter.mode = FilterMode::DisableAll;
+    std::vector<core::byte> without_filter;
+    assert(Compressor50::compress_buffer(original.data(), original.size(), without_filter, 3,
+                                          4 * 1024 * 1024, no_filter));
+
+    std::cout << "    - With filter: " << with_filter.size() << " bytes" << std::endl;
+    std::cout << "    - Without filter: " << without_filter.size() << " bytes" << std::endl;
+    // Filter should improve or at least not hurt compression on x86 binaries
+    assert(with_filter.size() <= without_filter.size());
+
+    // Verify both decompress correctly
+    Decompressor50 dec(4 * 1024 * 1024);
+    std::vector<core::byte> dec_filtered, dec_unfiltered;
+    assert(dec.decompress_to_vector(with_filter.data(), with_filter.size(), dec_filtered, false));
+    assert(dec_filtered.size() == original.size());
+    assert(std::memcmp(dec_filtered.data(), original.data(), original.size()) == 0);
+
+    Decompressor50 dec2(4 * 1024 * 1024);
+    assert(dec2.decompress_to_vector(without_filter.data(), without_filter.size(), dec_unfiltered, false));
+    assert(dec_unfiltered.size() == original.size());
+    assert(std::memcmp(dec_unfiltered.data(), original.data(), original.size()) == 0);
+
+    std::cout << "    - Ratio improvement verified: OK" << std::endl;
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -1470,6 +1666,22 @@ int main() {
     test_extra_distance_slot_decoding();
     std::cout << std::flush;
     test_compressor50_large_window_match_finding();
+    std::cout << std::flush;
+    test_filter_detect_e8_binary();
+    std::cout << std::flush;
+    test_filter_detect_arm_binary();
+    std::cout << std::flush;
+    test_filter_detect_delta_wav();
+    std::cout << std::flush;
+    test_filter_detect_disable_all();
+    std::cout << std::flush;
+    test_filter_e8_roundtrip();
+    std::cout << std::flush;
+    test_filter_arm_roundtrip();
+    std::cout << std::flush;
+    test_filter_delta_roundtrip();
+    std::cout << std::flush;
+    test_filter_improves_compression();
     std::cout << std::flush;
     std::cout << "All Milestone 6 Compression & Decompression Primitives PASSED!\n" << std::flush;
     return 0;
