@@ -237,6 +237,10 @@ void Compressor50::reset_state() {
     token_seq_.clear();
     lit_bytes_.clear();
     match_tokens_.clear();
+    filter_tokens_.clear();
+    active_filter_ = FilterType::None;
+    filter_channels_ = 1;
+    filter_emitted_until_ = 0;
     is_large_window_ = false;
     head_.clear();
     prev_.clear();
@@ -357,6 +361,8 @@ void Compressor50::start_file(io::FileStream* src, core::uint64 src_file_size,
     token_seq_.clear();
     lit_bytes_.clear();
     match_tokens_.clear();
+    filter_tokens_.clear();
+    filter_emitted_until_ = 0;
     input_since_block_ = 0;
     total_at_file_start_ = packed_total_;
     hash_crc32_.reset();
@@ -840,13 +846,26 @@ void Compressor50::emit_table(BitOutput& local_out) {
 }
 
 void Compressor50::emit_tokens(BitOutput& local_out) {
-    size_t li = 0, mi = 0;
+    size_t li = 0, mi = 0, fi = 0;
     for (core::byte seq : token_seq_) {
         if (seq == 0) {
             // Literal
             core::byte b = lit_bytes_[li++];
             assert(len_ld_[b] > 0 && "Encoder emitted literal symbol with 0-length code");
             local_out.put_bits(code_ld_[b], len_ld_[b]);
+            continue;
+        }
+        if (seq == 2) {
+            // Filter descriptor (slot 256)
+            const FilterToken& ft = filter_tokens_[fi++];
+            assert(len_ld_[256] > 0 && "Encoder emitted filter symbol with 0-length code");
+            local_out.put_bits(code_ld_[256], len_ld_[256]);
+            emit_filter_data(local_out, ft.block_start);
+            emit_filter_data(local_out, ft.block_length);
+            local_out.put_bits(static_cast<core::uint32>(ft.type), 3);
+            if (ft.type == 0) {
+                local_out.put_bits(ft.channels - 1, 5);
+            }
             continue;
         }
         const Compressor50Token& tok = match_tokens_[mi++];
@@ -925,6 +944,28 @@ void Compressor50::emit_tokens(BitOutput& local_out) {
     }
 }
 
+void Compressor50::add_filter(const FilterToken& ft) {
+    token_seq_.push_back(2);
+    filter_tokens_.push_back(ft);
+    freq_ld_[256]++;
+}
+
+void Compressor50::emit_filter_data(BitOutput& out, core::uint32 val) {
+    core::uint32 byte_cnt = 1;
+    if (val > 0xFFFFFF) byte_cnt = 4;
+    else if (val > 0xFFFF) byte_cnt = 3;
+    else if (val > 0xFF) byte_cnt = 2;
+
+    out.put_bits(byte_cnt - 1, 2);
+    for (core::uint32 i = 0; i < byte_cnt; ++i) {
+        out.put_bits((val >> (i * 8)) & 0xFF, 8);
+    }
+}
+
+void Compressor50::apply_pending_filter(core::uint64 up_to) {
+    (void)up_to;
+}
+
 bool Compressor50::write_block(bool last_block) {
     block_mem_.clear();
 
@@ -960,6 +1001,7 @@ bool Compressor50::write_block(bool last_block) {
             token_seq_.clear();
             lit_bytes_.clear();
             match_tokens_.clear();
+            filter_tokens_.clear();
             input_since_block_ = 0;
             init_freq();
             return true;
@@ -979,6 +1021,7 @@ bool Compressor50::write_block(bool last_block) {
         token_seq_.clear();
         lit_bytes_.clear();
         match_tokens_.clear();
+        filter_tokens_.clear();
         input_since_block_ = 0;
         init_freq();
         return wrote_ok;
@@ -995,6 +1038,7 @@ bool Compressor50::write_block(bool last_block) {
         token_seq_.clear();
         lit_bytes_.clear();
         match_tokens_.clear();
+        filter_tokens_.clear();
         input_since_block_ = 0;
         init_freq();
         return false;
@@ -1033,6 +1077,7 @@ bool Compressor50::write_block(bool last_block) {
     token_seq_.clear();
     lit_bytes_.clear();
     match_tokens_.clear();
+    filter_tokens_.clear();
     input_since_block_ = 0;
     init_freq();
     return wrote_ok;
@@ -1096,6 +1141,27 @@ int Compressor50::process_available(bool final) {
             slide_window();
         }
 
+        if (active_filter_ != FilterType::None && filter_emitted_until_ <= cur_ &&
+            filter_emitted_until_ < src_size_) {
+            size_t max_chunk = 0x100000; // 1 MiB clamp
+            if (win_size_ > 0x20000 && win_size_ / 2 < max_chunk) {
+                max_chunk = win_size_ / 2;
+            } else if (win_size_ <= 0x20000) {
+                max_chunk = win_size_ > 4 ? win_size_ / 2 : 1;
+            }
+            core::uint32 chunk_len = static_cast<core::uint32>(
+                std::min<core::uint64>(src_size_ - filter_emitted_until_, max_chunk));
+            if (chunk_len > 0) {
+                FilterToken ft;
+                ft.block_start = 0;
+                ft.block_length = chunk_len;
+                ft.type = static_cast<core::uint8>(active_filter_);
+                ft.channels = filter_channels_;
+                add_filter(ft);
+                filter_emitted_until_ += chunk_len;
+            }
+        }
+
         if (need_flush()) {
             consume_source(unhashed_pos_, cur_);
             unhashed_pos_ = cur_;
@@ -1149,6 +1215,23 @@ int Compressor50::process_available(bool final) {
             unhashed_pos_++;
         }
 
+        core::uint32 cur_nice_len = nice_len_;
+        size_t cur_max_lz = MAX_LZ_MATCH;
+        if (active_filter_ != FilterType::None && filter_emitted_until_ > cur_) {
+            size_t rem = static_cast<size_t>(filter_emitted_until_ - cur_);
+            if (rem < 2) {
+                fail_count_++;
+                add_literal(buf_data_[static_cast<size_t>(cur_ - pos_base_)]);
+                insert_position(cur_);
+                cur_++;
+                input_since_block_++;
+                unhashed_pos_ = cur_;
+                continue;
+            }
+            if (rem < cur_nice_len) cur_nice_len = static_cast<core::uint32>(rem);
+            if (rem < cur_max_lz) cur_max_lz = rem;
+        }
+
         // FailCount heuristic: skip chain search on long incompressible runs
         core::uint32 search_chain = max_chain_;
         if (fail_count_ > 0x100) {
@@ -1159,7 +1242,8 @@ int Compressor50::process_available(bool final) {
             if ((fail_count_ & skip_mask) != 0) search_chain = 0;
         }
         MatchInfo best = {0, -1};
-        if (search_chain > 0) best = find_match(cur_, search_chain, nice_len_);
+        if (search_chain > 0) best = find_match(cur_, search_chain, cur_nice_len);
+        if (best.length > cur_max_lz) best.length = cur_max_lz;
 
         size_t rep_best_len = 0;
         int rep_idx = -1;
@@ -1169,7 +1253,7 @@ int Compressor50::process_available(bool final) {
             if (d == static_cast<size_t>(-1) || d == 0 || d > cur_ - pos_base_ || d > max_dist_)
                 continue;
             if (buf_cur[0] != buf_cur[-static_cast<core::int64>(d)]) continue;
-            size_t len = rep_length(cur_, d, MAX_LZ_MATCH);
+            size_t len = rep_length(cur_, d, cur_max_lz);
             if (len > rep_best_len) {
                 rep_best_len = len;
                 rep_idx = static_cast<int>(i);
@@ -1208,10 +1292,12 @@ int Compressor50::process_available(bool final) {
             unhashed_pos_ = cur_;
         } else {
             if (len >= 8) fail_count_ = 0;
-            if (!is_rep && lazy_tests_ > 0 && len < nice_len_ && avail_at(cur_) > len + 1 &&
-                cur_ + 1 < src_size_) {
+            if (!is_rep && lazy_tests_ > 0 && len < cur_nice_len && avail_at(cur_) > len + 1 &&
+                cur_ + 1 < src_size_ &&
+                (active_filter_ == FilterType::None || cur_ + 1 < filter_emitted_until_)) {
                 MatchInfo next = {0, -1};
-                if (search_chain > 0) next = find_match(cur_ + 1, search_chain, nice_len_);
+                if (search_chain > 0) next = find_match(cur_ + 1, search_chain, cur_nice_len);
+                if (next.length > cur_max_lz) next.length = cur_max_lz;
 
                 size_t next_dist = static_cast<size_t>(
                     next.candidate >= 0 ? cur_ + 1 - static_cast<core::uint64>(next.candidate) : 0);
@@ -1267,17 +1353,77 @@ core::int64 Compressor50::compress() {
 }
 
 bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
-                                   std::vector<core::byte>& dest, int method, size_t win_size) {
+                                   std::vector<core::byte>& dest, int method, size_t win_size,
+                                   const FilterConfig& filter_cfg) {
     if (src_size == 0) {
         dest.clear();
         return true;
     }
     dest.clear();
 
+    core::uint8 detected_channels = 1;
+    FilterType detected_filter =
+        Filters50::detect_filter(src, src_size, detected_channels, filter_cfg);
+
+    if (detected_filter == FilterType::None) {
+        if (src_size <= win_size + 0x400000) {
+            Compressor50 packer;
+            packer.begin_archive(nullptr, method, win_size);
+            packer.set_external_buffer(src, src_size);
+            packer.set_memory_dest(&dest);
+            if (packer.compress() < 0) {
+                dest.clear();
+                return false;
+            }
+            return !dest.empty();
+        }
+
+        Compressor50 packer;
+        packer.init(nullptr, nullptr, method, src_size, win_size);
+        packer.mem_src_ptr_ = src;
+        packer.mem_src_size_ = src_size;
+        packer.mem_src_pos_ = 0;
+        packer.set_memory_dest(&dest);
+        if (packer.compress() < 0) {
+            dest.clear();
+            return false;
+        }
+        return !dest.empty();
+    }
+
+    // Filter-assisted compression
+    size_t max_chunk = 0x100000; // 1 MiB clamp
+    if (win_size > 0x20000 && win_size / 2 < max_chunk) {
+        max_chunk = win_size / 2;
+    } else if (win_size <= 0x20000) {
+        max_chunk = win_size > 4 ? win_size / 2 : 1;
+    }
+
+    std::vector<core::byte> filtered(src, src + src_size);
+    size_t chunk_start = 0;
+    while (chunk_start < src_size) {
+        size_t chunk_len = std::min<size_t>(src_size - chunk_start, max_chunk);
+        if (detected_filter == FilterType::E8) {
+            Filters50::encode_e8(filtered.data() + chunk_start, chunk_len, chunk_start, false);
+        } else if (detected_filter == FilterType::E8E9) {
+            Filters50::encode_e8(filtered.data() + chunk_start, chunk_len, chunk_start, true);
+        } else if (detected_filter == FilterType::Arm) {
+            Filters50::encode_arm(filtered.data() + chunk_start, chunk_len, chunk_start);
+        } else if (detected_filter == FilterType::Delta) {
+            std::vector<core::byte> tmp(chunk_len);
+            Filters50::encode_delta(filtered.data() + chunk_start, tmp.data(), chunk_len,
+                                   detected_channels);
+            std::memcpy(filtered.data() + chunk_start, tmp.data(), chunk_len);
+        }
+        chunk_start += chunk_len;
+    }
+
     if (src_size <= win_size + 0x400000) {
         Compressor50 packer;
         packer.begin_archive(nullptr, method, win_size);
-        packer.set_external_buffer(src, src_size);
+        packer.set_filter_config(filter_cfg);
+        packer.set_active_filter(detected_filter, detected_channels);
+        packer.set_external_buffer(filtered.data(), src_size);
         packer.set_memory_dest(&dest);
         if (packer.compress() < 0) {
             dest.clear();
@@ -1288,7 +1434,9 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
 
     Compressor50 packer;
     packer.init(nullptr, nullptr, method, src_size, win_size);
-    packer.mem_src_ptr_ = src;
+    packer.set_filter_config(filter_cfg);
+    packer.set_active_filter(detected_filter, detected_channels);
+    packer.mem_src_ptr_ = filtered.data();
     packer.mem_src_size_ = src_size;
     packer.mem_src_pos_ = 0;
     packer.set_memory_dest(&dest);

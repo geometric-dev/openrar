@@ -11,11 +11,25 @@ enum class FilterType : core::uint8 {
     Delta = 0, // Delta predictive byte decorrelation
     E8 = 1,    // x86 CALL rel32 translation
     E8E9 = 2,  // x86 CALL+JMP rel32 translation
-    Arm = 3    // ARM BL (1110) translation
+    Arm = 3,   // ARM BL (1110) translation
+    None = 255 // No filter
+};
+
+enum class FilterMode {
+    Auto,
+    DisableAll
+};
+
+struct FilterConfig {
+    FilterMode mode{FilterMode::Auto};
+    int e8_override{0};    // 0: auto, 1: force, -1: disable
+    int arm_override{0};   // 0: auto, 1: force, -1: disable
+    int delta_override{0}; // 0: auto, 1: force, -1: disable
+    core::uint8 delta_channels{0}; // 0: auto
 };
 
 struct FilterBlock {
-    FilterType type{FilterType::Delta};
+    FilterType type{FilterType::None};
     core::uint8 channels{1};
     size_t block_start{0};
     core::uint32 block_length{0};
@@ -23,6 +37,9 @@ struct FilterBlock {
 
 class Filters50 {
 public:
+    // Heuristic filter detection
+    static FilterType detect_filter(const core::byte* data, size_t size, core::uint8& out_channels,
+                                    const FilterConfig& config = {});
     // x86 CALL/JMP relative address translation
     static void apply_e8(core::byte* data, size_t size, core::uint64 file_offset,
                          bool include_e9 = false);

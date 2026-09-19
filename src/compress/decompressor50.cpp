@@ -729,18 +729,18 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             fe.block_length = f_len;
             // A filter region larger than the window can never be applied
             // intact: by the time the region ends, its start has been
-            // overwritten in the circular buffer, in every implementation
-            // (window accounting is enforced again at apply time). Regions
-            // beyond that are malformed for this dictionary (report M5).
+            // overwritten in the circular buffer (report M5).
             if (static_cast<size_t>(f_len) > win_size_) {
                 return false;
             }
-            // Aggregate budget: every output byte may belong to a handful of
-            // overlapping filters, but not to thousands of full-window ones.
-            // Without this, tens of KB of crafted stream schedule ~64 GB of
-            // transform work at flush time (report M7).
+            // Aggregate budget: prevents crafted streams from scheduling
+            // unbounded transform work at flush time (report M7).
+            // When dest_size == SIZE_MAX (streaming via decompress_to_vector),
+            // the addition dest_size + win_size_ wraps modulo 2^64, so we
+            // skip the check to avoid a false-positive abort.
             filters_total_len += static_cast<size_t>(f_len);
-            if (filters_total_len > dest_size + win_size_) {
+            if (dest_size != SIZE_MAX && dest_size <= SIZE_MAX - win_size_ &&
+                filters_total_len > dest_size + win_size_) {
                 return false;
             }
             if (filters_.size() >= 8192) return false;
@@ -752,11 +752,10 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
                 size_t distance = old_dist_[0];
                 // Repeat distances are attacker-controlled state: the
                 // sentinel (never set) or an out-of-window value means the
-                // stream is corrupt. copy_match would silently skip the
-                // copy while callers still advanced total_written,
-                // desyncing output accounting from the window (report M6).
-                if (distance == static_cast<size_t>(-1) || distance == 0 || distance > win_size_)
+                // stream is corrupt (report M6).
+                if (distance == static_cast<size_t>(-1) || distance == 0 || distance > win_size_) {
                     return false;
+                }
                 core::uint32 len = static_cast<core::uint32>(last_length_);
                 if (len > dest_size - total_written)
                     len = static_cast<core::uint32>(dest_size - total_written);
@@ -853,10 +852,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     if (!flush_pending_blocks(true)) return false;
 
     // Truncation check: if the stream ended without a LastBlock flag before
-    // producing dest_size bytes, the payload is incomplete. Reporting success
-    // here would let callers write silently truncated output, so fail instead.
-    // (dest_size may be SIZE_MAX when the caller streams unknown-length output;
-    // in that case a genuine stream end is only ever reached on LastBlock.)
+    // producing dest_size bytes, the payload is incomplete.
     if (!single_block && total_written < dest_size && !header.last_block_in_file) return false;
 
     if (out_written) *out_written = total_written;
