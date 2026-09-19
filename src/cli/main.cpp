@@ -333,6 +333,7 @@ void print_help() {
               << "  -ts<m|c|a>    Time fields to store: m=modified, c=created, a=accessed\n"
               << "                (letters combine; default -tsm)\n"
               << "  -v<size>      Create multi-volume archive\n"
+              << "  -ver[n]       File version control\n"
               << "  -x<pattern>   Exclude specified file or wildcard\n"
               << "  -x@<list>     Exclude files in specified list file\n"
               << "  -y            Assume Yes on all queries\n"
@@ -372,19 +373,27 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
         for (const auto& entry : reader.entries()) {
             if (entry.header.is_service) continue;
             if (is_path_excluded(entry.header.file_name, exclude_patterns)) continue;
+            std::string disp_name = entry.header.file_name;
+            if (entry.header.has_file_version) {
+                disp_name += ";" + std::to_string(entry.header.file_version);
+            }
             if (bare) {
-                std::cout << sanitize_for_display(entry.header.file_name) << "\n";
+                std::cout << sanitize_for_display(disp_name) << "\n";
             } else if (technical) {
-                std::cout << "  File:        " << sanitize_for_display(entry.header.file_name)
+                std::cout << "  File:        " << sanitize_for_display(disp_name)
                           << "\n"
                           << "  Size:        " << entry.header.unp_size << "\n"
                           << "  Packed:      " << entry.header.pack_size << "\n"
                           << "  Method:      " << entry.header.method << "\n"
                           << "  CRC32:       " << std::hex << entry.header.data_crc32 << std::dec
-                          << "\n\n";
+                          << "\n";
+                if (entry.header.has_file_version) {
+                    std::cout << "  File version: " << entry.header.file_version << "\n";
+                }
+                std::cout << "\n";
             } else {
                 std::cout << "    ..A....  " << entry.header.unp_size << "  "
-                          << sanitize_for_display(entry.header.file_name) << "\n";
+                          << sanitize_for_display(disp_name) << "\n";
             }
         }
     }
@@ -686,7 +695,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                          const std::vector<core::byte>* comment = nullptr, bool want_stm = false,
                          bool want_acl = false, bool want_qo = true, bool want_ams = false,
                          core::uint64 dict_size = 0,
-                         const compress::FilterConfig& filter_cfg = {}) {
+                         const compress::FilterConfig& filter_cfg = {},
+                         int max_versions = -1) {
     const core::uint64 total_ram = get_total_physical_memory();
     const core::uint64 prepare_budget = std::clamp<core::uint64>(
         total_ram / 4, 1ULL << 30, 32ULL * 1024ULL * 1024ULL * 1024ULL); // 25% of RAM, 1-32 GiB
@@ -759,7 +769,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         Prog.note_file_done(queue[0].entry_name, queue[0].file_size);
         if (!archive::ArchiveMutator::write_batch_add(
                 arc_path, prepared, sfx_stub, password, encrypt_headers, {}, solid,
-                comment ? *comment : std::vector<core::byte>(), want_qo, want_ams, filter_cfg)) {
+                comment ? *comment : std::vector<core::byte>(), want_qo, want_ams, filter_cfg, max_versions)) {
             return 1;
         }
         if (announce && !g_quiet_mode && !is_vt_supported()) {
@@ -920,7 +930,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     try {
         ok = archive::ArchiveMutator::write_batch_add(
             arc_path, prepared, sfx_stub, password, encrypt_headers, on_write, solid,
-            comment ? *comment : std::vector<core::byte>(), want_qo, want_ams, filter_cfg);
+            comment ? *comment : std::vector<core::byte>(), want_qo, want_ams, filter_cfg, max_versions);
     } catch (const PrepareFailed&) {
         ok = false;
     } catch (...) {
@@ -957,7 +967,8 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                    bool want_qo = true, bool want_ams = false,
                    const std::vector<std::string>& exclude_patterns = {},
                    core::uint64 dict_size = 0,
-                   const compress::FilterConfig& filter_cfg = {}) {
+                   const compress::FilterConfig& filter_cfg = {},
+                   int max_versions = -1) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return 1;
@@ -1414,7 +1425,7 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
         int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
                                /*delete_source=*/false, /*announce=*/true, threads, nullptr,
                                times_mask, solid, comment.empty() ? nullptr : &comment, want_stm,
-                               want_acl, want_qo, want_ams, dict_size, filter_cfg);
+                               want_acl, want_qo, want_ams, dict_size, filter_cfg, max_versions);
         if (rc != 0) return rc;
     }
 
@@ -1440,7 +1451,9 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     const std::string& password = "", unsigned threads = 1,
                     bool keep_broken = false, OverwriteMode overwrite_mode = OverwriteMode::Prompt,
                     bool extract_symlinks = true,
-                    const std::vector<std::string>& exclude_patterns = {}) {
+                    const std::vector<std::string>& exclude_patterns = {},
+                    int extract_version = -1,
+                    const std::vector<std::string>& file_patterns = {}) {
     archive::ArchiveReader reader;
     reader.set_keep_broken(keep_broken);
     reader.set_extract_symlinks(extract_symlinks);
@@ -1460,10 +1473,47 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     size_t total_entries = 0;
     core::uint64 total_bytes = 0;
     for (const auto& entry : reader.entries()) {
-        if (!entry.header.is_service && !is_path_excluded(entry.header.file_name, exclude_patterns)) {
-            total_entries++;
-            total_bytes += entry.header.unp_size;
+        if (entry.header.is_service || is_path_excluded(entry.header.file_name, exclude_patterns)) continue;
+        if (entry.header.has_file_version) {
+            if (extract_version < 0) {
+                bool explicit_version_match = false;
+                for (const auto& pat : file_patterns) {
+                    if (pat.find(';') != std::string::npos) {
+                        std::string ver_name = entry.header.file_name + ";" + std::to_string(entry.header.file_version);
+                        if (openrar::io::wildcard_match(pat, ver_name, false) ||
+                            openrar::io::wildcard_match(pat, std::filesystem::path(ver_name).filename().string(), false)) {
+                            explicit_version_match = true;
+                            break;
+                        }
+                    }
+                }
+                if (!explicit_version_match) continue;
+            } else if (extract_version > 0) {
+                if (entry.header.file_version != static_cast<core::uint64>(extract_version)) continue;
+            }
+        } else {
+            if (extract_version > 0) continue;
         }
+
+        if (!file_patterns.empty()) {
+            bool matched = false;
+            std::string ver_name = entry.header.file_name;
+            if (entry.header.has_file_version) {
+                ver_name += ";" + std::to_string(entry.header.file_version);
+            }
+            for (const auto& pat : file_patterns) {
+                if (openrar::io::wildcard_match(pat, entry.header.file_name, false) ||
+                    openrar::io::wildcard_match(pat, ver_name, false) ||
+                    openrar::io::wildcard_match(pat, std::filesystem::path(entry.header.file_name).filename().string(), false) ||
+                    openrar::io::wildcard_match(pat, std::filesystem::path(ver_name).filename().string(), false)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) continue;
+        }
+        total_entries++;
+        total_bytes += entry.header.unp_size;
     }
 
     Prog.init("DECOMPRESSING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
@@ -1490,15 +1540,60 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             const auto& entry = all_entries[i];
             if (entry.header.is_service) continue;
             if (is_path_excluded(entry.header.file_name, exclude_patterns)) continue;
+
+            // Version filtering
+            if (entry.header.has_file_version) {
+                if (extract_version < 0) {
+                    bool explicit_version_match = false;
+                    for (const auto& pat : file_patterns) {
+                        if (pat.find(';') != std::string::npos) {
+                            std::string ver_name = entry.header.file_name + ";" + std::to_string(entry.header.file_version);
+                            if (openrar::io::wildcard_match(pat, ver_name, false) ||
+                                openrar::io::wildcard_match(pat, std::filesystem::path(ver_name).filename().string(), false)) {
+                                explicit_version_match = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!explicit_version_match) continue;
+                } else if (extract_version > 0) {
+                    if (entry.header.file_version != static_cast<core::uint64>(extract_version)) continue;
+                }
+            } else {
+                if (extract_version > 0) continue;
+            }
+
+            if (!file_patterns.empty()) {
+                bool matched = false;
+                std::string ver_name = entry.header.file_name;
+                if (entry.header.has_file_version) {
+                    ver_name += ";" + std::to_string(entry.header.file_version);
+                }
+                for (const auto& pat : file_patterns) {
+                    if (openrar::io::wildcard_match(pat, entry.header.file_name, false) ||
+                        openrar::io::wildcard_match(pat, ver_name, false) ||
+                        openrar::io::wildcard_match(pat, std::filesystem::path(entry.header.file_name).filename().string(), false) ||
+                        openrar::io::wildcard_match(pat, std::filesystem::path(ver_name).filename().string(), false)) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) continue;
+            }
+
             std::string safe_name = io::sanitize_archive_path(entry.header.file_name);
             if (safe_name.empty()) {
                 std::cerr << "Skipping entry with unsafe empty path: "
                           << sanitize_for_display(entry.header.file_name) << "\n";
                 continue;
             }
+            std::string disk_name = safe_name;
+            if (entry.header.has_file_version && extract_version != static_cast<int>(entry.header.file_version)) {
+                disk_name += ";" + std::to_string(entry.header.file_version);
+            }
             std::filesystem::path target =
-                full_paths ? (out_root / std::filesystem::path(safe_name))
-                           : (out_root / std::filesystem::path(safe_name).filename());
+                full_paths ? (out_root / std::filesystem::path(disk_name))
+                           : (out_root / std::filesystem::path(disk_name).filename());
             if (!io::is_lexically_contained(target, out_root)) {
                 std::cerr << "Skipping entry escaping extraction directory: "
                           << sanitize_for_display(entry.header.file_name) << "\n";
@@ -2100,6 +2195,9 @@ static int cli_main(int argc, char* argv[]) {
     bool rv_is_percent = false;
     openrar::core::uint64 opt_dict_size = 0; // -md<size>
     openrar::compress::FilterConfig opt_filter_cfg;
+    bool want_versioning = false; // -ver
+    int max_versions = -1;        // -1 = disabled, 0 = unlimited, >0 = limit
+    int extract_version = -1;     // -1 = default, 0 = all versions (-ver), >0 = specific (-verN)
 
     for (const auto& s : switches) {
         if (sw_eq(s, "-plain") || sw_eq(s, "--plain") || sw_eq(s, "-idp") ||
@@ -2215,6 +2313,22 @@ static int cli_main(int argc, char* argv[]) {
                 return 7;
             }
             opt_dict_size = val;
+        } else if (sw_starts(s, "-ver")) {
+            want_versioning = true;
+            std::string tail = s.substr(4);
+            if (tail.empty()) {
+                max_versions = 0;
+                extract_version = 0;
+            } else {
+                try {
+                    int n = std::stoi(tail);
+                    max_versions = (n >= 0) ? n : 0;
+                    extract_version = n;
+                } catch (...) {
+                    max_versions = 0;
+                    extract_version = 0;
+                }
+            }
         } else if (sw_starts(s, "-v")) {
             std::string vs = s.substr(2);
             if (vs == "p" || vs == "-") {
@@ -2446,7 +2560,8 @@ static int cli_main(int argc, char* argv[]) {
                                               comment, times_mask, no_dir_records, ep_mode,
                                               recurse_subdirs, want_symlinks, (cmd == "f"),
                                               want_stm, want_acl, want_hardlinks, want_qo, want_ams,
-                                              exclude_patterns, opt_dict_size, opt_filter_cfg);
+                                              exclude_patterns, opt_dict_size, opt_filter_cfg,
+                                              max_versions);
         }
         if (rc == 0 && want_rr) {
             bool rr_ok;
@@ -2502,14 +2617,33 @@ static int cli_main(int argc, char* argv[]) {
         return rc;
     } else if (cmd == "p") {
         return openrar::cli::print_archive_to_stdout(arc_path, files, exclude_patterns, password);
-    } else if (cmd == "x") {
-        std::string dest = files.empty() ? "" : files[0];
-        return openrar::cli::extract_archive(arc_path, dest, true, password, threads, keep_broken,
-                                             overwrite_mode, extract_symlinks, exclude_patterns);
-    } else if (cmd == "e") {
-        std::string dest = files.empty() ? "" : files[0];
-        return openrar::cli::extract_archive(arc_path, dest, false, password, threads, keep_broken,
-                                             overwrite_mode, extract_symlinks, exclude_patterns);
+    } else if (cmd == "x" || cmd == "e") {
+        std::string dest = "";
+        std::vector<std::string> file_patterns;
+        if (!files.empty()) {
+            if (files.size() == 1) {
+                if (files[0].find(';') != std::string::npos || files[0].find('*') != std::string::npos || files[0].find('?') != std::string::npos) {
+                    file_patterns.push_back(files[0]);
+                } else {
+                    dest = files[0];
+                }
+            } else {
+                const std::string& last = files.back();
+                if (last.back() == '/' || last.back() == '\\' || std::filesystem::is_directory(last)) {
+                    dest = last;
+                    for (size_t fi = 0; fi + 1 < files.size(); ++fi) {
+                        file_patterns.push_back(files[fi]);
+                    }
+                } else {
+                    for (size_t fi = 0; fi < files.size(); ++fi) {
+                        file_patterns.push_back(files[fi]);
+                    }
+                }
+            }
+        }
+        return openrar::cli::extract_archive(arc_path, dest, cmd == "x", password, threads, keep_broken,
+                                             overwrite_mode, extract_symlinks, exclude_patterns,
+                                             extract_version, file_patterns);
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
     } else if (cmd == "rr" || cmd.rfind("rr", 0) == 0) {

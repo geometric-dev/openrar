@@ -609,6 +609,7 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
 #define OPENRAR_ENTRY_FLAG_HAS_CTIME (1u << 6)
 #define OPENRAR_ENTRY_FLAG_HAS_ATIME (1u << 7)
 #define OPENRAR_ENTRY_FLAG_DIRECTORY (1u << 8)
+#define OPENRAR_ENTRY_FLAG_HAS_VERSION (1u << 9)
 
 #pragma pack(push, 1)
 typedef struct {

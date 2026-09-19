@@ -20,6 +20,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <unordered_map>
 
 #ifdef _WIN32
@@ -1259,7 +1260,7 @@ int ArchiveMutator::write_batch_add_ex(
     const std::filesystem::path& sfx_stub_path, const std::string& password, bool encrypt_headers,
     const std::function<void(size_t, const std::string&)>& on_write, bool solid,
     const std::vector<core::byte>& comment, std::string& detail_out, bool want_qo, bool want_ams,
-    const compress::FilterConfig& filter_cfg) {
+    const compress::FilterConfig& filter_cfg, int max_versions) {
     if (files.empty()) {
         detail_out = "no input files";
         return RAR_ERR_INVALID_ARG;
@@ -1342,19 +1343,88 @@ int ArchiveMutator::write_batch_add_ex(
             // the ones whose removal the guards must vet.
             const std::vector<ArchiveEntry>& entries = reader.entries();
             std::vector<char> replaced(entries.size(), 0);
-            for (size_t i = 0; i < entries.size(); ++i) {
-                if (entries[i].header.is_service) continue;
+            std::vector<std::optional<format::FileBlock>> updated_headers(entries.size(), std::nullopt);
+
+            if (max_versions < 0) {
+                for (size_t i = 0; i < entries.size(); ++i) {
+                    if (entries[i].header.is_service) continue;
+                    for (const auto& pf : files) {
+                        if (entries[i].header.file_name == pf.entry_name) {
+                            replaced[i] = 1;
+                            for (size_t j = i + 1; j < entries.size() && entries[j].header.is_service;
+                                 ++j) {
+                                if (entries[j].header.service_type != "QO" &&
+                                    entries[j].header.service_type != "CMT") {
+                                    replaced[j] = 1;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            } else {
+                // Versioning mode: max_versions >= 0
                 for (const auto& pf : files) {
-                    if (entries[i].header.file_name == pf.entry_name) {
-                        replaced[i] = 1;
-                        for (size_t j = i + 1; j < entries.size() && entries[j].header.is_service;
-                             ++j) {
-                            if (entries[j].header.service_type != "QO" &&
-                                entries[j].header.service_type != "CMT") {
-                                replaced[j] = 1;
+                    std::vector<size_t> hist_indices;
+                    std::vector<size_t> curr_indices;
+                    for (size_t i = 0; i < entries.size(); ++i) {
+                        if (entries[i].header.is_service) continue;
+                        if (entries[i].header.file_name == pf.entry_name) {
+                            if (entries[i].header.has_file_version) {
+                                hist_indices.push_back(i);
+                            } else {
+                                curr_indices.push_back(i);
                             }
                         }
-                        break;
+                    }
+
+                    // Sort historical versions by file_version
+                    std::sort(hist_indices.begin(), hist_indices.end(), [&](size_t a, size_t b) {
+                        return entries[a].header.file_version < entries[b].header.file_version;
+                    });
+
+                    // Any existing current (unversioned) entry becomes a historical version
+                    for (size_t c_idx : curr_indices) {
+                        hist_indices.push_back(c_idx);
+                    }
+
+                    // If max_versions > 0, prune oldest versions if total exceeds max_versions
+                    if (max_versions > 0 && hist_indices.size() > static_cast<size_t>(max_versions)) {
+                        size_t to_prune = hist_indices.size() - static_cast<size_t>(max_versions);
+                        for (size_t p = 0; p < to_prune; ++p) {
+                            size_t p_idx = hist_indices[p];
+                            replaced[p_idx] = 1;
+                            for (size_t j = p_idx + 1; j < entries.size() && entries[j].header.is_service; ++j) {
+                                if (entries[j].header.service_type != "QO" &&
+                                    entries[j].header.service_type != "CMT") {
+                                    replaced[j] = 1;
+                                }
+                            }
+                        }
+                        // The remaining historical versions are renumbered 1..max_versions
+                        for (size_t r = 0; r < static_cast<size_t>(max_versions); ++r) {
+                            size_t r_idx = hist_indices[to_prune + r];
+                            core::uint64 ver_num = r + 1;
+                            format::FileBlock fb = entries[r_idx].header;
+                            fb.has_file_version = true;
+                            fb.file_version = ver_num;
+                            updated_headers[r_idx] = fb;
+                        }
+                    } else {
+                        // max_versions == 0 (unlimited) or doesn't exceed limit
+                        core::uint64 next_ver = 1;
+                        for (size_t h_idx : hist_indices) {
+                            const format::FileBlock& fb = entries[h_idx].header;
+                            if (fb.has_file_version) {
+                                next_ver = std::max(next_ver, fb.file_version + 1);
+                            }
+                        }
+                        for (size_t c_idx : curr_indices) {
+                            format::FileBlock fb = entries[c_idx].header;
+                            fb.has_file_version = true;
+                            fb.file_version = next_ver++;
+                            updated_headers[c_idx] = fb;
+                        }
                     }
                 }
             }
@@ -1453,25 +1523,51 @@ int ArchiveMutator::write_batch_add_ex(
                     !comment.empty())
                     continue;
                 if (i < replaced.size() && replaced[i]) continue;
-                if (want_qo) {
-                    size_t offset = qo_arena.size();
-                    std::vector<core::byte> old_hdr(static_cast<size_t>(entry.header_size));
-                    if (reader.stream().seek(static_cast<core::int64>(entry.header_offset),
-                                             io::SeekOrigin::Begin) &&
-                        reader.stream().read(old_hdr.data(),
-                                             static_cast<size_t>(entry.header_size)) ==
-                            entry.header_size) {
-                        qo_arena.insert(qo_arena.end(), old_hdr.begin(), old_hdr.end());
-                        qo_indices.push_back(
-                            {out.tell(), offset, static_cast<size_t>(entry.header_size)});
+                if (i < updated_headers.size() && updated_headers[i].has_value()) {
+                    const format::FileBlock& updated_fb = *updated_headers[i];
+                    core::uint64 orig_pos = out.tell();
+                    auto block_bytes = format::HeaderWriter::serialize_file_block(updated_fb, 0);
+                    if (want_qo) {
+                        size_t offset = qo_arena.size();
+                        qo_arena.insert(qo_arena.end(), block_bytes.begin(), block_bytes.end());
+                        qo_indices.push_back({orig_pos, offset, block_bytes.size()});
                     }
-                }
-                if (!copy_stream_region(reader.stream(), out, entry.header_offset,
-                                        entry.header_size + entry.data_size)) {
-                    out.close();
-                    std::filesystem::remove(tmp_path);
-                    detail_out = "rewrite failed";
-                    return RAR_ERR_IO;
+                    if (!format::HeaderWriter::emit_block(out, block_bytes,
+                                                          header_encrypt_mode ? &hcw : nullptr)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "rewrite failed";
+                        return RAR_ERR_IO;
+                    }
+                    if (entry.data_size > 0) {
+                        if (!copy_stream_region(reader.stream(), out, entry.data_offset, entry.data_size)) {
+                            out.close();
+                            std::filesystem::remove(tmp_path);
+                            detail_out = "rewrite failed";
+                            return RAR_ERR_IO;
+                        }
+                    }
+                } else {
+                    if (want_qo) {
+                        size_t offset = qo_arena.size();
+                        std::vector<core::byte> old_hdr(static_cast<size_t>(entry.header_size));
+                        if (reader.stream().seek(static_cast<core::int64>(entry.header_offset),
+                                                 io::SeekOrigin::Begin) &&
+                            reader.stream().read(old_hdr.data(),
+                                                 static_cast<size_t>(entry.header_size)) ==
+                                entry.header_size) {
+                            qo_arena.insert(qo_arena.end(), old_hdr.begin(), old_hdr.end());
+                            qo_indices.push_back(
+                                {out.tell(), offset, static_cast<size_t>(entry.header_size)});
+                        }
+                    }
+                    if (!copy_stream_region(reader.stream(), out, entry.header_offset,
+                                            entry.header_size + entry.data_size)) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "rewrite failed";
+                        return RAR_ERR_IO;
+                    }
                 }
             }
             reader.close();
@@ -2020,10 +2116,10 @@ bool ArchiveMutator::write_batch_add(
     const std::filesystem::path& sfx_stub_path, const std::string& password, bool encrypt_headers,
     const std::function<void(size_t, const std::string&)>& on_write, bool solid,
     const std::vector<core::byte>& comment, bool want_qo, bool want_ams,
-    const compress::FilterConfig& filter_cfg) {
+    const compress::FilterConfig& filter_cfg, int max_versions) {
     std::string detail;
     return write_batch_add_ex(arc_path, files, sfx_stub_path, password, encrypt_headers, on_write,
-                              solid, comment, detail, want_qo, want_ams, filter_cfg) == RAR_OK;
+                              solid, comment, detail, want_qo, want_ams, filter_cfg, max_versions) == RAR_OK;
 }
 
 static bool add_or_move_file(const std::filesystem::path& arc_path,

@@ -204,7 +204,8 @@ public:
                     const std::function<void(size_t, const std::string&)>& on_write = {},
                     bool solid = false, const std::vector<core::byte>& comment = {},
                     bool want_qo = false, bool want_ams = false,
-                    const compress::FilterConfig& filter_cfg = {});
+                    const compress::FilterConfig& filter_cfg = {},
+                    int max_versions = -1);
 
     // Status-code variant of write_batch_add (open_ex pattern: the bool
     // overload above delegates here and drops the detail). Same atomicity
@@ -222,7 +223,8 @@ public:
                                   bool solid, const std::vector<core::byte>& comment,
                                   std::string& detail_out, bool want_qo = false,
                                   bool want_ams = false,
-                                  const compress::FilterConfig& filter_cfg = {});
+                                  const compress::FilterConfig& filter_cfg = {},
+                                  int max_versions = -1);
 
     // SFX stub upper bound: the reader locates the signature behind the stub
     // by scanning at most 4 MiB (10-sfx.md:15), so a larger module would
