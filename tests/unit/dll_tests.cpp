@@ -280,6 +280,7 @@ static void test_abi_features() {
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_LIST_PASSWORD) != 0);
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS) != 0);
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_REPAIR) != 0);
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_CREATE) != 0);
     std::cout << "PASS test_abi_features\n";
 }
 
@@ -767,6 +768,84 @@ static void test_archive_handle_set_limits() {
     std::cout << "PASS test_archive_handle_set_limits\n";
 }
 
+static void test_archive_create() {
+    auto temp_dir = std::filesystem::temp_directory_path() / "openrar_dll_create_test";
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::create_directories(temp_dir, ec);
+
+    auto src1 = temp_dir / "file1.txt";
+    auto src2 = temp_dir / "file2.txt";
+    {
+        FILE* f1 = std::fopen(src1.string().c_str(), "wb");
+        assert(f1);
+        std::fputs("first test file payload for openrar create API", f1);
+        std::fclose(f1);
+
+        FILE* f2 = std::fopen(src2.string().c_str(), "wb");
+        assert(f2);
+        std::fputs("second test file payload with different contents", f2);
+        std::fclose(f2);
+    }
+
+    auto out_rar = temp_dir / "created.rar";
+    std::string s1 = src1.string();
+    std::string s2 = src2.string();
+    const char* src_paths[] = {s1.c_str(), s2.c_str()};
+    const char* arc_names[] = {"file1.txt", "sub/file2.txt"};
+
+    // 1. Basic create with method 3 and default dictionary
+    int rc = openrar_archive_create_file(out_rar.string().c_str(), src_paths, arc_names, 2, 3, 0);
+    assert(rc == RAR_OK);
+    assert(std::filesystem::exists(out_rar));
+    assert(std::filesystem::file_size(out_rar) > 0);
+
+    // Verify using open_file handle
+    uint32_t h = openrar_archive_open_file(out_rar.string().c_str(), nullptr, nullptr, nullptr, nullptr);
+    assert(h != 0);
+    uint32_t count = 0;
+    void* entries = nullptr;
+    void* paths = nullptr;
+    size_t paths_sz = 0;
+    rc = openrar_archive_handle_list(h, &count, &entries, &paths, &paths_sz);
+    assert(rc == RAR_OK);
+    assert(count == 2);
+    openrar_archive_list_free(entries, paths, paths_sz);
+
+    // Test extracting member 0 to path
+    auto ext1 = temp_dir / "extracted1.txt";
+    rc = openrar_archive_handle_extract_to_path(h, 0, ext1.string().c_str(), nullptr, nullptr, nullptr);
+    assert(rc == RAR_OK);
+    assert(std::filesystem::exists(ext1));
+    assert(std::filesystem::file_size(ext1) == std::filesystem::file_size(src1));
+
+    openrar_archive_close(h);
+
+    // 2. Test create_file_ex with password and solid mode
+    auto out_pw_rar = temp_dir / "created_pw.rar";
+    rc = openrar_archive_create_file_ex(out_pw_rar.string().c_str(), src_paths, arc_names, 2, 3,
+                                        1024 * 1024, "secret123", /*encrypt_headers=*/0,
+                                        /*solid=*/1, nullptr, nullptr, nullptr);
+    assert(rc == RAR_OK);
+    assert(std::filesystem::exists(out_pw_rar));
+
+    // Verify encrypted archive requires password
+    uint32_t h_pw = openrar_archive_open_file(out_pw_rar.string().c_str(), "secret123", nullptr, nullptr, nullptr);
+    assert(h_pw != 0);
+    rc = openrar_archive_handle_test(h_pw, 0, nullptr, nullptr, nullptr);
+    assert(rc == RAR_OK);
+    openrar_archive_close(h_pw);
+
+    // 3. Test add_files_file appending to an existing archive
+    const char* add_srcs[] = {s1.c_str()};
+    const char* add_names[] = {"added.txt"};
+    rc = openrar_archive_add_files_file(out_rar.string().c_str(), add_srcs, add_names, 1, 3, 2);
+    assert(rc == RAR_OK);
+
+    std::filesystem::remove_all(temp_dir, ec);
+    std::cout << "PASS test_archive_create\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -796,6 +875,7 @@ int main() {
     test_b1_durable_write_collision();
     test_archive_handle_set_limits();
     test_archive_repair();
+    test_archive_create();
     std::cout << "ALL DLL TESTS PASSED\n";
     return 0;
 }
