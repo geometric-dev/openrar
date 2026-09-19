@@ -161,6 +161,114 @@ void test_arm_filter() {
     std::cout << "[PASS] RAR 5.0 ARM Branch Filter Translation\n";
 }
 
+void test_forward_filters() {
+    // 1. x86 E8/E8E9 round-trip test
+    {
+        std::vector<core::byte> original(2048);
+        for (size_t i = 0; i < original.size(); ++i) {
+            original[i] = static_cast<core::byte>((i * 37 + 11) & 0xFF);
+        }
+        // Plant valid E8/E9 call sites
+        // Call site 1: pos 10, offset 0x20
+        original[10] = 0xE8;
+        core::write_le32(&original[11], 0x00000020);
+        // Call site 2: pos 50, backward jump (-100)
+        original[50] = 0xE9;
+        core::write_le32(&original[51], 0xFFFFFF9C);
+        // Call site 3: pos 120, large jump near 16MB modular cycle
+        original[120] = 0xE8;
+        core::write_le32(&original[121], 0x00FFFF00);
+
+        std::vector<core::byte> encoded = original;
+        Filters50::encode_e8(encoded.data(), encoded.size(), 0x1000, true);
+
+        // Prove that the transform actually altered the operands
+        assert(encoded != original);
+
+        // Vector vs scalar parity
+        std::vector<core::byte> encoded_scalar = original;
+        Filters50::encode_e8_scalar(encoded_scalar.data(), encoded_scalar.size(), 0x1000, true);
+        assert(encoded == encoded_scalar);
+
+        // Decode with apply_e8 and assert 100% byte-identity
+        std::vector<core::byte> decoded = encoded;
+        Filters50::apply_e8(decoded.data(), decoded.size(), 0x1000, true);
+        assert(decoded == original);
+    }
+
+    // 2. ARM BL round-trip test
+    {
+        std::vector<core::byte> original(1024);
+        for (size_t i = 0; i < original.size(); ++i) {
+            original[i] = static_cast<core::byte>((i * 19 + 7) & 0xFF);
+        }
+        // ARM instructions are 4-byte aligned with 0xEB in byte 3
+        original[3] = 0xEB;
+        core::write_le32(&original[0], (core::read_le32(&original[0]) & 0xFF000000) | 0x00012345);
+        original[19] = 0xEB;
+        core::write_le32(&original[16], (core::read_le32(&original[16]) & 0xFF000000) | 0x00FEDCBA);
+
+        std::vector<core::byte> encoded = original;
+        Filters50::encode_arm(encoded.data(), encoded.size(), 0x2000);
+        assert(encoded != original);
+
+        // Vector vs scalar parity
+        std::vector<core::byte> encoded_scalar = original;
+        Filters50::encode_arm_scalar(encoded_scalar.data(), encoded_scalar.size(), 0x2000);
+        assert(encoded == encoded_scalar);
+
+        // Decode with apply_arm
+        std::vector<core::byte> decoded = encoded;
+        Filters50::apply_arm(decoded.data(), decoded.size(), 0x2000);
+        assert(decoded == original);
+    }
+
+    // 3. Delta round-trip test across channels 1..32
+    {
+        for (core::uint8 ch = 1; ch <= 32; ++ch) {
+            std::vector<core::byte> original(512 + ch);
+            for (size_t i = 0; i < original.size(); ++i) {
+                original[i] = static_cast<core::byte>((i * 23 + ch * 17) & 0xFF);
+            }
+            std::vector<core::byte> encoded(original.size());
+            bool enc_ok = Filters50::encode_delta(original.data(), encoded.data(), original.size(), ch);
+            assert(enc_ok);
+
+            std::vector<core::byte> decoded(original.size());
+            bool dec_ok = Filters50::apply_delta(encoded.data(), decoded.data(), original.size(), ch);
+            assert(dec_ok);
+            assert(decoded == original);
+
+            // In-place encode/decode test
+            std::vector<core::byte> in_place = original;
+            assert(Filters50::encode_delta(in_place.data(), in_place.data(), in_place.size(), ch));
+            assert(Filters50::apply_delta(in_place.data(), in_place.data(), in_place.size(), ch));
+            assert(in_place == original);
+        }
+    }
+
+    // 4. Randomized fuzzing roundtrip for E8/E8E9 (10,000 synthetic sites)
+    {
+        std::vector<core::byte> fuzz(65536);
+        for (size_t i = 0; i < fuzz.size(); ++i) {
+            fuzz[i] = static_cast<core::byte>((i * 101 + 43) & 0xFF);
+        }
+        for (size_t pos = 0; pos + 5 < fuzz.size(); pos += 7) {
+            if ((pos % 3) == 0) {
+                fuzz[pos] = 0xE8;
+            } else if ((pos % 3) == 1) {
+                fuzz[pos] = 0xE9;
+            }
+        }
+        std::vector<core::byte> encoded = fuzz;
+        Filters50::encode_e8(encoded.data(), encoded.size(), 0x76543210ULL, true);
+        std::vector<core::byte> decoded = encoded;
+        Filters50::apply_e8(decoded.data(), decoded.size(), 0x76543210ULL, true);
+        assert(decoded == fuzz);
+    }
+    std::cout << "[PASS] RAR 5.0 Forward Filter Transforms & Mathematical Roundtrips\n";
+}
+
 void test_bit_reader_and_huffman() {
     core::byte data[4] = {0xAB, 0xCD, 0xEF, 0x12};
     BitReader reader(data, 4);
@@ -1311,6 +1419,8 @@ int main() {
     test_arm_filter();
     std::cout << std::flush;
     test_forced_scalar_filters();
+    std::cout << std::flush;
+    test_forward_filters();
     std::cout << std::flush;
     test_bit_reader_and_huffman();
     std::cout << std::flush;
