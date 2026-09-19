@@ -24,173 +24,286 @@ PAYLOAD_PATH = os.path.abspath("payload_4gb.dat")
 ARC_OPENRAR = os.path.abspath("bench_openrar_4gb.rar")
 ARC_WINRAR = os.path.abspath("bench_winrar_4gb.rar")
 
+METHOD_NAMES = {
+    0: "m0 (Store)",
+    1: "m1 (Fastest)",
+    2: "m2 (Fast)",
+    3: "m3 (Normal)",
+    4: "m4 (Good)",
+    5: "m5 (Best)",
+}
+
+PRIORITY_FLAGS = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0) if sys.platform == "win32" else 0
+
+if sys.platform == "win32":
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), 0x00004000) # BELOW_NORMAL_PRIORITY_CLASS
+    except Exception:
+        pass
+
 def main():
-    print("=" * 70)
-    print("        OpenRAR v1.10.0 vs WinRAR 7.20 x64: 4.0 GiB Benchmark")
-    print("=" * 70)
+    print("=" * 80)
+    print("        OpenRAR v1.13.0 vs WinRAR 7.20 x64: 4.0 GiB Benchmark (m0 - m5)")
+    print("        (Running with BELOW_NORMAL priority to keep IDE/UI responsive)")
+    print("=" * 80)
     print(f"OpenRAR Binary: {OPENRAR}")
     print(f"WinRAR Binary : {WINRAR}")
 
     initial_free = get_free_space_gb()
-    print(f"Initial Free Disk Space: {initial_free:.2f} GB")
-    if initial_free < 5.0:
+    print(f"Initial Free Disk Space: {initial_free:.2f} GB", flush=True)
+    if initial_free < 5.0 and not os.path.exists(PAYLOAD_PATH):
         print(f"ERROR: Insufficient free space ({initial_free:.2f} GB < 5.0 GB minimum safety floor).")
         sys.exit(1)
 
     TOTAL_MB = 4096
     TOTAL_BYTES = TOTAL_MB * 1024 * 1024
 
+    methods = [0, 1, 2, 3, 4, 5]
+    if len(sys.argv) > 1:
+        custom_methods = [int(x) for x in sys.argv[1:] if x.isdigit() and int(x) in range(6)]
+        if custom_methods:
+            methods = custom_methods
+
+    print(f"Target Compression Methods: {[f'-m{m}' for m in methods]}\n", flush=True)
+
+    results = {}
+
     try:
-        # Step 1: Generate 4 GiB synthetic benchmark file
-        print(f"\n[1/6] Generating 4.0 GiB ({TOTAL_MB} MiB) benchmark payload...")
-        t0 = time.perf_counter()
-        
-        # Build 1 MiB chunk of structured, realistic prose and code patterns
-        base_unit = (
-            "OpenRAR high performance engine streaming compression benchmark test.\n"
-            "The quick brown fox jumps over the lazy dog. 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ\n"
-            "for (int i = 0; i < 1000; ++i) { sum += buffer[i] * matrix[i][j]; }\n"
-            "std::vector<uint8_t> payload(65536); aes.encrypt_cbc(payload.data(), 65536, iv);\n"
-        ).encode("utf-8")
-        repeats = (1024 * 1024) // len(base_unit)
-        chunk_1mb = (base_unit * (repeats + 1))[:1024 * 1024]
-        
-        with open(PAYLOAD_PATH, "wb") as f:
-            for mb in range(TOTAL_MB):
-                f.write(chunk_1mb)
-                if (mb + 1) % 512 == 0:
-                    print(f"  ... written {mb + 1} / {TOTAL_MB} MiB ({(mb + 1) / TOTAL_MB * 100:.0f}%)")
-
-        gen_time = time.perf_counter() - t0
-        actual_bytes = os.path.getsize(PAYLOAD_PATH)
-        print(f"Payload created: {actual_bytes / (1024**3):.2f} GiB in {gen_time:.2f}s ({TOTAL_MB / gen_time:.1f} MB/s)")
-        print(f"Free disk space with payload: {get_free_space_gb():.2f} GB")
-
-        results = {}
-
-        # Step 2: OpenRAR Compression Benchmark (-m3 normal)
-        print("\n[2/6] Running OpenRAR -m3 compression on 4.0 GiB file...")
-        if os.path.exists(ARC_OPENRAR):
-            os.remove(ARC_OPENRAR)
-        t0 = time.perf_counter()
-        p = subprocess.run([OPENRAR, "a", "-m3", "-q", ARC_OPENRAR, PAYLOAD_PATH], capture_output=True, text=True)
-        t_openrar_comp = time.perf_counter() - t0
-        if p.returncode != 0:
-            print(f"OpenRAR FAILED (code {p.returncode}): {p.stderr}")
-            sys.exit(1)
-        openrar_arc_size = os.path.getsize(ARC_OPENRAR)
-        openrar_mb_s = TOTAL_MB / t_openrar_comp
-        print(f"  -> OpenRAR -m3 Time : {t_openrar_comp:.2f}s ({openrar_mb_s:.1f} MB/s)")
-        print(f"  -> Archive Size     : {openrar_arc_size / (1024*1024):.2f} MiB (ratio: {openrar_arc_size / actual_bytes * 100:.2f}%)")
-        results["openrar_comp_time"] = t_openrar_comp
-        results["openrar_comp_speed"] = openrar_mb_s
-        results["openrar_arc_size"] = openrar_arc_size
-
-        # Step 3: WinRAR Compression Benchmark (-m3 normal)
-        print("\n[3/6] Running WinRAR -m3 compression on 4.0 GiB file...")
-        if os.path.exists(ARC_WINRAR):
-            os.remove(ARC_WINRAR)
-        t0 = time.perf_counter()
-        p = subprocess.run([WINRAR, "a", "-m3", "-inul", ARC_WINRAR, PAYLOAD_PATH], capture_output=True, text=True)
-        t_winrar_comp = time.perf_counter() - t0
-        if p.returncode != 0:
-            print(f"WinRAR FAILED (code {p.returncode}): {p.stderr}")
-            sys.exit(1)
-        winrar_arc_size = os.path.getsize(ARC_WINRAR)
-        winrar_mb_s = TOTAL_MB / t_winrar_comp
-        print(f"  -> WinRAR -m3 Time  : {t_winrar_comp:.2f}s ({winrar_mb_s:.1f} MB/s)")
-        print(f"  -> Archive Size     : {winrar_arc_size / (1024*1024):.2f} MiB (ratio: {winrar_arc_size / actual_bytes * 100:.2f}%)")
-        results["winrar_comp_time"] = t_winrar_comp
-        results["winrar_comp_speed"] = winrar_mb_s
-        results["winrar_arc_size"] = winrar_arc_size
-
-        # Step 4: Cross-Verification & Self-Testing
-        print("\n[4/6] Verifying archive decodability & cross-compatibility...")
-        # OpenRAR verifies its own archive
-        p = subprocess.run([OPENRAR, "t", "-q", ARC_OPENRAR], capture_output=True, text=True)
-        print(f"  -> OpenRAR self-test     : {'PASS' if p.returncode == 0 else 'FAIL'}")
-        assert p.returncode == 0
-        # Reference UnRAR verifies OpenRAR's archive
-        p = subprocess.run([UNRAR, "t", "-y", ARC_OPENRAR], capture_output=True, text=True)
-        print(f"  -> UnRAR verifies OpenRAR: {'PASS' if p.returncode == 0 else 'FAIL'}")
-        assert p.returncode == 0
-        # OpenRAR verifies WinRAR's archive
-        p = subprocess.run([OPENRAR, "t", "-q", ARC_WINRAR], capture_output=True, text=True)
-        print(f"  -> OpenRAR verifies WinRAR: {'PASS' if p.returncode == 0 else 'FAIL'}")
-        assert p.returncode == 0
-
-        # Step 5: Decompression Speed Benchmark (stdout to NUL)
-        print("\n[5/6] Benchmarking pure decompression throughput (streaming 4.0 GiB to NUL)...")
-        # OpenRAR decompression via 'p' command
-        t0 = time.perf_counter()
-        with open("nul", "wb") as devnull:
-            p = subprocess.run([OPENRAR, "p", ARC_OPENRAR], stdout=devnull, stderr=subprocess.PIPE)
-        t_openrar_decomp = time.perf_counter() - t0
-        openrar_decomp_speed = TOTAL_MB / t_openrar_decomp
-        print(f"  -> OpenRAR Decompress Time: {t_openrar_decomp:.2f}s ({openrar_decomp_speed:.1f} MB/s)")
-        results["openrar_decomp_time"] = t_openrar_decomp
-        results["openrar_decomp_speed"] = openrar_decomp_speed
-
-        # WinRAR decompression via 'p' command
-        t0 = time.perf_counter()
-        with open("nul", "wb") as devnull:
-            p = subprocess.run([WINRAR, "p", "-inul", ARC_WINRAR], stdout=devnull, stderr=subprocess.PIPE)
-        t_winrar_decomp = time.perf_counter() - t0
-        winrar_decomp_speed = TOTAL_MB / t_winrar_decomp
-        print(f"  -> WinRAR Decompress Time : {t_winrar_decomp:.2f}s ({winrar_decomp_speed:.1f} MB/s)")
-        results["winrar_decomp_time"] = t_winrar_decomp
-        results["winrar_decomp_speed"] = winrar_decomp_speed
-
-        # Step 6: Stored Mode (-m0) Streaming Throughput Benchmark
-        print("\n[6/6] Benchmarking uncompressed streaming (-m0 store) on 4.0 GiB file...")
-        arc_store_openrar = "bench_openrar_m0.rar"
-        arc_store_winrar = "bench_winrar_m0.rar"
-        try:
+        # Step 1: Check or generate 4 GiB synthetic benchmark file
+        if os.path.exists(PAYLOAD_PATH) and os.path.getsize(PAYLOAD_PATH) == TOTAL_BYTES:
+            print(f"[Payload] Reusing existing 4.0 GiB benchmark payload: {PAYLOAD_PATH}", flush=True)
+            actual_bytes = os.path.getsize(PAYLOAD_PATH)
+        else:
+            print(f"[Payload] Generating 4.0 GiB ({TOTAL_MB} MiB) benchmark payload...", flush=True)
             t0 = time.perf_counter()
-            subprocess.run([OPENRAR, "a", "-m0", "-q", arc_store_openrar, PAYLOAD_PATH], check=True)
-            t_openrar_m0 = time.perf_counter() - t0
-            openrar_m0_speed = TOTAL_MB / t_openrar_m0
-            print(f"  -> OpenRAR -m0 Time       : {t_openrar_m0:.2f}s ({openrar_m0_speed:.1f} MB/s)")
-            results["openrar_m0_speed"] = openrar_m0_speed
-            results["openrar_m0_time"] = t_openrar_m0
-        finally:
-            if os.path.exists(arc_store_openrar):
-                os.remove(arc_store_openrar)
+            base_unit = (
+                "OpenRAR high performance engine streaming compression benchmark test.\n"
+                "The quick brown fox jumps over the lazy dog. 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ\n"
+                "for (int i = 0; i < 1000; ++i) { sum += buffer[i] * matrix[i][j]; }\n"
+                "std::vector<uint8_t> payload(65536); aes.encrypt_cbc(payload.data(), 65536, iv);\n"
+            ).encode("utf-8")
+            repeats = (1024 * 1024) // len(base_unit)
+            chunk_1mb = (base_unit * (repeats + 1))[:1024 * 1024]
+            chunk_64mb = chunk_1mb * 64
+            
+            with open(PAYLOAD_PATH, "wb") as f:
+                for i in range(TOTAL_MB // 64):
+                    f.write(chunk_64mb)
+                    written_mb = (i + 1) * 64
+                    if written_mb % 1024 == 0:
+                        print(f"  ... written {written_mb} / {TOTAL_MB} MiB ({written_mb / TOTAL_MB * 100:.0f}%)", flush=True)
 
-        try:
-            t0 = time.perf_counter()
-            subprocess.run([WINRAR, "a", "-m0", "-inul", arc_store_winrar, PAYLOAD_PATH], check=True)
-            t_winrar_m0 = time.perf_counter() - t0
-            winrar_m0_speed = TOTAL_MB / t_winrar_m0
-            print(f"  -> WinRAR -m0 Time        : {t_winrar_m0:.2f}s ({winrar_m0_speed:.1f} MB/s)")
-            results["winrar_m0_speed"] = winrar_m0_speed
-            results["winrar_m0_time"] = t_winrar_m0
-        finally:
-            if os.path.exists(arc_store_winrar):
-                os.remove(arc_store_winrar)
+            gen_time = time.perf_counter() - t0
+            actual_bytes = os.path.getsize(PAYLOAD_PATH)
+            print(f"Payload created: {actual_bytes / (1024**3):.2f} GiB in {gen_time:.2f}s ({TOTAL_MB / gen_time:.1f} MB/s)", flush=True)
 
-        # Print Final Summary Table
-        print("\n" + "=" * 70)
-        print("                  FINAL 4.0 GiB BENCHMARK RESULTS")
-        print("=" * 70)
-        print(f"{'Metric':<30} | {'OpenRAR v1.10.0':<16} | {'WinRAR 7.20 x64':<16} | {'Comparison':<12}")
-        print("-" * 70)
-        
-        comp_ratio = f"{results['openrar_comp_speed'] / results['winrar_comp_speed'] * 100:.1f}%"
-        print(f"{'Compression (-m3) Throughput':<30} | {results['openrar_comp_speed']:>10.1f} MB/s   | {results['winrar_comp_speed']:>10.1f} MB/s   | {comp_ratio:<12}")
-        
-        decomp_ratio = f"{results['openrar_decomp_speed'] / results['winrar_decomp_speed'] * 100:.1f}%"
-        print(f"{'Decompression Throughput':<30} | {results['openrar_decomp_speed']:>10.1f} MB/s   | {results['winrar_decomp_speed']:>10.1f} MB/s   | {decomp_ratio:<12}")
-        
-        m0_ratio = f"{results['openrar_m0_speed'] / results['winrar_m0_speed'] * 100:.1f}%"
-        print(f"{'Store (-m0) Streaming':<30} | {results['openrar_m0_speed']:>10.1f} MB/s   | {results['winrar_m0_speed']:>10.1f} MB/s   | {m0_ratio:<12}")
-        
-        print(f"{'Archive Size':<30} | {results['openrar_arc_size'] / 1024 / 1024:>10.2f} MiB  | {results['winrar_arc_size'] / 1024 / 1024:>10.2f} MiB  | {'Matched' if abs(results['openrar_arc_size'] - results['winrar_arc_size']) < 1024*1024 else 'Diff':<12}")
-        print(f"{'Cross-Decodability':<30} | {'100% OK':<16} | {'100% OK':<16} | {'Identical':<12}")
-        print("=" * 70)
+        print(f"Current free disk space: {get_free_space_gb():.2f} GB\n", flush=True)
+
+        for m in methods:
+            m_name = METHOD_NAMES.get(m, f"m{m}")
+            print("-" * 80)
+            print(f"  BENCHMARKING LEVEL: -{m_name}")
+            print("-" * 80, flush=True)
+            m_res = {}
+
+            # Short breather to let OS I/O queues and pagecache settle
+            time.sleep(1.0)
+
+            if m == 0:
+                # For m0 (Store), archives are 4.0 GiB uncompressed.
+                # To prevent disk exhaustion, test OpenRAR and WinRAR sequentially with immediate cleanup.
+                print(f"  [1/4] Running OpenRAR -m0 compression...", flush=True)
+                if os.path.exists(ARC_OPENRAR):
+                    os.remove(ARC_OPENRAR)
+                t0 = time.perf_counter()
+                p = subprocess.run([OPENRAR, "a", "-m0", "-q", ARC_OPENRAR, PAYLOAD_PATH],
+                                   capture_output=True, text=True, creationflags=PRIORITY_FLAGS)
+                t_openrar_comp = time.perf_counter() - t0
+                if p.returncode != 0:
+                    print(f"  OpenRAR FAILED (code {p.returncode}): {p.stderr}")
+                    sys.exit(1)
+                openrar_arc_size = os.path.getsize(ARC_OPENRAR)
+                openrar_comp_speed = TOTAL_MB / t_openrar_comp
+                m_res["openrar_comp_time"] = t_openrar_comp
+                m_res["openrar_comp_speed"] = openrar_comp_speed
+                m_res["openrar_arc_size"] = openrar_arc_size
+                m_res["openrar_ratio"] = (openrar_arc_size / actual_bytes) * 100
+                print(f"  -> OpenRAR Comp: {t_openrar_comp:6.2f}s | {openrar_comp_speed:7.1f} MB/s | Size: {openrar_arc_size / (1024*1024):7.2f} MiB ({m_res['openrar_ratio']:5.2f}%)", flush=True)
+
+                print(f"  [2/4] Testing OpenRAR -m0 decompression & verification...", flush=True)
+                p_openrar_self = subprocess.run([OPENRAR, "t", "-q", ARC_OPENRAR], capture_output=True, text=True, creationflags=PRIORITY_FLAGS)
+                p_unrar_openrar = subprocess.run([UNRAR, "t", "-y", ARC_OPENRAR], capture_output=True, text=True, creationflags=PRIORITY_FLAGS)
+
+                t0 = time.perf_counter()
+                with open("nul", "wb") as devnull:
+                    p = subprocess.run([OPENRAR, "p", ARC_OPENRAR], stdout=devnull, stderr=subprocess.DEVNULL, creationflags=PRIORITY_FLAGS)
+                t_openrar_decomp = time.perf_counter() - t0
+                openrar_decomp_speed = TOTAL_MB / t_openrar_decomp
+                m_res["openrar_decomp_time"] = t_openrar_decomp
+                m_res["openrar_decomp_speed"] = openrar_decomp_speed
+                print(f"  -> OpenRAR Decomp: {t_openrar_decomp:6.2f}s ({openrar_decomp_speed:7.1f} MB/s)", flush=True)
+
+                # Delete OpenRAR archive immediately so disk space is completely freed before WinRAR runs
+                if os.path.exists(ARC_OPENRAR):
+                    os.remove(ARC_OPENRAR)
+                time.sleep(1.0)
+
+                print(f"  [3/4] Running WinRAR -m0 compression...", flush=True)
+                if os.path.exists(ARC_WINRAR):
+                    os.remove(ARC_WINRAR)
+                t0 = time.perf_counter()
+                p = subprocess.run([WINRAR, "a", "-m0", "-inul", ARC_WINRAR, PAYLOAD_PATH],
+                                   capture_output=True, text=True, creationflags=PRIORITY_FLAGS)
+                t_winrar_comp = time.perf_counter() - t0
+                if p.returncode != 0:
+                    print(f"  WinRAR FAILED (code {p.returncode}): {p.stderr}")
+                    sys.exit(1)
+                winrar_arc_size = os.path.getsize(ARC_WINRAR)
+                winrar_comp_speed = TOTAL_MB / t_winrar_comp
+                m_res["winrar_comp_time"] = t_winrar_comp
+                m_res["winrar_comp_speed"] = winrar_comp_speed
+                m_res["winrar_arc_size"] = winrar_arc_size
+                m_res["winrar_ratio"] = (winrar_arc_size / actual_bytes) * 100
+                print(f"  -> WinRAR  Comp: {t_winrar_comp:6.2f}s | {winrar_comp_speed:7.1f} MB/s | Size: {winrar_arc_size / (1024*1024):7.2f} MiB ({m_res['winrar_ratio']:5.2f}%)", flush=True)
+
+                print(f"  [4/4] Testing WinRAR -m0 decompression & verification...", flush=True)
+                p_openrar_winrar = subprocess.run([OPENRAR, "t", "-q", ARC_WINRAR], capture_output=True, text=True, creationflags=PRIORITY_FLAGS)
+
+                t0 = time.perf_counter()
+                with open("nul", "wb") as devnull:
+                    p = subprocess.run([WINRAR, "p", "-inul", ARC_WINRAR], stdout=devnull, stderr=subprocess.DEVNULL, creationflags=PRIORITY_FLAGS)
+                t_winrar_decomp = time.perf_counter() - t0
+                winrar_decomp_speed = TOTAL_MB / t_winrar_decomp
+                m_res["winrar_decomp_time"] = t_winrar_decomp
+                m_res["winrar_decomp_speed"] = winrar_decomp_speed
+                print(f"  -> WinRAR Decomp: {t_winrar_decomp:6.2f}s ({winrar_decomp_speed:7.1f} MB/s)", flush=True)
+
+                all_ok = (p_openrar_self.returncode == 0 and p_unrar_openrar.returncode == 0 and p_openrar_winrar.returncode == 0)
+                m_res["verify"] = "PASS" if all_ok else "FAIL"
+                print(f"  -> Dual-Oracle Integrity & Cross-Decodability: {m_res['verify']}\n", flush=True)
+
+                if os.path.exists(ARC_WINRAR):
+                    os.remove(ARC_WINRAR)
+                time.sleep(1.0)
+
+            else:
+                # For m1..m5, compressed archives are only ~2 MiB, taking negligible disk space.
+                # 1. OpenRAR Compression
+                if os.path.exists(ARC_OPENRAR):
+                    os.remove(ARC_OPENRAR)
+                print(f"  [1/4] Running OpenRAR -m{m} compression...", flush=True)
+                t0 = time.perf_counter()
+                p = subprocess.run([OPENRAR, "a", f"-m{m}", "-q", ARC_OPENRAR, PAYLOAD_PATH],
+                                   capture_output=True, text=True, creationflags=PRIORITY_FLAGS)
+                t_openrar_comp = time.perf_counter() - t0
+                if p.returncode != 0:
+                    print(f"  OpenRAR FAILED (code {p.returncode}): {p.stderr}")
+                    sys.exit(1)
+                openrar_arc_size = os.path.getsize(ARC_OPENRAR)
+                openrar_comp_speed = TOTAL_MB / t_openrar_comp
+                m_res["openrar_comp_time"] = t_openrar_comp
+                m_res["openrar_comp_speed"] = openrar_comp_speed
+                m_res["openrar_arc_size"] = openrar_arc_size
+                m_res["openrar_ratio"] = (openrar_arc_size / actual_bytes) * 100
+                print(f"  -> OpenRAR Comp: {t_openrar_comp:6.2f}s | {openrar_comp_speed:7.1f} MB/s | Size: {openrar_arc_size / (1024*1024):7.2f} MiB ({m_res['openrar_ratio']:5.2f}%)", flush=True)
+
+                time.sleep(0.5)
+
+                # 2. WinRAR Compression
+                if os.path.exists(ARC_WINRAR):
+                    os.remove(ARC_WINRAR)
+                print(f"  [2/4] Running WinRAR -m{m} compression...", flush=True)
+                t0 = time.perf_counter()
+                p = subprocess.run([WINRAR, "a", f"-m{m}", "-inul", ARC_WINRAR, PAYLOAD_PATH],
+                                   capture_output=True, text=True, creationflags=PRIORITY_FLAGS)
+                t_winrar_comp = time.perf_counter() - t0
+                if p.returncode != 0:
+                    print(f"  WinRAR FAILED (code {p.returncode}): {p.stderr}")
+                    sys.exit(1)
+                winrar_arc_size = os.path.getsize(ARC_WINRAR)
+                winrar_comp_speed = TOTAL_MB / t_winrar_comp
+                m_res["winrar_comp_time"] = t_winrar_comp
+                m_res["winrar_comp_speed"] = winrar_comp_speed
+                m_res["winrar_arc_size"] = winrar_arc_size
+                m_res["winrar_ratio"] = (winrar_arc_size / actual_bytes) * 100
+                print(f"  -> WinRAR  Comp: {t_winrar_comp:6.2f}s | {winrar_comp_speed:7.1f} MB/s | Size: {winrar_arc_size / (1024*1024):7.2f} MiB ({m_res['winrar_ratio']:5.2f}%)", flush=True)
+
+                time.sleep(0.5)
+
+                # 3. Cross-Verification
+                print(f"  [3/4] Dual-oracle cross-verification...", flush=True)
+                p_openrar_self = subprocess.run([OPENRAR, "t", "-q", ARC_OPENRAR], capture_output=True, text=True, creationflags=PRIORITY_FLAGS)
+                p_unrar_openrar = subprocess.run([UNRAR, "t", "-y", ARC_OPENRAR], capture_output=True, text=True, creationflags=PRIORITY_FLAGS)
+                p_openrar_winrar = subprocess.run([OPENRAR, "t", "-q", ARC_WINRAR], capture_output=True, text=True, creationflags=PRIORITY_FLAGS)
+                all_ok = (p_openrar_self.returncode == 0 and p_unrar_openrar.returncode == 0 and p_openrar_winrar.returncode == 0)
+                m_res["verify"] = "PASS" if all_ok else "FAIL"
+                if not all_ok:
+                    print(f"  -> VERIFY FAIL: openrar_self={p_openrar_self.returncode}, unrar_openrar={p_unrar_openrar.returncode}, openrar_winrar={p_openrar_winrar.returncode}")
+                else:
+                    print(f"  -> Dual-Oracle Integrity & Cross-Decodability: 100% PASS", flush=True)
+
+                time.sleep(0.5)
+
+                # 4. Decompression Throughput
+                print(f"  [4/4] Decompression throughput...", flush=True)
+                t0 = time.perf_counter()
+                with open("nul", "wb") as devnull:
+                    p = subprocess.run([OPENRAR, "p", ARC_OPENRAR], stdout=devnull, stderr=subprocess.DEVNULL, creationflags=PRIORITY_FLAGS)
+                t_openrar_decomp = time.perf_counter() - t0
+                openrar_decomp_speed = TOTAL_MB / t_openrar_decomp
+                m_res["openrar_decomp_time"] = t_openrar_decomp
+                m_res["openrar_decomp_speed"] = openrar_decomp_speed
+
+                time.sleep(0.5)
+
+                t0 = time.perf_counter()
+                with open("nul", "wb") as devnull:
+                    p = subprocess.run([WINRAR, "p", "-inul", ARC_WINRAR], stdout=devnull, stderr=subprocess.DEVNULL, creationflags=PRIORITY_FLAGS)
+                t_winrar_decomp = time.perf_counter() - t0
+                winrar_decomp_speed = TOTAL_MB / t_winrar_decomp
+                m_res["winrar_decomp_time"] = t_winrar_decomp
+                m_res["winrar_decomp_speed"] = winrar_decomp_speed
+                print(f"  -> OpenRAR Decomp: {t_openrar_decomp:6.2f}s ({openrar_decomp_speed:7.1f} MB/s) | WinRAR Decomp: {t_winrar_decomp:6.2f}s ({winrar_decomp_speed:7.1f} MB/s)\n", flush=True)
+
+                # Clean up archives immediately to conserve disk space
+                if os.path.exists(ARC_OPENRAR):
+                    os.remove(ARC_OPENRAR)
+                if os.path.exists(ARC_WINRAR):
+                    os.remove(ARC_WINRAR)
+
+            results[m] = m_res
+
+        # Print Final Comprehensive Summary Table
+        print("=" * 125)
+        print("                                       FINAL 4.0 GiB BENCHMARK RESULTS (m0 - m5)")
+        print("=" * 125)
+        header = f"{'Method':<8} | {'OpenRAR Comp':<13} | {'WinRAR Comp':<13} | {'Comp Spdup':<10} | {'OpenRAR Dec':<13} | {'WinRAR Dec':<13} | {'Dec Spdup':<10} | {'OpenRAR Sz':<10} | {'WinRAR Sz':<10} | {'Verify':<6}"
+        print(header)
+        print("-" * 125)
+
+        for m in methods:
+            r = results[m]
+            m_label = f"-m{m}"
+            o_comp = f"{r['openrar_comp_speed']:>6.1f} MB/s"
+            w_comp = f"{r['winrar_comp_speed']:>6.1f} MB/s"
+            comp_diff = (r['openrar_comp_speed'] / r['winrar_comp_speed']) * 100
+            comp_spdup = f"{comp_diff:>6.1f}%"
+            o_dec = f"{r['openrar_decomp_speed']:>6.1f} MB/s"
+            w_dec = f"{r['winrar_decomp_speed']:>6.1f} MB/s"
+            dec_diff = (r['openrar_decomp_speed'] / r['winrar_decomp_speed']) * 100
+            dec_spdup = f"{dec_diff:>6.1f}%"
+            o_size = f"{r['openrar_arc_size'] / (1024*1024):>7.2f} MB"
+            w_size = f"{r['winrar_arc_size'] / (1024*1024):>7.2f} MB"
+            v = r['verify']
+            print(f"{m_label:<8} | {o_comp:<13} | {w_comp:<13} | {comp_spdup:<10} | {o_dec:<13} | {w_dec:<13} | {dec_spdup:<10} | {o_size:<10} | {w_size:<10} | {v:<6}")
+
+        print("=" * 125)
 
     finally:
-        print("\nCleaning up temporary benchmark files...")
+        print("\nCleaning up temporary benchmark files...", flush=True)
         for p in [PAYLOAD_PATH, ARC_OPENRAR, ARC_WINRAR]:
             if os.path.exists(p):
                 try:

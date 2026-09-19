@@ -229,6 +229,9 @@ private:
 
     std::vector<core::uint32> head_;
     std::vector<core::uint32> prev_;
+    std::vector<core::uint64> head64_;
+    std::vector<core::uint64> prev64_;
+    bool is_large_window_{false};
 
     // Split token storage: literals go in lit_bytes_ (1 byte each) and
     // match/rep tokens in match_tokens_ (8 bytes each).  token_seq_ records
@@ -401,6 +404,8 @@ public:
 
     // Returns the number of source bytes actually loaded by the compressor.
     core::uint64 source_bytes_loaded() const { return src_loaded_; }
+
+    friend class Compressor50TestAccess;
 };
 
 } // namespace openrar::compress

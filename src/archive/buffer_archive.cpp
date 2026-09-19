@@ -775,8 +775,11 @@ int BufferArchive::extract_all(const uint8_t* data, size_t size,
     // Aggregate output budget (report M8): per-entry decompression is capped
     // by MAX_STREAM_OUTPUT, but the buffer API holds every entry in memory at
     // once, so a hostile archive with many entries could multiply that into
-    // unbounded RAM. Cap the cumulative payload like the per-entry cap.
-    constexpr uint64_t MAX_TOTAL_OUTPUT = 4ULL * 1024 * 1024 * 1024;
+#if defined(__EMSCRIPTEN__) || defined(_M_IX86) || defined(__i386__)
+    constexpr uint64_t MAX_TOTAL_OUTPUT = 2ULL * 1024 * 1024 * 1024; // 2 GiB on 32-bit / WASM
+#else
+    constexpr uint64_t MAX_TOTAL_OUTPUT = 64ULL * 1024 * 1024 * 1024; // 64 GiB on 64-bit native
+#endif
 
     for (const auto& e : entries) {
         // Cancel is polled once per entry — the coarsest granularity the

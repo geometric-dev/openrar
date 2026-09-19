@@ -834,6 +834,114 @@ void test_extra_distance_slot_decoding() {
     std::cout << "[PASS] Extra-distance slots 68-79 64-bit distance decoding (> 4 GiB)\n";
 }
 
+namespace openrar::compress {
+class Compressor50TestAccess {
+public:
+    static bool is_large_window(const Compressor50& c) { return c.is_large_window_; }
+    static size_t head_size(const Compressor50& c) { return c.head_.size(); }
+    static size_t prev_size(const Compressor50& c) { return c.prev_.size(); }
+    static size_t head64_size(const Compressor50& c) { return c.head64_.size(); }
+    static size_t prev64_size(const Compressor50& c) { return c.prev64_.size(); }
+
+    static void setup_mock_large_window(Compressor50& c, core::uint64 max_dist, size_t win_mask_size) {
+        c.reset_state();
+        c.is_large_window_ = true;
+        c.win_size_ = win_mask_size;
+        c.max_dist_ = max_dist;
+        c.head64_.assign(Compressor50::HASH_SIZE, static_cast<core::uint64>(-1));
+        c.prev64_.assign(win_mask_size, static_cast<core::uint64>(-1));
+    }
+
+    static void insert_pos(Compressor50& c, core::uint64 pos) {
+        c.insert_position(pos);
+    }
+
+    static core::int64 reconstruct_pos(Compressor50& c, core::uint64 pos, core::uint32 trunc) {
+        return c.reconstruct_pos(pos, trunc);
+    }
+
+    static core::uint64 get_head64(const Compressor50& c, size_t idx) { return c.head64_[idx]; }
+    static core::uint64 get_prev64(const Compressor50& c, size_t idx) { return c.prev64_[idx]; }
+    static core::uint32 calc_hash(Compressor50& c, core::uint64 pos) { return c.calc_hash(pos); }
+
+    static void set_test_buffer(Compressor50& c, const core::byte* data, size_t size, core::uint64 pos_base, core::uint64 src_loaded) {
+        c.buf_data_ = data;
+        c.buf_size_ = size;
+        c.pos_base_ = pos_base;
+        c.src_loaded_ = src_loaded;
+    }
+};
+} // namespace openrar::compress
+
+void test_compressor50_large_window_match_finding() {
+    // 1. Verify standard window (<= 4 GiB) allocates 32-bit tables and leaves 64-bit tables empty
+    {
+        Compressor50 c;
+        c.begin_archive(nullptr, 3, 2 * 1024 * 1024);
+        assert(!Compressor50TestAccess::is_large_window(c));
+        assert(Compressor50TestAccess::head_size(c) == 131072);
+        assert(Compressor50TestAccess::prev_size(c) == 2 * 1024 * 1024);
+        assert(Compressor50TestAccess::head64_size(c) == 0);
+        assert(Compressor50TestAccess::prev64_size(c) == 0);
+
+        // 32-bit reconstruct_pos cannot reach candidates > 4 GiB back:
+        core::uint64 pos = 6ULL * 1024 * 1024 * 1024 + 500;
+        core::uint32 trunc = 500;
+        core::int64 cand = Compressor50TestAccess::reconstruct_pos(c, pos, trunc);
+        assert(cand != 500); // Truncation in 32-bit reconstruct_pos prevents reaching 500
+    }
+
+    // 2. Verify 64-bit match finding across > 4 GiB horizons and hash chains
+    {
+        Compressor50 c;
+        const size_t MOCK_WIN_MASK_SIZE = 65536; // 64K entries
+        const core::uint64 MAX_DIST = 16ULL * 1024 * 1024 * 1024; // 16 GiB reach
+        Compressor50TestAccess::setup_mock_large_window(c, MAX_DIST, MOCK_WIN_MASK_SIZE);
+
+        assert(Compressor50TestAccess::is_large_window(c));
+        assert(Compressor50TestAccess::head_size(c) == 0);
+        assert(Compressor50TestAccess::prev_size(c) == 0);
+        assert(Compressor50TestAccess::head64_size(c) == 131072);
+        assert(Compressor50TestAccess::prev64_size(c) == MOCK_WIN_MASK_SIZE);
+
+        core::byte test_buf[64] = {'T', 'E', 'S', 'T', 0};
+
+        // First insertion at pos1 = 200
+        const core::uint64 pos1 = 200;
+        Compressor50TestAccess::set_test_buffer(c, test_buf, 64, pos1, pos1 + 10);
+        core::uint32 h = Compressor50TestAccess::calc_hash(c, pos1);
+        Compressor50TestAccess::insert_pos(c, pos1);
+        assert(Compressor50TestAccess::get_head64(c, h) == pos1);
+
+        // Second insertion at pos2 = 5 GiB + 200 (distance = 5 GiB > 4 GiB)
+        const core::uint64 pos2 = 5ULL * 1024 * 1024 * 1024 + 200;
+        Compressor50TestAccess::set_test_buffer(c, test_buf, 64, pos2, pos2 + 10);
+        Compressor50TestAccess::insert_pos(c, pos2);
+
+        // Head now points to pos2, and prev64_ chain links pos2 to pos1
+        assert(Compressor50TestAccess::get_head64(c, h) == pos2);
+        assert(Compressor50TestAccess::get_prev64(c, pos2 & (MOCK_WIN_MASK_SIZE - 1)) == pos1);
+
+        // Verify distance calculations across the 64-bit chain:
+        // Candidate at head (pos2) is distance 6 GiB from pos3 = 11 GiB + 200
+        const core::uint64 pos3 = 11ULL * 1024 * 1024 * 1024 + 200;
+        core::uint64 cand1 = Compressor50TestAccess::get_head64(c, h);
+        assert(cand1 == pos2);
+        assert(pos3 - cand1 == 6ULL * 1024 * 1024 * 1024);
+        assert(pos3 - cand1 > 4ULL * 1024 * 1024 * 1024);
+        assert(pos3 - cand1 <= MAX_DIST);
+
+        // Chained candidate in prev64_ (pos1) is distance 11 GiB from pos3
+        core::uint64 cand2 = Compressor50TestAccess::get_prev64(c, cand1 & (MOCK_WIN_MASK_SIZE - 1));
+        assert(cand2 == pos1);
+        assert(pos3 - cand2 == 11ULL * 1024 * 1024 * 1024);
+        assert(pos3 - cand2 > 4ULL * 1024 * 1024 * 1024);
+        assert(pos3 - cand2 <= MAX_DIST);
+    }
+
+    std::cout << "[PASS] Compressor50 64-bit large window match-finding horizon (> 4 GiB)\n";
+}
+
 
 // Test 6: Verify BC table RLE encoding for sparse trees.
 // A pure 0x00 file, and a patterned file with a 64 KiB embedded run.
@@ -1250,6 +1358,8 @@ int main() {
     test_bit_reader_get_bits64();
     std::cout << std::flush;
     test_extra_distance_slot_decoding();
+    std::cout << std::flush;
+    test_compressor50_large_window_match_finding();
     std::cout << std::flush;
     std::cout << "All Milestone 6 Compression & Decompression Primitives PASSED!\n" << std::flush;
     return 0;

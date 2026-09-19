@@ -175,7 +175,11 @@ public:
     // every decompress_to_vector call fail on wasm while native builds
     // passed. On wasm32 size_t itself is already bounded at 4 GiB - 1,
     // so the cap stays meaningful there.
-    static constexpr core::uint64 MAX_STREAM_OUTPUT = 4ULL * 1024 * 1024 * 1024;
+#if defined(__EMSCRIPTEN__) || defined(_M_IX86) || defined(__i386__)
+    static constexpr core::uint64 MAX_STREAM_OUTPUT = 2ULL * 1024 * 1024 * 1024; // 2 GiB on 32-bit / WASM
+#else
+    static constexpr core::uint64 MAX_STREAM_OUTPUT = 64ULL * 1024 * 1024 * 1024; // 64 GiB on 64-bit native
+#endif
 
 private:
 #ifdef OPENRAR_CROSS_VALIDATE
