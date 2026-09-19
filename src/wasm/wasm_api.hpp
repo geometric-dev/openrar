@@ -49,6 +49,18 @@ int openrar_compress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr, siz
 int openrar_decompress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr, size_t* out_len,
                         size_t win_size);
 
+// Streaming encoder
+uint32_t openrar_stream_create(int method, size_t win_size);
+uint32_t openrar_stream_compress_new(int method, size_t win_size);
+int openrar_stream_feed(uint32_t handle, const uint8_t* src, size_t n);
+int openrar_stream_compress_feed(uint32_t handle, const uint8_t* src, size_t n);
+int openrar_stream_pull(uint32_t handle, uint8_t** out_ptr, size_t* out_len);
+int openrar_stream_compress_pull(uint32_t handle, uint8_t** out_ptr, size_t* out_len);
+int openrar_stream_finish(uint32_t handle, uint8_t** out_ptr, size_t* out_len);
+int openrar_stream_compress_finish(uint32_t handle, uint8_t** out_ptr, size_t* out_len);
+void openrar_stream_free(uint32_t handle);
+void openrar_stream_compress_free(uint32_t handle);
+
 // Streaming decoder
 uint32_t openrar_stream_decompress_create(size_t win_size);
 int openrar_stream_decompress_feed(uint32_t handle, const uint8_t* src, size_t n);

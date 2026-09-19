@@ -118,12 +118,21 @@ openrar::api::HandleTable<openrar::compress::StreamEncoder> g_streams;
 
 uint32_t openrar_stream_create(int method, size_t win_size) {
     try {
+        if (win_size == 0) win_size = 4 * 1024 * 1024;
+#if defined(__EMSCRIPTEN__) || defined(__wasm__)
+        if (win_size > 64ULL * 1024 * 1024) return 0; // Bound WASM allocations to <= 64 MiB
+#else
         if (win_size > openrar::wasm::MAX_WIN_SIZE) return 0;
+#endif
         auto enc = std::make_shared<openrar::compress::StreamEncoder>(method, win_size);
         return openrar::wasm::g_streams.insert(enc);
     } catch (...) {
         return 0;
     }
+}
+
+uint32_t openrar_stream_compress_new(int method, size_t win_size) {
+    return openrar_stream_create(method, win_size);
 }
 
 int openrar_stream_feed(uint32_t handle, const uint8_t* src, size_t n) {
@@ -135,6 +144,35 @@ int openrar_stream_feed(uint32_t handle, const uint8_t* src, size_t n) {
     } catch (...) {
         return -1;
     }
+}
+
+int openrar_stream_compress_feed(uint32_t handle, const uint8_t* src, size_t n) {
+    return openrar_stream_feed(handle, src, n);
+}
+
+int openrar_stream_pull(uint32_t handle, uint8_t** out_ptr, size_t* out_len) {
+    try {
+        if (!out_ptr || !out_len) return -1;
+        *out_ptr = nullptr;
+        *out_len = 0;
+        auto enc = openrar::wasm::g_streams.pin(handle);
+        if (!enc) return -1;
+        std::vector<uint8_t> out;
+        if (!enc->take_output(out)) return -1;
+        if (out.empty()) return 0;
+        uint8_t* buf = static_cast<uint8_t*>(std::malloc(out.size()));
+        if (!buf) return -1;
+        std::memcpy(buf, out.data(), out.size());
+        *out_ptr = buf;
+        *out_len = out.size();
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+int openrar_stream_compress_pull(uint32_t handle, uint8_t** out_ptr, size_t* out_len) {
+    return openrar_stream_pull(handle, out_ptr, out_len);
 }
 
 int openrar_stream_finish(uint32_t handle, uint8_t** out_ptr, size_t* out_len) {
@@ -158,8 +196,16 @@ int openrar_stream_finish(uint32_t handle, uint8_t** out_ptr, size_t* out_len) {
     }
 }
 
+int openrar_stream_compress_finish(uint32_t handle, uint8_t** out_ptr, size_t* out_len) {
+    return openrar_stream_finish(handle, out_ptr, out_len);
+}
+
 void openrar_stream_free(uint32_t handle) {
     openrar::wasm::g_streams.erase(handle);
+}
+
+void openrar_stream_compress_free(uint32_t handle) {
+    openrar_stream_free(handle);
 }
 
 int openrar_decompress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr, size_t* out_len,
