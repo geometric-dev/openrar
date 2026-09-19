@@ -161,6 +161,40 @@ static void test_cpp_wrapper_file_handle() {
     std::cout << "PASS test_cpp_wrapper_file_handle" << std::endl;
 }
 
+static void test_cpp_wrapper_create() {
+    auto temp_dir = std::filesystem::temp_directory_path() / "openrar_cpp_create_test";
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::create_directories(temp_dir, ec);
+
+    auto src1 = temp_dir / "cpp_f1.txt";
+    auto src2 = temp_dir / "cpp_f2.txt";
+    {
+        std::ofstream of1(src1, std::ios::binary);
+        of1 << "C++ wrapper creation test file 1";
+        std::ofstream of2(src2, std::ios::binary);
+        of2 << "C++ wrapper creation test file 2";
+    }
+
+    auto out_rar = temp_dir / "cpp_created.rar";
+    std::vector<std::pair<std::filesystem::path, std::string>> entries = {
+        {src1, "cpp_f1.txt"},
+        {src2, "sub/cpp_f2.txt"}
+    };
+
+    openrar::Archive::create(out_rar, entries, 3, 0);
+    assert(std::filesystem::exists(out_rar));
+
+    openrar::ArchiveHandle h(out_rar);
+    auto list = h.list();
+    assert(list.size() == 2);
+    assert(list[0].path == "cpp_f1.txt");
+    assert(list[1].path == "sub/cpp_f2.txt");
+
+    std::filesystem::remove_all(temp_dir, ec);
+    std::cout << "PASS test_cpp_wrapper_create\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -173,6 +207,7 @@ int main() {
     test_cpp_wrapper_list_callbacks();
     test_cpp_wrapper_password_and_open();
     test_cpp_wrapper_file_handle();
+    test_cpp_wrapper_create();
     std::cout << "ALL CPP WRAPPER TESTS PASSED\n";
     return 0;
 }
