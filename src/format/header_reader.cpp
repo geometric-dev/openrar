@@ -529,7 +529,7 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                 }
             }
             out_block.win_size = win;
-            // Note: win up to 1 TB fits in uint64; decompressor will further check > RAR_DICT_ALLOC_LIMIT (1 GiB)
+            // Note: win up to 1 TB fits in uint64; decompressor will further check > RAR_DICT_ALLOC_LIMIT
             // and return false with "dictionary too large" instead of truncating (spec 01:95).
         }
     }

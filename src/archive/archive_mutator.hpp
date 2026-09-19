@@ -135,16 +135,17 @@ public:
     // one file into `out`. method may be downgraded to 0 (store) exactly like
     // the single-file path does. On success out.entry_name == arc_entry_name.
     // times_mask selects the FHEXTRA_HTIME records (default: mtime only).
-    // window_log2 selects the dictionary window for compressed methods
-    // (1..4 → 128 KiB..1 MiB, create parity); 0 keeps the historical 2 MiB
-    // CLI default. Ignored for stored entries. The value is written into the
+    // dict_size selects the dictionary window for compressed methods
+    // (0 uses tuned defaults per method; 1..15 translates to legacy log2
+    // 128 KiB..2 GiB for backward compatibility; > 15 is treated directly as exact byte size).
+    // Ignored for stored entries. The value is written into the
     // header's win_size and must match the compressor's dictionary.
     // want_streams / want_acl attach NTFS ADS and Security ACL child records.
     static bool prepare_add_file(const std::filesystem::path& src_file,
                                  const std::string& arc_entry_name, int method,
                                  const std::string& password, PreparedAdd& out,
                                  core::uint32 times_mask = time_flags::MTIME,
-                                 core::uint32 window_log2 = 0, bool want_streams = false,
+                                 core::uint64 dict_size = 0, bool want_streams = false,
                                  bool want_acl = false, bool is_solid = false);
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,

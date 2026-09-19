@@ -711,12 +711,28 @@ void test_decompressor_lazy_alloc() {
     size_t initial_rss = get_peak_rss();
 
     // Construct with 1 GiB window, but don't call decompress.
-    Decompressor50 dec(Decompressor50::ALLOC_LIMIT);
+    Decompressor50 dec(1ULL * 1024 * 1024 * 1024);
 
     size_t new_rss = get_peak_rss();
     if (initial_rss > 0) {
         assert(new_rss - initial_rss < 500 * 1024 * 1024);
     }
+
+#if !defined(__EMSCRIPTEN__) && !defined(__wasm__) && !defined(_M_IX86) && !defined(__i386__)
+    // 64-bit platforms: test lazy instantiation with 2G, 4G, 8G, 16G, 64G windows
+    const core::uint64 large_windows[] = {
+        2ULL * 1024 * 1024 * 1024,
+        4ULL * 1024 * 1024 * 1024,
+        8ULL * 1024 * 1024 * 1024,
+        16ULL * 1024 * 1024 * 1024,
+        64ULL * 1024 * 1024 * 1024
+    };
+    for (core::uint64 w : large_windows) {
+        Decompressor50 dec_large(static_cast<size_t>(w));
+        assert(!dec_large.is_dictionary_too_large());
+        assert(dec_large.last_error() == DecompressErrorCode::Ok);
+    }
+#endif
 
     Decompressor50 dec_huge(Decompressor50::ALLOC_LIMIT + 1);
     assert(dec_huge.is_dictionary_too_large());
@@ -728,6 +744,94 @@ void test_decompressor_lazy_alloc() {
     assert(dec_huge.is_dictionary_too_large());
 
     std::cout << "[PASS] RAR 5.0 Decompressor Lazy Allocation\n";
+}
+
+void test_bit_reader_get_bits64() {
+    std::vector<core::byte> buf(32);
+    for (size_t i = 0; i < buf.size(); ++i) {
+        buf[i] = static_cast<core::byte>((i * 17 + 0x2B) & 0xFF);
+    }
+
+    // Test reading every bit count from 33 to 64
+    for (unsigned int bits = 33; bits <= 64; ++bits) {
+        // Reference: bit-by-bit
+        core::uint64 expected = 0;
+        BitReader r_ref(buf.data(), buf.size());
+        for (unsigned int b = 0; b < bits; ++b) {
+            expected = (expected << 1) | r_ref.get_bits(1);
+        }
+
+        BitReader r_test(buf.data(), buf.size());
+        core::uint64 actual = r_test.get_bits64(bits);
+        assert(actual == expected);
+        assert(r_test.bit_pos() == bits);
+    }
+
+    // Test reading unaligned 33..56 bit values (after initial 1..7 offset bits)
+    for (unsigned int pre = 1; pre <= 7; ++pre) {
+        for (unsigned int bits = 33; bits <= 56; ++bits) {
+            core::uint64 expected = 0;
+            BitReader r_ref(buf.data(), buf.size());
+            r_ref.get_bits(pre);
+            for (unsigned int b = 0; b < bits; ++b) {
+                expected = (expected << 1) | r_ref.get_bits(1);
+            }
+
+            BitReader r_test(buf.data(), buf.size());
+            r_test.get_bits(pre);
+            core::uint64 actual = r_test.get_bits64(bits);
+            assert(actual == expected);
+            assert(r_test.bit_pos() == pre + bits);
+        }
+    }
+
+    // Explicit 64-bit value check
+    core::byte raw64[8] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF};
+    BitReader r64(raw64, 8);
+    assert(r64.get_bits64(64) == 0x0123456789ABCDEFULL);
+
+    std::cout << "[PASS] BitReader get_bits64 across 33-64 bit values\n";
+}
+
+void test_extra_distance_slot_decoding() {
+    core::byte test_stream[16] = {
+        0xA5, 0x5A, 0xF0, 0x0F, 0x33, 0xCC, 0x55, 0xAA,
+        0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0
+    };
+
+    // Simulate slot 76 extra distance read (33 bits)
+    BitReader reader76(test_stream, sizeof(test_stream));
+    core::uint32 dist_slot = 76;
+    core::uint32 d_bits = dist_slot / 2 - 1; // 37
+    assert(d_bits == 37);
+    assert(d_bits > 36);
+    core::uint32 extra_bits = d_bits - 4; // 33 bits
+    assert(extra_bits == 33);
+
+    core::uint64 extra = reader76.get_bits64(extra_bits);
+    assert((extra >> 32) != 0);
+
+    core::uint64 distance = 1;
+    distance += static_cast<core::uint64>(2 | (dist_slot & 1)) << d_bits;
+    distance += extra << 4;
+    assert(distance > (4ULL * 1024 * 1024 * 1024));
+
+    // Simulate slot 78 extra distance read (34 bits)
+    BitReader reader78(test_stream, sizeof(test_stream));
+    dist_slot = 78;
+    d_bits = dist_slot / 2 - 1; // 38
+    assert(d_bits == 38);
+    extra_bits = d_bits - 4; // 34 bits
+    assert(extra_bits == 34);
+
+    extra = reader78.get_bits64(extra_bits);
+    assert((extra >> 32) != 0);
+    distance = 1;
+    distance += static_cast<core::uint64>(2 | (dist_slot & 1)) << d_bits;
+    distance += extra << 4;
+    assert(distance > (4ULL * 1024 * 1024 * 1024));
+
+    std::cout << "[PASS] Extra-distance slots 68-79 64-bit distance decoding (> 4 GiB)\n";
 }
 
 
@@ -1142,6 +1246,10 @@ int main() {
     test_match_length_tail_caps();
     std::cout << std::flush;
     test_decompressor_lazy_alloc();
+    std::cout << std::flush;
+    test_bit_reader_get_bits64();
+    std::cout << std::flush;
+    test_extra_distance_slot_decoding();
     std::cout << std::flush;
     std::cout << "All Milestone 6 Compression & Decompression Primitives PASSED!\n" << std::flush;
     return 0;

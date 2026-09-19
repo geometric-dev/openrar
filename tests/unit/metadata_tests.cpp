@@ -477,6 +477,55 @@ static void test_rar7_header_serialization() {
     std::cout << "[PASS] rar7_header_serialization\n";
 }
 
+static void test_mutator_exact_dict_serialization() {
+    std::cout << "Starting test_mutator_exact_dict_serialization...\n" << std::flush;
+    const fs::path dir = make_scratch_dir("exact_dict");
+    const fs::path src = dir / "data.bin";
+    write_bytes(src, make_pattern(4096, 42));
+
+    const openrar::core::uint64 test_dicts[] = {
+        48ULL * 1024 * 1024,
+        4ULL * 1024 * 1024 * 1024
+    };
+
+    for (openrar::core::uint64 target_dict : test_dicts) {
+        const fs::path arc = dir / (std::to_string(target_dict) + ".rar");
+        std::vector<ArchiveMutator::PreparedAdd> prepared;
+        ArchiveMutator::PreparedAdd p;
+        p.entry_name = "data.bin";
+        p.src_path = src;
+        assert(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", p, engine::time_flags::MTIME,
+                                               target_dict));
+        assert(p.fb.win_size == target_dict);
+        assert(p.fb.unp_ver == 1);
+        prepared.push_back(std::move(p));
+        assert(ArchiveMutator::write_batch_add(arc, prepared));
+
+        // Verify exact 64-bit dictionary size in ArchiveReader header
+        engine::ArchiveReader ar;
+        assert(ar.open(arc));
+        assert(ar.entries().size() == 1);
+        assert(ar.entries()[0].header.win_size == target_dict);
+        assert(ar.entries()[0].header.unp_ver == 1);
+
+        // Verify C DLL entry_ex ABI reporting (32-bit saturation above 4 GiB)
+        uint32_t h =
+            openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
+        assert(h != 0);
+        void* extra = nullptr;
+        size_t extra_len = 0;
+        const openrar_entry_ex_t ex = query_entry_ex(h, 0, &extra, &extra_len);
+        if (target_dict > 0xFFFFFFFFULL) {
+            assert(ex.win_size == 0xFFFFFFFFu);
+        } else {
+            assert(ex.win_size == target_dict);
+        }
+        assert(ex.version_needed == 1);
+        openrar_archive_close(h);
+    }
+    std::cout << "[PASS] mutator_exact_dict_serialization (-mdx48m and -md4g)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr under ctest (piped stdio).
@@ -492,6 +541,7 @@ int main() {
     test_buffer_refusal_and_validation();
     test_cpp_wrapper();
     test_rar7_header_serialization();
+    test_mutator_exact_dict_serialization();
     std::cout << "ALL METADATA TESTS PASSED\n";
     return 0;
 }

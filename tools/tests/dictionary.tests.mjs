@@ -20,19 +20,18 @@ import { parseArchive } from '../rar5-coverage.js';
 describe('RAR 5.0 / 7.0 Compression Dictionary & Version Spec', () => {
   it('applies standard default dictionary per compression method (m0..m5)', () => {
     const tree = freshDir('dict-def-tree');
-    writeFileSync(join(tree, 'sample.txt'), 'A'.repeat(50000));
+    const expectedDicts = [
+      { method: 0, winSize: 128 * 1024, expectedLabel: '128KB' },
+      { method: 1, winSize: 512 * 1024, expectedLabel: '512KB' },
+      { method: 2, winSize: 1024 * 1024, expectedLabel: '1MB' },
+      { method: 3, winSize: 8192 * 1024, expectedLabel: '8MB' },
+      { method: 4, winSize: 16384 * 1024, expectedLabel: '16MB' },
+      { method: 5, winSize: 65536 * 1024, expectedLabel: '64MB' },
+    ];
     const out = freshDir('dict-def-out');
 
-    const expectedDicts = [
-      { method: 0, winSize: 128 * 1024 },
-      { method: 1, winSize: 512 * 1024 },
-      { method: 2, winSize: 1024 * 1024 },
-      { method: 3, winSize: 2048 * 1024 },
-      { method: 4, winSize: 4096 * 1024 },
-      { method: 5, winSize: 16384 * 1024 },
-    ];
-
-    for (const { method, winSize } of expectedDicts) {
+    for (const { method, winSize, expectedLabel } of expectedDicts) {
+      writeFileSync(join(tree, 'sample.txt'), Buffer.alloc(winSize, 0x41));
       const arc = join(out, `arc_m${method}.rar`);
       const res = runTool(OUR_EXE, ['a', '-y', `-m${method}`, arc, '.'], tree);
       assert.equal(res.code, 0, `Archiving with -m${method} failed: ${res.output}`);
@@ -44,7 +43,6 @@ describe('RAR 5.0 / 7.0 Compression Dictionary & Version Spec', () => {
 
       // The header dict bits must reflect the per-method default table above
       // (the parser label is 128 * 2^n KB: '128KB', '512KB', '1MB', ...).
-      const expectedLabel = { 0: '128KB', 1: '512KB', 2: '1MB', 3: '2MB', 4: '4MB', 5: '16MB' }[method];
       assert.equal(
         fileBlock.file.dict, expectedLabel,
         `-m${method} must declare its default ${expectedLabel} dictionary (got ${fileBlock.file?.dict})`,
