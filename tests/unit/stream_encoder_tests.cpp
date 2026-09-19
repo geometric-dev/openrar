@@ -8,6 +8,7 @@
 //   5. Flush sink delivers exactly the same bytes as accumulation.
 
 #include "../../src/compress/stream_encoder.hpp"
+#include "../../src/compress/stream_decoder.hpp"
 #include "../../src/compress/decompressor50.hpp"
 
 #include <cstdio>
@@ -193,6 +194,68 @@ void test_store_passthrough() {
     CHECK(got == src); // STORE: output == input
 }
 
+void test_stream_decoder_roundtrip() {
+    const std::vector<uint8_t> src = pattern_payload(120 * 1024, 777);
+    for (int method : {1, 3, 5}) {
+        const size_t win = 1024 * 1024;
+        std::vector<uint8_t> comp = one_shot(src, method, win);
+        CHECK(!comp.empty());
+
+        for (size_t chunk : {1, 17, 512, 4096, 65536}) {
+            openrar::compress::StreamDecoder dec(win, method);
+            for (size_t off = 0; off < comp.size(); off += chunk) {
+                size_t n = std::min(chunk, comp.size() - off);
+                if (!dec.feed(comp.data() + off, n)) {
+                    FAIL("decoder feed failed");
+                    return;
+                }
+            }
+            std::vector<openrar::core::byte> restored;
+            if (!dec.finish(restored)) {
+                FAIL("decoder finish failed");
+                return;
+            }
+            CHECK(restored.size() == src.size());
+            CHECK(std::memcmp(restored.data(), src.data(), src.size()) == 0);
+        }
+    }
+}
+
+void test_stream_decoder_incremental_pull() {
+    const std::vector<uint8_t> src = pattern_payload(250 * 1024, 888);
+    const size_t win = 1024 * 1024;
+    std::vector<uint8_t> comp = one_shot(src, 3, win);
+    CHECK(!comp.empty());
+
+    openrar::compress::StreamDecoder dec(win, 3);
+    std::vector<openrar::core::byte> accumulated;
+    for (size_t off = 0; off < comp.size(); off += 2048) {
+        size_t n = std::min<size_t>(2048, comp.size() - off);
+        CHECK(dec.feed(comp.data() + off, n));
+        std::vector<openrar::core::byte> chunk;
+        CHECK(dec.take_output(chunk));
+        accumulated.insert(accumulated.end(), chunk.begin(), chunk.end());
+    }
+    std::vector<openrar::core::byte> rest;
+    CHECK(dec.finish(rest));
+    accumulated.insert(accumulated.end(), rest.begin(), rest.end());
+    CHECK(accumulated.size() == src.size());
+    CHECK(std::memcmp(accumulated.data(), src.data(), src.size()) == 0);
+}
+
+void test_stream_decoder_store() {
+    const std::vector<uint8_t> src = pattern_payload(40 * 1024, 333);
+    openrar::compress::StreamDecoder dec(1024 * 1024, /*method=*/0);
+    for (size_t off = 0; off < src.size(); off += 3000) {
+        size_t n = std::min<size_t>(3000, src.size() - off);
+        CHECK(dec.feed(src.data() + off, n));
+    }
+    std::vector<openrar::core::byte> out;
+    CHECK(dec.finish(out));
+    CHECK(out.size() == src.size());
+    CHECK(std::memcmp(out.data(), src.data(), src.size()) == 0);
+}
+
 } // namespace
 
 int main() {
@@ -212,6 +275,9 @@ int main() {
     test_cancel_and_progress();
     test_flush_sink();
     test_store_passthrough();
+    test_stream_decoder_roundtrip();
+    test_stream_decoder_incremental_pull();
+    test_stream_decoder_store();
 
     if (fails) {
         std::fprintf(stderr, "%d failure(s)\n", fails);

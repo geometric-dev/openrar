@@ -80,6 +80,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 //   bit 5  ENTRY_EX               handle_entry_ex / handle_info     (v1.5.0)
 //   bit 6  PACKAGE_VERSION        openrar_package_version_string    (v1.7.0)
 //   bit 7  SET_LIMITS             openrar_archive_handle_set_limits (v1.10.0)
+//   bit 8  REPAIR                 openrar_archive_repair            (v1.11.0)
 // Reserve convention: future open-time options (e.g. codepage override,
 // custom volume search callbacks) ship as openrar_archive_open_file_ex
 // behind a new bit, never as signature changes to open_file.
@@ -91,6 +92,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 #define OPENRAR_ABI_FEATURE_ENTRY_EX (1ull << 5)             // metadata exports below
 #define OPENRAR_ABI_FEATURE_PACKAGE_VERSION (1ull << 6)      // openrar_package_version_string
 #define OPENRAR_ABI_FEATURE_SET_LIMITS (1ull << 7)           // openrar_archive_handle_set_limits
+#define OPENRAR_ABI_FEATURE_REPAIR (1ull << 8)               // openrar_archive_repair
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -617,6 +619,16 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_info(uint32_t handle
                                                                  openrar_archive_info_t* out,
                                                                  void** comment_out,
                                                                  size_t* comment_size_out);
+
+// ── Archive Repair (v1.11.0, additive) ──────────────────────────────────────
+// Repairs corrupted or missing archive volumes via inline Recovery Records (RR)
+// or external Cauchy Reed-Solomon parity volumes (.rev).
+// Returns RAR_OK (0) on success, or a negative RAR_ERR_* code on failure.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_repair(const char* arc_path,
+                       openrar_progress_cb progress,
+                       openrar_cancel_cb cancel,
+                       void* user);
 
 #ifdef __cplusplus
 } // extern "C"
