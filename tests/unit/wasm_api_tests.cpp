@@ -258,6 +258,62 @@ static void test_stream_compress_store() {
     CHECK(all_chunks == src);
 }
 
+static void test_stream_compress_filter_ex() {
+    // Generate x86 CALL instructions to test E8 filter
+    std::vector<uint8_t> src(64 * 1024);
+    for (size_t i = 0; i + 5 <= src.size(); i += 5) {
+        src[i] = 0xE8;
+        src[i + 1] = static_cast<uint8_t>(i & 0xFF);
+        src[i + 2] = static_cast<uint8_t>((i >> 8) & 0xFF);
+        src[i + 3] = 0x00;
+        src[i + 4] = 0x00;
+    }
+
+    // Test with FORCE_E8 (flags = 2)
+    uint32_t handle = openrar_stream_create_ex(3, 1024 * 1024, 2);
+    CHECK(handle != 0);
+
+    for (size_t off = 0; off < src.size(); off += 4096) {
+        size_t n = std::min<size_t>(4096, src.size() - off);
+        int rc = openrar_stream_feed(handle, src.data() + off, n);
+        CHECK(rc == 0);
+    }
+
+    uint8_t* comp_ptr = nullptr;
+    size_t comp_len = 0;
+    int rc = openrar_stream_finish(handle, &comp_ptr, &comp_len);
+    CHECK(rc == 0);
+    CHECK(comp_ptr != nullptr);
+    CHECK(comp_len > 0);
+    openrar_stream_free(handle);
+
+    uint8_t* restored = nullptr;
+    size_t restored_len = 0;
+    CHECK(openrar_decompress2(comp_ptr, comp_len, &restored, &restored_len, 1024 * 1024) == 1);
+    CHECK(restored_len == src.size());
+    CHECK(std::memcmp(restored, src.data(), src.size()) == 0);
+    openrar_free(restored);
+    openrar_free(comp_ptr);
+
+    // Test with DISABLE_ALL (flags = 1)
+    handle = openrar_stream_create_ex(3, 1024 * 1024, 1);
+    CHECK(handle != 0);
+    CHECK(openrar_stream_feed(handle, src.data(), src.size()) == 0);
+    comp_ptr = nullptr;
+    comp_len = 0;
+    CHECK(openrar_stream_finish(handle, &comp_ptr, &comp_len) == 0);
+    CHECK(comp_ptr != nullptr);
+    openrar_stream_free(handle);
+
+    restored = nullptr;
+    restored_len = 0;
+    CHECK(openrar_decompress2(comp_ptr, comp_len, &restored, &restored_len, 1024 * 1024) == 1);
+    CHECK(restored_len == src.size());
+    CHECK(std::memcmp(restored, src.data(), src.size()) == 0);
+    openrar_free(restored);
+    openrar_free(comp_ptr);
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -278,6 +334,7 @@ int main() {
     test_stream_compress_roundtrip();
     test_stream_compress_incremental_pull();
     test_stream_compress_store();
+    test_stream_compress_filter_ex();
     if (fails) {
         std::fprintf(stderr, "%d failure(s)\n", fails);
         return 1;

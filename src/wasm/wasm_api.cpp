@@ -116,7 +116,25 @@ openrar::api::HandleTable<openrar::compress::StreamEncoder> g_streams;
 } // namespace
 } // namespace openrar::wasm
 
-uint32_t openrar_stream_create(int method, size_t win_size) {
+static openrar::compress::FilterConfig filter_cfg_from_wasm_flags(uint32_t flags) {
+    openrar::compress::FilterConfig cfg;
+    if (flags & (1u << 0)) {
+        cfg.mode = openrar::compress::FilterMode::DisableAll;
+        return cfg;
+    }
+    if (flags & (1u << 1)) cfg.e8_override = 1;
+    else if (flags & (1u << 2)) cfg.e8_override = -1;
+
+    if (flags & (1u << 3)) cfg.arm_override = 1;
+    else if (flags & (1u << 4)) cfg.arm_override = -1;
+
+    if (flags & (1u << 5)) cfg.delta_override = 1;
+    else if (flags & (1u << 6)) cfg.delta_override = -1;
+
+    return cfg;
+}
+
+uint32_t openrar_stream_create_ex(int method, size_t win_size, uint32_t filter_flags) {
     try {
         if (win_size == 0) win_size = 4 * 1024 * 1024;
 #if defined(__EMSCRIPTEN__) || defined(__wasm__)
@@ -124,11 +142,16 @@ uint32_t openrar_stream_create(int method, size_t win_size) {
 #else
         if (win_size > openrar::wasm::MAX_WIN_SIZE) return 0;
 #endif
-        auto enc = std::make_shared<openrar::compress::StreamEncoder>(method, win_size);
+        openrar::compress::FilterConfig fcfg = filter_cfg_from_wasm_flags(filter_flags);
+        auto enc = std::make_shared<openrar::compress::StreamEncoder>(method, win_size, fcfg);
         return openrar::wasm::g_streams.insert(enc);
     } catch (...) {
         return 0;
     }
+}
+
+uint32_t openrar_stream_create(int method, size_t win_size) {
+    return openrar_stream_create_ex(method, win_size, 0);
 }
 
 uint32_t openrar_stream_compress_new(int method, size_t win_size) {

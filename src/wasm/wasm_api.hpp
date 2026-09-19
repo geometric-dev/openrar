@@ -51,6 +51,7 @@ int openrar_decompress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr, s
 
 // Streaming encoder
 uint32_t openrar_stream_create(int method, size_t win_size);
+uint32_t openrar_stream_create_ex(int method, size_t win_size, uint32_t filter_flags);
 uint32_t openrar_stream_compress_new(int method, size_t win_size);
 int openrar_stream_feed(uint32_t handle, const uint8_t* src, size_t n);
 int openrar_stream_compress_feed(uint32_t handle, const uint8_t* src, size_t n);

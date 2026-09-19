@@ -3,7 +3,8 @@
 
 namespace openrar::compress {
 
-StreamEncoder::StreamEncoder(int method, size_t win_size) : method_(method), win_size_(win_size) {
+StreamEncoder::StreamEncoder(int method, size_t win_size, const FilterConfig& filter_cfg)
+    : method_(method), win_size_(win_size), filter_cfg_(filter_cfg) {
     if (method_ < 0) method_ = 3;
     if (method_ > 5) method_ = 5;
     if (win_size_ == 0) win_size_ = 4 * 1024 * 1024;
@@ -52,6 +53,7 @@ bool StreamEncoder::feed(const core::byte* src, size_t n) {
 
     if (!started_) {
         if (!packer_.begin_stream(method_, win_size_)) return false;
+        packer_.set_filter_config(filter_cfg_);
         packer_.set_memory_dest(&scratch_);
         started_ = true;
     }

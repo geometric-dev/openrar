@@ -36,7 +36,9 @@ export interface RawModule {
   // Streaming encoder (additive in v2). feed() copies bytes in; finish()
   // returns byte-identical output to compress2 of the same input.
   _openrar_stream_create(method: number, winSize: number): number;
+  _openrar_stream_create_ex?(method: number, winSize: number, filterFlags: number): number;
   _openrar_stream_feed(handle: number, src: number, n: number): number;
+  _openrar_stream_pull?(handle: number, outPtr: number, outLen: number): number;
   _openrar_stream_finish(handle: number, outPtr: number, outLen: number): number;
   _openrar_stream_free(handle: number): void;
   // Streaming decoder (v1.11).
@@ -73,6 +75,15 @@ export declare function hex(data: InputData): string;
 export declare function base64Encode(data: InputData): string;
 export declare function base64Decode(s: string): Uint8Array;
 
+export type FilterMode = 'auto' | 'none' | 'e8' | 'arm' | 'delta';
+
+export interface CompressStreamOptions {
+  method?: CompressionMethod;
+  winSize?: number;
+  filterMode?: FilterMode;
+  signal?: AbortSignal;
+}
+
 export declare class OpenRAR {
   readonly ready: Promise<void>;
   apiVersion: number;
@@ -100,12 +111,14 @@ export declare class OpenRAR {
   decompress(data: InputData, winSize?: number): Promise<Uint8Array>;
 
   /**
-   * Compress a ReadableStream incrementally. Output is byte-identical to
-   * compress() of the same concatenated input.
+   * Compress a ReadableStream incrementally. The encoder keeps the
+   * full RAR5 look-ahead semantics, so the concatenated output is
+   * byte-identical to compress() of the same input; memory stays bounded by
+   * the window + one chunk instead of the whole input.
    */
   compressStream(
     readable: ReadableStream<Uint8Array>,
-    opts?: { method?: CompressionMethod; winSize?: number; signal?: AbortSignal },
+    opts?: CompressStreamOptions,
   ): Promise<Uint8Array>;
 
   /**
@@ -114,7 +127,7 @@ export declare class OpenRAR {
    */
   compressStreamChunks(
     readable: ReadableStream<Uint8Array>,
-    opts?: { method?: CompressionMethod; winSize?: number; signal?: AbortSignal },
+    opts?: CompressStreamOptions,
   ): AsyncGenerator<Uint8Array, void, unknown>;
 
   /**
