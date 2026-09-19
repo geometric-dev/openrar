@@ -649,11 +649,28 @@ struct PendingFile {
           is_hardlink(hardlink), hardlink_target(std::move(htarget)) {}
 };
 
+static core::uint64 get_total_physical_memory() {
+#if defined(_WIN32)
+    MEMORYSTATUSEX mem_status;
+    mem_status.dwLength = sizeof(mem_status);
+    if (GlobalMemoryStatusEx(&mem_status)) {
+        return static_cast<core::uint64>(mem_status.ullTotalPhys);
+    }
+#elif defined(_SC_PHYS_PAGES) && defined(_SC_PAGE_SIZE)
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page_size = sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && page_size > 0) {
+        return static_cast<core::uint64>(pages) * static_cast<core::uint64>(page_size);
+    }
+#endif
+    return 4ULL * 1024ULL * 1024ULL * 1024ULL; // Safe fallback: 4 GiB
+}
+
 // Parallel batch add: prepare every file on the pool (read + CRC + compress +
 // optional encrypt), then write the archive in queue order on the calling
 // thread. write_batch_add's on_write hook blocks until that entry's prepare
 // has finished, so output bytes match the serial path exactly while
-// compression overlaps disk writes. Memory stays bounded by PREPARE_BUDGET:
+// compression overlaps disk writes. Memory stays bounded by prepare_budget:
 // a job may only begin once its bytes are available, and the charge is
 // released when the entry's payload reaches the archive — preparing ahead of
 // the writer can never accumulate the whole batch in RAM. Any prepare or
@@ -667,14 +684,16 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                          const std::vector<core::byte>* comment = nullptr, bool want_stm = false,
                          bool want_acl = false, bool want_qo = true, bool want_ams = false,
                          core::uint64 dict_size = 0) {
-    constexpr core::uint64 PREPARE_BUDGET = 1ull << 30; // in-flight prepare bytes
+    const core::uint64 total_ram = get_total_physical_memory();
+    const core::uint64 prepare_budget = std::clamp<core::uint64>(
+        total_ram / 4, 1ULL << 30, 32ULL * 1024ULL * 1024ULL * 1024ULL); // 25% of RAM, 1-32 GiB
     if (solid) {
         threads = 1;
     }
 
     // Dynamic concurrency throttling for large dictionaries:
     // If dictionary size W > 32 MiB, Compressor50's ~5W footprint requires clamping
-    // max worker threads to prevent exceeding PREPARE_BUDGET (1 GiB) and exhausting RAM.
+    // max worker threads to prevent exceeding prepare_budget and exhausting RAM.
     core::uint64 eff_dict = 0;
     if (dict_size >= 1 && dict_size <= 15) {
         eff_dict = 0x20000ULL << (dict_size - 1);
@@ -686,7 +705,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     if (eff_dict > 32ULL * 1024ULL * 1024ULL) {
         core::uint64 per_thread_mem = (eff_dict * 5) + (6ULL * 1024ULL * 1024ULL);
         unsigned max_safe_threads = static_cast<unsigned>(
-            std::max<core::uint64>(1, PREPARE_BUDGET / per_thread_mem));
+            std::max<core::uint64>(1, prepare_budget / per_thread_mem));
         threads = std::min(threads, max_safe_threads);
     }
 
@@ -752,11 +771,12 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         std::mutex mu;
         std::condition_variable cv;
         size_t admit_head = 0; // FIFO: only this index may charge bytes
-        core::uint64 budget = PREPARE_BUDGET;
+        core::uint64 budget = 0;
         std::vector<core::uint64> holds; // bytes charged per entry (0 = released)
         std::vector<char> done, ok;
         bool aborting = false;
     } pl;
+    pl.budget = prepare_budget;
     pl.holds.assign(queue.size(), 0);
     pl.done.assign(queue.size(), 0);
     pl.ok.assign(queue.size(), 0);
@@ -781,7 +801,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             ? exec_plan.entries[i].estimated_workspace_bytes
             : queue[i].file_size;
         pool.submit([&pl, &queue, &prepared, i, method, &password, delete_source, times_mask,
-                     want_stm, want_acl, est_ws, budget_bytes = PREPARE_BUDGET, dict_size, solid] {
+                     want_stm, want_acl, est_ws, budget_bytes = prepare_budget, dict_size, solid] {
             std::unique_lock<std::mutex> lk(pl.mu);
             pl.cv.wait(lk, [&] { return pl.aborting || pl.admit_head == i; });
             if (pl.aborting) {

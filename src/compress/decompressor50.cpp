@@ -871,12 +871,24 @@ bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size
     if (src == nullptr || src_size == 0) return true;
 
     size_t cap = std::max<size_t>(64 * 1024, src_size * 8);
-    if (cap > MAX_STREAM_OUTPUT) cap = MAX_STREAM_OUTPUT;
-    out.reserve(cap);
+    if (cap > static_cast<size_t>(MAX_STREAM_OUTPUT)) cap = static_cast<size_t>(MAX_STREAM_OUTPUT);
+    try {
+        out.reserve(cap);
+    } catch (const std::bad_alloc&) {
+        last_error_ = DecompressErrorCode::AllocationFailed;
+        last_error_str_ = "failed to reserve stream output buffer";
+        return false;
+    }
 
     auto cb = [&](const core::byte* data, size_t size) -> bool {
         if (out.size() + size > MAX_STREAM_OUTPUT) return false;
-        out.insert(out.end(), data, data + size);
+        try {
+            out.insert(out.end(), data, data + size);
+        } catch (const std::bad_alloc&) {
+            last_error_ = DecompressErrorCode::AllocationFailed;
+            last_error_str_ = "out of memory growing stream output buffer";
+            return false;
+        }
         return true;
     };
 

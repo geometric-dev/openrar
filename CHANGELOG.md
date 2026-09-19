@@ -5,6 +5,22 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-09-19
+
+### Added
+
+- **64-Bit In-Memory Extraction Buffers**:
+  - Raised `MAX_STREAM_OUTPUT` (`Decompressor50`) and `MAX_TOTAL_OUTPUT` (`BufferArchive`) from 4 GiB to **64 GiB** on 64-bit native platforms (`sizeof(void*) >= 8`), guarded with `std::bad_alloc` exception handling mapping to `AllocationFailed` / `RAR_ERR_NOMEM`.
+  - Preserved defensive 2 GiB bounds on 32-bit / Emscripten WASM builds.
+- **64-Bit Recovery Parity Buffer Scaling**:
+  - Raised `MAX_PARITY_BUFFER_CAP` in `RecoveryRecord` from 2 GiB to **64 GiB** on 64-bit platforms, enabling multi-gigabyte RS-parity blocks for large archives while preserving 2 GiB bounds on 32-bit platforms.
+- **64-Bit Compression Match Finder Horizon**:
+  - Implemented 64-bit match-finder tables (`head64_` / `prev64_`) in `Compressor50` when `win_size_ > 4 GiB`, eliminating 32-bit distance truncation in sliding-window match searches across $> 4\text{ GiB}$ horizons.
+  - Dynamically allocates 64-bit tables only for $> 4\text{ GiB}$ dictionaries, maintaining zero overhead and 32-bit cache locality for standard dictionaries ($\le 4\text{ GiB}$).
+- **Dynamic CLI Concurrency RAM Budget**:
+  - Scaled CLI concurrency `PREPARE_BUDGET` dynamically based on detected host physical RAM (`GlobalMemoryStatusEx` on Windows, `sysconf` on POSIX), allocating 25% of system RAM clamped between 1 GiB and 32 GiB.
+  - Concurrency throttling for large dictionaries now dynamically adjusts worker threads against available physical memory.
+
 ## [1.12.0] - 2026-09-19
 
 ### Added
