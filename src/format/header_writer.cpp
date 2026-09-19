@@ -424,13 +424,14 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
     if (block.win_size >= 0x20000) {
         core::uint64 pow2 = 0x20000;
         core::uint32 dict_bits = 0;
-        while (2 * pow2 <= block.win_size && dict_bits < (block.unp_ver == 1 ? 31u : 15u)) {
+        while (2 * pow2 <= block.win_size && dict_bits < (block.unp_ver == 1 ? 23u : 15u)) {
             pow2 *= 2;
             dict_bits++;
         }
         comp_info |= (dict_bits << 10);
         if (block.unp_ver == 1 && block.win_size > pow2) {
-            core::uint64 fraction = (block.win_size - pow2) / (pow2 / 32);
+            core::uint64 fraction = (block.win_size - pow2) * 32 / pow2;
+            if (fraction > 31) fraction = 31;
             comp_info |= ((static_cast<core::uint32>(fraction) & 0x1F) << 15);
         }
     }

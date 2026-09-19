@@ -775,7 +775,8 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
     fb.attributes = 0x20;
-    fb.unp_ver = 0;
+    bool is_non_pow2 = (win_size & (win_size - 1)) != 0;
+    fb.unp_ver = (method > 0 && (win_size > (1ULL * 1024 * 1024 * 1024) || is_non_pow2)) ? 1 : 0;
     FileTimes times;
     if (get_file_times(src_file, times)) {
         apply_file_times(fb, times, times_mask);
@@ -842,6 +843,7 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
             fb.has_crc32 = true;
             fb.method = static_cast<core::uint32>(method);
             fb.win_size = (method > 0) ? win_size : 0;
+            if (method == 0) fb.unp_ver = 0;
 
             if (!password.empty()) {
                 if (!encrypt_file_payload(payload_to_write, fb, password)) {
@@ -1033,6 +1035,7 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                 fb.has_crc32 = true;
                 fb.method = static_cast<core::uint32>(method);
                 fb.win_size = (method > 0) ? win_size : 0;
+                if (method == 0) fb.unp_ver = 0;
                 if (do_encrypt) {
                     fb.is_encrypted = true;
                     fb.crypt_version = 0;

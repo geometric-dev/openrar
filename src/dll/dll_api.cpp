@@ -8,6 +8,7 @@
 #include "../compress/compressor50.hpp"
 #include "../compress/decompressor50.hpp"
 #include "../compress/stream_encoder.hpp"
+#include "../recovery/recovery_writer.hpp"
 
 #include <algorithm>
 #include <exception>
@@ -757,7 +758,8 @@ uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
     return OPENRAR_ABI_FEATURE_LIST_PROGRESS | OPENRAR_ABI_FEATURE_LIST_PASSWORD |
            OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS | OPENRAR_ABI_FEATURE_FILE_HANDLE |
            OPENRAR_ABI_FEATURE_MUTATION | OPENRAR_ABI_FEATURE_ENTRY_EX |
-           OPENRAR_ABI_FEATURE_PACKAGE_VERSION | OPENRAR_ABI_FEATURE_SET_LIMITS;
+           OPENRAR_ABI_FEATURE_PACKAGE_VERSION | OPENRAR_ABI_FEATURE_SET_LIMITS |
+           OPENRAR_ABI_FEATURE_REPAIR;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1508,6 +1510,44 @@ int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
                                                                  /*solid=*/false, {}, detail);
         if (rc != RAR_OK) set_error(detail.empty() ? "add failed" : detail);
         return rc;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+
+int OPENRAR_DLL_CALL openrar_archive_repair(const char* arc_path,
+                                            openrar_progress_cb progress,
+                                            openrar_cancel_cb cancel,
+                                            void* user) {
+    try {
+        if (!arc_path) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        if (cancel && cancel(user)) {
+            set_error("aborted");
+            return RAR_ERR_ABORTED;
+        }
+        int pre = mutation_precheck(arc_path);
+        if (pre != RAR_OK) return pre;
+
+        if (progress) progress(user, 0, 100);
+
+        bool ok = openrar::recovery::RecoveryWriter::repair(std::filesystem::u8path(arc_path));
+        if (cancel && cancel(user)) {
+            set_error("aborted");
+            return RAR_ERR_ABORTED;
+        }
+        if (!ok) {
+            set_error("repair failed");
+            return RAR_ERR_IO;
+        }
+        if (progress) progress(user, 100, 100);
+        return RAR_OK;
     } catch (const std::exception& e) {
         set_error(e.what());
         return RAR_ERR_IO;

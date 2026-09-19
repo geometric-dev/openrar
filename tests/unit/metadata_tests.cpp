@@ -12,6 +12,7 @@
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/crypto/crc32.hpp"
 #include "../../src/format/header_writer.hpp"
+#include "../../src/format/header_reader.hpp"
 #include "../../src/io/file_stream.hpp"
 #include "../../src/recovery/recovery_writer.hpp"
 
@@ -435,6 +436,47 @@ static void test_cpp_wrapper() {
     std::cout << "[PASS] cpp_wrapper\n";
 }
 
+// ── 7. RAR7 Header and Dictionary Fraction Round-trip ───────────────────────
+static void test_rar7_header_serialization() {
+    std::cout << "Starting test_rar7_header_serialization...\n" << std::flush;
+    for (openrar::core::uint64 win : {48ULL * 1024 * 1024, 96ULL * 1024 * 1024}) {
+        openrar::format::FileBlock block;
+        block.file_name = "test_rar7.bin";
+        block.unp_size = 1024;
+        block.pack_size = 100;
+        block.method = 3;
+        block.win_size = win;
+        block.unp_ver = 1; // RAR7 format version
+        block.has_crc32 = true;
+        block.data_crc32 = 0x12345678;
+
+        fs::path tmp = fs::temp_directory_path() / "test_rar7_hdr.bin";
+        {
+            openrar::io::FileStream f;
+            assert(f.open(tmp, openrar::io::FileMode::CreateAlways));
+            assert(openrar::format::HeaderWriter::write_file_block(f, block));
+            f.close();
+        }
+
+        {
+            openrar::io::FileStream f;
+            assert(f.open(tmp, openrar::io::FileMode::ReadOnly));
+            openrar::core::uint64 block_type = 0, block_flags = 0, data_size = 0;
+            std::vector<openrar::core::byte> body;
+            auto res = openrar::format::HeaderReader::read_block_raw(f, block_type, block_flags, body, data_size);
+            assert(res == openrar::format::HeaderResult::Ok);
+            openrar::format::FileBlock read_block;
+            assert(openrar::format::HeaderReader::parse_file_header(body.data(), body.size(), read_block));
+            assert(read_block.unp_ver == 1);
+            assert(read_block.win_size == win);
+            f.close();
+        }
+        std::error_code ec;
+        fs::remove(tmp, ec);
+    }
+    std::cout << "[PASS] rar7_header_serialization\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr under ctest (piped stdio).
@@ -449,6 +491,7 @@ int main() {
     test_info_comment_and_volumes();
     test_buffer_refusal_and_validation();
     test_cpp_wrapper();
+    test_rar7_header_serialization();
     std::cout << "ALL METADATA TESTS PASSED\n";
     return 0;
 }

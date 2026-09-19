@@ -39,6 +39,12 @@ export interface RawModule {
   _openrar_stream_feed(handle: number, src: number, n: number): number;
   _openrar_stream_finish(handle: number, outPtr: number, outLen: number): number;
   _openrar_stream_free(handle: number): void;
+  // Streaming decoder (v1.11).
+  _openrar_stream_decompress_create(winSize: number): number;
+  _openrar_stream_decompress_feed(handle: number, src: number, n: number): number;
+  _openrar_stream_decompress_finish(handle: number, outPtr: number, outLen: number): number;
+  _openrar_stream_decompress_pull(handle: number, outPtr: number, outLen: number): number;
+  _openrar_stream_decompress_free(handle: number): void;
   _malloc(n: number): number;
   _free(ptr: number): void;
   ccall<T = unknown>(ident: string, returnType: string | null, argTypes: string[], args: unknown[]): T;
@@ -95,13 +101,29 @@ export declare class OpenRAR {
 
   /**
    * Compress a ReadableStream incrementally. Output is byte-identical to
-   * compress() of the same concatenated input. (Decompression streaming is
-   * not yet available; see docs/streaming-considerations.md.)
+   * compress() of the same concatenated input.
    */
   compressStream(
     readable: ReadableStream<Uint8Array>,
     opts?: { method?: CompressionMethod; winSize?: number; signal?: AbortSignal },
   ): Promise<Uint8Array>;
+
+  /**
+   * Decompress a ReadableStream incrementally, returning the concatenated uncompressed bytes.
+   */
+  decompressStream(
+    readable: ReadableStream<Uint8Array>,
+    opts?: { winSize?: number; signal?: AbortSignal },
+  ): Promise<Uint8Array>;
+
+  /**
+   * Decompress a ReadableStream incrementally, yielding uncompressed chunks as they are decoded.
+   * Memory is bounded by the window size + chunk size.
+   */
+  decompressStreamChunks(
+    readable: ReadableStream<Uint8Array>,
+    opts?: { winSize?: number; signal?: AbortSignal },
+  ): AsyncGenerator<Uint8Array, void, unknown>;
 
   // Low-level C ABI (escape hatch for FFI / QuickJS hosts).
   alloc(n: number): Promise<number>;
