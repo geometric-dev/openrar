@@ -281,6 +281,7 @@ static void test_abi_features() {
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS) != 0);
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_REPAIR) != 0);
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_CREATE) != 0);
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_FILTERS) != 0);
     std::cout << "PASS test_abi_features\n";
 }
 
@@ -841,6 +842,18 @@ static void test_archive_create() {
     const char* add_names[] = {"added.txt"};
     rc = openrar_archive_add_files_file(out_rar.string().c_str(), add_srcs, add_names, 1, 3, 2);
     assert(rc == RAR_OK);
+
+    // 4. Test openrar_archive_create_file_opts with filter options
+    auto out_opts_rar = temp_dir / "created_opts.rar";
+    rc = openrar_archive_create_file_opts(out_opts_rar.string().c_str(), src_paths, arc_names, 2, 3,
+                                          0, nullptr, 0, 0, OPENRAR_FILTER_FORCE_E8, nullptr, nullptr, nullptr);
+    assert(rc == RAR_OK);
+    assert(std::filesystem::exists(out_opts_rar));
+    uint32_t h_opts = openrar_archive_open_file(out_opts_rar.string().c_str(), nullptr, nullptr, nullptr, nullptr);
+    assert(h_opts != 0);
+    rc = openrar_archive_handle_test(h_opts, 0, nullptr, nullptr, nullptr);
+    assert(rc == RAR_OK);
+    openrar_archive_close(h_opts);
 
     std::filesystem::remove_all(temp_dir, ec);
     std::cout << "PASS test_archive_create\n";
