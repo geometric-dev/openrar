@@ -5,6 +5,30 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-09-19
+
+### Added
+
+- **First-Class Native Archive Creation in C ABI / DLL (`OPENRAR_ABI_FEATURE_CREATE`)**:
+  - Exported `openrar_archive_create_file` and `openrar_archive_create_file_ex` under additive feature bit `OPENRAR_ABI_FEATURE_CREATE = (1ull << 9)` (`docs/versioning.md`), preserving the frozen 64-byte `openrar_archive_entry_t` ABI contract.
+  - Supports non-existent target bootstrapping, atomic durability replacement, exact dictionary window sizes (`dict_size`), password encryption, solid chaining, and real-time progress/cancellation callbacks.
+  - Added RAII C++ convenience wrapper `openrar::Archive::create`.
+  - Relaxed `openrar_archive_add_files_file` to accept compression methods 0–5, modern dictionary sizes up to 64 GiB, and automatic creation for non-existent archive targets.
+- **Streaming Multi-Volume Creation (`-v<size>`) Without Whole-File RAM Buffering**:
+  - Overhauled `ArchiveMutator::add_file_to_archive_vol` to guarantee an invariant $O(\text{dictionary window})$ memory ceiling during multi-volume creation, completely eliminating `uncompressed.resize(file_sz)` whole-file RAM buffering.
+  - Stream-compresses large files through bounded spool buffers and slices payloads across volume boundaries using 64-bit extents and offsets.
+  - Connected the `-md` custom dictionary switch to multi-volume archiving, added a minimum volume size guard (`vol_size >= 4096`), and preserved transactional `.mv_bak` sidecar replacement.
+- **Direct-to-Archive Streaming Compression (Zero Double-Spooling via Fixed-Width vint Back-Patching)**:
+  - Eliminated temporary disk spool files (`spool_tmp`) for large unencrypted files during single-file and sequential additions, cutting disk write I/O by 50% and peak scratch disk usage to 1x payload.
+  - Implemented 10-byte fixed-width vint (`push_vint_fixed`) header back-patching in `HeaderWriter::serialize_file_block`, allowing in-place updating of `pack_size`, `data_crc32`, and header CRC without shifting byte offsets or violating RAR5 specification leniency.
+  - Integrated deterministic store fallback truncation (`out.truncate(orig_pos)`) for payloads that expand during compression.
+- **`StreamEncoder` Store-Mode RAM Uncapping & Bidirectional WASM Streaming**:
+  - Uncapped store mode (`method == 0`) streaming in `StreamEncoder`, passing chunks directly to `flush_cb_` or yielding via `take_output` with zero whole-stream RAM buffering.
+  - Added incremental block pulling (`take_output`) to `StreamEncoder`.
+  - Exported streaming compressor C ABI functions (`openrar_stream_compress_new`, `openrar_stream_compress_feed`, `openrar_stream_compress_pull`, `openrar_stream_compress_finish`, `openrar_stream_compress_free`).
+  - Added `compressStreamChunks` async generator to the WebAssembly npm wrapper, achieving full bidirectional streaming symmetry (`compressStream`, `compressStreamChunks`, `decompressStream`, `decompressStreamChunks`).
+  - Bounded WASM compression dictionary allocations to $\le 64\text{ MiB}$ under `__EMSCRIPTEN__` to prevent 32-bit linear memory exhaustion.
+
 ## [1.13.0] - 2026-09-19
 
 ### Added
