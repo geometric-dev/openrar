@@ -729,7 +729,8 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                                       const std::string& password, PreparedAdd& out,
                                       core::uint32 times_mask, core::uint64 dict_size,
                                       bool want_streams, bool want_acl, bool is_solid,
-                                      bool direct_stream) {
+                                      bool direct_stream,
+                                      const compress::FilterConfig& filter_cfg) {
     if (!std::filesystem::exists(src_file)) {
         return false;
     }
@@ -827,7 +828,7 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
             if (method > 0) {
                 if (compress::Compressor50::compress_buffer(uncompressed.data(),
                                                             uncompressed.size(), compressed_payload,
-                                                            method, win_size)) {
+                                                            method, win_size, filter_cfg)) {
                     if (compressed_payload.size() >= uncompressed.size()) {
                         compressed_payload.clear();
                         method = 0;
@@ -2028,13 +2029,14 @@ static bool add_or_move_file(const std::filesystem::path& arc_path,
                              const std::string& arc_entry_name, bool delete_source, int method = 3,
                              const std::filesystem::path& sfx_stub_path = {},
                              const std::string& password = "", bool encrypt_headers = false,
-                             core::uint64 dict_size = 0) {
+                             core::uint64 dict_size = 0,
+                             const compress::FilterConfig& filter_cfg = {}) {
     ArchiveMutator::PreparedAdd prepared;
     prepared.entry_name = arc_entry_name;
     prepared.src_path = src_file;
     if (!ArchiveMutator::prepare_add_file(src_file, arc_entry_name, method, password, prepared,
                                           time_flags::MTIME, dict_size, false, false, false,
-                                          /*direct_stream=*/true)) {
+                                          /*direct_stream=*/true, filter_cfg)) {
         return false;
     }
     prepared.delete_source = delete_source;
@@ -2048,9 +2050,10 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
                                              const std::filesystem::path& src_file,
                                              const std::string& arc_entry_name, int method,
                                              core::uint64 vol_size, const std::string& password,
-                                             bool solid, core::uint64 dict_size) {
+                                             bool solid, core::uint64 dict_size,
+                                             const compress::FilterConfig& filter_cfg) {
     if (vol_size == 0 || vol_size == volume::VOLSIZE_AUTO) {
-        return add_or_move_file(arc_path, src_file, arc_entry_name, false, method, {}, password, false, dict_size);
+        return add_or_move_file(arc_path, src_file, arc_entry_name, false, method, {}, password, false, dict_size, filter_cfg);
     }
     if (vol_size < 1024) return false; // too small
     if (!std::filesystem::exists(src_file)) return false;
@@ -2129,7 +2132,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
 
         std::vector<core::byte> compressed_payload;
         if (compress::Compressor50::compress_buffer(uncompressed.data(), uncompressed.size(),
-                                                    compressed_payload, method, win_size)) {
+                                                    compressed_payload, method, win_size, filter_cfg)) {
             if (compressed_payload.size() >= uncompressed.size()) {
                 compressed_payload.clear();
                 method = 0;
@@ -2661,22 +2664,24 @@ bool ArchiveMutator::add_file_to_archive(const std::filesystem::path& arc_path,
                                          const std::filesystem::path& sfx_stub_path,
                                          core::uint64 vol_size, const std::string& password,
                                          bool encrypt_headers, bool solid,
-                                         core::uint64 dict_size) {
+                                         core::uint64 dict_size,
+                                         const compress::FilterConfig& filter_cfg) {
     if (vol_size != 0 && vol_size != volume::VOLSIZE_AUTO) {
         return add_file_to_archive_vol(arc_path, src_file, arc_entry_name, method, vol_size,
-                                       password, solid, dict_size);
+                                       password, solid, dict_size, filter_cfg);
     }
     return add_or_move_file(arc_path, src_file, arc_entry_name, false, method, sfx_stub_path,
-                            password, encrypt_headers, dict_size);
+                            password, encrypt_headers, dict_size, filter_cfg);
 }
 
 bool ArchiveMutator::move_file_to_archive_vol(const std::filesystem::path& arc_path,
                                               const std::filesystem::path& src_file,
                                               const std::string& arc_entry_name, int method,
                                               core::uint64 vol_size, const std::string& password,
-                                              bool solid, core::uint64 dict_size) {
+                                              bool solid, core::uint64 dict_size,
+                                              const compress::FilterConfig& filter_cfg) {
     bool ok = add_file_to_archive_vol(arc_path, src_file, arc_entry_name, method, vol_size,
-                                      password, solid, dict_size);
+                                      password, solid, dict_size, filter_cfg);
     if (ok) {
         std::error_code ec;
         std::filesystem::remove(src_file, ec);
@@ -2689,9 +2694,10 @@ bool ArchiveMutator::move_file_to_archive(const std::filesystem::path& arc_path,
                                           const std::filesystem::path& src_file,
                                           const std::string& arc_entry_name, int method,
                                           const std::filesystem::path& sfx_stub_path,
-                                          const std::string& password, bool encrypt_headers) {
+                                          const std::string& password, bool encrypt_headers,
+                                          const compress::FilterConfig& filter_cfg) {
     return add_or_move_file(arc_path, src_file, arc_entry_name, true, method, sfx_stub_path,
-                            password, encrypt_headers);
+                            password, encrypt_headers, 0, filter_cfg);
 }
 
 std::filesystem::path ArchiveMutator::resolve_sfx_stub(const std::string& sfx_name_raw,

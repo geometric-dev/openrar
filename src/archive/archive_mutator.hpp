@@ -3,6 +3,7 @@
 
 #include "archive_reader.hpp"
 #include "../compress/compress_plan.hpp"
+#include "../compress/filters50.hpp"
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -53,14 +54,16 @@ public:
                                     const std::filesystem::path& sfx_stub_path = {},
                                     core::uint64 vol_size = 0, const std::string& password = "",
                                     bool encrypt_headers = false, bool solid = false,
-                                    core::uint64 dict_size = 0);
+                                    core::uint64 dict_size = 0,
+                                    const compress::FilterConfig& filter_cfg = {});
 
     // Volume-aware add ( -v )
     static bool add_file_to_archive_vol(const std::filesystem::path& arc_path,
                                         const std::filesystem::path& src_file,
                                         const std::string& arc_entry_name, int method,
                                         core::uint64 vol_size, const std::string& password = "",
-                                        bool solid = false, core::uint64 dict_size = 0);
+                                        bool solid = false, core::uint64 dict_size = 0,
+                                        const compress::FilterConfig& filter_cfg = {});
 
     // Move file to archive and delete from disk upon success (command 'm')
     static bool move_file_to_archive(const std::filesystem::path& arc_path,
@@ -68,13 +71,15 @@ public:
                                      const std::string& arc_entry_name, int method = 3,
                                      const std::filesystem::path& sfx_stub_path = {},
                                      const std::string& password = "",
-                                     bool encrypt_headers = false);
+                                     bool encrypt_headers = false,
+                                     const compress::FilterConfig& filter_cfg = {});
 
     static bool move_file_to_archive_vol(const std::filesystem::path& arc_path,
                                          const std::filesystem::path& src_file,
                                          const std::string& arc_entry_name, int method,
                                          core::uint64 vol_size, const std::string& password = "",
-                                         bool solid = false, core::uint64 dict_size = 0);
+                                         bool solid = false, core::uint64 dict_size = 0,
+                                         const compress::FilterConfig& filter_cfg = {});
 
     // Spool guard ensuring temporary spool files are unlinked on any unwound
     // exception, error, or early abort.
@@ -156,7 +161,8 @@ public:
                                  core::uint32 times_mask = time_flags::MTIME,
                                  core::uint64 dict_size = 0, bool want_streams = false,
                                  bool want_acl = false, bool is_solid = false,
-                                 bool direct_stream = false);
+                                 bool direct_stream = false,
+                                 const compress::FilterConfig& filter_cfg = {});
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,
     // no data area) carrying the directory's timestamps. Encryption does not

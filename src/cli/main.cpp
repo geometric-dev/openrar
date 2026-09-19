@@ -4,6 +4,7 @@
 #include "../format/headers.hpp"
 #include "../archive/archive_reader.hpp"
 #include "../archive/archive_mutator.hpp"
+#include "../compress/filters50.hpp"
 #include "../archive/rar_errors.hpp"
 #include "../archive/volume.hpp"
 #include "../recovery/recovery_record.hpp"
@@ -311,6 +312,7 @@ void print_help() {
               << "  -ep           Exclude paths from names\n"
               << "  -hp<p>        Encrypt both file data and headers\n"
               << "  -m<0..5>      Set compression level (0-store...3-default...5-maximal)\n"
+              << "  -mc<par>      Set compression pre-processing filters (e.g. -mc-, -mcE+, -mcD+)\n"
               << "  -md<size>     Accepted and validated (128k..1T); dictionary size is\n"
               << "                auto-selected per entry\n"
               << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto)\n"
@@ -683,7 +685,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                          core::uint32 times_mask = archive::time_flags::MTIME, bool solid = false,
                          const std::vector<core::byte>* comment = nullptr, bool want_stm = false,
                          bool want_acl = false, bool want_qo = true, bool want_ams = false,
-                         core::uint64 dict_size = 0) {
+                         core::uint64 dict_size = 0,
+                         const compress::FilterConfig& filter_cfg = {}) {
     const core::uint64 total_ram = get_total_physical_memory();
     const core::uint64 prepare_budget = std::clamp<core::uint64>(
         total_ram / 4, 1ULL << 30, 32ULL * 1024ULL * 1024ULL * 1024ULL); // 25% of RAM, 1-32 GiB
@@ -740,7 +743,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             else
                 okv = archive::ArchiveMutator::prepare_add_file(
                     queue[0].src_path, queue[0].entry_name, method, password, prepared[0],
-                    times_mask, dict_size, want_stm, want_acl, solid, /*direct_stream=*/true);
+                    times_mask, dict_size, want_stm, want_acl, solid, /*direct_stream=*/true,
+                    filter_cfg);
         } catch (...) {
             okv = false;
         }
@@ -801,7 +805,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             ? exec_plan.entries[i].estimated_workspace_bytes
             : queue[i].file_size;
         pool.submit([&pl, &queue, &prepared, i, method, &password, delete_source, times_mask,
-                     want_stm, want_acl, est_ws, budget_bytes = prepare_budget, dict_size, solid] {
+                     want_stm, want_acl, est_ws, budget_bytes = prepare_budget, dict_size, solid,
+                     &filter_cfg] {
             std::unique_lock<std::mutex> lk(pl.mu);
             pl.cv.wait(lk, [&] { return pl.aborting || pl.admit_head == i; });
             if (pl.aborting) {
@@ -840,7 +845,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                         else
                             okv = archive::ArchiveMutator::prepare_add_file(
                                 queue[i].src_path, queue[i].entry_name, method, password,
-                                prepared[i], times_mask, dict_size, want_stm, want_acl, solid);
+                                prepared[i], times_mask, dict_size, want_stm, want_acl, solid,
+                                /*direct_stream=*/false, filter_cfg);
                     } catch (...) {
                         // std::filesystem throws on sources that vanish or
                         // become unreadable after the scan; same handling as
@@ -950,7 +956,8 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                    bool want_stm = false, bool want_acl = false, bool want_hardlinks = false,
                    bool want_qo = true, bool want_ams = false,
                    const std::vector<std::string>& exclude_patterns = {},
-                   core::uint64 dict_size = 0) {
+                   core::uint64 dict_size = 0,
+                   const compress::FilterConfig& filter_cfg = {}) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return 1;
@@ -1392,10 +1399,10 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
             if (!sfx_stub.empty())
                 ok = archive::ArchiveMutator::add_file_to_archive(
                     arc_path, item.src_path, item.entry_name, method, sfx_stub, vol_size, password,
-                    /*encrypt_headers=*/false, solid, dict_size);
+                    /*encrypt_headers=*/false, solid, dict_size, filter_cfg);
             else
                 ok = archive::ArchiveMutator::add_file_to_archive_vol(
-                    arc_path, item.src_path, item.entry_name, method, vol_size, password, solid, dict_size);
+                    arc_path, item.src_path, item.entry_name, method, vol_size, password, solid, dict_size, filter_cfg);
             if (!ok) {
                 if (!g_quiet_mode && !is_vt_supported()) std::cout << "FAILED\n";
                 return 1;
@@ -1407,7 +1414,7 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
         int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
                                /*delete_source=*/false, /*announce=*/true, threads, nullptr,
                                times_mask, solid, comment.empty() ? nullptr : &comment, want_stm,
-                               want_acl, want_qo, want_ams, dict_size);
+                               want_acl, want_qo, want_ams, dict_size, filter_cfg);
         if (rc != 0) return rc;
     }
 
@@ -1888,7 +1895,8 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
                     ::openrar::core::uint64 vol_size = 0, const std::string& password = "",
                     bool encrypt_headers = false, unsigned threads = 1, bool want_qo = true,
                     const std::vector<std::string>& exclude_patterns = {},
-                    core::uint64 dict_size = 0) {
+                    core::uint64 dict_size = 0,
+                    const compress::FilterConfig& filter_cfg = {}) {
     if (files.empty()) {
         std::cerr << "No files specified for move\n";
         return 1;
@@ -1913,7 +1921,7 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
         // Volume chain rewrite is inherently sequential (see add_to_archive).
         for (const auto& item : queue) {
             bool ok = archive::ArchiveMutator::move_file_to_archive_vol(
-                arc_path, item.src_path, item.entry_name, method, vol_size, password, /*solid=*/false, dict_size);
+                arc_path, item.src_path, item.entry_name, method, vol_size, password, /*solid=*/false, dict_size, filter_cfg);
             if (!ok) {
                 std::cerr << "Failed moving " << item.src_path.string() << " to " << arc_path
                           << "\n";
@@ -1927,7 +1935,7 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
     int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
                            /*delete_source=*/true, /*announce=*/false, threads, &failed_name,
                            archive::time_flags::MTIME, /*solid=*/false, nullptr, /*want_stm=*/false,
-                           /*want_acl=*/false, want_qo, /*want_ams=*/false, dict_size);
+                           /*want_acl=*/false, want_qo, /*want_ams=*/false, dict_size, filter_cfg);
     if (rc != 0) {
         std::cerr << "Failed moving "
                   << (failed_name.empty() ? queue.front().src_path.string() : failed_name) << " to "
@@ -1943,6 +1951,73 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
 // unreadable dirs, vanishing files, current_path(), bad_alloc from hostile
 // archives). This body must not be reached by an escaping exception directly;
 // main() below wraps it. The argc<2/argv copies here cannot throw.
+static bool parse_mc_switch(const std::string& s, openrar::compress::FilterConfig& cfg) {
+    if (s == "-mc-") {
+        cfg.mode = openrar::compress::FilterMode::DisableAll;
+        return true;
+    }
+    std::string tail = s.substr(3);
+    if (tail.empty()) {
+        cfg.mode = openrar::compress::FilterMode::Auto;
+        cfg.e8_override = 0;
+        cfg.arm_override = 0;
+        cfg.delta_override = 0;
+        cfg.delta_channels = 0;
+        return true;
+    }
+    if (tail == "-") {
+        cfg.mode = openrar::compress::FilterMode::DisableAll;
+        return true;
+    }
+
+    size_t i = 0;
+    while (i < tail.size()) {
+        std::string params;
+        while (i < tail.size() && (std::isdigit(static_cast<unsigned char>(tail[i])) || tail[i] == ':')) {
+            params.push_back(tail[i]);
+            ++i;
+        }
+        if (i >= tail.size()) {
+            if (params == "-") {
+                cfg.mode = openrar::compress::FilterMode::DisableAll;
+            }
+            break;
+        }
+        char type_char = tail[i++];
+        char sign = 0;
+        if (i < tail.size() && (tail[i] == '+' || tail[i] == '-')) {
+            sign = tail[i++];
+        }
+
+        char upper = static_cast<char>(std::toupper(static_cast<unsigned char>(type_char)));
+        int override_val = (sign == '+') ? 1 : ((sign == '-') ? -1 : 0);
+
+        if (upper == 'E') {
+            cfg.e8_override = override_val;
+            if (override_val > 0) cfg.mode = openrar::compress::FilterMode::Auto;
+        } else if (upper == 'A') {
+            cfg.arm_override = override_val;
+            if (override_val > 0) cfg.mode = openrar::compress::FilterMode::Auto;
+        } else if (upper == 'D') {
+            cfg.delta_override = override_val;
+            if (override_val > 0) cfg.mode = openrar::compress::FilterMode::Auto;
+            if (!params.empty()) {
+                auto colon = params.rfind(':');
+                std::string chan_str = (colon != std::string::npos) ? params.substr(colon + 1) : params;
+                try {
+                    int ch = std::stoi(chan_str);
+                    if (ch >= 1 && ch <= 32) {
+                        cfg.delta_channels = static_cast<openrar::core::uint8>(ch);
+                    }
+                } catch (...) {}
+            }
+        } else if (upper == 'L' || upper == 'X' || upper == 'T') {
+            // Long range / exhaustive / text accepted for compatibility
+        }
+    }
+    return true;
+}
+
 static int cli_main(int argc, char* argv[]) {
     using namespace openrar::cli;
     for (int i = 1; i < argc; ++i) {
@@ -2024,6 +2099,7 @@ static int cli_main(int argc, char* argv[]) {
     openrar::core::uint32 rv_count_or_percent = 1;
     bool rv_is_percent = false;
     openrar::core::uint64 opt_dict_size = 0; // -md<size>
+    openrar::compress::FilterConfig opt_filter_cfg;
 
     for (const auto& s : switches) {
         if (sw_eq(s, "-plain") || sw_eq(s, "--plain") || sw_eq(s, "-idp") ||
@@ -2240,6 +2316,8 @@ static int cli_main(int argc, char* argv[]) {
             want_qo = false;
         } else if (sw_eq(s, "-am") || sw_eq(s, "-ams")) {
             want_ams = true;
+        } else if (sw_starts(s, "-mc")) {
+            parse_mc_switch(s, opt_filter_cfg);
         } else if (sw_starts(s, "-x@") && s.size() > 3) {
             std::string err;
             if (!openrar::cli::read_listfile(s.substr(3), exclude_patterns, err)) {
@@ -2368,7 +2446,7 @@ static int cli_main(int argc, char* argv[]) {
                                               comment, times_mask, no_dir_records, ep_mode,
                                               recurse_subdirs, want_symlinks, (cmd == "f"),
                                               want_stm, want_acl, want_hardlinks, want_qo, want_ams,
-                                              exclude_patterns, opt_dict_size);
+                                              exclude_patterns, opt_dict_size, opt_filter_cfg);
         }
         if (rc == 0 && want_rr) {
             bool rr_ok;
@@ -2529,7 +2607,7 @@ static int cli_main(int argc, char* argv[]) {
         std::string move_arc = sfx_stub_path.empty() ? arc_path : sfx_arc_path_str;
         int rc = openrar::cli::move_to_archive(move_arc, files, method, sfx_stub_path, vol_size,
                                                password, want_header_encryption, threads, want_qo,
-                                               exclude_patterns, opt_dict_size);
+                                               exclude_patterns, opt_dict_size, opt_filter_cfg);
         if (rc == 0 && want_rr) {
             bool rr_ok;
             bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;

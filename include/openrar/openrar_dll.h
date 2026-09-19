@@ -82,6 +82,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 //   bit 7  SET_LIMITS             openrar_archive_handle_set_limits (v1.10.0)
 //   bit 8  REPAIR                 openrar_archive_repair            (v1.11.0)
 //   bit 9  CREATE                 openrar_archive_create_file       (v1.14.0)
+//   bit 10 FILTERS                openrar_archive_create_file_opts  (v1.15.0)
 // Reserve convention: future open-time options (e.g. codepage override,
 // custom volume search callbacks) ship as openrar_archive_open_file_ex
 // behind a new bit, never as signature changes to open_file.
@@ -95,6 +96,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 #define OPENRAR_ABI_FEATURE_SET_LIMITS (1ull << 7)           // openrar_archive_handle_set_limits
 #define OPENRAR_ABI_FEATURE_REPAIR (1ull << 8)               // openrar_archive_repair
 #define OPENRAR_ABI_FEATURE_CREATE (1ull << 9)               // openrar_archive_create_file / create_file_ex
+#define OPENRAR_ABI_FEATURE_FILTERS (1ull << 10)             // openrar_archive_create_file_opts / filter controls
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -566,7 +568,16 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* 
 //
 // Errors: RAR_ERR_INVALID_ARG on null args / empty batch / method not in 0..5;
 // RAR_ERR_BUSY (-14) if an open file-mode handle in this process holds arc_path;
-// RAR_ERR_IO on missing src files or filesystem errors; RAR_ERR_NOMEM on allocation failure.
+// Filter flags for openrar_archive_create_file_opts or filter configuration (bit 10):
+#define OPENRAR_FILTER_DEFAULT         0u
+#define OPENRAR_FILTER_DISABLE_ALL    (1u << 0) // Force disable all filters (-mc-)
+#define OPENRAR_FILTER_FORCE_E8       (1u << 1) // Force x86 E8/E8E9 filter (-mcE+)
+#define OPENRAR_FILTER_DISABLE_E8     (1u << 2) // Disable x86 E8/E8E9 filter (-mcE-)
+#define OPENRAR_FILTER_FORCE_ARM      (1u << 3) // Force ARM BL filter (-mcA+)
+#define OPENRAR_FILTER_DISABLE_ARM    (1u << 4) // Disable ARM BL filter (-mcA-)
+#define OPENRAR_FILTER_FORCE_DELTA    (1u << 5) // Force delta filter (-mcD+)
+#define OPENRAR_FILTER_DISABLE_DELTA  (1u << 6) // Disable delta filter (-mcD-)
+
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file(
     const char* arc_path, const char* const* src_paths, const char* const* arc_names,
     uint32_t file_count, int method, uint64_t dict_size);
@@ -576,6 +587,12 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file_ex(
     uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
     int encrypt_headers, int solid, openrar_progress_cb progress, openrar_cancel_cb cancel,
     void* user);
+
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
+    const char* arc_path, const char* const* src_paths, const char* const* arc_names,
+    uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
+    int encrypt_headers, int solid, uint32_t filter_flags, openrar_progress_cb progress,
+    openrar_cancel_cb cancel, void* user);
 
 // ── Extended metadata (file-mode handles; additive) ─────────────────────────
 // The 64-byte entry struct is frozen (shared WASM contract); these queries
