@@ -162,14 +162,18 @@ public:
                                  core::uint64 dict_size = 0, bool want_streams = false,
                                  bool want_acl = false, bool is_solid = false,
                                  bool direct_stream = false,
-                                 const compress::FilterConfig& filter_cfg = {});
+                                 const compress::FilterConfig& filter_cfg = {},
+                                 const std::string& default_group = "",
+                                 const std::string& default_user = "");
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,
     // no data area) carrying the directory's timestamps. Encryption does not
     // apply to directory records.
     static bool prepare_add_dir(const std::filesystem::path& src_dir,
                                 const std::string& arc_entry_name, PreparedAdd& out,
-                                core::uint32 times_mask = time_flags::MTIME, bool want_acl = false);
+                                core::uint32 times_mask = time_flags::MTIME, bool want_acl = false,
+                                const std::string& default_group = "",
+                                const std::string& default_user = "");
 
     // Stage 1 variant for a symbolic link: emits a symlink record (FHEXTRA_REDIR,
     // redir_type = 2 on Windows, 1 on POSIX, no data area) carrying the link's timestamps.
@@ -177,7 +181,9 @@ public:
                                     const std::string& arc_entry_name, const std::string& target,
                                     bool is_dir_target, PreparedAdd& out,
                                     core::uint32 times_mask = time_flags::MTIME,
-                                    bool want_acl = false);
+                                    bool want_acl = false,
+                                    const std::string& default_group = "",
+                                    const std::string& default_user = "");
 
     // Stage 1 variant for a hard link: emits a hardlink record (FHEXTRA_REDIR,
     // redir_type = 4, no data area) pointing to target_entry_name.
@@ -185,7 +191,9 @@ public:
                                      const std::string& arc_entry_name,
                                      const std::string& target_entry_name, PreparedAdd& out,
                                      core::uint32 times_mask = time_flags::MTIME,
-                                     bool want_acl = false);
+                                     bool want_acl = false,
+                                     const std::string& default_group = "",
+                                     const std::string& default_user = "");
 
     // Query disk file last-modification time as unix epoch seconds.
     static bool get_file_mtime(const std::filesystem::path& path, core::uint64& mtime_out);

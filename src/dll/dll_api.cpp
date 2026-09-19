@@ -132,6 +132,11 @@ struct ArchiveHandleBase {
         set_error("archive info requires a file-mode handle");
         return RAR_ERR_UNSUPPORTED_FEATURE;
     }
+    virtual int entry_owner(uint32_t /*entry_index*/, openrar_entry_owner_t* /*owner_out*/,
+                            char** /*username_out*/, char** /*groupname_out*/) {
+        set_error("owner metadata requires a file-mode handle");
+        return RAR_ERR_UNSUPPORTED_FEATURE;
+    }
     std::atomic<bool> busy{false};
     virtual int set_limits(uint64_t max_member_bytes, uint64_t max_total_bytes,
                            uint64_t max_header_count, uint64_t max_header_bytes) = 0;
@@ -634,6 +639,7 @@ struct FileArchiveHandle : ArchiveHandleBase {
         if (out->atime_ft) flags |= OPENRAR_ENTRY_FLAG_HAS_ATIME;
         if (h.file_flags & openrar::format::FHFL_DIRECTORY) flags |= OPENRAR_ENTRY_FLAG_DIRECTORY;
         if (h.has_file_version) flags |= OPENRAR_ENTRY_FLAG_HAS_VERSION;
+        if (h.has_owner) flags |= OPENRAR_ENTRY_FLAG_HAS_OWNER;
         out->flags = flags;
         out->win_size =
             h.win_size > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(h.win_size);
@@ -736,6 +742,57 @@ struct FileArchiveHandle : ArchiveHandleBase {
         }
         return RAR_OK; // no CMT service
     }
+
+    int entry_owner(uint32_t entry_index, openrar_entry_owner_t* owner_out,
+                    char** username_out, char** groupname_out) override {
+        if (!owner_out) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *owner_out = openrar_entry_owner_t{};
+        if (username_out) *username_out = nullptr;
+        if (groupname_out) *groupname_out = nullptr;
+        if (entry_index >= entries.size()) {
+            set_error("entry_index OOR");
+            return RAR_ERR_INVALID_ARG;
+        }
+        const auto& re = reader->entries()[reader_index[entry_index]];
+        const auto& h = re.header;
+        if (!h.has_owner) {
+            return RAR_OK;
+        }
+        uint32_t flags = 0;
+        if (h.has_owner_uid) {
+            owner_out->uid = h.owner_uid;
+            flags |= OPENRAR_OWNER_FLAG_HAS_UID;
+        }
+        if (h.has_owner_gid) {
+            owner_out->gid = h.owner_gid;
+            flags |= OPENRAR_OWNER_FLAG_HAS_GID;
+        }
+        if (!h.owner_user.empty()) {
+            flags |= OPENRAR_OWNER_FLAG_HAS_USER;
+            if (username_out) {
+                char* u = static_cast<char*>(std::malloc(h.owner_user.size() + 1));
+                if (u) {
+                    std::memcpy(u, h.owner_user.c_str(), h.owner_user.size() + 1);
+                    *username_out = u;
+                }
+            }
+        }
+        if (!h.owner_group.empty()) {
+            flags |= OPENRAR_OWNER_FLAG_HAS_GROUP;
+            if (groupname_out) {
+                char* g = static_cast<char*>(std::malloc(h.owner_group.size() + 1));
+                if (g) {
+                    std::memcpy(g, h.owner_group.c_str(), h.owner_group.size() + 1);
+                    *groupname_out = g;
+                }
+            }
+        }
+        owner_out->flags = flags;
+        return RAR_OK;
+    }
 };
 } // namespace
 
@@ -761,7 +818,7 @@ uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
            OPENRAR_ABI_FEATURE_MUTATION | OPENRAR_ABI_FEATURE_ENTRY_EX |
            OPENRAR_ABI_FEATURE_PACKAGE_VERSION | OPENRAR_ABI_FEATURE_SET_LIMITS |
            OPENRAR_ABI_FEATURE_REPAIR | OPENRAR_ABI_FEATURE_CREATE |
-           OPENRAR_ABI_FEATURE_FILTERS;
+           OPENRAR_ABI_FEATURE_FILTERS | OPENRAR_ABI_FEATURE_OWNER;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1738,6 +1795,37 @@ int OPENRAR_DLL_CALL openrar_archive_handle_entry_ex(uint32_t handle, uint32_t e
 
 void OPENRAR_DLL_CALL openrar_archive_entry_ex_free(void* extra) {
     std::free(extra);
+}
+
+int OPENRAR_DLL_CALL openrar_archive_handle_entry_owner(uint32_t handle, uint32_t entry_index,
+                                                        openrar_entry_owner_t* owner_out,
+                                                        char** username_out,
+                                                        char** groupname_out) {
+    try {
+        if (!owner_out) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *owner_out = openrar_entry_owner_t{};
+        if (username_out) *username_out = nullptr;
+        if (groupname_out) *groupname_out = nullptr;
+        auto h = g_handles.pin(handle);
+        if (!h) {
+            set_error("invalid handle");
+            return RAR_ERR_INVALID_ARG;
+        }
+        return h->entry_owner(entry_index, owner_out, username_out, groupname_out);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+
+void OPENRAR_DLL_CALL openrar_archive_entry_owner_free(char* str) {
+    std::free(str);
 }
 
 int OPENRAR_DLL_CALL openrar_archive_handle_info(uint32_t handle, openrar_archive_info_t* out,
