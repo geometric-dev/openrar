@@ -5,6 +5,27 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.0] - 2026-09-20
+
+### Added
+
+- **Standalone Recovery Volumes (`.rev` / `-rv`) Generation & Engine Parity**:
+  - Multi-Chunk Reed-Solomon Parity Accumulation Integrity:
+    - Fixed per-chunk parity zeroing bug in `RecoveryWriter::write_rev_volumes` for multi-chunk volume sets (>1 MiB per volume), eliminating residual buffer contamination across chunk boundaries.
+    - Fixed per-chunk reconstruction zeroing bug in `RecoveryWriter::repair_rev_volumes` during Cauchy Reed-Solomon decode passes.
+    - Guarantees byte-for-byte exact parity encoding and reconstruction for multi-volume archives of arbitrary size.
+  - Missing-Volume Direct Repair Entry Parity:
+    - Prioritized `has_rev_files` check ahead of volume existence in `RecoveryWriter::repair`, permitting recovery volume reconstruction when passed missing volume paths (e.g. `openrar r archive.part02.rar`).
+  - Standalone `rv` Command Path Normalization:
+    - Extended `vol_name_to_first_name` to probe existing disk files across candidate digit widths (`.part1.rar`, `.part01.rar`, `.part001.rar`), restoring full WinRAR CLI parity when passing archive base names (`openrar rv1 archive.rar`).
+  - Additive C DLL ABI Recovery Interfaces:
+    - Added `#define OPENRAR_ABI_FEATURE_REC_VOL (1ull << 14)` in `openrar_dll.h`.
+    - Added `openrar_archive_create_rev_volumes` and `openrar_archive_add_recovery_record` DLL exports.
+    - Updated `openrar_archive_repair` to support reconstructing missing archive volumes via `.rev` files without failing existence prechecks.
+    - Preserved frozen `OPENRAR_DLL_API_VERSION = 1` ABI contract and entry struct layouts.
+  - Comprehensive Verification & Dual-Oracle Interop:
+    - Authored `tools/tests/recovery_volumes.tests.mjs` verifying multi-chunk volume repair, direct missing volume repair, CLI base name normalization, and dual-oracle cross-validation against official WinRAR / UnRAR 7.20.
+
 ## [1.19.0] - 2026-09-20
 
 ### Added
