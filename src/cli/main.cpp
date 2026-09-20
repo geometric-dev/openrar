@@ -364,6 +364,25 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
                       << (reader.is_locked() ? ", locked" : "")
                       << (reader.is_volume() ? ", volume" : "")
                       << (reader.has_recovery_record() ? ", recovery record" : "") << "\n\n";
+            std::string cmt_text;
+            for (const auto& entry : reader.entries()) {
+                if (entry.header.is_service && entry.header.service_type == "CMT") {
+                    if (!entry.header.sub_data.empty()) {
+                        cmt_text.assign(reinterpret_cast<const char*>(entry.header.sub_data.data()), entry.header.sub_data.size());
+                    } else if (entry.data_size > 0 && entry.data_size <= 1024 * 1024) {
+                        std::vector<char> cbuf(static_cast<size_t>(entry.data_size));
+                        auto& s = reader.stream();
+                        if (s.seek(static_cast<core::int64>(entry.data_offset), io::SeekOrigin::Begin) &&
+                            s.read(reinterpret_cast<core::byte*>(cbuf.data()), cbuf.size()) == cbuf.size()) {
+                            cmt_text.assign(cbuf.data(), cbuf.size());
+                        }
+                    }
+                    break;
+                }
+            }
+            if (!cmt_text.empty()) {
+                std::cout << "Comment:\n" << cmt_text << "\n\n";
+            }
             if (!technical) {
                 std::cout << " Attributes      Size     Date     Time   Name\n"
                           << "-----------  --------  ---------- -----  ----\n";
@@ -994,7 +1013,8 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                    const compress::FilterConfig& filter_cfg = {},
                    int max_versions = -1,
                    const std::string& default_group = "",
-                   const std::string& default_user = "") {
+                   const std::string& default_user = "",
+                   bool want_lock = false) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return 1;
@@ -1433,13 +1453,15 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                 std::cout << "Adding    " << item.entry_name << " ... ";
             }
             bool ok = false;
+            bool is_last = (i == queue.size() - 1);
             if (!sfx_stub.empty())
                 ok = archive::ArchiveMutator::add_file_to_archive(
                     arc_path, item.src_path, item.entry_name, method, sfx_stub, vol_size, password,
-                    /*encrypt_headers=*/false, solid, dict_size, filter_cfg);
+                    encrypt_headers, solid, dict_size, filter_cfg);
             else
                 ok = archive::ArchiveMutator::add_file_to_archive_vol(
-                    arc_path, item.src_path, item.entry_name, method, vol_size, password, solid, dict_size, filter_cfg);
+                    arc_path, item.src_path, item.entry_name, method, vol_size, password, solid, dict_size, filter_cfg,
+                    encrypt_headers, comment.empty() ? nullptr : &comment, is_last ? want_lock : false);
             if (!ok) {
                 if (!g_quiet_mode && !is_vt_supported()) std::cout << "FAILED\n";
                 return 1;
@@ -1986,8 +2008,8 @@ int repair_archive(const std::string& arc_path) {
     return 1;
 }
 
-int lock_archive(const std::string& arc_path) {
-    if (!archive::ArchiveMutator::lock_archive(arc_path)) {
+int lock_archive(const std::string& arc_path, const std::string& password = "") {
+    if (!archive::ArchiveMutator::lock_archive(arc_path, password)) {
         std::cerr << "Cannot lock archive\n";
         return 1;
     }
@@ -2044,7 +2066,8 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
         // Volume chain rewrite is inherently sequential (see add_to_archive).
         for (const auto& item : queue) {
             bool ok = archive::ArchiveMutator::move_file_to_archive_vol(
-                arc_path, item.src_path, item.entry_name, method, vol_size, password, /*solid=*/false, dict_size, filter_cfg);
+                arc_path, item.src_path, item.entry_name, method, vol_size, password, /*solid=*/false, dict_size, filter_cfg,
+                encrypt_headers);
             if (!ok) {
                 std::cerr << "Failed moving " << item.src_path.string() << " to " << arc_path
                           << "\n";
@@ -2523,17 +2546,8 @@ static int cli_main(int argc, char* argv[]) {
     // explicit -mt wins, otherwise one worker per hardware thread.
     unsigned threads = mt_flag ? mt_flag : openrar::core::hardware_thread_hint();
 
-    // Header encryption (-hp) applies to single-file archives. It implies
-    // per-file data encryption and is incompatible with multi-volume output
-    // (each volume would need its own HEAD_CRYPT + encrypted headers).
+    // Header encryption (-hp): implies per-file data encryption
     if (want_header_encryption && (cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m")) {
-        if (vol_size != 0) {
-            std::cerr
-                << "Error: -hp (header encryption) is not supported together with -v "
-                   "(multi-volume).\n"
-                << "       Use -hp without -v, or -p<password> with -v for data-only encryption.\n";
-            return 7; // ExitCode::UserError
-        }
         if (password.empty()) {
             std::cerr << "Error: -hp requires a password (-hp<password>).\n";
             return 7;
@@ -2544,15 +2558,6 @@ static int cli_main(int argc, char* argv[]) {
     // For now all -rr goes via RecoveryWriter; vintage detection would be via archive version flag
     if ((cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m") && want_rr) {
         // defer to handler below; no early rejection
-    }
-    // Comment / lock writes are batch-path features; the volume writer has no
-    // CMT placement or per-volume locking yet — reject explicitly rather than
-    // silently produce an archive without the requested feature.
-    if ((!comment_path.empty() || want_lock) &&
-        (cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m") && vol_size != 0) {
-        std::cerr << "Error: -z (comment) / -k (lock) is not supported together with -v "
-                     "(multi-volume).\n";
-        return 7;
     }
     // Read the -z comment payload up front so a bad file fails before any
     // archive work starts.
@@ -2625,7 +2630,7 @@ static int cli_main(int argc, char* argv[]) {
                                               recurse_subdirs, want_symlinks, (cmd == "f"),
                                               want_stm, want_acl, want_hardlinks, want_qo, want_ams,
                                               exclude_patterns, opt_dict_size, opt_filter_cfg,
-                                              max_versions, opt_group, opt_user);
+                                              max_versions, opt_group, opt_user, want_lock);
         }
         if (rc == 0 && want_rr) {
             bool rr_ok;
@@ -2671,9 +2676,8 @@ static int cli_main(int argc, char* argv[]) {
         }
         // -k locks after the archive (and any RR) is fully written, matching
         // the `k` command's rewrite; locking earlier would block RR splicing.
-        if (rc == 0 && want_lock &&
-            !(vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO)) {
-            if (!openrar::archive::ArchiveMutator::lock_archive(target_arc)) {
+        if (rc == 0 && want_lock) {
+            if (!openrar::archive::ArchiveMutator::lock_archive(target_arc, password)) {
                 std::cerr << "Error: failed to lock " << target_arc << "\n";
                 return 1;
             }
@@ -2790,7 +2794,7 @@ static int cli_main(int argc, char* argv[]) {
     } else if (cmd == "d") {
         return openrar::cli::delete_from_archive(arc_path, files);
     } else if (cmd == "k") {
-        return openrar::cli::lock_archive(arc_path);
+        return openrar::cli::lock_archive(arc_path, password);
     } else if (cmd == "m") {
         // B8-class honesty: a/u/f honor -z/-s/-ts, but m's batch path does
         // not carry them. Warn instead of silently dropping advertised
@@ -2832,9 +2836,8 @@ static int cli_main(int argc, char* argv[]) {
             }
         }
         // -k locks after the archive (and any RR) is fully written (see a/u/f).
-        if (rc == 0 && want_lock &&
-            !(vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO)) {
-            if (!openrar::archive::ArchiveMutator::lock_archive(move_arc)) {
+        if (rc == 0 && want_lock) {
+            if (!openrar::archive::ArchiveMutator::lock_archive(move_arc, password)) {
                 std::cerr << "Error: failed to lock " << move_arc << "\n";
                 return 1;
             }
