@@ -5,6 +5,26 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-09-20
+
+### Added
+
+- **POSIX User & Group Ownership (`FHEXTRA_OWNER` `0x06`, `-ow`, `-og`)**:
+  - Implemented complete format serialization and deserialization for RAR5 owner extra record `0x06` (`FHEXTRA_OWNER`).
+  - Flag handling: `0x01` (user name string), `0x02` (group name string), `0x04` (numeric UID), `0x08` (numeric GID).
+  - CLI switch support:
+    - `-og` / `-og<group>`: Store group name or numeric GID in archive extra records.
+    - `--group=<group>` / `--owner=<user>`: Store symbolic user/group names or numeric UID/GID overrides.
+    - Technical listing (`lt`): Displays user name, group name, UID, and GID attributes when present.
+    - Extraction: Restores POSIX ownership attributes on Unix/POSIX targets when run as root (`euid == 0`) or when `-ow` / `-og` is requested.
+  - Additive DLL ABI Integration:
+    - Added `#define OPENRAR_ABI_FEATURE_OWNER (1ull << 11)` in `openrar_dll.h`.
+    - Added `#define OPENRAR_ENTRY_FLAG_HAS_OWNER (1u << 10)` in `openrar_dll.h`.
+    - Defined 20-byte packed struct `openrar_entry_owner_t` allowing zero-allocation numeric UID/GID queries.
+    - Exported `openrar_archive_handle_entry_owner` and `openrar_archive_entry_owner_free`.
+  - Comprehensive Test Suite & Dual-Oracle Cross-Validation:
+    - Authored `tools/tests/owner.tests.mjs` verifying symbolic group, numeric GID, combined user/group overrides, technical listing, and dual-oracle cross-validation against official WinRAR 7.20.
+
 ## [1.16.0] - 2026-09-19
 
 ### Added
