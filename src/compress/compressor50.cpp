@@ -1,5 +1,6 @@
 #include "compressor50.hpp"
 #include "arch/match_simd.hpp"
+#include "../core/thread_pool.hpp"
 #include <algorithm>
 #include <cstring>
 #include <cassert>
@@ -1369,7 +1370,7 @@ int Compressor50::process_available(bool final) {
     return 0;
 }
 
-core::int64 Compressor50::compress() {
+core::int64 Compressor50::compress(bool last_block) {
     init_match_params();
     fail_count_ = 0;
 
@@ -1379,7 +1380,7 @@ core::int64 Compressor50::compress() {
 
     consume_source(unhashed_pos_, cur_);
     unhashed_pos_ = cur_;
-    if (!write_block(true)) return -1;
+    if (!write_block(last_block)) return -1;
 
     return static_cast<core::int64>(packed_total_ - total_at_file_start_);
 }
@@ -1486,6 +1487,71 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
     if (packer.compress() < 0) {
         dest.clear();
         return false;
+    }
+    return !dest.empty();
+}
+
+bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_size,
+                                             std::vector<core::byte>& dest, int method,
+                                             size_t win_size,
+                                             const FilterConfig& filter_cfg,
+                                             unsigned threads) {
+    if (src_size == 0) {
+        dest.clear();
+        return true;
+    }
+
+    unsigned eff_threads = threads == 0 ? core::hardware_thread_hint() : threads;
+    if (eff_threads == 0) eff_threads = 1;
+    if (eff_threads > 16) eff_threads = 16; // Bound worker count to cap match-finder allocations
+
+    // Files < 1 MiB or single-threaded execution bypass chunking
+    if (eff_threads <= 1 || src_size < 1024 * 1024) {
+        return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
+    }
+
+    size_t chunk_size = std::max<size_t>(1024 * 1024,
+        std::min<size_t>(4 * 1024 * 1024, (src_size + eff_threads - 1) / eff_threads));
+    size_t num_chunks = (src_size + chunk_size - 1) / chunk_size;
+    if (num_chunks <= 1) {
+        return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
+    }
+
+    size_t chunk_win = std::min(win_size, chunk_size);
+    FilterConfig no_filters;
+    no_filters.mode = FilterMode::DisableAll;
+
+    std::vector<std::vector<core::byte>> chunk_outputs(num_chunks);
+    std::vector<char> chunk_ok(num_chunks, 0);
+
+    core::ThreadPool pool(std::min<unsigned>(eff_threads, static_cast<unsigned>(num_chunks)));
+    core::parallel_for(pool, 0, num_chunks, [&](size_t i) {
+        size_t off = i * chunk_size;
+        size_t len = std::min(chunk_size, src_size - off);
+        bool is_last = (i == num_chunks - 1);
+        Compressor50 packer;
+        packer.begin_archive(nullptr, method, chunk_win);
+        packer.set_filter_config(no_filters);
+        packer.set_external_buffer(src + off, len);
+        packer.set_memory_dest(&chunk_outputs[i]);
+        core::int64 r = packer.compress(is_last);
+        if (r >= 0) chunk_ok[i] = 1;
+    });
+
+    for (char ok : chunk_ok) {
+        if (!ok) {
+            dest.clear();
+            return false;
+        }
+    }
+
+    size_t total_sz = 0;
+    for (const auto& co : chunk_outputs) total_sz += co.size();
+    dest.clear();
+    dest.reserve(total_sz);
+    for (auto& co : chunk_outputs) {
+        dest.insert(dest.end(), co.begin(), co.end());
+        std::vector<core::byte>().swap(co);
     }
     return !dest.empty();
 }

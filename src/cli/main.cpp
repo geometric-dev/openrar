@@ -796,7 +796,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                 okv = archive::ArchiveMutator::prepare_add_file(
                     queue[0].src_path, queue[0].entry_name, method, password, prepared[0],
                     times_mask, dict_size, want_stm, want_acl, solid, /*direct_stream=*/true,
-                    filter_cfg, default_group, default_user);
+                    filter_cfg, default_group, default_user, /*threads=*/threads);
         } catch (...) {
             okv = false;
         }
@@ -899,7 +899,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                             okv = archive::ArchiveMutator::prepare_add_file(
                                 queue[i].src_path, queue[i].entry_name, method, password,
                                 prepared[i], times_mask, dict_size, want_stm, want_acl, solid,
-                                /*direct_stream=*/false, filter_cfg, default_group, default_user);
+                                /*direct_stream=*/false, filter_cfg, default_group, default_user,
+                                /*threads=*/1);
                     } catch (...) {
                         // std::filesystem throws on sources that vanish or
                         // become unreadable after the scan; same handling as
