@@ -116,7 +116,7 @@ describe('RAR 5.0 / 7.0 Compression Dictionary & Version Spec', () => {
     assert.equal(resExt.code, 0, `Solid extraction failed: ${resExt.output}`);
   });
 
-  it('rejects illegal dictionary sizes (<128KB, >1TB, and non-power-of-2 for -md)', () => {
+  it('rejects illegal dictionary sizes (<128KB, >1TB, and invalid syntax)', () => {
     const tree = freshDir('dict-bad-tree');
     writeFileSync(join(tree, 'bad.txt'), 'test');
     const out = freshDir('dict-bad-out');
@@ -129,11 +129,15 @@ describe('RAR 5.0 / 7.0 Compression Dictionary & Version Spec', () => {
     const resLarge = runTool(OUR_EXE, ['a', '-y', '-md2t', join(out, 'bad2.rar'), '.'], tree);
     assert.notEqual(resLarge.code, 0, '-md2t (>1TB) must be rejected');
 
-    // 3. Non-power-of-2 under -md (e.g. -md3m) must be rejected
-    const resNonPow2 = runTool(OUR_EXE, ['a', '-y', '-md3m', join(out, 'bad3.rar'), '.'], tree);
-    assert.notEqual(resNonPow2.code, 0, '-md3m (non-power-of-2 for <=4GB) must be rejected');
+    // 3. Invalid syntax (e.g. -mdxyz) must be rejected
+    const resBadSyntax = runTool(OUR_EXE, ['a', '-y', '-mdxyz', join(out, 'bad3.rar'), '.'], tree);
+    assert.notEqual(resBadSyntax.code, 0, '-mdxyz (invalid syntax) must be rejected');
 
-    // 4. Non-power-of-2 under -mdx (e.g. -mdx3m) is allowed
+    // 4. Non-power-of-2 under -md (e.g. -md3m) is now supported with RAR 7.0 sizing
+    const resNonPow2 = runTool(OUR_EXE, ['a', '-y', '-md3m', join(out, 'good_npot.rar'), '.'], tree);
+    assert.equal(resNonPow2.code, 0, '-md3m (non-power-of-2) must be accepted under RAR 7.0');
+
+    // 5. Non-power-of-2 under -mdx (e.g. -mdx3m) is allowed
     const resMdx = runTool(OUR_EXE, ['a', '-y', '-mdx3m', join(out, 'good_mdx.rar'), '.'], tree);
     assert.equal(resMdx.code, 0, '-mdx3m (fractional allowed for limit) must be accepted');
   });

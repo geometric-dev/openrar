@@ -515,10 +515,7 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
             if (out_block.unp_ver == 1) {
                 core::uint32 frac = static_cast<core::uint32>((comp_info >> 15) & 0x1F);
                 win += (base / 32) * frac;
-                // FCI_RAR5_COMPAT (0x100000) means stream is version0 algorithm but dict sized as version1
-                if (comp_info & 0x100000) {
-                    out_block.unp_ver = 0;
-                }
+                // FCI_RAR5_COMPAT (0x100000) indicates RAR5 compression algorithm compatibility.
                 // For version1, validate effective dict against 1 TB spec max (with fract)
                 if (win > RAR_DICT_MAX_V1) {
                     win = RAR_DICT_MAX_V1 + 1; // sentinel for too large
