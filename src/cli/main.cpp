@@ -2746,8 +2746,19 @@ static int cli_main(int argc, char* argv[]) {
         return 0;
     } else if (cmd == "rv" || cmd.rfind("rv", 0) == 0) {
         if (!std::filesystem::exists(arc_path)) {
-            std::cerr << "Cannot open " << arc_path << "\n";
-            return 1;
+            std::filesystem::path first =
+                openrar::archive::volume::vol_name_to_first_name(arc_path, false);
+            if (std::filesystem::exists(first)) {
+                arc_path = first.string();
+            } else {
+                first = openrar::archive::volume::vol_name_to_first_name(arc_path, true);
+                if (std::filesystem::exists(first)) {
+                    arc_path = first.string();
+                } else {
+                    std::cerr << "Cannot open " << arc_path << "\n";
+                    return 1;
+                }
+            }
         }
         openrar::core::uint32 count_or_pct = 1;
         bool is_pct = false;
