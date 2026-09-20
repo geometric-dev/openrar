@@ -147,11 +147,12 @@ bool ArchiveReader::open_ex(const std::filesystem::path& arc_path, const std::st
                             bool strict_volumes,
                             const ExtractionLimits* limits,
                             LimitState* state) {
+    std::string effective_password = password.empty() ? password_ : password;
     close();
     status_out = RAR_OK;
     detail_out.clear();
     path_ = arc_path;
-    password_ = password;
+    password_ = effective_password;
 
     // Multi-volume rewind: a middle volume path (.partNN.rar, NN > 1) opens
     // the derived first volume instead. The rewind only fires when the
