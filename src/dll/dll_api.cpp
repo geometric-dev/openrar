@@ -9,6 +9,7 @@
 #include "../compress/decompressor50.hpp"
 #include "../compress/stream_encoder.hpp"
 #include "../recovery/recovery_writer.hpp"
+#include "../archive/volume.hpp"
 
 #include <algorithm>
 #include <exception>
@@ -819,7 +820,8 @@ uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
            OPENRAR_ABI_FEATURE_PACKAGE_VERSION | OPENRAR_ABI_FEATURE_SET_LIMITS |
            OPENRAR_ABI_FEATURE_REPAIR | OPENRAR_ABI_FEATURE_CREATE |
            OPENRAR_ABI_FEATURE_FILTERS | OPENRAR_ABI_FEATURE_OWNER |
-           OPENRAR_ABI_FEATURE_DICT_EX | OPENRAR_ABI_FEATURE_VOL_ENCRYPT;
+           OPENRAR_ABI_FEATURE_DICT_EX | OPENRAR_ABI_FEATURE_VOL_ENCRYPT |
+           OPENRAR_ABI_FEATURE_REC_VOL;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1738,7 +1740,10 @@ int OPENRAR_DLL_CALL openrar_archive_repair(const char* arc_path,
             set_error("aborted");
             return RAR_ERR_ABORTED;
         }
-        int pre = mutation_precheck(arc_path);
+        // If .rev files are present, repair reconstructs missing volumes,
+        // so arc_path itself does not strictly need to exist on disk.
+        bool has_rev = openrar::recovery::RecoveryWriter::has_rev_files(std::filesystem::u8path(arc_path));
+        int pre = mutation_precheck(arc_path, /*must_exist=*/!has_rev);
         if (pre != RAR_OK) return pre;
 
         if (progress) progress(user, 0, 100);
@@ -1750,6 +1755,94 @@ int OPENRAR_DLL_CALL openrar_archive_repair(const char* arc_path,
         }
         if (!ok) {
             set_error("repair failed");
+            return RAR_ERR_IO;
+        }
+        if (progress) progress(user, 100, 100);
+        return RAR_OK;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+
+int OPENRAR_DLL_CALL openrar_archive_create_rev_volumes(const char* arc_path,
+                                                        uint32_t count_or_percent,
+                                                        int is_percent,
+                                                        unsigned int threads,
+                                                        openrar_progress_cb progress,
+                                                        openrar_cancel_cb cancel,
+                                                        void* user) {
+    try {
+        if (!arc_path) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        if (cancel && cancel(user)) {
+            set_error("aborted");
+            return RAR_ERR_ABORTED;
+        }
+        int pre = mutation_precheck(arc_path, /*must_exist=*/false);
+        if (pre != RAR_OK) return pre;
+
+        if (progress) progress(user, 0, 100);
+
+        bool ok = openrar::recovery::RecoveryWriter::write_rev_volumes(
+            std::filesystem::u8path(arc_path), count_or_percent, is_percent != 0,
+            threads > 0 ? threads : 1);
+        if (cancel && cancel(user)) {
+            set_error("aborted");
+            return RAR_ERR_ABORTED;
+        }
+        if (!ok) {
+            set_error("create recovery volumes failed: not a volume archive or invalid params");
+            return RAR_ERR_UNSUPPORTED_FEATURE;
+        }
+        if (progress) progress(user, 100, 100);
+        return RAR_OK;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+
+int OPENRAR_DLL_CALL openrar_archive_add_recovery_record(const char* arc_path,
+                                                         uint32_t percent,
+                                                         unsigned int threads,
+                                                         openrar_progress_cb progress,
+                                                         openrar_cancel_cb cancel,
+                                                         void* user) {
+    try {
+        if (!arc_path) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        if (percent == 0 || percent > 1000) {
+            set_error("invalid recovery record percentage (must be 1..1000)");
+            return RAR_ERR_INVALID_ARG;
+        }
+        if (cancel && cancel(user)) {
+            set_error("aborted");
+            return RAR_ERR_ABORTED;
+        }
+        int pre = mutation_precheck(arc_path, /*must_exist=*/true);
+        if (pre != RAR_OK) return pre;
+
+        if (progress) progress(user, 0, 100);
+
+        bool ok = openrar::recovery::RecoveryWriter::add_recovery_record(
+            std::filesystem::u8path(arc_path), percent, threads > 0 ? threads : 1);
+        if (cancel && cancel(user)) {
+            set_error("aborted");
+            return RAR_ERR_ABORTED;
+        }
+        if (!ok) {
+            set_error("add recovery record failed");
             return RAR_ERR_IO;
         }
         if (progress) progress(user, 100, 100);

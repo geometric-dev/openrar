@@ -282,18 +282,28 @@ static void test_abi_features() {
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_REPAIR) != 0);
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_CREATE) != 0);
     assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_FILTERS) != 0);
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_VOL_ENCRYPT) != 0);
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_REC_VOL) != 0);
     std::cout << "PASS test_abi_features\n";
 }
 
 static void test_archive_repair() {
     // Null arc_path returns RAR_ERR_INVALID_ARG
     assert(openrar_archive_repair(nullptr, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
-    // Non-existent path returns RAR_ERR_IO
+    // Non-existent path without .rev siblings returns RAR_ERR_IO
     assert(openrar_archive_repair("non_existent_archive_file_12345.rar", nullptr, nullptr, nullptr) == RAR_ERR_IO);
     // Cancelled callback returns RAR_ERR_ABORTED
     auto cancel_now = [](void*) -> int { return 1; };
     assert(openrar_archive_repair("non_existent_archive_file_12345.rar", nullptr, cancel_now, nullptr) == RAR_ERR_ABORTED);
     std::cout << "PASS test_archive_repair\n";
+}
+
+static void test_archive_recovery_volumes() {
+    assert(openrar_archive_create_rev_volumes(nullptr, 1, 0, 1, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
+    assert(openrar_archive_add_recovery_record(nullptr, 5, 1, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
+    assert(openrar_archive_add_recovery_record("nonexistent.rar", 0, 1, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
+    assert(openrar_archive_add_recovery_record("nonexistent.rar", 1001, 1, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
+    std::cout << "PASS test_archive_recovery_volumes\n";
 }
 
 struct ExProgressLog {
@@ -888,6 +898,7 @@ int main() {
     test_b1_durable_write_collision();
     test_archive_handle_set_limits();
     test_archive_repair();
+    test_archive_recovery_volumes();
     test_archive_create();
     std::cout << "ALL DLL TESTS PASSED\n";
     return 0;

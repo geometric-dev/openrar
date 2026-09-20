@@ -100,6 +100,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 #define OPENRAR_ABI_FEATURE_OWNER (1ull << 11)               // openrar_archive_handle_entry_owner / owner controls
 #define OPENRAR_ABI_FEATURE_DICT_EX (1ull << 12)             // RAR 7.0 fractional & non-power-of-two dictionary sizing
 #define OPENRAR_ABI_FEATURE_VOL_ENCRYPT (1ull << 13)         // multi-volume encryption & metadata parity
+#define OPENRAR_ABI_FEATURE_REC_VOL (1ull << 14)             // recovery volume (.rev) & recovery record creation
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -717,6 +718,32 @@ openrar_archive_repair(const char* arc_path,
                        openrar_progress_cb progress,
                        openrar_cancel_cb cancel,
                        void* user);
+
+// ── Recovery Volume & Record Creation (v1.20.0, additive) ───────────────────
+// Generates external Reed-Solomon (.rev) recovery volumes for a multi-volume set.
+// count_or_percent: number of .rev volumes (if is_percent == 0) or percentage (if is_percent != 0).
+// threads: number of worker threads (1 = serial).
+// Returns RAR_OK (0) on success, or a negative RAR_ERR_* code on failure.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_create_rev_volumes(const char* arc_path,
+                                   uint32_t count_or_percent,
+                                   int is_percent,
+                                   unsigned int threads,
+                                   openrar_progress_cb progress,
+                                   openrar_cancel_cb cancel,
+                                   void* user);
+
+// Appends an inline Recovery Record (RR) service block to a single-volume archive.
+// percent: recovery percentage (1..1000).
+// threads: number of worker threads (1 = serial).
+// Returns RAR_OK (0) on success, or a negative RAR_ERR_* code on failure.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_add_recovery_record(const char* arc_path,
+                                    uint32_t percent,
+                                    unsigned int threads,
+                                    openrar_progress_cb progress,
+                                    openrar_cancel_cb cancel,
+                                    void* user);
 
 #ifdef __cplusplus
 } // extern "C"
