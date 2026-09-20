@@ -40,7 +40,8 @@ public:
                                        std::string& detail_out);
 
     // Lock archive against further modifications (command 'k')
-    static bool lock_archive(const std::filesystem::path& arc_path);
+    static bool lock_archive(const std::filesystem::path& arc_path,
+                             const std::string& password = "");
 
     // Add file to archive (command 'a') - optionally with SFX stub + vol_size + password
     // password: empty = no encryption. Non-empty enables per-file AES-256-CBC (spec §4)
@@ -63,7 +64,10 @@ public:
                                         const std::string& arc_entry_name, int method,
                                         core::uint64 vol_size, const std::string& password = "",
                                         bool solid = false, core::uint64 dict_size = 0,
-                                        const compress::FilterConfig& filter_cfg = {});
+                                        const compress::FilterConfig& filter_cfg = {},
+                                        bool encrypt_headers = false,
+                                        const std::vector<core::byte>* comment = nullptr,
+                                        bool lock = false);
 
     // Move file to archive and delete from disk upon success (command 'm')
     static bool move_file_to_archive(const std::filesystem::path& arc_path,
@@ -79,7 +83,10 @@ public:
                                          const std::string& arc_entry_name, int method,
                                          core::uint64 vol_size, const std::string& password = "",
                                          bool solid = false, core::uint64 dict_size = 0,
-                                         const compress::FilterConfig& filter_cfg = {});
+                                         const compress::FilterConfig& filter_cfg = {},
+                                         bool encrypt_headers = false,
+                                         const std::vector<core::byte>* comment = nullptr,
+                                         bool lock = false);
 
     // Spool guard ensuring temporary spool files are unlinked on any unwound
     // exception, error, or early abort.

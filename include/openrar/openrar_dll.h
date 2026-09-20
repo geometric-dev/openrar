@@ -99,6 +99,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 #define OPENRAR_ABI_FEATURE_FILTERS (1ull << 10)             // openrar_archive_create_file_opts / filter controls
 #define OPENRAR_ABI_FEATURE_OWNER (1ull << 11)               // openrar_archive_handle_entry_owner / owner controls
 #define OPENRAR_ABI_FEATURE_DICT_EX (1ull << 12)             // RAR 7.0 fractional & non-power-of-two dictionary sizing
+#define OPENRAR_ABI_FEATURE_VOL_ENCRYPT (1ull << 13)         // multi-volume encryption & metadata parity
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────

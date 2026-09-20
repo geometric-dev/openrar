@@ -6,6 +6,7 @@
 #include "../compress/stream_encoder.hpp"
 #include "../core/vint.hpp"
 #include "../format/header_writer.hpp"
+#include "../format/header_reader.hpp"
 #include "../io/path_util.hpp"
 #include "../crypto/crc32.hpp"
 #include "../crypto/aes256.hpp"
@@ -607,9 +608,20 @@ int ArchiveMutator::delete_entries_by_index(const std::filesystem::path& arc_pat
     return delete_entries_impl(arc_path, reader, removed, detail_out);
 }
 
-bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path) {
+bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
+                                   const std::string& password) {
+    std::filesystem::path actual_path = arc_path;
+    if (!std::filesystem::exists(actual_path)) {
+        std::filesystem::path first = volume::first_volume_name(arc_path, false);
+        if (std::filesystem::exists(first)) {
+            actual_path = first;
+        }
+    }
     ArchiveReader reader;
-    if (!reader.open(arc_path)) {
+    if (!password.empty()) {
+        reader.set_password(password);
+    }
+    if (!reader.open(actual_path, password)) {
         return false;
     }
 
@@ -617,7 +629,127 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path) {
         return true; // Already locked
     }
     if (reader.is_volume()) {
-        return false;
+        std::filesystem::path cur_vol = volume::first_volume_name(actual_path, false);
+        if (!std::filesystem::exists(cur_vol)) {
+            cur_vol = actual_path;
+        }
+        std::vector<std::filesystem::path> vols;
+        while (std::filesystem::exists(cur_vol) && vols.size() < 65535) {
+            vols.push_back(cur_vol);
+            cur_vol = volume::next_volume_name(cur_vol, false);
+        }
+        if (vols.empty()) return false;
+        format::CryptBlock cb = reader.header_crypt();
+        bool is_enc = reader.is_header_encrypted();
+        core::uint64 first_sfx = reader.sfx_offset();
+        reader.close();
+
+        for (size_t vi = 0; vi < vols.size(); ++vi) {
+            const auto& v = vols[vi];
+            core::uint64 sfx_off = (vi == 0) ? first_sfx : 0;
+            io::FileStream in_s;
+            if (!in_s.open(v, io::FileMode::ReadOnly)) return false;
+
+            std::filesystem::path tmp_path = mutation_temp_path(v, "lck_tmp");
+            io::FileStream out;
+            if (!out.open(tmp_path, io::FileMode::CreateNew)) return false;
+            try {
+                if (sfx_off > 0) {
+                    if (!copy_stream_region(in_s, out, 0, sfx_off)) {
+                        out.close();
+                        in_s.close();
+                        std::filesystem::remove(tmp_path);
+                        return false;
+                    }
+                }
+                in_s.seek(static_cast<core::int64>(sfx_off), io::SeekOrigin::Begin);
+                if (!format::HeaderReader::read_signature(in_s)) {
+                    out.close();
+                    in_s.close();
+                    std::filesystem::remove(tmp_path);
+                    return false;
+                }
+                format::HeaderWriter::write_signature(out);
+
+                format::HeaderCryptReader hcr;
+                format::HeaderCryptWriter hcw;
+                if (is_enc) {
+                    if (password.empty() || !hcr.init(password, cb) || !hcw.init_existing(password, cb)) {
+                        out.close();
+                        in_s.close();
+                        std::filesystem::remove(tmp_path);
+                        return false;
+                    }
+                    core::uint64 ctype = 0, cflags = 0, cdata_size = 0;
+                    std::vector<core::byte> cbody;
+                    auto cres = format::HeaderReader::read_block_raw(in_s, ctype, cflags, cbody, cdata_size, nullptr);
+                    if (cres != format::HeaderResult::Ok || ctype != format::HEAD_CRYPT) {
+                        out.close();
+                        in_s.close();
+                        std::filesystem::remove(tmp_path);
+                        return false;
+                    }
+                    if (!format::HeaderWriter::write_crypt_block(out, cb)) {
+                        out.close();
+                        in_s.close();
+                        std::filesystem::remove(tmp_path);
+                        return false;
+                    }
+                }
+
+                core::uint64 mtype = 0, mflags = 0, mdata_size = 0;
+                std::vector<core::byte> mbody;
+                auto mres = format::HeaderReader::read_block_raw(in_s, mtype, mflags, mbody, mdata_size, is_enc ? &hcr : nullptr);
+                if (mres != format::HeaderResult::Ok || mtype != format::HEAD_MAIN) {
+                    out.close();
+                    in_s.close();
+                    std::filesystem::remove(tmp_path);
+                    return false;
+                }
+                format::MainBlock mb;
+                if (!format::HeaderReader::parse_main_header(mbody.data(), mbody.size(), mb)) {
+                    out.close();
+                    in_s.close();
+                    std::filesystem::remove(tmp_path);
+                    return false;
+                }
+                mb.arc_flags |= format::MHFL_LOCK;
+                if (!format::HeaderWriter::write_main_block(out, mb, is_enc ? &hcw : nullptr)) {
+                    out.close();
+                    in_s.close();
+                    std::filesystem::remove(tmp_path);
+                    return false;
+                }
+
+                core::uint64 cur_in_pos = in_s.tell();
+                core::uint64 total_in_sz = in_s.size();
+                if (total_in_sz > cur_in_pos) {
+                    if (!copy_stream_region(in_s, out, cur_in_pos, total_in_sz - cur_in_pos)) {
+                        out.close();
+                        in_s.close();
+                        std::filesystem::remove(tmp_path);
+                        return false;
+                    }
+                }
+
+                in_s.close();
+                out.close();
+                std::error_code ec;
+                std::filesystem::remove(v, ec);
+                std::filesystem::rename(tmp_path, v, ec);
+                if (ec) {
+                    std::filesystem::remove(tmp_path, ec);
+                    return false;
+                }
+            } catch (...) {
+                out.close();
+                in_s.close();
+                std::error_code ec;
+                std::filesystem::remove(tmp_path, ec);
+                return false;
+            }
+        }
+        return true;
     }
 
     std::filesystem::path tmp_path = mutation_temp_path(arc_path, "lck_tmp");
@@ -641,10 +773,25 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path) {
         // Signature
         format::HeaderWriter::write_signature(out);
 
+        format::HeaderCryptWriter hcw;
+        bool is_enc = reader.is_header_encrypted();
+        if (is_enc) {
+            if (password.empty() || !hcw.init_existing(password, reader.header_crypt())) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                return false;
+            }
+            if (!format::HeaderWriter::write_crypt_block(out, reader.header_crypt())) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                return false;
+            }
+        }
+
         // Main block with MHFL_LOCK set
         format::MainBlock mb = reader.main_block();
         mb.arc_flags |= format::MHFL_LOCK;
-        format::HeaderWriter::write_main_block(out, mb);
+        format::HeaderWriter::write_main_block(out, mb, is_enc ? &hcw : nullptr);
 
         // Copy all entries verbatim
         for (const auto& entry : reader.entries()) {
@@ -659,7 +806,7 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path) {
         // End block
         format::EndArcBlock eb;
         eb.end_flags = 0;
-        format::HeaderWriter::write_end_block(out, eb);
+        format::HeaderWriter::write_end_block(out, eb, is_enc ? &hcw : nullptr);
 
         reader.close();
         out.close();
@@ -673,7 +820,15 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path) {
         throw;
     }
 
-    return atomic_replace(tmp_path, arc_path);
+    std::error_code ren_ec;
+    std::filesystem::remove(arc_path, ren_ec);
+    std::filesystem::rename(tmp_path, arc_path, ren_ec);
+    if (ren_ec) {
+        std::error_code rm_ec;
+        std::filesystem::remove(tmp_path, rm_ec);
+        return false;
+    }
+    return true;
 }
 
 static std::filesystem::path get_exe_dir(const char* argv0) {
@@ -2198,12 +2353,16 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
                                              const std::string& arc_entry_name, int method,
                                              core::uint64 vol_size, const std::string& password,
                                              bool solid, core::uint64 dict_size,
-                                             const compress::FilterConfig& filter_cfg) {
+                                             const compress::FilterConfig& filter_cfg,
+                                             bool encrypt_headers,
+                                             const std::vector<core::byte>* comment,
+                                             bool lock) {
     if (vol_size == 0 || vol_size == volume::VOLSIZE_AUTO) {
-        return add_or_move_file(arc_path, src_file, arc_entry_name, false, method, {}, password, false, dict_size, filter_cfg);
+        return add_or_move_file(arc_path, src_file, arc_entry_name, false, method, {}, password, encrypt_headers, dict_size, filter_cfg);
     }
     if (vol_size < 1024) return false; // too small
     if (!std::filesystem::exists(src_file)) return false;
+    if (encrypt_headers && password.empty()) return false;
 
     // Prepare new file payload using streaming compression (O(window) RAM invariant)
     core::uint64 file_sz = 0;
@@ -2497,15 +2656,30 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     // SFX handling: capture sfx bytes if present (first-volume-only)
     std::vector<core::byte> sfx_bytes;
     core::uint64 sfx_off = 0;
+    format::HeaderCryptWriter hcw;
+    format::CryptBlock new_crypt;
+    bool header_encrypt_mode = false;
+
     if (!existing_path.empty()) {
         ArchiveReader r;
+        if (!password.empty()) {
+            r.set_password(password);
+        }
         // Hard guard: never proceed when the existing archive cannot be
         // opened (header-encrypted without password, corrupt file, IO
         // error). Continuing would rename every volume aside and write a
         // fresh chain containing only the new file — silent loss of the
         // original contents — so refuse instead.
-        if (!r.open(existing_path)) return false;
+        if (!r.open(existing_path, password)) return false;
         if (r.is_locked()) return false;
+        if (r.is_header_encrypted()) {
+            if (password.empty()) return false;
+            new_crypt = r.header_crypt();
+            if (!hcw.init_existing(password, new_crypt)) return false;
+            header_encrypt_mode = true;
+        } else if (encrypt_headers) {
+            return false;
+        }
         // Allow volume rewrite; previously would reject but for multivolume we permit recreating
         vol_solid = vol_solid || r.is_solid();
         sfx_off = r.sfx_offset();
@@ -2518,6 +2692,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         }
         for (auto& e : r.entries()) {
             if (e.header.is_service && e.header.service_type == "QO") continue;
+            if (e.header.is_service && e.header.service_type == "CMT" && comment && !comment->empty()) continue;
             if (!e.header.is_service && e.header.file_name == arc_entry_name) continue; // replace
             volume_detail::PayloadEntry pe;
             pe.fb = e.header;
@@ -2534,6 +2709,12 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             all_payloads.push_back(std::move(pe));
         }
         r.close();
+    } else {
+        if (encrypt_headers) {
+            if (password.empty()) return false;
+            if (!hcw.init_new(password, new_crypt)) return false;
+            header_encrypt_mode = true;
+        }
     }
     base_fb.is_solid = vol_solid && has_prior_compressed && base_fb.method > 0;
 
@@ -2651,15 +2832,39 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             if (cur.write(sfx_bytes.data(), sfx_bytes.size()) != sfx_bytes.size()) return false;
         }
         if (!format::HeaderWriter::write_signature(cur)) return false;
+        if (header_encrypt_mode) {
+            if (!format::HeaderWriter::write_crypt_block(cur, new_crypt)) return false;
+        }
         format::MainBlock mb;
         mb.arc_flags = format::MHFL_VOLUME;
         if (vol_solid) mb.arc_flags |= format::MHFL_SOLID;
+        if (lock) mb.arc_flags |= format::MHFL_LOCK;
         if (idx != 0) {
             mb.arc_flags |= format::MHFL_VOLNUMBER;
             mb.vol_number = static_cast<core::uint64>(idx);
         }
         mb.has_locator = false;
-        if (!format::HeaderWriter::write_main_block(cur, mb)) return false;
+        if (!format::HeaderWriter::write_main_block(cur, mb, header_encrypt_mode ? &hcw : nullptr)) return false;
+
+        if (idx == 0 && comment && !comment->empty()) {
+            format::FileBlock cmt;
+            cmt.is_service = true;
+            cmt.service_type = "CMT";
+            cmt.file_name = "CMT";
+            cmt.unp_size = comment->size();
+            cmt.pack_size = static_cast<core::int64>(comment->size());
+            cmt.attributes = 0x20;
+            cmt.has_crc32 = true;
+            crypto::Crc32 cmt_crc;
+            cmt_crc.update(comment->data(), comment->size());
+            cmt.data_crc32 = cmt_crc.get();
+            cmt.method = 0;
+            cmt.unp_ver = 0;
+            cmt.win_size = 0;
+            if (!format::HeaderWriter::write_file_block(cur, cmt, 0, header_encrypt_mode ? &hcw : nullptr)) return false;
+            if (cur.write(comment->data(), comment->size()) != comment->size()) return false;
+        }
+
         created.push_back(path);
         return true;
     };
@@ -2675,7 +2880,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             if (space < volume::MAX_HEADER_SIZE_MARGIN + volume::ENDARC_SIZE + 10) {
                 format::EndArcBlock eb;
                 eb.end_flags = 0x0001;
-                format::HeaderWriter::write_end_block(cur, eb);
+                format::HeaderWriter::write_end_block(cur, eb, header_encrypt_mode ? &hcw : nullptr);
                 cur.close();
                 vol_idx++;
                 curPath = volume::next_volume_name(curPath, false);
@@ -2684,7 +2889,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             format::FileBlock slice_fb = pe.fb;
             slice_fb.pack_size = 0;
             // no split flags for empty
-            if (!format::HeaderWriter::write_file_block(cur, slice_fb, 0)) return false;
+            if (!format::HeaderWriter::write_file_block(cur, slice_fb, 0, header_encrypt_mode ? &hcw : nullptr)) return false;
             continue;
         }
         core::uint64 written = 0;
@@ -2693,7 +2898,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             if (vol_size <= cur_pos) {
                 format::EndArcBlock eb;
                 eb.end_flags = 0x0001;
-                format::HeaderWriter::write_end_block(cur, eb);
+                format::HeaderWriter::write_end_block(cur, eb, header_encrypt_mode ? &hcw : nullptr);
                 cur.close();
                 vol_idx++;
                 curPath = volume::next_volume_name(curPath, false);
@@ -2707,7 +2912,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             if (maxSlice <= 0) {
                 format::EndArcBlock eb;
                 eb.end_flags = 0x0001;
-                format::HeaderWriter::write_end_block(cur, eb);
+                format::HeaderWriter::write_end_block(cur, eb, header_encrypt_mode ? &hcw : nullptr);
                 cur.close();
                 vol_idx++;
                 curPath = volume::next_volume_name(curPath, false);
@@ -2716,10 +2921,13 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             }
             core::uint64 remaining = total - written;
             core::uint64 slice = std::min(remaining, static_cast<core::uint64>(maxSlice));
+            if (pe.fb.is_encrypted && written + slice < total) {
+                slice = (slice / 16) * 16;
+            }
             if (slice == 0) {
                 format::EndArcBlock eb;
                 eb.end_flags = 0x0001;
-                format::HeaderWriter::write_end_block(cur, eb);
+                format::HeaderWriter::write_end_block(cur, eb, header_encrypt_mode ? &hcw : nullptr);
                 cur.close();
                 vol_idx++;
                 curPath = volume::next_volume_name(curPath, false);
@@ -2750,7 +2958,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             }
             core::uint64 extra_flags = (split_before ? format::HFL_SPLITBEFORE : 0) |
                                        (split_after ? format::HFL_SPLITAFTER : 0);
-            if (!format::HeaderWriter::write_file_block(cur, slice_fb, extra_flags)) {
+            if (!format::HeaderWriter::write_file_block(cur, slice_fb, extra_flags, header_encrypt_mode ? &hcw : nullptr)) {
                 cur.close();
                 return false;
             }
@@ -2762,7 +2970,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             if (!final) {
                 format::EndArcBlock eb;
                 eb.end_flags = 0x0001;
-                format::HeaderWriter::write_end_block(cur, eb);
+                format::HeaderWriter::write_end_block(cur, eb, header_encrypt_mode ? &hcw : nullptr);
                 cur.close();
                 vol_idx++;
                 curPath = volume::next_volume_name(curPath, false);
@@ -2774,7 +2982,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     {
         format::EndArcBlock eb;
         eb.end_flags = 0;
-        format::HeaderWriter::write_end_block(cur, eb);
+        format::HeaderWriter::write_end_block(cur, eb, header_encrypt_mode ? &hcw : nullptr);
         cur.close();
     }
     // If firstVolume != arc_path and original single file exists, remove it to avoid confusion
@@ -2815,7 +3023,7 @@ bool ArchiveMutator::add_file_to_archive(const std::filesystem::path& arc_path,
                                          const compress::FilterConfig& filter_cfg) {
     if (vol_size != 0 && vol_size != volume::VOLSIZE_AUTO) {
         return add_file_to_archive_vol(arc_path, src_file, arc_entry_name, method, vol_size,
-                                       password, solid, dict_size, filter_cfg);
+                                       password, solid, dict_size, filter_cfg, encrypt_headers);
     }
     return add_or_move_file(arc_path, src_file, arc_entry_name, false, method, sfx_stub_path,
                             password, encrypt_headers, dict_size, filter_cfg);
@@ -2826,9 +3034,13 @@ bool ArchiveMutator::move_file_to_archive_vol(const std::filesystem::path& arc_p
                                               const std::string& arc_entry_name, int method,
                                               core::uint64 vol_size, const std::string& password,
                                               bool solid, core::uint64 dict_size,
-                                              const compress::FilterConfig& filter_cfg) {
+                                              const compress::FilterConfig& filter_cfg,
+                                              bool encrypt_headers,
+                                              const std::vector<core::byte>* comment,
+                                              bool lock) {
     bool ok = add_file_to_archive_vol(arc_path, src_file, arc_entry_name, method, vol_size,
-                                      password, solid, dict_size, filter_cfg);
+                                      password, solid, dict_size, filter_cfg,
+                                      encrypt_headers, comment, lock);
     if (ok) {
         std::error_code ec;
         std::filesystem::remove(src_file, ec);
