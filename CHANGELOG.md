@@ -5,6 +5,32 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.0] - 2026-09-20
+
+### Added
+
+- **High-Throughput Multi-Threaded Compression (`-mt`) & Block Pipeline**:
+  - **Format-Legal Chunk-Parallel RAR5 Compression**:
+    - Leverages RAR5's self-contained block bitstream framing (per-block Huffman tables and explicit `LastBlock` flags) to divide single large files into independent 2–4 MiB chunks compressed across multiple CPU cores.
+    - Guarantees 100% compatibility with official `UnRAR.exe` 7.20 and native `Decompressor50` without any format extensions or unpacker modifications.
+  - **Exclusive Concurrency Dimension Architecture**:
+    - Eliminates nested thread-pool deadlock hazards by strictly enforcing the single-dimension concurrency rule: multi-file batches parallelize across files with single-threaded compression per file (`file_threads = 1`), while single files parallelize across chunks (`chunk_threads = mt_threads`).
+    - Resolves bare `-mt` to `core::hardware_thread_hint()`, with `-mt1` forcing single-threaded mode and worker counts clamped to 16 to guarantee strict memory boundaries.
+  - **Bounded-Memory Streaming Block Pipeline (`ParallelBlockPipeline`)**:
+    - Implements streaming pipeline for files $> 16\text{ MiB}$ with in-order chunk emission and bounded in-flight memory throttled to $2 \times \text{threads}$.
+    - Memory footprint is strictly bounded by clamping worker dictionary windows to chunk size ($\le 16\text{ MiB}$ per worker), with instant vector deallocation after block emission.
+    - Enforces match-finder clamping at chunk boundaries (`src_loaded_ = chunk_len`) and disables filters in chunked mode (`FilterMode::DisableAll`) to prevent cross-boundary corruptions.
+    - Sentinel repeat match initialization (`old_dist_ = -1`) mathematically prevents cross-chunk distance state contamination.
+    - Honest header window recording: marks `win_size = min(dict, chunk_size)` in file headers, reducing unpacker resident RAM.
+  - **Additive C DLL ABI Parallel Interfaces**:
+    - Added `#define OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS (1ull << 15)` in `openrar_dll.h`.
+    - Exported `openrar_archive_create_file_opts_mt` supporting caller-specified thread counts, with legacy `openrar_archive_create_file_opts` delegating to it with `threads = 1`.
+    - Maintained frozen `OPENRAR_DLL_API_VERSION = 1` ABI contract and entry struct layouts.
+  - **Comprehensive Verification & Canonical Interop Gate**:
+    - Added unit test suite `tests/unit/parallel_compress_tests.cpp` covering 16 KiB framing spike, determinism, roundtrip methods 1..5, streaming pipeline, mid-stream cancellation, and small file bypass.
+    - Added Node.js test suite `tools/tests/parallel_compression.tests.mjs` verifying multi-threaded chunk compression, < 3% ratio delta vs `-mt1`, multi-file batch exclusive concurrency, and bare `-mt`.
+    - Added Stage 14 to canonical `tools/interop_gate.py`, verifying 100% pass rate against official reference `UnRAR.exe` 7.20 across all 14 stages.
+
 ## [1.20.0] - 2026-09-20
 
 ### Added

@@ -4,6 +4,7 @@
 #include "rar_errors.hpp" // RAR_* status codes for the mutation variants
 #include "../compress/compressor50.hpp"
 #include "../compress/stream_encoder.hpp"
+#include "../compress/parallel_compressor.hpp"
 #include "../core/vint.hpp"
 #include "../format/header_writer.hpp"
 #include "../format/header_reader.hpp"
@@ -924,10 +925,18 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                                       bool direct_stream,
                                       const compress::FilterConfig& filter_cfg,
                                       const std::string& default_group,
-                                      const std::string& default_user) {
+                                      const std::string& default_user,
+                                      unsigned threads) {
     if (!std::filesystem::exists(src_file)) {
         return false;
     }
+
+    if (is_solid) {
+        threads = 1; // Solid archives must remain strictly sequential
+    }
+    unsigned eff_threads = threads == 0 ? core::hardware_thread_hint() : threads;
+    if (eff_threads == 0) eff_threads = 1;
+    if (eff_threads > 16) eff_threads = 16;
 
     // Dictionary window: dict_size 1..15 -> 128 KiB..2 GiB (backward compatibility);
     // 0 uses tuned defaults per method (8 MB for -m3, 64 MB for -m5);
@@ -1020,9 +1029,17 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
 
             std::vector<core::byte> compressed_payload;
             if (method > 0) {
-                if (compress::Compressor50::compress_buffer(uncompressed.data(),
-                                                            uncompressed.size(), compressed_payload,
-                                                            method, win_size, filter_cfg)) {
+                bool comp_ok = false;
+                if (eff_threads > 1 && uncompressed.size() >= 1024 * 1024) {
+                    comp_ok = compress::Compressor50::compress_buffer_parallel(
+                        uncompressed.data(), uncompressed.size(), compressed_payload,
+                        method, static_cast<size_t>(win_size), filter_cfg, eff_threads);
+                } else {
+                    comp_ok = compress::Compressor50::compress_buffer(
+                        uncompressed.data(), uncompressed.size(), compressed_payload,
+                        method, static_cast<size_t>(win_size), filter_cfg);
+                }
+                if (comp_ok) {
                     if (compressed_payload.size() >= uncompressed.size()) {
                         compressed_payload.clear();
                         method = 0;
@@ -1086,8 +1103,8 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                 fb.method = 0;
                 fb.win_size = 0;
                 out.needs_deferred_crc = true;
-            } else if (method > 0 && !do_encrypt && direct_stream) {
-                // Direct-to-archive streaming compression via fixed-width vint back-patching:
+            } else if (method > 0 && !do_encrypt && direct_stream && eff_threads <= 1) {
+                // Direct-to-archive streaming compression via fixed-width vint back-patching (single-threaded):
                 // No temp spool needed! write_batch_add_ex will stream-compress directly into
                 // the archive in 1 MiB chunks, compute CRC32 on-the-fly, and back-patch the
                 // 10-byte fixed-width vint header. Eliminates intermediate disk spooling.
@@ -1140,32 +1157,50 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                 core::uint64 remaining = file_sz;
 
                 if (method > 0) {
-                    compress::StreamEncoder encoder(method, win_size);
-                    struct FlushCtx {
-                        decltype(write_spool_chunk)* writer;
-                        bool ok;
-                    } fctx{&write_spool_chunk, true};
-                    encoder.set_flush([](void* user, const core::byte* data, size_t size) -> int {
-                        auto* ctx = static_cast<FlushCtx*>(user);
-                        if (!(*ctx->writer)(data, size)) {
-                            ctx->ok = false;
-                            return -1;
+                    bool comp_ok = true;
+                    if (eff_threads > 1) {
+                        compress::ParallelCompressConfig pcfg;
+                        pcfg.method = method;
+                        pcfg.win_size = static_cast<size_t>(win_size);
+                        pcfg.threads = eff_threads;
+                        compress::ParallelBlockPipeline pipeline(pcfg);
+                        core::uint32 stream_crc = 0;
+                        core::uint64 p_pack = 0;
+                        if (!pipeline.compress_stream(src, file_sz, write_spool_chunk, stream_crc, p_pack)) {
+                            comp_ok = false;
+                        } else {
+                            crc = stream_crc;
                         }
-                        return 0;
-                    }, &fctx);
+                    } else {
+                        compress::StreamEncoder encoder(method, win_size);
+                        struct FlushCtx {
+                            decltype(write_spool_chunk)* writer;
+                            bool ok;
+                        } fctx{&write_spool_chunk, true};
+                        encoder.set_flush([](void* user, const core::byte* data, size_t size) -> int {
+                            auto* ctx = static_cast<FlushCtx*>(user);
+                            if (!(*ctx->writer)(data, size)) {
+                                ctx->ok = false;
+                                return -1;
+                            }
+                            return 0;
+                        }, &fctx);
 
-                    while (remaining > 0) {
-                        size_t to_read = static_cast<size_t>(std::min<core::uint64>(remaining, read_buf.size()));
-                        if (src.read(read_buf.data(), to_read) != to_read) return false;
-                        crc_calc.update(read_buf.data(), to_read);
-                        if (!encoder.feed(read_buf.data(), to_read) || !fctx.ok) return false;
-                        remaining -= to_read;
+                        while (remaining > 0) {
+                            size_t to_read = static_cast<size_t>(std::min<core::uint64>(remaining, read_buf.size()));
+                            if (src.read(read_buf.data(), to_read) != to_read) return false;
+                            crc_calc.update(read_buf.data(), to_read);
+                            if (!encoder.feed(read_buf.data(), to_read) || !fctx.ok) return false;
+                            remaining -= to_read;
+                        }
+                        std::vector<core::byte> final_chunk;
+                        if (!encoder.finish(final_chunk) || !fctx.ok) return false;
+                        if (!final_chunk.empty()) {
+                            if (!write_spool_chunk(final_chunk.data(), final_chunk.size())) return false;
+                        }
+                        crc = crc_calc.get();
                     }
-                    std::vector<core::byte> final_chunk;
-                    if (!encoder.finish(final_chunk) || !fctx.ok) return false;
-                    if (!final_chunk.empty()) {
-                        if (!write_spool_chunk(final_chunk.data(), final_chunk.size())) return false;
-                    }
+                    if (!comp_ok) return false;
                     if (do_encrypt && !enc_residual.empty()) {
                         size_t pad_need = 16 - enc_residual.size();
                         enc_residual.insert(enc_residual.end(), pad_need, core::byte(0));
@@ -1241,7 +1276,7 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                 }
 
                 src.close();
-                crc = crc_calc.get();
+                if (method == 0 || eff_threads <= 1) crc = crc_calc.get();
                 fb.pack_size = static_cast<core::int64>(spooled_pack_bytes);
                 fb.data_crc32 = crc;
                 fb.has_crc32 = true;

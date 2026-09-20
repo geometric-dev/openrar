@@ -821,7 +821,7 @@ uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
            OPENRAR_ABI_FEATURE_REPAIR | OPENRAR_ABI_FEATURE_CREATE |
            OPENRAR_ABI_FEATURE_FILTERS | OPENRAR_ABI_FEATURE_OWNER |
            OPENRAR_ABI_FEATURE_DICT_EX | OPENRAR_ABI_FEATURE_VOL_ENCRYPT |
-           OPENRAR_ABI_FEATURE_REC_VOL;
+           OPENRAR_ABI_FEATURE_REC_VOL | OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1637,6 +1637,17 @@ int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
     uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
     int encrypt_headers, int solid, uint32_t filter_flags, openrar_progress_cb progress,
     openrar_cancel_cb cancel, void* user) {
+    return openrar_archive_create_file_opts_mt(
+        arc_path, src_paths, arc_names, file_count, method, dict_size,
+        password_utf8, encrypt_headers, solid, filter_flags, /*threads=*/1,
+        progress, cancel, user);
+}
+
+int OPENRAR_DLL_CALL openrar_archive_create_file_opts_mt(
+    const char* arc_path, const char* const* src_paths, const char* const* arc_names,
+    uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
+    int encrypt_headers, int solid, uint32_t filter_flags, uint32_t threads,
+    openrar_progress_cb progress, openrar_cancel_cb cancel, void* user) {
     try {
         if (!arc_path || !src_paths || !arc_names || file_count == 0) {
             set_error("null argument");
@@ -1661,6 +1672,11 @@ int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
 
         std::string password = password_utf8 ? password_utf8 : "";
         openrar::compress::FilterConfig filter_cfg = filter_cfg_from_flags(filter_flags);
+
+        // Exclusive Concurrency Policy:
+        // Single files parallelize across chunks with chunk_threads = threads;
+        // Multi-file batches parallelize across files (or serial) with chunk_threads = 1.
+        unsigned file_threads = (file_count == 1) ? threads : 1;
 
         std::vector<openrar::archive::ArchiveMutator::PreparedAdd> batch;
         batch.reserve(file_count);
@@ -1696,7 +1712,9 @@ int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
                            p.src_path, name, method, password, p,
                            openrar::archive::time_flags::MTIME, dict_size,
                            /*want_streams=*/false, /*want_acl=*/false, solid != 0,
-                           /*direct_stream=*/true, filter_cfg)) {
+                           /*direct_stream=*/true, filter_cfg,
+                           /*default_group=*/"", /*default_user=*/"",
+                           /*threads=*/file_threads)) {
                 set_error("cannot read " + std::string(src_paths[i]));
                 return RAR_ERR_IO;
             }

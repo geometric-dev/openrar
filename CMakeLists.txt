@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 # commit counter since the current MAJOR.MINOR line's anchor tag - see
 # docs/versioning.md).
 # wasm/js/package.json and CHANGELOG.md are synced at release time.
-project(openrar VERSION 1.20.0 LANGUAGES CXX)
+project(openrar VERSION 1.21.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,6 +44,7 @@ set(OPENRAR_CORE_SOURCES
     src/compress/decompressor50.cpp
     src/compress/stream_encoder.cpp
     src/compress/stream_decoder.cpp
+    src/compress/parallel_compressor.cpp
     src/archive/archive_reader.cpp
     src/archive/archive_mutator.cpp
     src/archive/volume.cpp
@@ -348,6 +349,7 @@ if(NOT EMSCRIPTEN)
     endfunction()
 
     add_openrar_test(compress_tests tests/unit/compress_tests.cpp)
+    add_openrar_test(parallel_compress_tests tests/unit/parallel_compress_tests.cpp)
 
     # Streaming encoder gates: byte-identical vs one-shot, the historical
     # iteration-3 crash regression, cancel/progress, flush sink.

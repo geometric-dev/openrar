@@ -101,6 +101,7 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 #define OPENRAR_ABI_FEATURE_DICT_EX (1ull << 12)             // RAR 7.0 fractional & non-power-of-two dictionary sizing
 #define OPENRAR_ABI_FEATURE_VOL_ENCRYPT (1ull << 13)         // multi-volume encryption & metadata parity
 #define OPENRAR_ABI_FEATURE_REC_VOL (1ull << 14)             // recovery volume (.rev) & recovery record creation
+#define OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS (1ull << 15)   // High-throughput parallel compression (-mt)
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -597,6 +598,12 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
     uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
     int encrypt_headers, int solid, uint32_t filter_flags, openrar_progress_cb progress,
     openrar_cancel_cb cancel, void* user);
+
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file_opts_mt(
+    const char* arc_path, const char* const* src_paths, const char* const* arc_names,
+    uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
+    int encrypt_headers, int solid, uint32_t filter_flags, uint32_t threads,
+    openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
 
 // ── Extended metadata (file-mode handles; additive) ─────────────────────────
 // The 64-byte entry struct is frozen (shared WASM contract); these queries
