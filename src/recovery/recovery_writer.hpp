@@ -46,6 +46,7 @@ public:
     static bool add_recovery_record(const std::filesystem::path& arc_path, core::uint32 percent,
                                     unsigned threads = 1);
     static bool repair(const std::filesystem::path& arc_path);
+    static bool has_rev_files(const std::filesystem::path& arc_path);
 
 private:
     // Reconstruct missing/corrupt data volumes from external .rev parity

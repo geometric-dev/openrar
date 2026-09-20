@@ -140,6 +140,15 @@ std::filesystem::path vol_name_to_first_name(const std::filesystem::path& cur, b
         // Re-check has_digit after ext fix (still none)
         std::string stem = (dot == std::string::npos) ? fname : fname.substr(0, dot);
         std::string e = (dot == std::string::npos) ? "" : fname.substr(dot);
+        std::filesystem::path parent = cur.parent_path();
+        std::error_code ec;
+        for (const char* pfx : {".part1", ".part01", ".part001", ".part0001"}) {
+            std::filesystem::path candidate = parent.empty() ? std::filesystem::path(stem + pfx + e)
+                                                             : parent / (stem + pfx + e);
+            if (std::filesystem::exists(candidate, ec) && !ec) {
+                return candidate;
+            }
+        }
         fname = stem + ".part01" + e;
         if (!cur.parent_path().empty()) return cur.parent_path() / fname;
         return std::filesystem::path(fname);

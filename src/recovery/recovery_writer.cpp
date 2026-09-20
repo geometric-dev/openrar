@@ -512,7 +512,7 @@ bool headers_verify(const std::filesystem::path& arc_path, core::uint64 sfx_off)
 // also belongs to the same volume-set stem — the external recovery-volume
 // case (spec §4.7). The stem prefix keeps unrelated .rev files elsewhere in
 // the directory from hijacking an inline-RR repair.
-bool has_rev_files(const std::filesystem::path& arc_path) {
+bool check_has_rev_files(const std::filesystem::path& arc_path) {
     std::filesystem::path dir = arc_path.parent_path();
     if (dir.empty()) dir = std::filesystem::current_path();
     std::wstring base = arc_path.stem().wstring();
@@ -651,6 +651,10 @@ bool splice_repair_with_rr(const std::filesystem::path& arc_path,
 }
 
 } // namespace
+
+bool RecoveryWriter::has_rev_files(const std::filesystem::path& arc_path) {
+    return check_has_rev_files(arc_path);
+}
 
 // —————————————————————————————————————————————————————————————————————————————
 // Public API
@@ -868,6 +872,9 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
 
     while (processed < shard && ok) {
         size_t chunk = static_cast<size_t>(std::min<core::uint64>(CHUNK, shard - processed));
+        for (core::uint32 j = 0; j < nr; ++j) {
+            std::memset(parity[j].data(), 0, chunk);
+        }
         for (core::uint32 i = 0; i < nd && ok; ++i) {
             // Clamp against this volume's size: the last (typically smaller)
             // volume runs out before processed reaches shard. Without the
@@ -1522,6 +1529,9 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     bool ok = true;
     while (processed < shard && ok) {
         size_t chunk = static_cast<size_t>(std::min<core::uint64>(CHUNK, shard - processed));
+        for (core::uint32 e = 0; e < missing; ++e) {
+            std::memset(recon[e].data(), 0, chunk);
+        }
         for (core::uint32 i = 0; i < nd; ++i) {
             size_t got = src[i]->read(srcbuf.data(), chunk);
             if (got < chunk) std::memset(srcbuf.data() + got, 0, chunk - got);
@@ -1574,11 +1584,12 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
 }
 
 bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
-    if (!std::filesystem::exists(arc_path)) return false;
-
     // External .rev volumes: reconstruct missing/corrupt data volumes from
-    // the parity shards (spec Â§4.7).
+    // the parity shards (spec §4.7). If .rev files exist for this archive stem,
+    // reconstruct even if arc_path itself is one of the missing volumes.
     if (has_rev_files(arc_path)) return repair_rev_volumes(arc_path);
+
+    if (!std::filesystem::exists(arc_path)) return false;
 
     // Old-numbering multi-volume sets without .rev files: inline RR repair
     // does not apply; refuse rather than pretending.
