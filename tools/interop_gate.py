@@ -13,9 +13,10 @@ Checks:
   8. Track 5: QuickOpen (QO) Cache Invalidation Under Mutation (d, u)
   9. Track 6: Recovery Volume (.rev) Cauchy Parity Reconstruction (-rv -> rar rc)
  10. Track 7: 64-Bit VINT Size Bounds & Heap Exhaustion Prevention
- 11. Multivolume roundtrip (store + compressed)
- 12. SFX read + create
- 13. Unit & compression tests via ctest
+ 11. Track 8: High-Throughput Parallel Compression (-mt) & Block Pipeline
+ 12. Multivolume roundtrip (store + compressed)
+ 13. SFX read + create
+ 14. Unit & compression tests via ctest
 
 CI: rar.exe is not available in GitHub Actions, so this gate is LOCAL ONLY
 for src/compress/* changes. In CI we fall back to self-roundtrip + ctest.
@@ -92,7 +93,7 @@ def ensure_build():
     return find_openrar() is not None
 
 def test_self_roundtrip(openrar):
-    print("[1/13] Self-roundtrip hash...", flush=True)
+    print("[1/14] Self-roundtrip hash...", flush=True)
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         src = td / "payload.bin"
@@ -123,7 +124,7 @@ def test_self_roundtrip(openrar):
         return True
 
 def test_cross(openrar, unrar, rar):
-    print("[2/13] Cross-interop vs reference unrar...", flush=True)
+    print("[2/14] Cross-interop vs reference unrar...", flush=True)
     has_ref = unrar is not None or rar is not None
     if not has_ref:
         print("  SKIP: no UnRAR/rar.exe found (CI fallback)")
@@ -167,7 +168,7 @@ def test_cross(openrar, unrar, rar):
     return ok
 
 def test_methods_interop(openrar, unrar, rar):
-    print("[3/13] Compression methods m1-m5 full-dictionary & wrap-around...", flush=True)
+    print("[3/14] Compression methods m1-m5 full-dictionary & wrap-around...", flush=True)
     ref_decompress = unrar or rar
 
     configs = [
@@ -252,7 +253,7 @@ def test_methods_interop(openrar, unrar, rar):
     return True
 
 def test_track1_solid_mixed(openrar, unrar, rar):
-    print("[4/13] Track 1: Solid Mixed-Stream Invariants (-s -m3)...", flush=True)
+    print("[4/14] Track 1: Solid Mixed-Stream Invariants (-s -m3)...", flush=True)
     ref_decompress = unrar or rar
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
@@ -318,7 +319,7 @@ def test_track1_solid_mixed(openrar, unrar, rar):
     return True
 
 def test_track2_filters(openrar, unrar, rar):
-    print("[5/13] Track 2: WinRAR Executable & Delta Filter Bi-Directional Interop (-mc)...", flush=True)
+    print("[5/14] Track 2: WinRAR Executable & Delta Filter Bi-Directional Interop (-mc)...", flush=True)
     ref_decompress = unrar or rar
 
     with tempfile.TemporaryDirectory() as td:
@@ -421,7 +422,7 @@ def test_track2_filters(openrar, unrar, rar):
     return True
 
 def test_track3_timestamps(openrar, unrar):
-    print("[6/13] Track 3: High-Precision Timestamps (Pre-1970 & Post-2038)...", flush=True)
+    print("[6/14] Track 3: High-Precision Timestamps (Pre-1970 & Post-2038)...", flush=True)
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         f1 = td / "vintage_1965.txt"
@@ -452,7 +453,7 @@ def test_track3_timestamps(openrar, unrar):
     return True
 
 def test_track4_passwords(openrar, unrar, rar):
-    print("[7/13] Track 4: Multi-Byte UTF-8 Passwords & Key Derivation (-p / -hp)...", flush=True)
+    print("[7/14] Track 4: Multi-Byte UTF-8 Passwords & Key Derivation (-p / -hp)...", flush=True)
     ref_decompress = unrar or rar
     vectors = [
         ("München_Café2026!", False), # German umlauts + French accent (-p)
@@ -515,7 +516,7 @@ def test_track4_passwords(openrar, unrar, rar):
     return True
 
 def test_track5_quickopen(openrar, unrar, rar):
-    print("[8/13] Track 5: QuickOpen (QO) Cache Invalidation Under Mutation...", flush=True)
+    print("[8/14] Track 5: QuickOpen (QO) Cache Invalidation Under Mutation...", flush=True)
     if not rar:
         print("  SKIP: rar.exe not found to create QO archive")
         return True
@@ -563,7 +564,7 @@ def test_track5_quickopen(openrar, unrar, rar):
     return True
 
 def test_track6_recovery_volumes(openrar, unrar, rar):
-    print("[9/13] Track 6: Recovery Volume (.rev) Cauchy Parity Reconstruction...", flush=True)
+    print("[9/14] Track 6: Recovery Volume (.rev) Cauchy Parity Reconstruction...", flush=True)
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         src = td / "big.bin"
@@ -601,7 +602,7 @@ def test_track6_recovery_volumes(openrar, unrar, rar):
     return True
 
 def test_track7_vint64(openrar, unrar):
-    print("[10/13] Track 7: 64-Bit VINT Size Bounds & Memory Safety...", flush=True)
+    print("[10/14] Track 7: 64-Bit VINT Size Bounds & Memory Safety...", flush=True)
 
     def write_vint(val):
         res = bytearray()
@@ -659,8 +660,57 @@ def test_track7_vint64(openrar, unrar):
     print("  OK Track 7 64-bit VINT size bounds & memory safety")
     return True
 
+def test_track8_parallel_compression(openrar, unrar):
+    print("[11/14] Track 8: High-Throughput Parallel Compression (-mt) & Block Pipeline...", flush=True)
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+        p_small = td / "payload_2mb.bin"
+        p_large = td / "payload_18mb.bin"
+
+        def gen_data(sz, seed):
+            b = bytearray(sz)
+            for i in range(sz):
+                b[i] = ((i % 251) ^ (i // 120) ^ seed) & 0xFF
+            return bytes(b)
+
+        data_small = gen_data(2 * 1024 * 1024, 42)
+        data_large = gen_data(18 * 1024 * 1024, 77)
+        p_small.write_bytes(data_small)
+        p_large.write_bytes(data_large)
+
+        h_small = hashlib.sha256(data_small).hexdigest()
+        h_large = hashlib.sha256(data_large).hexdigest()
+
+        for mt_threads, target_file, target_hash in [("4", p_small, h_small), ("8", p_large, h_large)]:
+            arc = td / f"mt_{mt_threads}.rar"
+            rc, out, err = run([openrar, "a", "-y", f"-mt{mt_threads}", str(arc), target_file.name], cwd=str(td))
+            if rc != 0:
+                print(f"  FAIL: openrar a -mt{mt_threads} rc={rc}\n{out}\n{err}"); return False
+
+            rc, out, err = run([openrar, "t", "-y", str(arc)], cwd=str(td))
+            if rc != 0:
+                print(f"  FAIL: openrar t mt{mt_threads} rc={rc}\n{out}\n{err}"); return False
+
+            if unrar:
+                rc, out, err = run([unrar, "t", "-y", str(arc)], cwd=str(td))
+                if rc != 0:
+                    print(f"  FAIL: unrar t mt{mt_threads} rc={rc}\n{out}\n{err}"); return False
+
+            outdir = td / f"out_mt_{mt_threads}"
+            outdir.mkdir()
+            rc, out, err = run([openrar, "x", "-y", str(arc), str(outdir) + os.sep], cwd=str(td))
+            if rc != 0:
+                print(f"  FAIL: openrar x mt{mt_threads} rc={rc}\n{out}\n{err}"); return False
+
+            dec = find_extracted(outdir, target_file.name)
+            if not dec or sha256(dec) != target_hash:
+                print(f"  FAIL: extracted payload mismatch for mt{mt_threads}"); return False
+
+    print("  OK Track 8 high-throughput parallel compression (-mt)")
+    return True
+
 def test_multivolume(openrar, rar):
-    print("[11/13] Multivolume roundtrip (store + compressed)...", flush=True)
+    print("[12/14] Multivolume roundtrip (store + compressed)...", flush=True)
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         src = td / "big.bin"
@@ -704,7 +754,7 @@ def test_multivolume(openrar, rar):
     return True
 
 def test_sfx(openrar):
-    print("[12/13] SFX read + create...", flush=True)
+    print("[13/14] SFX read + create...", flush=True)
     with tempfile.TemporaryDirectory() as td:
         td = pathlib.Path(td)
         src = td / "hello.txt"
@@ -756,7 +806,7 @@ def test_sfx(openrar):
     return True
 
 def test_ctest():
-    print("[13/13] ctest compress_tests...", flush=True)
+    print("[14/14] ctest compress_tests...", flush=True)
     for cfg in ["Release", "Debug"]:
         rc, out, err = run(["ctest", "-C", cfg, "-R", "compress_tests", "--test-dir", "build", "--output-on-failure"])
         if rc == 0:
@@ -796,6 +846,7 @@ def main():
         (test_track5_quickopen, (openrar, unrar, rar)),
         (test_track6_recovery_volumes, (openrar, unrar, rar)),
         (test_track7_vint64, (openrar, unrar)),
+        (test_track8_parallel_compression, (openrar, unrar)),
         (test_multivolume, (openrar, rar)),
         (test_sfx, (openrar,)),
         (test_ctest, ()),
@@ -808,7 +859,7 @@ def main():
 
     elapsed = time.time() - t0
     print(f"\n=======================================================")
-    print(f" ALL 13 INTEROP GATE STAGES PASSED in {elapsed:.2f}s")
+    print(f" ALL 14 INTEROP GATE STAGES PASSED in {elapsed:.2f}s")
     print(f"=======================================================")
 
 if __name__ == "__main__":

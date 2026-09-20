@@ -1597,6 +1597,85 @@ void test_filter_improves_compression() {
     std::cout << "    - Ratio improvement verified: OK" << std::endl;
 }
 
+void test_chunk_framing_spike() {
+    std::cout << "[+] test_chunk_framing_spike" << std::endl;
+    // 64 KiB payload divided into four 16 KiB independent chunks
+    const size_t CHUNK_SIZE = 16 * 1024;
+    const size_t NUM_CHUNKS = 4;
+    const size_t TOTAL_SIZE = CHUNK_SIZE * NUM_CHUNKS;
+
+    std::vector<core::byte> original(TOTAL_SIZE);
+    for (size_t i = 0; i < TOTAL_SIZE; ++i) {
+        original[i] = static_cast<core::byte>((i % 251) ^ (i / 17));
+    }
+
+    std::vector<core::byte> concatenated_stream;
+    for (size_t c = 0; c < NUM_CHUNKS; ++c) {
+        bool is_last = (c == NUM_CHUNKS - 1);
+        Compressor50 packer;
+        packer.begin_archive(nullptr, 3, 128 * 1024);
+        packer.set_external_buffer(original.data() + c * CHUNK_SIZE, CHUNK_SIZE);
+        packer.set_memory_dest(&concatenated_stream);
+        core::int64 packed = packer.compress(is_last);
+        assert(packed > 0);
+    }
+
+    // Unpack concatenated stream through standard Decompressor50
+    Decompressor50 dec(128 * 1024);
+    std::vector<core::byte> decompressed;
+    bool ok = dec.decompress_to_vector(concatenated_stream.data(), concatenated_stream.size(), decompressed, false);
+    assert(ok);
+    assert(decompressed.size() == original.size());
+    assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+
+    // Wrap concatenated stream in full RAR5 archive container
+    std::filesystem::path spike_arc = "build/spike_chunk_test.rar";
+    std::filesystem::remove(spike_arc);
+
+    archive::ArchiveMutator::PreparedAdd prep;
+    prep.entry_name = "chunked_payload.bin";
+    prep.payload = concatenated_stream;
+    prep.fb.file_name = "chunked_payload.bin";
+    prep.fb.unp_size = original.size();
+    prep.fb.pack_size = concatenated_stream.size();
+    crypto::Crc32 crc_c;
+    crc_c.update(original.data(), original.size());
+    prep.fb.data_crc32 = crc_c.get();
+    prep.fb.has_crc32 = true;
+    prep.fb.method = 3;
+    prep.fb.win_size = 128 * 1024;
+    prep.fb.attributes = 0x20;
+
+    std::vector<archive::ArchiveMutator::PreparedAdd> batch;
+    batch.push_back(std::move(prep));
+    assert(archive::ArchiveMutator::write_batch_add(spike_arc, batch));
+
+    // Verify OpenRAR ArchiveReader tests and extracts successfully
+    archive::ArchiveReader reader;
+    assert(reader.open(spike_arc));
+    assert(reader.entries().size() == 1);
+    assert(reader.test_entry(reader.entries()[0]));
+    std::vector<core::byte> extracted;
+    assert(reader.extract_entry_to_memory(0, extracted, 1024 * 1024, {}) == 0);
+    assert(extracted == original);
+    reader.close();
+
+    // Verify Official Reference UnRAR.exe if present on the host
+    const char* unrar_path = "C:\\Program Files\\WinRAR\\UnRAR.exe";
+    if (std::filesystem::exists(unrar_path)) {
+        std::string unrar_cmd = std::string("\"\"") + unrar_path + "\" t -y \"" + spike_arc.string() + "\" > nul\"";
+        int rc = std::system(unrar_cmd.c_str());
+        assert(rc == 0 && "Official UnRAR.exe failed to test multi-block chunked RAR5 archive!");
+        std::cout << "    - Official UnRAR.exe 7.20 verification: OK" << std::endl;
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(spike_arc, ec);
+
+    std::cout << "    - 16 KiB chunk framing spike roundtrip: OK ("
+              << original.size() << " -> " << concatenated_stream.size() << ")" << std::endl;
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -1682,6 +1761,8 @@ int main() {
     test_filter_delta_roundtrip();
     std::cout << std::flush;
     test_filter_improves_compression();
+    std::cout << std::flush;
+    test_chunk_framing_spike();
     std::cout << std::flush;
     std::cout << "All Milestone 6 Compression & Decompression Primitives PASSED!\n" << std::flush;
     return 0;

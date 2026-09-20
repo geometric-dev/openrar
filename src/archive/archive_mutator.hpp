@@ -171,7 +171,8 @@ public:
                                  bool direct_stream = false,
                                  const compress::FilterConfig& filter_cfg = {},
                                  const std::string& default_group = "",
-                                 const std::string& default_user = "");
+                                 const std::string& default_user = "",
+                                 unsigned threads = 1);
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,
     // no data area) carrying the directory's timestamps. Encryption does not
