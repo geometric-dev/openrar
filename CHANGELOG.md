@@ -5,6 +5,30 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2026-09-20
+
+### Added
+
+- **Multi-Volume Header Encryption (`-hp` with `-v`) & Metadata Parity (`-z`, `-k`)**:
+  - Multi-Volume Header Encryption (`-hp` combined with `-v`):
+    - Emits plaintext RAR5 signature immediately followed by a canonical `HEAD_CRYPT` block on every volume in a multi-volume chain.
+    - Shares identical `CryptBlock` (salt, IV, iteration count, password check) derived via PBKDF2 across all volumes.
+    - Encrypts all subsequent block structures (MainBlock, CMT service blocks, FileBlocks, EndArcBlock) via AES-256-CBC, each preceded by its own 16-byte random IV.
+    - Preserves 16-byte alignment on intermediate volume slice boundaries (`slice = (slice / 16) * 16`), ensuring clean decryption without fractional block carryover across volume extents.
+  - Archive Comment (`-z`) on Multi-Volume Sets:
+    - Writes `CMT` service block right after `MainBlock` on the head volume (`vol_idx == 0`).
+    - Respects header encryption when `-hp` is active, re-encrypting the comment block.
+    - `openrar lt` technical listing reads and displays the archive comment.
+  - Archive Lock (`-k` and command `k`) on Multi-Volume Sets:
+    - Automatically marks `MHFL_LOCK` (`0x0004`) in `MainBlock.arc_flags` across all volumes.
+    - Stream-based multi-volume mutation in `ArchiveMutator::lock_archive`: opens each volume individually, updates `MainBlock`, and preserves all file extents, service records, and EndArc blocks verbatim.
+    - Protects against subsequent file addition or mutation across both single and multi-volume archives.
+  - Additive DLL ABI Integration:
+    - Added `#define OPENRAR_ABI_FEATURE_VOL_ENCRYPT (1ull << 13)` in `openrar_dll.h`.
+    - Exposed feature flag in `openrar_abi_features()`.
+  - Comprehensive Test Suite & Dual-Oracle Cross-Validation:
+    - Authored `tools/tests/volume_encryption.tests.mjs` verifying multi-volume header encryption, comments, locking, and combinations against official WinRAR / UnRAR 7.20.
+
 ## [1.18.0] - 2026-09-20
 
 ### Added
