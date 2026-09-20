@@ -657,9 +657,22 @@ void test_cli_dict_size_flag() {
         assert(e->header.win_size == 64 * 1024 * 1024);
     }
 
-    // 3. Invalid -md not power of two (e.g. -md10m) -> fail
+    // 3. Non-power-of-two -md10m is now valid with RAR 7.0 dictionary sizing
+    fs::path arc_npot = temp_dir / "npot.rar";
+    cmd = exe + " a -q -md10m " + arc_npot.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+    {
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc_npot));
+        const auto* e = find_file(r);
+        assert(e != nullptr);
+        assert(e->header.win_size == 10 * 1024 * 1024);
+    }
+
+    // 3b. Invalid -md invalid syntax (e.g. -mdxyz) -> fail
     fs::path arc_bad1 = temp_dir / "bad1.rar";
-    cmd = exe + " a -q -md10m " + arc_bad1.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    cmd = exe + " a -q -mdxyz " + arc_bad1.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
     assert(res != 0);
 

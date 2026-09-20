@@ -387,6 +387,15 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
                           << "  Method:      " << entry.header.method << "\n"
                           << "  CRC32:       " << std::hex << entry.header.data_crc32 << std::dec
                           << "\n";
+                if (entry.header.win_size > 0) {
+                    if (entry.header.win_size >= 1024 * 1024 && (entry.header.win_size % (1024 * 1024) == 0)) {
+                        std::cout << "  Dictionary:  " << (entry.header.win_size / (1024 * 1024)) << " MB\n";
+                    } else if (entry.header.win_size >= 1024 && (entry.header.win_size % 1024 == 0)) {
+                        std::cout << "  Dictionary:  " << (entry.header.win_size / 1024) << " KB\n";
+                    } else {
+                        std::cout << "  Dictionary:  " << entry.header.win_size << " bytes\n";
+                    }
+                }
                 if (entry.header.has_file_version) {
                     std::cout << "  File version: " << entry.header.file_version << "\n";
                 }
@@ -2300,24 +2309,39 @@ static int cli_main(int argc, char* argv[]) {
                 std::cerr << "Error: -md requires a size specification\n";
                 return 7;
             }
-            char unit = tail.back();
+            char unit = tail.empty() ? 0 : tail.back();
             uint64_t mult = 1;
+            bool has_unit = false;
             if (unit == 'k' || unit == 'K') {
                 mult = 1024ULL;
                 tail.pop_back();
+                has_unit = true;
             } else if (unit == 'm' || unit == 'M') {
                 mult = 1024ULL * 1024ULL;
                 tail.pop_back();
+                has_unit = true;
             } else if (unit == 'g' || unit == 'G') {
                 mult = 1024ULL * 1024ULL * 1024ULL;
                 tail.pop_back();
+                has_unit = true;
             } else if (unit == 't' || unit == 'T') {
                 mult = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
                 tail.pop_back();
+                has_unit = true;
+            }
+            if (!has_unit) {
+                // If no modifier is present, megabytes are assumed for -md
+                // and gigabytes for -mdx switch (matching WinRAR spec).
+                mult = is_mdx ? (1024ULL * 1024ULL * 1024ULL) : (1024ULL * 1024ULL);
             }
             uint64_t val = 0;
             try {
-                val = std::stoull(tail) * mult;
+                double dval = std::stod(tail);
+                if (dval < 0) {
+                    std::cerr << "Error: invalid dictionary size '" << s << "'\n";
+                    return 7;
+                }
+                val = static_cast<uint64_t>(dval * static_cast<double>(mult));
             } catch (...) {
                 std::cerr << "Error: invalid dictionary size '" << s << "'\n";
                 return 7;
@@ -2330,9 +2354,19 @@ static int cli_main(int argc, char* argv[]) {
                 std::cerr << "Error: dictionary size > 1 TB not allowed\n";
                 return 7;
             }
-            if (!is_mdx && (val & (val - 1)) != 0) {
-                std::cerr << "Error: dictionary size must be a power of 2 for -md\n";
-                return 7;
+            // In RAR 7.0, non-power-of-two dictionary sizes are permitted.
+            // Adjust to the nearest discrete step: base 128K<<N + fraction*(base/32)
+            uint64_t pow2 = 0x20000;
+            while (2 * pow2 <= val && pow2 < (1ULL << 39)) {
+                pow2 *= 2;
+            }
+            if (val > pow2) {
+                uint64_t step = pow2 / 32;
+                if (step > 0) {
+                    uint64_t fraction = (val - pow2) / step;
+                    if (fraction > 31) fraction = 31;
+                    val = pow2 + fraction * step;
+                }
             }
             opt_dict_size = val;
         } else if (sw_starts(s, "-ver")) {

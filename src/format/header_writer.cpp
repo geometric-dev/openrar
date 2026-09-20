@@ -434,10 +434,14 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
             dict_bits++;
         }
         comp_info |= (dict_bits << 10);
-        if (block.unp_ver == 1 && block.win_size > pow2) {
-            core::uint64 fraction = (block.win_size - pow2) * 32 / pow2;
-            if (fraction > 31) fraction = 31;
-            comp_info |= ((static_cast<core::uint32>(fraction) & 0x1F) << 15);
+        if (block.unp_ver == 1) {
+            if (block.win_size > pow2) {
+                core::uint64 fraction = (block.win_size - pow2) * 32 / pow2;
+                if (fraction > 31) fraction = 31;
+                comp_info |= ((static_cast<core::uint32>(fraction) & 0x1F) << 15);
+            }
+            // RAR7 dictionary sizing with RAR5 compression algorithm
+            comp_info |= FCI_RAR5_COMPAT;
         }
     }
     core::push_vint(body, comp_info);
