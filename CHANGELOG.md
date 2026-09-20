@@ -5,6 +5,24 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-09-20
+
+### Added
+
+- **RAR 7.0 Fractional & Non-Power-of-Two Dictionary Sizing (bits 15–19 $F$, `FCI_RAR5_COMPAT`)**:
+  - Full implementation of RAR 7.0 non-power-of-two dictionary sizing and fractional 1/32 dictionary steps:
+    - Encodes discrete window coordinates $D = \text{base} + (\text{base} / 32) \times F$ into bits 10–14 (base $N$) and bits 15–19 (fraction $F$).
+    - Supports canonical compression info flags: `FCI_ALGO_MASK` (`0x003F`), `FCI_SOLID` (`0x0040`), `FCI_METHOD_MASK` (`0x0380`), `FCI_DICT_MASK` (`0x7C00`), `FCI_DICT_FRACT_MASK` (`0xF8000`), and `FCI_RAR5_COMPAT` (`0x100000`).
+    - Sets `FCI_RAR5_COMPAT` (`0x100000`) for all RAR 7 dictionary-sized archives to guarantee official WinRAR and UnRAR 7.20+ cleanly decouple extended dictionary sizing from the decompression stream algorithm, reporting `RAR 5.0(v50)` and unpacking with zero checksum errors.
+  - CLI switch enhancement:
+    - `-md` now supports non-power-of-two values (e.g. `-md24m`, `-md48m`), fractional/decimal inputs (e.g. `-md1.5g`), and unit-less numeric arguments defaulting to MB.
+    - Technical listing (`openrar lt`) now displays formatted dictionary size for each archive entry.
+  - Additive DLL ABI Integration:
+    - Added `#define OPENRAR_ABI_FEATURE_DICT_EX (1ull << 12)` in `openrar_dll.h`.
+    - Exposed feature flag in `openrar_abi_features()`.
+  - Comprehensive Test Suite & Dual-Oracle Cross-Validation:
+    - Authored `tools/tests/dict_sizing.tests.mjs` verifying creation, self-test, roundtrip extraction, and dual-oracle cross-validation against official WinRAR/UnRAR 7.20.
+
 ## [1.17.0] - 2026-09-20
 
 ### Added
