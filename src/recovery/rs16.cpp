@@ -2,6 +2,8 @@
 #include "../core/cpu.hpp"
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
+#include <iostream>
 
 #if defined(OPENRAR_HAS_GFNI_KERNEL)
 namespace openrar::recovery {
@@ -87,6 +89,7 @@ const GfniCalib& gfni_calib() {
         }
         ReedSolomon16 rs; // GF tables only; matrix state is irrelevant here
 
+        const bool diag = std::getenv("OPENRAR_GFNI_DIAG") != nullptr;
         for (int s = 0; s < 8; ++s) {
             for (int b = 0; b < 8; ++b) {
                 const core::uint64 q = static_cast<core::uint64>(1u << b) << (8 * s);
@@ -96,6 +99,13 @@ const GfniCalib& gfni_calib() {
                     alignas(64) core::byte ecc[64] = {};
                     data[0] = static_cast<core::byte>(1u << i); // lo byte of word 0
                     rs16_fold_gfni(data, ecc, sizeof(data), m);
+                    if (diag) {
+                        std::cout << "[gfni-diag] qbyte=" << s << " qbit=" << b
+                                  << " in_bit=" << i << " ecc0=0x" << std::hex
+                                  << static_cast<unsigned>(ecc[0]) << std::dec
+                                  << " ecc1=0x" << std::hex << static_cast<unsigned>(ecc[1])
+                                  << std::dec << "\n";
+                    }
                     // hi byte of word 0 is zero -> aff(0, q) = 0 (pure linear),
                     // so ecc[0] == ecc[1] == the transform of the single bit.
                     if (ecc[0] == 0 && ecc[1] == 0) continue;
