@@ -12,6 +12,7 @@
 #include "../archive/volume.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <exception>
 #include <cstdlib>
 #include <cstddef>

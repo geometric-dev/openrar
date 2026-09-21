@@ -57,19 +57,19 @@ bool g_assume_yes = false;
 // "warning, operation succeeded" — so scripts could not distinguish corrupt
 // archives from password failures from open failures. Handlers map the
 // diagnosable causes; unknown failures are fatal (2).
-constexpr int EXIT_OK = 0;
-constexpr int EXIT_WARNING = 1;   // warnings only; operation succeeded
-constexpr int EXIT_FATAL = 2;     // generic failure
-constexpr int EXIT_CRC = 3;       // checksum error
-constexpr int EXIT_LOCKED = 4;    // locked archive
-constexpr int EXIT_WRITE = 5;     // write error
-constexpr int EXIT_OPEN = 6;      // archive open error
-constexpr int EXIT_USAGE = 7;     // command-line error
-constexpr int EXIT_MEMORY = 8;    // not enough memory
-constexpr int EXIT_NO_FILES = 10; // no files matched
-constexpr int EXIT_BAD_PASSWORD = 11;
-constexpr int EXIT_BAD_ARCHIVE = 13; // unrar RARX_BADARC: unrecognized archive
-constexpr int EXIT_USER_BREAK = 255;
+[[maybe_unused]] constexpr int EXIT_OK = 0;
+[[maybe_unused]] constexpr int EXIT_WARNING = 1;   // warnings only; operation succeeded
+[[maybe_unused]] constexpr int EXIT_FATAL = 2;     // generic failure
+[[maybe_unused]] constexpr int EXIT_CRC = 3;       // checksum error
+[[maybe_unused]] constexpr int EXIT_LOCKED = 4;    // locked archive
+[[maybe_unused]] constexpr int EXIT_WRITE = 5;     // write error
+[[maybe_unused]] constexpr int EXIT_OPEN = 6;      // archive open error
+[[maybe_unused]] constexpr int EXIT_USAGE = 7;     // command-line error
+[[maybe_unused]] constexpr int EXIT_MEMORY = 8;    // not enough memory
+[[maybe_unused]] constexpr int EXIT_NO_FILES = 10; // no files matched
+[[maybe_unused]] constexpr int EXIT_BAD_PASSWORD = 11;
+[[maybe_unused]] constexpr int EXIT_BAD_ARCHIVE = 13; // unrar RARX_BADARC: unrecognized archive
+[[maybe_unused]] constexpr int EXIT_USER_BREAK = 255;
 
 enum class OverwriteMode { Prompt, Overwrite, SkipExisting };
 
@@ -2455,10 +2455,9 @@ static int cli_main(int argc, char* argv[]) {
     bool rv_is_percent = false;
     openrar::core::uint64 opt_dict_size = 0; // -md<size>
     openrar::compress::FilterConfig opt_filter_cfg;
-    bool want_versioning = false; // -ver
-    int max_versions = -1;        // -1 = disabled, 0 = unlimited, >0 = limit
-    int extract_version = -1;     // -1 = default, 0 = all versions (-ver), >0 = specific (-verN)
-    bool want_og = false;         // -og
+    int max_versions = -1;    // -1 = disabled, 0 = unlimited, >0 = limit
+    int extract_version = -1; // -1 = default, 0 = all versions (-ver), >0 = specific (-verN)
+    bool want_og = false;     // -og
     std::string opt_group;
     std::string opt_user;
 
@@ -2626,7 +2625,6 @@ static int cli_main(int argc, char* argv[]) {
             // Exact dispatch (v1.21.2): only "-ver" or "-ver<digits>"; other
             // "-ver*" spellings (e.g. "-verbose") fall through to the
             // unknown-switch error instead of silently enabling versioning.
-            want_versioning = true;
             std::string tail = s.substr(4);
             if (tail.empty()) {
                 max_versions = 0;
