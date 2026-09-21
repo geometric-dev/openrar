@@ -463,10 +463,12 @@ static void test_rar7_header_serialization() {
             assert(f.open(tmp, openrar::io::FileMode::ReadOnly));
             openrar::core::uint64 block_type = 0, block_flags = 0, data_size = 0;
             std::vector<openrar::core::byte> body;
-            auto res = openrar::format::HeaderReader::read_block_raw(f, block_type, block_flags, body, data_size);
+            auto res = openrar::format::HeaderReader::read_block_raw(f, block_type, block_flags,
+                                                                     body, data_size);
             assert(res == openrar::format::HeaderResult::Ok);
             openrar::format::FileBlock read_block;
-            assert(openrar::format::HeaderReader::parse_file_header(body.data(), body.size(), read_block));
+            assert(openrar::format::HeaderReader::parse_file_header(body.data(), body.size(),
+                                                                    read_block));
             assert(read_block.unp_ver == 1);
             assert(read_block.win_size == win);
             f.close();
@@ -483,10 +485,7 @@ static void test_mutator_exact_dict_serialization() {
     const fs::path src = dir / "data.bin";
     write_bytes(src, make_pattern(4096, 42));
 
-    const openrar::core::uint64 test_dicts[] = {
-        48ULL * 1024 * 1024,
-        4ULL * 1024 * 1024 * 1024
-    };
+    const openrar::core::uint64 test_dicts[] = {48ULL * 1024 * 1024, 4ULL * 1024 * 1024 * 1024};
 
     for (openrar::core::uint64 target_dict : test_dicts) {
         const fs::path arc = dir / (std::to_string(target_dict) + ".rar");
@@ -494,8 +493,8 @@ static void test_mutator_exact_dict_serialization() {
         ArchiveMutator::PreparedAdd p;
         p.entry_name = "data.bin";
         p.src_path = src;
-        assert(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", p, engine::time_flags::MTIME,
-                                               target_dict));
+        assert(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", p,
+                                                engine::time_flags::MTIME, target_dict));
         assert(p.fb.win_size == target_dict);
         assert(p.fb.unp_ver == 1);
         prepared.push_back(std::move(p));

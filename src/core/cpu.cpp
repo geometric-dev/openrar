@@ -214,7 +214,7 @@ AccelerationReport describe_acceleration() {
             r.tags.push_back("AVX512 LZ");
         else
 #endif
-        if (f.avx2)
+            if (f.avx2)
             r.tags.push_back("AVX2 LZ");
         else if (f.sse2)
             r.tags.push_back("SSE2 LZ");

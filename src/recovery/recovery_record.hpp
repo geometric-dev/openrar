@@ -10,9 +10,11 @@
 namespace openrar::recovery {
 
 #if defined(__EMSCRIPTEN__) || defined(_M_IX86) || defined(__i386__)
-static constexpr core::uint64 MAX_PARITY_BUFFER_CAP = 2ULL * 1024 * 1024 * 1024; // 2 GiB cap on 32-bit / WASM
+static constexpr core::uint64 MAX_PARITY_BUFFER_CAP =
+    2ULL * 1024 * 1024 * 1024; // 2 GiB cap on 32-bit / WASM
 #else
-static constexpr core::uint64 MAX_PARITY_BUFFER_CAP = 64ULL * 1024 * 1024 * 1024; // 64 GiB cap on 64-bit native
+static constexpr core::uint64 MAX_PARITY_BUFFER_CAP =
+    64ULL * 1024 * 1024 * 1024; // 64 GiB cap on 64-bit native
 #endif
 
 inline std::optional<core::uint64> calculate_parity_buffer_size(core::uint64 count,

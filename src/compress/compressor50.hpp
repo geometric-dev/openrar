@@ -401,14 +401,12 @@ public:
 
     static bool compress_buffer(const core::byte* src, size_t src_size,
                                 std::vector<core::byte>& dest, int method = 3,
-                                size_t win_size = 0x200000,
-                                const FilterConfig& filter_cfg = {});
+                                size_t win_size = 0x200000, const FilterConfig& filter_cfg = {});
 
     static bool compress_buffer_parallel(const core::byte* src, size_t src_size,
                                          std::vector<core::byte>& dest, int method = 3,
                                          size_t win_size = 0x200000,
-                                         const FilterConfig& filter_cfg = {},
-                                         unsigned threads = 0);
+                                         const FilterConfig& filter_cfg = {}, unsigned threads = 0);
 
     // ── Streaming (incremental) compression ─────────────────────────────────
     // Path-A design (docs/streaming-considerations.md §7): the compressor

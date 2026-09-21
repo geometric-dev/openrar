@@ -82,8 +82,7 @@ public:
     // recent list() result on this instance. Returns RAR_ERR_INVALID_ARG
     // if entry_index is out of range.
     int extract(const uint8_t* data, size_t size, size_t entry_index, std::vector<uint8_t>& out,
-                const ExtractionLimits* limits = nullptr,
-                LimitState* state = nullptr);
+                const ExtractionLimits* limits = nullptr, LimitState* state = nullptr);
 
     // Extract every entry from the most recent list(). Cumulative monotonic
     // progress from 0 to `total` (sum of entry sizes); ~50% is the size-probe
@@ -93,8 +92,7 @@ public:
                     std::vector<std::pair<std::string, std::vector<uint8_t>>>& out_files,
                     progress_cb on_progress = nullptr, void* user = nullptr,
                     cancel_cb on_cancel = nullptr, void* cancel_user = nullptr,
-                    const ExtractionLimits* limits = nullptr,
-                    LimitState* state = nullptr);
+                    const ExtractionLimits* limits = nullptr, LimitState* state = nullptr);
 
 private:
     // Cached result from the most recent list() call.

@@ -20,8 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`test_match_length_bit_exactness`): every implementation the running CPU
   supports must match the scalar reference over 2300 boundary cases —
   Scalar == SSE2 == AVX2 == AVX-512 == NEON, exercised per machine.
-  Next increments: GFNI RS16 parity kernel (requires GFNI-capable hardware
-  for validation), NEON `vmull_p64` path.
+- **GFNI RS16 fold kernel**: the Cauchy parity fold
+  (`ReedSolomon16::update_ecc`) now dispatches to a `_mm512_gf2p8affine_epi64_epi8`
+  kernel — each 16-bit multiply-by-constant decomposes into four 8x8 GF(2)
+  byte matrices applied across 64 bytes/instruction. A one-time convention
+  probe validates the instruction's matrix encoding against the scalar table
+  fold and fails safe to it (worst case: no speedup, never wrong parity);
+  `update_ecc_scalar` stays public as the bit-exactness reference.
+  Validated in CI under **Intel SDE** (`simd-validation` job): the gate
+  greps for kernel activation so an SDE/ISA mismatch fails loudly, and runs
+  the interop quick gate end-to-end (real `.rev` parity through the kernel).
+  `test_rs16_gfni_bit_exactness` pins dispatched == scalar over 11 block
+  classes x every Cauchy coefficient.
+  Remaining for v1.22.0: NEON `vmull_p64` path, benchmark numbers.
 
 ## [1.21.2] - 2026-09-21
 

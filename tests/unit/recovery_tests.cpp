@@ -45,6 +45,49 @@ void test_gf_arithmetic() {
     std::cout << "[PASS] Galois Field GF(65536) Arithmetic\n";
 }
 
+// ── v1.22.0: GFNI fold kernel bit-exactness gate ────────────────────────────
+// The dispatched update_ecc must be byte-identical to the scalar table fold
+// for every coefficient the Cauchy matrix can produce, across random data
+// and exact block boundaries (64-byte body + sub-64-byte remainders). On a
+// GFNI-capable CPU (or under Intel SDE in CI) the dispatched path IS the
+// kernel; elsewhere both sides are scalar and the gate is trivially green.
+void test_rs16_gfni_bit_exactness() {
+    std::cout << "[+] test_rs16_gfni_bit_exactness" << std::endl;
+    const bool kernel_active = recovery::ReedSolomon16::gfni_kernel_active();
+
+    const core::uint32 ND = 6;
+    const core::uint32 NR = 4;
+    recovery::ReedSolomon16 rs;
+    assert(rs.init(ND, NR));
+
+    // Block sizes: 64-boundary classes and odd-word remainders (block_size
+    // is always even per the codec contract).
+    const size_t sizes[] = {2, 62, 64, 66, 126, 128, 130, 1024, 65536, 1048574, 1048576};
+    std::mt19937 rng(0x5EED);
+    std::uniform_int_distribution<int> byte(0, 255);
+
+    for (size_t size : sizes) {
+        std::vector<core::byte> data(size);
+        for (auto& b : data) b = static_cast<core::byte>(byte(rng));
+        for (core::uint32 dn = 0; dn < ND; ++dn) {
+            for (core::uint32 en = 0; en < NR; ++en) {
+                std::vector<core::byte> ecc_ref(size, core::byte(0));
+                std::vector<core::byte> ecc_gfni(size, core::byte(0));
+                // Pre-existing parity content: the fold must XOR into it.
+                for (auto& b : ecc_ref) b = static_cast<core::byte>(byte(rng));
+                ecc_gfni = ecc_ref;
+                rs.update_ecc_scalar(dn, en, data.data(), ecc_ref.data(), size);
+                rs.update_ecc(dn, en, data.data(), ecc_gfni.data(), size);
+                assert(ecc_gfni == ecc_ref && "GFNI fold diverged from scalar fold");
+            }
+        }
+    }
+    std::cout << "    - dispatched fold == scalar fold over " << (sizeof(sizes) / sizeof(sizes[0]))
+              << " block classes x " << ND * NR << " coefficients: OK"
+              << (kernel_active ? " [GFNI KERNEL ACTIVE]" : " [scalar fallback: no GFNI here]")
+              << std::endl;
+}
+
 void test_rs16_codec_roundtrip() {
     const core::uint32 ND = 5; // 5 data sectors
     const core::uint32 NR = 3; // 3 parity sectors
@@ -889,6 +932,7 @@ int main() {
     std::cout << "Running Clean-Room Milestone 4 Recovery Verification...\n";
     test_gf_arithmetic();
     test_rs16_codec_roundtrip();
+    test_rs16_gfni_bit_exactness();
     test_recovery_manager();
     test_recovery_params_overflow();
     test_repair_rejects_hostile_prot_size();

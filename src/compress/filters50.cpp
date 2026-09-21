@@ -49,10 +49,11 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
             core::uint32 pe_off = core::read_le32(data + 0x3C);
             // 64-bit arithmetic: pe_off is untrusted and near-UINT32_MAX values
             // would wrap below in 32-bit and pass the guard (OOB read).
-            if (static_cast<core::uint64>(pe_off) + 6 < size && data[pe_off] == 'P' && data[pe_off + 1] == 'E' &&
-                data[pe_off + 2] == 0 && data[pe_off + 3] == 0) {
+            if (static_cast<core::uint64>(pe_off) + 6 < size && data[pe_off] == 'P' &&
+                data[pe_off + 1] == 'E' && data[pe_off + 2] == 0 && data[pe_off + 3] == 0) {
                 core::uint16 machine = core::read_le16(data + pe_off + 4);
-                if (config.arm_override >= 0 && (machine == 0x01C0 || machine == 0x01C2 || machine == 0x01C4)) {
+                if (config.arm_override >= 0 &&
+                    (machine == 0x01C0 || machine == 0x01C2 || machine == 0x01C4)) {
                     return FilterType::Arm;
                 }
                 return FilterType::E8; // Default PE to E8 (x86/x64)
@@ -76,7 +77,8 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
         core::uint32 magic = core::read_le32(data);
         if (magic == 0xFEEDFACEu || magic == 0xFEEDFACFu) { // Mach-O 32 / 64
             core::uint32 cputype = core::read_le32(data + 4);
-            if (config.e8_override >= 0 && (cputype == 7 || cputype == 0x01000007u)) { // x86 / x86_64
+            if (config.e8_override >= 0 &&
+                (cputype == 7 || cputype == 0x01000007u)) { // x86 / x86_64
                 return FilterType::E8;
             }
             if (config.arm_override >= 0 && cputype == 12) { // 32-bit ARM (CPU_TYPE_ARM)
@@ -528,7 +530,8 @@ void Filters50::encode_e8_scalar(core::byte* data, size_t size, core::uint64 fil
     }
 }
 
-void Filters50::encode_e8(core::byte* data, size_t size, core::uint64 file_offset, bool include_e9) {
+void Filters50::encode_e8(core::byte* data, size_t size, core::uint64 file_offset,
+                          bool include_e9) {
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     const core::uint32 file_size_mask = 0x01000000u; // 16MB modular cycle
     core::uint32 file_off = static_cast<core::uint32>(file_offset);

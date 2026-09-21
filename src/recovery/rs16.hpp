@@ -27,9 +27,22 @@ public:
     bool init(core::uint32 data_count, core::uint32 rec_count,
               const core::byte* valid_flags = nullptr);
 
-    // Apply a data sector to an ECC sector (block_size must be even)
+    // Apply a data sector to an ECC sector (block_size must be even).
+    // Dispatches to the GFNI kernel when compiled with it and the CPU
+    // supports it (probed once against the scalar path — see
+    // build_gfni_affines); otherwise the scalar table path runs. Both paths
+    // are bit-identical (test_rs16_gfni_bit_exactness).
     void update_ecc(core::uint32 data_num, core::uint32 ecc_num, const core::byte* data,
                     core::byte* ecc, size_t block_size);
+
+    // Scalar reference path (public for the bit-exactness gate: the test
+    // compares this against update_ecc's dispatched GFNI path directly).
+    void update_ecc_scalar(core::uint32 data_num, core::uint32 ecc_num, const core::byte* data,
+                           core::byte* ecc, size_t block_size);
+
+    // True when this process will actually use the GFNI fold kernel
+    // (compiled in, CPU-supported, and convention-probe validated).
+    static bool gfni_kernel_active();
 
     // Field operations (public for testing and validation)
     core::uint32 gf_add(core::uint32 a, core::uint32 b) const { return a ^ b; }

@@ -15,7 +15,7 @@
 namespace openrar::compress {
 class Decompressor50;
 enum class DecompressErrorCode;
-}
+} // namespace openrar::compress
 
 namespace openrar::crypto {
 struct Rar5Keys; // POD key bundle (pbkdf2.hpp); streaming methods take it by pointer
@@ -106,8 +106,7 @@ public:
     // for openrar_archive_get_error.
     bool open_ex(const std::filesystem::path& arc_path, const std::string& password,
                  int& status_out, std::string& detail_out, const ReaderHooks& hooks = {},
-                 bool strict_volumes = false,
-                 const ExtractionLimits* limits = nullptr,
+                 bool strict_volumes = false, const ExtractionLimits* limits = nullptr,
                  LimitState* state = nullptr);
 
     // Volume paths in the open set (primary first, then every extent volume,
@@ -127,14 +126,12 @@ public:
     // RAR_ERR_CRC_MISMATCH / RAR_ERR_TRUNCATED / RAR_ERR_ABORTED /
     // RAR_ERR_MISSING_VOLUME / RAR_ERR_IO / RAR_ERR_LIMIT_EXCEEDED.
     int extract_entry_stream(size_t entry_index, io::FileStream& out, const ReaderHooks& hooks,
-                             const ExtractionLimits* limits = nullptr,
-                             LimitState* state = nullptr);
+                             const ExtractionLimits* limits = nullptr, LimitState* state = nullptr);
 
     // Stream entries_[entry_index]'s payload into a caller-supplied sink function.
     int extract_entry_sink(size_t entry_index,
                            const std::function<bool(const core::byte*, size_t)>& out_sink,
-                           const ReaderHooks& hooks = {},
-                           const ExtractionLimits* limits = nullptr,
+                           const ReaderHooks& hooks = {}, const ExtractionLimits* limits = nullptr,
                            LimitState* state = nullptr);
 
     // Extract into memory (preview path). Fails with RAR_ERR_NOMEM when the
@@ -148,13 +145,11 @@ public:
     // output. Directory and link entries verify trivially (RAR_OK, no
     // callbacks). Error mapping as extract_entry_stream.
     int test_entry_stream(size_t entry_index, const ReaderHooks& hooks,
-                          const ExtractionLimits* limits = nullptr,
-                          LimitState* state = nullptr);
+                          const ExtractionLimits* limits = nullptr, LimitState* state = nullptr);
 
 private:
     bool scan_archive(const ReaderHooks& hooks, bool strict_volumes, int& status_out,
-                      std::string& detail_out,
-                      const ExtractionLimits* limits = nullptr,
+                      std::string& detail_out, const ExtractionLimits* limits = nullptr,
                       LimitState* state = nullptr);
 
     // ── Streaming internals (v1.3.0) ─────────────────────────────────────────

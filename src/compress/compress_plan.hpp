@@ -10,31 +10,38 @@ namespace openrar::compress {
 // Default dictionary size helper for RAR5 compression methods 0-5.
 inline uint64_t default_dict_size_for_method(uint32_t method) {
     switch (method) {
-    case 0: return 0x20000ULL;    // 128 KB
-    case 1: return 0x80000ULL;    // 512 KB
-    case 2: return 0x100000ULL;   // 1 MB
-    case 3: return 0x800000ULL;   // 8 MB  (balanced speed, ratio & L3 cache)
-    case 4: return 0x1000000ULL;  // 16 MB
-    case 5: return 0x4000000ULL;  // 64 MB (matches WinRAR Best profile)
-    default: return 0x800000ULL;
+    case 0:
+        return 0x20000ULL; // 128 KB
+    case 1:
+        return 0x80000ULL; // 512 KB
+    case 2:
+        return 0x100000ULL; // 1 MB
+    case 3:
+        return 0x800000ULL; // 8 MB  (balanced speed, ratio & L3 cache)
+    case 4:
+        return 0x1000000ULL; // 16 MB
+    case 5:
+        return 0x4000000ULL; // 64 MB (matches WinRAR Best profile)
+    default:
+        return 0x800000ULL;
     }
 }
 
 // Decision on how a single entry payload is encoded into the archive.
 enum class EntryDecision {
-    Stored,       // Method 0 (uncompressed copy)
-    BlockStream,  // Block-based streaming compression (normal LZ compressor)
-    WholeMember   // Entire file buffered and compressed as a unit
+    Stored,      // Method 0 (uncompressed copy)
+    BlockStream, // Block-based streaming compression (normal LZ compressor)
+    WholeMember  // Entire file buffered and compressed as a unit
 };
 
 // Execution plan for a single entry.
 struct EntryPlan {
     EntryDecision decision{EntryDecision::Stored};
     uint64_t dict_size{0};
-    uint32_t method{0};          // 0–5
-    bool is_solid_chain{false};  // member continues solid state from previous compressed entry
-    bool is_dir{false};          // directory record (no data payload)
-    uint64_t raw_size{0};        // input uncompressed size
+    uint32_t method{0};         // 0–5
+    bool is_solid_chain{false}; // member continues solid state from previous compressed entry
+    bool is_dir{false};         // directory record (no data payload)
+    uint64_t raw_size{0};       // input uncompressed size
     uint64_t estimated_workspace_bytes{0}; // estimated workspace RAM to prepare/compress
 };
 
@@ -46,8 +53,8 @@ struct EntryPlan {
 // batch, the planner examines all entries up front to generate an immutable plan before
 // execution starts.
 struct CompressPlan {
-    uint64_t dict_size{0};          // Archive-level dictionary choice
-    uint32_t method{3};             // Archive-level default method (0-5)
+    uint64_t dict_size{0}; // Archive-level dictionary choice
+    uint32_t method{3};    // Archive-level default method (0-5)
     bool solid{false};
     bool continue_solid_stream{false};
     bool seen_compressed_entry{false};
@@ -62,7 +69,8 @@ struct CompressPlan {
         } else {
             ep.decision = EntryDecision::BlockStream;
             if (ep.dict_size == 0) {
-                ep.dict_size = (dict_size != 0) ? dict_size : default_dict_size_for_method(ep.method);
+                ep.dict_size =
+                    (dict_size != 0) ? dict_size : default_dict_size_for_method(ep.method);
             }
             ep.is_solid_chain = (solid || continue_solid_stream) && seen_compressed_entry;
             seen_compressed_entry = true;

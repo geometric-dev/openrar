@@ -140,10 +140,8 @@ public:
 
     // Decompresses exactly one compressed RAR 5.0 block.
     // If solid is true, dictionary history and active tables carry over.
-    bool decompress_block(const core::byte* src, size_t src_size,
-                          OutputCallback flush_cb = nullptr,
-                          size_t* out_written = nullptr,
-                          bool* out_finished = nullptr,
+    bool decompress_block(const core::byte* src, size_t src_size, OutputCallback flush_cb = nullptr,
+                          size_t* out_written = nullptr, bool* out_finished = nullptr,
                           bool solid = false);
 
     // Streams the decompressed output into a growing vector until the RAR5
@@ -176,9 +174,11 @@ public:
     // passed. On wasm32 size_t itself is already bounded at 4 GiB - 1,
     // so the cap stays meaningful there.
 #if defined(__EMSCRIPTEN__) || defined(_M_IX86) || defined(__i386__)
-    static constexpr core::uint64 MAX_STREAM_OUTPUT = 2ULL * 1024 * 1024 * 1024; // 2 GiB on 32-bit / WASM
+    static constexpr core::uint64 MAX_STREAM_OUTPUT =
+        2ULL * 1024 * 1024 * 1024; // 2 GiB on 32-bit / WASM
 #else
-    static constexpr core::uint64 MAX_STREAM_OUTPUT = 64ULL * 1024 * 1024 * 1024; // 64 GiB on 64-bit native
+    static constexpr core::uint64 MAX_STREAM_OUTPUT =
+        64ULL * 1024 * 1024 * 1024; // 64 GiB on 64-bit native
 #endif
 
 private:
