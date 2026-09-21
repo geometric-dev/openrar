@@ -146,12 +146,18 @@ published ones (see `crypto_tests.cpp` for the existing KAT set).
 
 ## Local gate & hooks
 
-Install the shared pre-commit hook (it runs the interop gate when
-compress/archive/format code changes):
+Install the shared pre-commit hook (it runs the clang-format gate on every
+commit, plus the interop gate when compress/archive/format code changes):
 
 ```sh
 git config core.hooksPath .githooks
 ```
+
+The format gate mirrors the CI format leg (clang-format 18, full tree).
+clang-format is resolved in this order: `clang-format-18`, `clang-format`
+on PATH, then the `pip install clang-format` binary (any major version
+other than 18 prints a warning, since CI pins 18). If the tool is missing
+the gate skips with a warning — CI still enforces it.
 
 Bypass with `git commit --no-verify` only for clearly-non-format commits
 that tripped the gate accidentally — and say so in the commit body.
