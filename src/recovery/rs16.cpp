@@ -1,8 +1,129 @@
 #include "rs16.hpp"
+#include "../core/cpu.hpp"
 #include <algorithm>
 #include <cstring>
 
+#if defined(OPENRAR_HAS_GFNI_KERNEL)
 namespace openrar::recovery {
+// Defined in rs16_gfni.cpp (the only TU compiled with AVX-512/GFNI flags).
+// Folds 64-byte-multiples of the block; the remainder is handled scalar-side.
+void rs16_fold_gfni(const core::byte* data, core::byte* ecc, size_t bytes,
+                    const core::uint64 m[4]) noexcept;
+} // namespace openrar::recovery
+#endif
+
+namespace openrar::recovery {
+
+namespace {
+
+#if defined(OPENRAR_HAS_GFNI_KERNEL)
+
+// ── GFNI affinity matrices (v1.22.0) ─────────────────────────────────────────
+// GF(2^16) multiply-by-constant distributes over the byte halves:
+//   coeff * (hi<<8 | lo) = (hi * K1) ^ (lo * K0)
+// with K0 = coeff and K1 = coeff * x^8 (both 16-bit constants). Each 8-bit ×
+// 16-bit-constant product is a GF(2)-linear byte map 8 -> 16, i.e. TWO 8x8
+// GF(2) matrices (one per output byte). Four matrices per coefficient:
+//   m[0]: lo -> out_lo   m[1]: lo -> out_hi
+//   m[2]: hi -> out_lo   m[3]: hi -> out_hi
+//
+// The _mm512_gf2p8affine_epi64_epi8 instruction applies an 8x8 GF(2)
+// bit-matrix per byte; the convention probe below verifies our encoding of
+// that matrix against the scalar table path at first use and falls back to
+// the scalar path if no candidate matches — worst case is "no speedup",
+// never wrong parity.
+
+// Build one matrix for the byte map T[b] = byte-half of K*b (8-bit b).
+// Row i (the mask byte selecting which input bits feed output bit i) is
+// assembled from T[1<<j] across the input basis vectors.
+core::uint8 gfni_matrix_row(const ReedSolomon16& rs, core::uint32 K, bool high_half,
+                            core::uint32 i) {
+    core::uint8 row = 0;
+    for (core::uint32 j = 0; j < 8; ++j) {
+        const core::uint32 product = rs.gf_mul(K, 1u << j);
+        const core::uint8 out_byte = static_cast<core::uint8>(
+            high_half ? (product >> 8) & 0xFF : product & 0xFF);
+        row |= static_cast<core::uint8>(((out_byte >> i) & 1) << j);
+    }
+    return row;
+}
+
+core::uint64 gfni_pack_candidate(const ReedSolomon16& rs, core::uint32 K, bool high_half,
+                                 int convention) {
+    core::uint64 q = 0;
+    for (core::uint32 i = 0; i < 8; ++i) {
+        core::uint8 row = gfni_matrix_row(rs, K, high_half, i);
+        core::uint32 lane_byte = i;
+        if (convention == 2 || convention == 3) lane_byte = 7 - i;   // reversed rows
+        core::uint8 value = row;
+        if (convention == 1 || convention == 3) {                    // bit-reversed rows
+            core::uint8 r = 0;
+            for (core::uint32 b = 0; b < 8; ++b) {
+                r |= static_cast<core::uint8>(((value >> b) & 1) << (7 - b));
+            }
+            value = r;
+        }
+        q |= static_cast<core::uint64>(value) << (8 * lane_byte);
+    }
+    return q;
+}
+
+// Index of the matrix-convention candidate validated against the scalar
+// table fold (0..3), or -1 when the CPU lacks GFNI or no candidate matched.
+// First caller runs the probe (magic static = thread safe). All paths fail
+// safe: no match -> no GFNI dispatch.
+int gfni_convention() {
+    static const int convention = [] {
+        if (!core::get_cpu_features().gfni) return -1;
+        ReedSolomon16 rs; // gf tables only; init() state is irrelevant here
+        constexpr core::uint32 kCoeff = 0x1234;
+        // Reference fold via the scalar tables for one 64-byte block.
+        alignas(64) core::byte ref_ecc[64] = {};
+        core::uint16 mul_lo[256], mul_hi[256];
+        for (core::uint32 b = 0; b < 256; ++b) {
+            mul_lo[b] = static_cast<core::uint16>(rs.gf_mul(kCoeff, b));
+            mul_hi[b] = static_cast<core::uint16>(rs.gf_mul(kCoeff, b << 8));
+        }
+        alignas(64) core::byte block[64];
+        for (core::uint32 w = 0; w < 32; ++w) {
+            const core::uint16 word = static_cast<core::uint16>((w * 251 + 7) |
+                                                                ((w * 31 + 3) << 8));
+            block[2 * w] = static_cast<core::byte>(word & 0xFF);
+            block[2 * w + 1] = static_cast<core::byte>((word >> 8) & 0xFF);
+            const core::uint16 folded = static_cast<core::uint16>(
+                mul_lo[word & 0xFF] ^ mul_hi[(word >> 8) & 0xFF]);
+            ref_ecc[2 * w] = static_cast<core::byte>(folded & 0xFF);
+            ref_ecc[2 * w + 1] = static_cast<core::byte>((folded >> 8) & 0xFF);
+        }
+        // Try each matrix-convention candidate.
+        for (int candidate = 0; candidate < 4; ++candidate) {
+            core::uint64 m[4];
+            m[0] = gfni_pack_candidate(rs, kCoeff, /*high_half=*/false, candidate);
+            m[1] = gfni_pack_candidate(rs, kCoeff, /*high_half=*/true, candidate);
+            m[2] = gfni_pack_candidate(rs, rs.gf_mul(kCoeff, 0x100u), /*high_half=*/false,
+                                       candidate);
+            m[3] = gfni_pack_candidate(rs, rs.gf_mul(kCoeff, 0x100u), /*high_half=*/true,
+                                       candidate);
+            alignas(64) core::byte ecc[64] = {};
+            rs16_fold_gfni(block, ecc, sizeof(ecc), m);
+            if (std::memcmp(ecc, ref_ecc, sizeof(ecc)) == 0) return candidate;
+        }
+        return -1;
+    }();
+    return convention;
+}
+
+#endif // OPENRAR_HAS_GFNI_KERNEL
+
+} // namespace
+
+bool ReedSolomon16::gfni_kernel_active() {
+#if defined(OPENRAR_HAS_GFNI_KERNEL)
+    return gfni_convention() >= 0;
+#else
+    return false;
+#endif
+}
 
 ReedSolomon16::ReedSolomon16() {
     init_gf();
@@ -153,8 +274,9 @@ void ReedSolomon16::invert_decoder_matrix() {
     std::copy(mi.begin(), mi.end(), mx_.begin());
 }
 
-void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, const core::byte* data,
-                               core::byte* ecc, size_t block_size) {
+void ReedSolomon16::update_ecc_scalar(core::uint32 data_num, core::uint32 ecc_num,
+                                      const core::byte* data, core::byte* ecc,
+                                      size_t block_size) {
     if (data_num == 0) {
         std::memset(ecc, 0, block_size);
     }
@@ -202,6 +324,54 @@ void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, cons
         e_ptr[1] = static_cast<core::byte>((ec >> 8) & 0xFF);
         e_ptr += 2;
     }
+}
+
+void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num,
+                               const core::byte* data, core::byte* ecc, size_t block_size) {
+    if (data_num == 0) {
+        std::memset(ecc, 0, block_size);
+    }
+
+    const core::uint32 coeff = mx_[ecc_num * nd_ + data_num];
+    if (coeff == 0) {
+        return;
+    }
+
+#if defined(OPENRAR_HAS_GFNI_KERNEL)
+    const int convention = gfni_convention();
+    if (convention >= 0) {
+        // GF(2^16) mul distributes over the byte halves:
+        //   coeff * (hi<<8 | lo) = (lo * K0) ^ (hi * K1), K1 = coeff * x^8.
+        // Each 8-bit x 16-bit-constant product is a GF(2)-linear byte map,
+        // i.e. two 8x8 matrices; the probe has pinned the instruction's
+        // convention, so the kernel is bit-identical to the scalar fold.
+        core::uint64 m[4];
+        m[0] = gfni_pack_candidate(*this, coeff, /*high_half=*/false, convention);
+        m[1] = gfni_pack_candidate(*this, coeff, /*high_half=*/true, convention);
+        const core::uint32 K1 = gf_mul(coeff, 0x100u);
+        m[2] = gfni_pack_candidate(*this, K1, /*high_half=*/false, convention);
+        m[3] = gfni_pack_candidate(*this, K1, /*high_half=*/true, convention);
+
+        const size_t body = block_size & ~static_cast<size_t>(63);
+        if (body > 0) {
+            rs16_fold_gfni(data, ecc, body, m);
+        }
+        const size_t done = body;
+        // Scalar remainder (< 64 bytes): direct log/exp muls, cheaper than
+        // building 1 KiB of tables for a handful of words.
+        for (size_t off = done; off + 2 <= block_size; off += 2) {
+            const core::uint16 word = static_cast<core::uint16>(data[off] | (data[off + 1] << 8));
+            const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
+            const core::uint16 ec = static_cast<core::uint16>(
+                static_cast<core::uint16>(ecc[off] | (ecc[off + 1] << 8)) ^ product);
+            ecc[off] = static_cast<core::byte>(ec & 0xFF);
+            ecc[off + 1] = static_cast<core::byte>((ec >> 8) & 0xFF);
+        }
+        return;
+    }
+#endif
+
+    update_ecc_scalar(data_num, ecc_num, data, ecc, block_size);
 }
 
 } // namespace openrar::recovery
