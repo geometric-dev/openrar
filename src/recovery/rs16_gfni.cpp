@@ -20,8 +20,8 @@
 #if defined(OPENRAR_HAS_GFNI_KERNEL)
 
 #include "../core/types.hpp"
-
 #include <immintrin.h>
+
 #include <cstring>
 
 #if defined(__GNUC__) || defined(__clang__)
