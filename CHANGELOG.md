@@ -5,6 +5,24 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v1.22.0 work in progress
+
+### Added
+
+- **AVX-512 match-length kernel (v1.22.0 groundwork)**: 64-byte-per-cycle
+  match-length comparison in a dedicated translation unit compiled with
+  `/arch:AVX512` (MSVC) / function-level target attributes (GCC, Clang) —
+  512-bit intrinsics can never leak into baseline codegen. Runtime dispatch
+  requires `cpu.avx512f` (CPUID + OS ZMM XSTATE, report M4 semantics) and the
+  `OPENRAR_HAS_AVX512_KERNEL` compile-time capability flag. `GFNI` detection
+  (leaf 7 ECX bit 8, ZMM-gated) added to `CpuFeatures` for the RS16 parity
+  kernel. Cross-implementation bit-exactness gate
+  (`test_match_length_bit_exactness`): every implementation the running CPU
+  supports must match the scalar reference over 2300 boundary cases —
+  Scalar == SSE2 == AVX2 == AVX-512 == NEON, exercised per machine.
+  Next increments: GFNI RS16 parity kernel (requires GFNI-capable hardware
+  for validation), NEON `vmull_p64` path.
+
 ## [1.21.2] - 2026-09-21
 
 Residual P2 front-load from the v1.6.0 → v1.21.0 audit (the remainder of the
