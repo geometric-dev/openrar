@@ -37,8 +37,8 @@ public:
 
     // Scalar reference path (public for the bit-exactness gate: the test
     // compares this against update_ecc's dispatched GFNI path directly).
-    void update_ecc_scalar(core::uint32 data_num, core::uint32 ecc_num,
-                           const core::byte* data, core::byte* ecc, size_t block_size);
+    void update_ecc_scalar(core::uint32 data_num, core::uint32 ecc_num, const core::byte* data,
+                           core::byte* ecc, size_t block_size);
 
     // True when this process will actually use the GFNI fold kernel
     // (compiled in, CPU-supported, and convention-probe validated).

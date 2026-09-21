@@ -17,7 +17,7 @@ struct CpuFeatures {
     bool pclmulqdq{false};
     bool sha_ni{false};
     bool avx512f{false};
-    bool gfni{false};   // GFNI (leaf 7 ECX bit 8), gated on ZMM OS state
+    bool gfni{false}; // GFNI (leaf 7 ECX bit 8), gated on ZMM OS state
     bool vaes{false};
     bool vpclmulqdq{false};
 

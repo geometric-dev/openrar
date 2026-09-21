@@ -188,8 +188,8 @@ void test_streaming_multivolume_creation() {
 
     // 1. Test compressed multi-volume creation (method 3, 32 KiB volume size, 128 KiB dictionary)
     fs::path arc_base = dir / "multi.rar";
-    bool ok = archive::ArchiveMutator::add_file_to_archive_vol(
-        arc_base, src, "stream_src.bin", 3, 32 * 1024, "", false, 128 * 1024);
+    bool ok = archive::ArchiveMutator::add_file_to_archive_vol(arc_base, src, "stream_src.bin", 3,
+                                                               32 * 1024, "", false, 128 * 1024);
     assert(ok);
 
     fs::path part1 = dir / "multi.part01.rar";
@@ -216,8 +216,8 @@ void test_streaming_multivolume_creation() {
 
     // 2. Test store mode (method 0) multi-volume creation with zero RAM buffering
     fs::path arc_store = dir / "store_multi.rar";
-    ok = archive::ArchiveMutator::add_file_to_archive_vol(
-        arc_store, src, "store_src.bin", 0, 32 * 1024, "");
+    ok = archive::ArchiveMutator::add_file_to_archive_vol(arc_store, src, "store_src.bin", 0,
+                                                          32 * 1024, "");
     assert(ok);
 
     fs::path store_part1 = dir / "store_multi.part01.rar";

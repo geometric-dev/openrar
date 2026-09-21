@@ -1257,8 +1257,8 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
             }
         }
         return name == arc_stem ||
-               (name.size() > arc_stem.size() &&
-                name.compare(0, arc_stem.size(), arc_stem) == 0 && name[arc_stem.size()] == L'.');
+               (name.size() > arc_stem.size() && name.compare(0, arc_stem.size(), arc_stem) == 0 &&
+                name[arc_stem.size()] == L'.');
     };
 
     std::error_code ec;
@@ -1476,8 +1476,10 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     {
         core::uint32 present_valid = 0, present_corrupt = 0;
         for (core::uint32 i = 0; i < nd; ++i) {
-            if (vols[i].valid) present_valid++;
-            else if (vols[i].corrupt) present_corrupt++;
+            if (vols[i].valid)
+                present_valid++;
+            else if (vols[i].corrupt)
+                present_corrupt++;
         }
         if (present_corrupt > 0 && present_valid == 0) return false;
     }

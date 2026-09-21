@@ -82,10 +82,9 @@ void test_rs16_gfni_bit_exactness() {
             }
         }
     }
-    std::cout << "    - dispatched fold == scalar fold over "
-              << (sizeof(sizes) / sizeof(sizes[0])) << " block classes x " << ND * NR
-              << " coefficients: OK" << (kernel_active ? " [GFNI KERNEL ACTIVE]"
-                                                       : " [scalar fallback: no GFNI here]")
+    std::cout << "    - dispatched fold == scalar fold over " << (sizeof(sizes) / sizeof(sizes[0]))
+              << " block classes x " << ND * NR << " coefficients: OK"
+              << (kernel_active ? " [GFNI KERNEL ACTIVE]" : " [scalar fallback: no GFNI here]")
               << std::endl;
 }
 
