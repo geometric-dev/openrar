@@ -21,19 +21,21 @@
 #include <immintrin.h>
 #include <cstring>
 
+// Clang does not honor #pragma GCC target for intrinsics selection in all
+// versions; explicit target attributes on each function using intrinsics
+// are the portable form for GCC/Clang. MSVC relies on the whole-TU
+// /arch:AVX512 (CMake).
 #if defined(__GNUC__) || defined(__clang__)
-#pragma GCC push_options
-#pragma GCC target("avx512f,avx512bw,avx512vl")
-#define OPENRAR_AVX512_FN
-#elif defined(_MSC_VER)
+#define OPENRAR_AVX512_FN_ATTR "avx512f,avx512bw,avx512vl,avx2"
+#define OPENRAR_AVX512_FN __attribute__((target(OPENRAR_AVX512_FN_ATTR)))
+#else
 #define OPENRAR_AVX512_FN
 #endif
 
 namespace openrar::compress::arch {
 
 OPENRAR_AVX512_FN
-size_t match_length_avx512_kernel(const core::byte* p, const core::byte* q,
-                                  size_t cap) noexcept {
+size_t match_length_avx512_kernel(const core::byte* p, const core::byte* q, size_t cap) noexcept {
     if (cap == 0 || p[0] != q[0]) return 0;
     size_t i = 0;
     // 64 bytes per iteration: cmpeq produces a 64-bit lane mask; the first
@@ -94,10 +96,6 @@ size_t match_length_avx512_kernel(const core::byte* p, const core::byte* q,
     }
     return i;
 }
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC pop_options
-#endif
 
 } // namespace openrar::compress::arch
 

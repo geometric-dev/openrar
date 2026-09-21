@@ -491,9 +491,8 @@ public:
     // Create a new RAR5 archive on disk directly from source files (v1.14.0)
     static void create(const std::filesystem::path& arc_path,
                        const std::vector<std::pair<std::filesystem::path, std::string>>& entries,
-                       int method = 3, uint64_t dict_size = 0,
-                       const std::string& password = "", bool encrypt_headers = false,
-                       bool solid = false) {
+                       int method = 3, uint64_t dict_size = 0, const std::string& password = "",
+                       bool encrypt_headers = false, bool solid = false) {
         if (entries.empty()) throw std::invalid_argument("entries cannot be empty");
         std::vector<std::string> src_str;
         std::vector<std::string> arc_str;
@@ -514,8 +513,8 @@ public:
         int rc = openrar_archive_create_file_ex(
             detail::u8_str(arc_path).c_str(), src_ptrs.data(), arc_ptrs.data(),
             static_cast<uint32_t>(entries.size()), method, dict_size,
-            password.empty() ? nullptr : password.c_str(), encrypt_headers ? 1 : 0,
-            solid ? 1 : 0, nullptr, nullptr, nullptr);
+            password.empty() ? nullptr : password.c_str(), encrypt_headers ? 1 : 0, solid ? 1 : 0,
+            nullptr, nullptr, nullptr);
         check(rc);
     }
 
@@ -532,11 +531,11 @@ private:
 
 using Archive = ArchiveHandle;
 
-inline void create_archive_file(const std::filesystem::path& arc_path,
-                                const std::vector<std::pair<std::filesystem::path, std::string>>& entries,
-                                int method = 3, uint64_t dict_size = 0,
-                                const std::string& password = "", bool encrypt_headers = false,
-                                bool solid = false) {
+inline void
+create_archive_file(const std::filesystem::path& arc_path,
+                    const std::vector<std::pair<std::filesystem::path, std::string>>& entries,
+                    int method = 3, uint64_t dict_size = 0, const std::string& password = "",
+                    bool encrypt_headers = false, bool solid = false) {
     ArchiveHandle::create(arc_path, entries, method, dict_size, password, encrypt_headers, solid);
 }
 
