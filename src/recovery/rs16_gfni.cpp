@@ -25,8 +25,12 @@
 #include <cstring>
 
 #if defined(__GNUC__) || defined(__clang__)
-#pragma GCC push_options
-#pragma GCC target("avx512f,avx512bw,avx512vl,gfni")
+// Clang does not reliably honor #pragma GCC target for intrinsic selection;
+// explicit target attributes on each function using intrinsics are the
+// portable form for GCC/Clang. MSVC relies on the whole-TU /arch:AVX512.
+#define OPENRAR_GFNI_FN __attribute__((target("avx512f,avx512bw,avx512vl,gfni")))
+#else
+#define OPENRAR_GFNI_FN
 #endif
 
 namespace openrar::recovery {
@@ -40,39 +44,37 @@ namespace {
 // lists bytes from byte 63 (lane 3, position 15) down to byte 0.
 
 // result[p] = v[2p] for even p (low bytes gathered), zero elsewhere.
-inline __m512i even_byte_mask() {
-    return _mm512_set_epi8(
-        0x80, 14, 0x80, 12, 0x80, 10, 0x80, 8, 0x80, 6, 0x80, 4, 0x80, 2, 0x80, 0,
-        0x80, 14, 0x80, 12, 0x80, 10, 0x80, 8, 0x80, 6, 0x80, 4, 0x80, 2, 0x80, 0,
-        0x80, 14, 0x80, 12, 0x80, 10, 0x80, 8, 0x80, 6, 0x80, 4, 0x80, 2, 0x80, 0,
-        0x80, 14, 0x80, 12, 0x80, 10, 0x80, 8, 0x80, 6, 0x80, 4, 0x80, 2, 0x80, 0);
+OPENRAR_GFNI_FN inline __m512i even_byte_mask() {
+    return _mm512_set_epi8(0x80, 14, 0x80, 12, 0x80, 10, 0x80, 8, 0x80, 6, 0x80, 4, 0x80, 2, 0x80,
+                           0, 0x80, 14, 0x80, 12, 0x80, 10, 0x80, 8, 0x80, 6, 0x80, 4, 0x80, 2,
+                           0x80, 0, 0x80, 14, 0x80, 12, 0x80, 10, 0x80, 8, 0x80, 6, 0x80, 4, 0x80,
+                           2, 0x80, 0, 0x80, 14, 0x80, 12, 0x80, 10, 0x80, 8, 0x80, 6, 0x80, 4,
+                           0x80, 2, 0x80, 0);
 }
 
 // result[p] = v[2p+1] for even p (high bytes gathered), zero elsewhere.
-inline __m512i odd_byte_mask() {
-    return _mm512_set_epi8(
-        15, 0x80, 13, 0x80, 11, 0x80, 9, 0x80, 7, 0x80, 5, 0x80, 3, 0x80, 1, 0x80,
-        15, 0x80, 13, 0x80, 11, 0x80, 9, 0x80, 7, 0x80, 5, 0x80, 3, 0x80, 1, 0x80,
-        15, 0x80, 13, 0x80, 11, 0x80, 9, 0x80, 7, 0x80, 5, 0x80, 3, 0x80, 1, 0x80,
-        15, 0x80, 13, 0x80, 11, 0x80, 9, 0x80, 7, 0x80, 5, 0x80, 3, 0x80, 1, 0x80);
+OPENRAR_GFNI_FN inline __m512i odd_byte_mask() {
+    return _mm512_set_epi8(15, 0x80, 13, 0x80, 11, 0x80, 9, 0x80, 7, 0x80, 5, 0x80, 3, 0x80, 1,
+                           0x80, 15, 0x80, 13, 0x80, 11, 0x80, 9, 0x80, 7, 0x80, 5, 0x80, 3, 0x80,
+                           1, 0x80, 15, 0x80, 13, 0x80, 11, 0x80, 9, 0x80, 7, 0x80, 5, 0x80, 3,
+                           0x80, 1, 0x80, 15, 0x80, 13, 0x80, 11, 0x80, 9, 0x80, 7, 0x80, 5, 0x80,
+                           3, 0x80, 1, 0x80);
 }
 
 // Spread out_lo (lane positions 0..7) to even positions, zeroing odds.
-inline __m512i spread_lo_mask() {
-    return _mm512_set_epi8(
-        0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0,
-        0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0,
-        0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0,
-        0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0);
+OPENRAR_GFNI_FN inline __m512i spread_lo_mask() {
+    return _mm512_set_epi8(0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0,
+                           0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0,
+                           0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0,
+                           0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0);
 }
 
 // Spread out_hi (lane positions 0..7) to odd positions, zeroing evens.
-inline __m512i spread_hi_mask() {
-    return _mm512_set_epi8(
-        7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80,
-        7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80,
-        7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80,
-        7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80);
+OPENRAR_GFNI_FN inline __m512i spread_hi_mask() {
+    return _mm512_set_epi8(7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80,
+                           7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80,
+                           7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80,
+                           7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80);
 }
 
 } // namespace
@@ -85,8 +87,8 @@ inline __m512i spread_hi_mask() {
 // _mm512_gf2p8affine_epi64_epi8 with the 8-byte matrix constant broadcast
 // across the register. m[0..1] derive from the coefficient itself (applied
 // to the word's low byte), m[2..3] from coeff*x^8 (the word's high byte).
-void rs16_fold_gfni(const core::byte* data, core::byte* ecc, size_t bytes,
-                    const core::uint64 m[4]) noexcept {
+OPENRAR_GFNI_FN void rs16_fold_gfni(const core::byte* data, core::byte* ecc, size_t bytes,
+                                    const core::uint64 m[4]) noexcept {
     const __m512i k_even = even_byte_mask();
     const __m512i k_odd = odd_byte_mask();
     const __m512i k_spread_lo = spread_lo_mask();
@@ -111,16 +113,11 @@ void rs16_fold_gfni(const core::byte* data, core::byte* ecc, size_t bytes,
         __m512i spread = _mm512_or_si512(_mm512_shuffle_epi8(out_lo, k_spread_lo),
                                          _mm512_shuffle_epi8(out_hi, k_spread_hi));
         __m512i e = _mm512_loadu_si512(reinterpret_cast<const void*>(ecc + i));
-        _mm512_storeu_si512(reinterpret_cast<void*>(ecc + i),
-                            _mm512_xor_si512(e, spread));
+        _mm512_storeu_si512(reinterpret_cast<void*>(ecc + i), _mm512_xor_si512(e, spread));
         i += 64;
     }
 }
 
 } // namespace openrar::recovery
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC pop_options
-#endif
 
 #endif // OPENRAR_HAS_GFNI_KERNEL

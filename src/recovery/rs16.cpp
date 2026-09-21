@@ -41,8 +41,8 @@ core::uint8 gfni_matrix_row(const ReedSolomon16& rs, core::uint32 K, bool high_h
     core::uint8 row = 0;
     for (core::uint32 j = 0; j < 8; ++j) {
         const core::uint32 product = rs.gf_mul(K, 1u << j);
-        const core::uint8 out_byte = static_cast<core::uint8>(
-            high_half ? (product >> 8) & 0xFF : product & 0xFF);
+        const core::uint8 out_byte =
+            static_cast<core::uint8>(high_half ? (product >> 8) & 0xFF : product & 0xFF);
         row |= static_cast<core::uint8>(((out_byte >> i) & 1) << j);
     }
     return row;
@@ -54,9 +54,9 @@ core::uint64 gfni_pack_candidate(const ReedSolomon16& rs, core::uint32 K, bool h
     for (core::uint32 i = 0; i < 8; ++i) {
         core::uint8 row = gfni_matrix_row(rs, K, high_half, i);
         core::uint32 lane_byte = i;
-        if (convention == 2 || convention == 3) lane_byte = 7 - i;   // reversed rows
+        if (convention == 2 || convention == 3) lane_byte = 7 - i; // reversed rows
         core::uint8 value = row;
-        if (convention == 1 || convention == 3) {                    // bit-reversed rows
+        if (convention == 1 || convention == 3) { // bit-reversed rows
             core::uint8 r = 0;
             for (core::uint32 b = 0; b < 8; ++b) {
                 r |= static_cast<core::uint8>(((value >> b) & 1) << (7 - b));
@@ -86,12 +86,12 @@ int gfni_convention() {
         }
         alignas(64) core::byte block[64];
         for (core::uint32 w = 0; w < 32; ++w) {
-            const core::uint16 word = static_cast<core::uint16>((w * 251 + 7) |
-                                                                ((w * 31 + 3) << 8));
+            const core::uint16 word =
+                static_cast<core::uint16>((w * 251 + 7) | ((w * 31 + 3) << 8));
             block[2 * w] = static_cast<core::byte>(word & 0xFF);
             block[2 * w + 1] = static_cast<core::byte>((word >> 8) & 0xFF);
-            const core::uint16 folded = static_cast<core::uint16>(
-                mul_lo[word & 0xFF] ^ mul_hi[(word >> 8) & 0xFF]);
+            const core::uint16 folded =
+                static_cast<core::uint16>(mul_lo[word & 0xFF] ^ mul_hi[(word >> 8) & 0xFF]);
             ref_ecc[2 * w] = static_cast<core::byte>(folded & 0xFF);
             ref_ecc[2 * w + 1] = static_cast<core::byte>((folded >> 8) & 0xFF);
         }
@@ -100,10 +100,10 @@ int gfni_convention() {
             core::uint64 m[4];
             m[0] = gfni_pack_candidate(rs, kCoeff, /*high_half=*/false, candidate);
             m[1] = gfni_pack_candidate(rs, kCoeff, /*high_half=*/true, candidate);
-            m[2] = gfni_pack_candidate(rs, rs.gf_mul(kCoeff, 0x100u), /*high_half=*/false,
-                                       candidate);
-            m[3] = gfni_pack_candidate(rs, rs.gf_mul(kCoeff, 0x100u), /*high_half=*/true,
-                                       candidate);
+            m[2] =
+                gfni_pack_candidate(rs, rs.gf_mul(kCoeff, 0x100u), /*high_half=*/false, candidate);
+            m[3] =
+                gfni_pack_candidate(rs, rs.gf_mul(kCoeff, 0x100u), /*high_half=*/true, candidate);
             alignas(64) core::byte ecc[64] = {};
             rs16_fold_gfni(block, ecc, sizeof(ecc), m);
             if (std::memcmp(ecc, ref_ecc, sizeof(ecc)) == 0) return candidate;
@@ -275,8 +275,7 @@ void ReedSolomon16::invert_decoder_matrix() {
 }
 
 void ReedSolomon16::update_ecc_scalar(core::uint32 data_num, core::uint32 ecc_num,
-                                      const core::byte* data, core::byte* ecc,
-                                      size_t block_size) {
+                                      const core::byte* data, core::byte* ecc, size_t block_size) {
     if (data_num == 0) {
         std::memset(ecc, 0, block_size);
     }
@@ -326,8 +325,8 @@ void ReedSolomon16::update_ecc_scalar(core::uint32 data_num, core::uint32 ecc_nu
     }
 }
 
-void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num,
-                               const core::byte* data, core::byte* ecc, size_t block_size) {
+void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, const core::byte* data,
+                               core::byte* ecc, size_t block_size) {
     if (data_num == 0) {
         std::memset(ecc, 0, block_size);
     }

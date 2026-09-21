@@ -59,34 +59,27 @@ public:
                                     const compress::FilterConfig& filter_cfg = {});
 
     // Volume-aware add ( -v )
-    static bool add_file_to_archive_vol(const std::filesystem::path& arc_path,
-                                        const std::filesystem::path& src_file,
-                                        const std::string& arc_entry_name, int method,
-                                        core::uint64 vol_size, const std::string& password = "",
-                                        bool solid = false, core::uint64 dict_size = 0,
-                                        const compress::FilterConfig& filter_cfg = {},
-                                        bool encrypt_headers = false,
-                                        const std::vector<core::byte>* comment = nullptr,
-                                        bool lock = false);
+    static bool add_file_to_archive_vol(
+        const std::filesystem::path& arc_path, const std::filesystem::path& src_file,
+        const std::string& arc_entry_name, int method, core::uint64 vol_size,
+        const std::string& password = "", bool solid = false, core::uint64 dict_size = 0,
+        const compress::FilterConfig& filter_cfg = {}, bool encrypt_headers = false,
+        const std::vector<core::byte>* comment = nullptr, bool lock = false);
 
     // Move file to archive and delete from disk upon success (command 'm')
     static bool move_file_to_archive(const std::filesystem::path& arc_path,
                                      const std::filesystem::path& src_file,
                                      const std::string& arc_entry_name, int method = 3,
                                      const std::filesystem::path& sfx_stub_path = {},
-                                     const std::string& password = "",
-                                     bool encrypt_headers = false,
+                                     const std::string& password = "", bool encrypt_headers = false,
                                      const compress::FilterConfig& filter_cfg = {});
 
-    static bool move_file_to_archive_vol(const std::filesystem::path& arc_path,
-                                         const std::filesystem::path& src_file,
-                                         const std::string& arc_entry_name, int method,
-                                         core::uint64 vol_size, const std::string& password = "",
-                                         bool solid = false, core::uint64 dict_size = 0,
-                                         const compress::FilterConfig& filter_cfg = {},
-                                         bool encrypt_headers = false,
-                                         const std::vector<core::byte>* comment = nullptr,
-                                         bool lock = false);
+    static bool move_file_to_archive_vol(
+        const std::filesystem::path& arc_path, const std::filesystem::path& src_file,
+        const std::string& arc_entry_name, int method, core::uint64 vol_size,
+        const std::string& password = "", bool solid = false, core::uint64 dict_size = 0,
+        const compress::FilterConfig& filter_cfg = {}, bool encrypt_headers = false,
+        const std::vector<core::byte>* comment = nullptr, bool lock = false);
 
     // Spool guard ensuring temporary spool files are unlinked on any unwound
     // exception, error, or early abort.
@@ -96,7 +89,9 @@ public:
         ~SpoolFileGuard() { cleanup(); }
         SpoolFileGuard(const SpoolFileGuard&) = delete;
         SpoolFileGuard& operator=(const SpoolFileGuard&) = delete;
-        SpoolFileGuard(SpoolFileGuard&& other) noexcept : path_(std::move(other.path_)) { other.path_.clear(); }
+        SpoolFileGuard(SpoolFileGuard&& other) noexcept : path_(std::move(other.path_)) {
+            other.path_.clear();
+        }
         SpoolFileGuard& operator=(SpoolFileGuard&& other) noexcept {
             if (this != &other) {
                 cleanup();
@@ -107,7 +102,10 @@ public:
         }
         void disarm() noexcept { path_.clear(); }
         void commit() noexcept { disarm(); }
-        void reset(std::filesystem::path p) { cleanup(); path_ = std::move(p); }
+        void reset(std::filesystem::path p) {
+            cleanup();
+            path_ = std::move(p);
+        }
         const std::filesystem::path& path() const noexcept { return path_; }
         void cleanup() noexcept {
             if (!path_.empty()) {
@@ -116,6 +114,7 @@ public:
                 path_.clear();
             }
         }
+
     private:
         std::filesystem::path path_;
     };
@@ -128,9 +127,9 @@ public:
     // per-file computation with no shared state.
     struct PreparedAdd {
         format::FileBlock fb;
-        std::vector<core::byte> payload;    // packed (possibly encrypted) data if in memory
-        std::filesystem::path spool_path;   // path to spooled payload on disk if > threshold
-        std::filesystem::path src_path;     // original file, removed for move after success
+        std::vector<core::byte> payload;  // packed (possibly encrypted) data if in memory
+        std::filesystem::path spool_path; // path to spooled payload on disk if > threshold
+        std::filesystem::path src_path;   // original file, removed for move after success
         std::string entry_name;
         bool delete_source{false};
         bool needs_deferred_crc{false};
@@ -162,17 +161,14 @@ public:
     // header's win_size and must match the compressor's dictionary.
     // want_streams / want_acl attach NTFS ADS and Security ACL child records.
     // direct_stream enables zero-spool direct streaming into the archive.
-    static bool prepare_add_file(const std::filesystem::path& src_file,
-                                 const std::string& arc_entry_name, int method,
-                                 const std::string& password, PreparedAdd& out,
-                                 core::uint32 times_mask = time_flags::MTIME,
-                                 core::uint64 dict_size = 0, bool want_streams = false,
-                                 bool want_acl = false, bool is_solid = false,
-                                 bool direct_stream = false,
-                                 const compress::FilterConfig& filter_cfg = {},
-                                 const std::string& default_group = "",
-                                 const std::string& default_user = "",
-                                 unsigned threads = 1);
+    static bool
+    prepare_add_file(const std::filesystem::path& src_file, const std::string& arc_entry_name,
+                     int method, const std::string& password, PreparedAdd& out,
+                     core::uint32 times_mask = time_flags::MTIME, core::uint64 dict_size = 0,
+                     bool want_streams = false, bool want_acl = false, bool is_solid = false,
+                     bool direct_stream = false, const compress::FilterConfig& filter_cfg = {},
+                     const std::string& default_group = "", const std::string& default_user = "",
+                     unsigned threads = 1);
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,
     // no data area) carrying the directory's timestamps. Encryption does not
@@ -189,8 +185,7 @@ public:
                                     const std::string& arc_entry_name, const std::string& target,
                                     bool is_dir_target, PreparedAdd& out,
                                     core::uint32 times_mask = time_flags::MTIME,
-                                    bool want_acl = false,
-                                    const std::string& default_group = "",
+                                    bool want_acl = false, const std::string& default_group = "",
                                     const std::string& default_user = "");
 
     // Stage 1 variant for a hard link: emits a hardlink record (FHEXTRA_REDIR,
@@ -199,8 +194,7 @@ public:
                                      const std::string& arc_entry_name,
                                      const std::string& target_entry_name, PreparedAdd& out,
                                      core::uint32 times_mask = time_flags::MTIME,
-                                     bool want_acl = false,
-                                     const std::string& default_group = "",
+                                     bool want_acl = false, const std::string& default_group = "",
                                      const std::string& default_user = "");
 
     // Query disk file last-modification time as unix epoch seconds.
@@ -220,8 +214,7 @@ public:
                     const std::function<void(size_t, const std::string&)>& on_write = {},
                     bool solid = false, const std::vector<core::byte>& comment = {},
                     bool want_qo = false, bool want_ams = false,
-                    const compress::FilterConfig& filter_cfg = {},
-                    int max_versions = -1);
+                    const compress::FilterConfig& filter_cfg = {}, int max_versions = -1);
 
     // Status-code variant of write_batch_add (open_ex pattern: the bool
     // overload above delegates here and drops the detail). Same atomicity
@@ -231,16 +224,14 @@ public:
     // RAR_ERR_UNSUPPORTED_FEATURE ("cannot replace entry in solid archive
     // without recompressing chain"). Refuses locked and multi-volume
     // archives the same way. detail_out is set for every non-OK return.
-    static int write_batch_add_ex(const std::filesystem::path& arc_path,
-                                  std::vector<PreparedAdd>& files,
-                                  const std::filesystem::path& sfx_stub_path,
-                                  const std::string& password, bool encrypt_headers,
-                                  const std::function<void(size_t, const std::string&)>& on_write,
-                                  bool solid, const std::vector<core::byte>& comment,
-                                  std::string& detail_out, bool want_qo = false,
-                                  bool want_ams = false,
-                                  const compress::FilterConfig& filter_cfg = {},
-                                  int max_versions = -1);
+    static int
+    write_batch_add_ex(const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
+                       const std::filesystem::path& sfx_stub_path, const std::string& password,
+                       bool encrypt_headers,
+                       const std::function<void(size_t, const std::string&)>& on_write, bool solid,
+                       const std::vector<core::byte>& comment, std::string& detail_out,
+                       bool want_qo = false, bool want_ams = false,
+                       const compress::FilterConfig& filter_cfg = {}, int max_versions = -1);
 
     // SFX stub upper bound: the reader locates the signature behind the stub
     // by scanning at most 4 MiB (10-sfx.md:15), so a larger module would

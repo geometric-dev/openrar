@@ -675,9 +675,12 @@ static void test_mutator_plan_single_file_compressed() {
 static void test_mutator_plan_solid_chain_three_files() {
     std::cout << "Starting test_mutator_plan_solid_chain_three_files...\n" << std::flush;
     std::vector<openrar::compress::EntryPlan> reqs(3);
-    reqs[0].method = 3; reqs[0].is_dir = false;
-    reqs[1].method = 0; reqs[1].is_dir = false; // stored
-    reqs[2].method = 3; reqs[2].is_dir = false;
+    reqs[0].method = 3;
+    reqs[0].is_dir = false;
+    reqs[1].method = 0;
+    reqs[1].is_dir = false; // stored
+    reqs[2].method = 3;
+    reqs[2].is_dir = false;
     auto plan = openrar::compress::CompressPlan::plan_entries(reqs, /*solid_mode=*/true);
     assert(plan.entries.size() == 3);
     assert(plan.entries[0].decision == openrar::compress::EntryDecision::BlockStream);
@@ -685,13 +688,14 @@ static void test_mutator_plan_solid_chain_three_files() {
     assert(plan.entries[1].decision == openrar::compress::EntryDecision::Stored);
     assert(!plan.entries[1].is_solid_chain); // stored entry never solid
     assert(plan.entries[2].decision == openrar::compress::EntryDecision::BlockStream);
-    assert(plan.entries[2].is_solid_chain);  // second compressed entry continues chain
+    assert(plan.entries[2].is_solid_chain); // second compressed entry continues chain
     std::cout << "[PASS] MutatorPlan_SolidChain_ThreeFiles\n";
 }
 
 static void test_mutator_plan_output_bit_identical() {
     std::cout << "Starting test_mutator_plan_output_bit_identical...\n" << std::flush;
-    const fs::path fixtures_root = fs::path(OPENRAR_SOURCE_DIR) / "tests" / "fixtures" / "golden" / "writer";
+    const fs::path fixtures_root =
+        fs::path(OPENRAR_SOURCE_DIR) / "tests" / "fixtures" / "golden" / "writer";
     const fs::path golden_solid = fixtures_root / "writer_solid=solid=1=comp=m3.rar";
     const fs::path golden_sha = fixtures_root / "writer_solid=solid=1=comp=m3.rar.sha256";
     if (!fs::exists(golden_solid) || !fs::exists(golden_sha)) {
@@ -704,7 +708,8 @@ static void test_mutator_plan_output_bit_identical() {
     sf >> expected_sha;
 
     std::ifstream gf(golden_solid, std::ios::binary);
-    std::vector<uint8_t> gbytes((std::istreambuf_iterator<char>(gf)), std::istreambuf_iterator<char>());
+    std::vector<uint8_t> gbytes((std::istreambuf_iterator<char>(gf)),
+                                std::istreambuf_iterator<char>());
     uint8_t digest[32];
     openrar::crypto::Sha256::compute(gbytes.data(), gbytes.size(), digest);
     char hex[65];
@@ -904,7 +909,8 @@ static void test_deferred_store_and_adaptive_clamping() {
     {
         ArchiveMutator::PreparedAdd prep;
         bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 3, "", prep,
-                                                   openrar::archive::time_flags::MTIME, 0, false, false, false);
+                                                   openrar::archive::time_flags::MTIME, 0, false,
+                                                   false, false);
         assert(ok);
         assert(prep.fb.win_size == 128 * 1024);
     }
@@ -913,7 +919,8 @@ static void test_deferred_store_and_adaptive_clamping() {
     {
         ArchiveMutator::PreparedAdd prep;
         bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 3, "", prep,
-                                                   openrar::archive::time_flags::MTIME, 2, false, false, false);
+                                                   openrar::archive::time_flags::MTIME, 2, false,
+                                                   false, false);
         assert(ok);
         assert(prep.fb.win_size == 256 * 1024);
     }
@@ -922,7 +929,8 @@ static void test_deferred_store_and_adaptive_clamping() {
     {
         ArchiveMutator::PreparedAdd prep;
         bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 5, "", prep,
-                                                   openrar::archive::time_flags::MTIME, 0, false, false, false);
+                                                   openrar::archive::time_flags::MTIME, 0, false,
+                                                   false, false);
         assert(ok);
         assert(prep.fb.win_size == 128 * 1024);
     }
@@ -931,7 +939,8 @@ static void test_deferred_store_and_adaptive_clamping() {
     {
         ArchiveMutator::PreparedAdd prep;
         bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 3, "", prep,
-                                                   openrar::archive::time_flags::MTIME, 0, false, false, true);
+                                                   openrar::archive::time_flags::MTIME, 0, false,
+                                                   false, true);
         assert(ok);
         assert(prep.fb.win_size == 8 * 1024 * 1024);
     }
@@ -940,7 +949,8 @@ static void test_deferred_store_and_adaptive_clamping() {
     {
         ArchiveMutator::PreparedAdd prep;
         bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 5, "", prep,
-                                                   openrar::archive::time_flags::MTIME, 0, false, false, true);
+                                                   openrar::archive::time_flags::MTIME, 0, false,
+                                                   false, true);
         assert(ok);
         assert(prep.fb.win_size == 64 * 1024 * 1024);
     }
@@ -952,7 +962,8 @@ static void test_deferred_store_and_adaptive_clamping() {
     {
         ArchiveMutator::PreparedAdd prep;
         bool ok = ArchiveMutator::prepare_add_file(f_1m, "f_1m.bin", 5, "", prep,
-                                                   openrar::archive::time_flags::MTIME, 0, false, false, false);
+                                                   openrar::archive::time_flags::MTIME, 0, false,
+                                                   false, false);
         assert(ok);
         assert(prep.fb.win_size == 1024 * 1024);
     }
@@ -1031,14 +1042,14 @@ static void test_off_grid_dict_snap_roundtrip() {
     // the 2 MiB base), and > 16 MiB spool threshold is irrelevant here — this
     // exercises the in-memory path with an explicit off-grid dict_size.
     const std::uint64_t off_grid = 3000000ULL;
-    const std::vector<uint8_t> data = make_pattern(1 << 21, 11);  // 2 MiB payload
+    const std::vector<uint8_t> data = make_pattern(1 << 21, 11); // 2 MiB payload
     const fs::path src = dir / "src.bin";
     write_bytes(src, data);
     const fs::path arc = dir / "offgrid.rar";
 
     ArchiveMutator::PreparedAdd prep;
-    assert(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", prep,
-                                            engine::time_flags::MTIME, off_grid));
+    assert(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", prep, engine::time_flags::MTIME,
+                                            off_grid));
     std::vector<ArchiveMutator::PreparedAdd> batch;
     batch.push_back(std::move(prep));
     assert(ArchiveMutator::write_batch_add(arc, batch, {}, "", false, {}, /*solid=*/false));
@@ -1094,13 +1105,14 @@ static void test_direct_stream_compression_and_backpatch() {
     prep.src_path = f_18m;
     prep.entry_name = "f_18m_compress.bin";
     bool ok = ArchiveMutator::prepare_add_file(f_18m, "f_18m_compress.bin", 3, "", prep,
-                                               openrar::archive::time_flags::MTIME, 0, false, false, false,
+                                               openrar::archive::time_flags::MTIME, 0, false, false,
+                                               false,
                                                /*direct_stream=*/true);
     assert(ok);
     assert(prep.needs_direct_stream);
     assert(prep.spool_path.empty());
     assert(prep.payload.empty());
-    assert(prep.fb.pack_size == 0); // Placeholder
+    assert(prep.fb.pack_size == 0);  // Placeholder
     assert(prep.fb.data_crc32 == 0); // Placeholder
 
     fs::path arc_path = dir / "direct_stream.rar";
@@ -1158,7 +1170,8 @@ static void test_direct_stream_compression_and_backpatch() {
     prep_rand.src_path = f_rand;
     prep_rand.entry_name = "rand_17m.bin";
     ok = ArchiveMutator::prepare_add_file(f_rand, "rand_17m.bin", 1, "", prep_rand,
-                                          openrar::archive::time_flags::MTIME, 0, false, false, false,
+                                          openrar::archive::time_flags::MTIME, 0, false, false,
+                                          false,
                                           /*direct_stream=*/true);
     assert(ok);
     assert(prep_rand.needs_direct_stream);
@@ -1255,8 +1268,7 @@ static fs::path create_ads_archive(const fs::path& dir, const char* name) {
     stm.method = 0;
     stm.win_size = 0;
     stm.unp_ver = 0;
-    write_entry(stm, stm_payload,
-                openrar::format::HFL_CHILD | openrar::format::HFL_INHERITED);
+    write_entry(stm, stm_payload, openrar::format::HFL_CHILD | openrar::format::HFL_INHERITED);
 
     openrar::format::FileBlock keep_fb;
     keep_fb.file_name = "survivor.txt";
@@ -1340,4 +1352,3 @@ int main() {
     std::cout << "ALL MUTATION TESTS PASSED\n";
     return 0;
 }
-
