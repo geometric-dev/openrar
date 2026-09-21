@@ -294,6 +294,10 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_stream_set_cancel(uint32_t handle,
 // ── Resource limits (additive; v1.10.0) ──────────────────────────────────────
 // Configures caller-imposed extraction limits for an open archive handle.
 // Any limit set to UINT64_MAX is considered unlimited.
+// Scope note: the cumulative total-output counter (max_total_bytes) spans the
+// WHOLE handle lifetime and is deliberately never reset — call set_limits
+// again with new thresholds to raise/adjust it, or close and reopen the
+// handle to start a fresh accounting (v1.21.1 documentation).
 // Returns RAR_OK on success, RAR_ERR_INVALID_ARG if handle is invalid,
 // or RAR_ERR_BUSY if an operation is currently executing on the handle.
 OPENRAR_DLL_API int OPENRAR_DLL_CALL

@@ -247,6 +247,47 @@ static void test_small_file_bypass() {
     std::cout << "    - Small file bypass: OK" << std::endl;
 }
 
+// E8-dense PE-like content that triggers the Auto filter heuristic.
+static std::vector<core::byte> generate_e8_dense(size_t size) {
+    std::vector<core::byte> data(size, 0x90);
+    data[0] = 'M';
+    data[1] = 'Z';
+    core::write_le32(data.data() + 0x3C, 64);
+    data[64] = 'P'; data[65] = 'E'; data[66] = 0; data[67] = 0;
+    core::write_le16(data.data() + 68, 0x8664);
+    for (size_t off = 128; off + 5 <= size; off += 5) {
+        data[off] = 0xE8;
+        core::int32 rel = static_cast<core::int32>((off * 7919) % 0x01000000u);
+        core::write_le32(data.data() + off + 1, static_cast<core::uint32>(rel));
+    }
+    return data;
+}
+
+// Filter parity (v1.21.1): for content whose detection triggers a filter, the
+// chunked pipeline must fall back to the sequential path so the filter is
+// honored — and the output must be byte-identical to a plain compress_buffer
+// call. Without this, -mt1 and -mt4 produced different archives for the same
+// input (and -mc was silently dropped under -mt>1).
+static void test_parallel_filter_parity() {
+    std::cout << "[+] test_parallel_filter_parity: filter-triggering content matches sequential output" << std::endl;
+    auto data = generate_e8_dense(6 * 1024 * 1024);
+
+    std::vector<core::byte> sequential;
+    assert(Compressor50::compress_buffer(data.data(), data.size(), sequential, 3, 4 * 1024 * 1024));
+
+    for (unsigned threads : {2u, 4u, 8u}) {
+        std::vector<core::byte> parallel;
+        assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), parallel, 3,
+                                                      4 * 1024 * 1024, {}, threads));
+        assert(parallel == sequential &&
+               "parallel output diverged from sequential for filter-triggering content");
+        std::vector<core::byte> decompressed;
+        assert(decompress_buffer(parallel, data.size(), 4 * 1024 * 1024, decompressed));
+        assert(decompressed == data && "Content mismatch");
+    }
+    std::cout << "    - Filter parity across -mt2/-mt4/-mt8: OK" << std::endl;
+}
+
 int main() {
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -260,6 +301,7 @@ int main() {
     test_parallel_pipeline_streaming();
     test_parallel_pipeline_cancellation();
     test_small_file_bypass();
+    test_parallel_filter_parity();
     std::cout << "All Parallel Compression Tests PASSED!" << std::endl;
     return 0;
 }

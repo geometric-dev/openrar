@@ -91,6 +91,53 @@ if (!existsSync(distJs)) {
     assert.equal(entries[0].path, 'ok.txt');
   });
 
+  test('createArchive with onProgress fires the C-ABI callback and keeps the heap healthy (hooks conformance)', async () => {
+    // v1.21.1 regression pair: (a) the hooks pointer was freed twice on every
+    // hooks-using createArchive call (freelist corruption), and (b) the
+    // progress function pointer was registered with the wrong wasm signature
+    // ('vijj' instead of 'vjji'), trapping the module on the first callback.
+    // The existing double-free regression above passed hooksPtr=0 and never
+    // exercised this path. This test drives the REAL C ABI.
+    let calls = 0;
+    let lastDone = -1;
+    let lastTotal = -1;
+    const rar = await createArchive(
+      [{ path: 'hook.txt', data: new TextEncoder().encode('hooks conformance payload') }],
+      {
+        onProgress: (done, total) => {
+          calls++;
+          lastDone = done;
+          lastTotal = total;
+        },
+      },
+    );
+    assert.ok(calls >= 1, 'progress callback never fired');
+    assert.ok(lastDone >= 0 && lastTotal >= 0, 'progress reported non-negative counts');
+    const entries = await listArchive(rar);
+    assert.equal(entries.length, 1);
+    // The module must still work after the hooks-using call: a heap corruption
+    // or a trapped callback would fail the calls above or break this one.
+    const out = await extractFile(rar, 'hook.txt');
+    assert.equal(new TextDecoder().decode(out), 'hooks conformance payload');
+  });
+
+  test('createArchive with an AbortSignal wires cancellation through the C ABI', async () => {
+    // Healthy signal: the operation completes.
+    const healthy = new AbortController();
+    const rar = await createArchive(
+      [{ path: 'sig.txt', data: new TextEncoder().encode('signal payload') }],
+      { signal: healthy.signal },
+    );
+    assert.equal((await listArchive(rar)).length, 1);
+    // Pre-aborted signal: rejected with ABORTED before any work.
+    const aborted = new AbortController();
+    aborted.abort();
+    await assert.rejects(
+      createArchive([{ path: 'x.txt', data: new Uint8Array([1]) }], { signal: aborted.signal }),
+      (e) => e.code === 'ABORTED',
+    );
+  });
+
   test('createArchive + extractAll round-trips repetitive single-byte payloads', async () => {
     const rar = await createArchive([
       { path: 'rep8k.bin', data: new Uint8Array(8192).fill(0x41) },
