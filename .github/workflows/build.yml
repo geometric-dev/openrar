@@ -275,6 +275,67 @@ jobs:
         # and structural asserts run everywhere.
         run: node tools/run-tests.cjs
 
+  simd-validation:
+    name: SIMD kernels (native + Intel SDE: AVX-512, GFNI)
+    # The AVX-512 match kernel and GFNI RS16 fold kernel dispatch only where
+    # the CPU reports the feature. GitHub runners cannot be assumed to have
+    # either, so the kernels are validated under Intel SDE (Software
+    # Development Emulator), which advertises the ISA to the process and
+    # executes the instructions regardless of host silicon. The activation
+    # greps below make the gate loud: if SDE did not advertise the ISA, or
+    # the dispatcher/probe fell back to scalar, this job FAILS rather than
+    # passing vacuously.
+    runs-on: ubuntu-latest
+    env:
+      SDE_VERSION: "10.13.1"
+      SDE_BUILD: "2026-07-28"
+      SDE_ID: "924984"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DOPENRAR_INMEM_ARCHIVE=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Native kernel gates (whatever this CPU supports)
+        run: |
+          ./build/recovery_tests
+          ./build/compress_tests
+
+      - name: Download Intel SDE (pinned version)
+        run: |
+          curl -fsSLO "https://downloadmirror.intel.com/${SDE_ID}/sde-external-${SDE_VERSION}-${SDE_BUILD}-lin.tar.xz"
+          tar -xJf "sde-external-${SDE_VERSION}-${SDE_BUILD}-lin.tar.xz"
+          SDE_DIR=$(find . -maxdepth 1 -type d -name 'sde-external-*' | head -1)
+          test -x "${SDE_DIR}/sde64"
+          echo "SDE_EXE=${SDE_DIR}/sde64" >> "$GITHUB_ENV"
+
+      - name: GFNI RS16 fold kernel under SDE (must ACTIVATE and match scalar)
+        run: |
+          "${SDE_EXE}" -gfni -avx512f -avx512bw -avx512vl -- ./build/recovery_tests | tee sde_recovery.log
+          grep -q "GFNI KERNEL ACTIVE" sde_recovery.log \
+            || { echo "FAIL: GFNI kernel did not activate under SDE (probe fell back to scalar)"; exit 1; }
+
+      - name: AVX-512 match kernel under SDE (must ACTIVATE and match scalar)
+        run: |
+          "${SDE_EXE}" -gfni -avx512f -avx512bw -avx512vl -- ./build/compress_tests | tee sde_compress.log
+          grep -q "avx512" sde_compress.log \
+            || { echo "FAIL: AVX-512 match path absent under SDE"; exit 1; }
+
+      - name: Interop quick gate under SDE (end-to-end .rev parity through the GFNI kernel)
+        run: |
+          "${SDE_EXE}" -gfni -avx512f -avx512bw -avx512vl -- python3 tools/interop_gate.py --quick
+
   wasm:
     name: WASM (Emscripten) — block codec + archive API
     runs-on: ubuntu-latest
