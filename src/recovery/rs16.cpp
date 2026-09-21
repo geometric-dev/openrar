@@ -36,134 +36,178 @@ namespace {
 // never wrong parity.
 
 // ── GFNI calibration (v1.22.0) ───────────────────────────────────────────────
+// The _mm512_gf2p8affine_epi64_epi8 instruction applies a per-byte 8x8 GF(2)
+// bit-matrix encoded in the 64-bit lane of the second operand. Rather than
+// trusting any spec reading of HOW the 64 qword bits map to the 64 matrix
+// entries, the calibration MEASURES it: each one-hot qword (single set bit)
+// folded against each one-hot input byte reveals exactly one matrix entry
+// (the output row that fires for the input column). 64 qword bits x 8 input
+// columns must cover every (row, column) entry exactly once; the composite
+// fold is then re-verified against the scalar table reference before the
+// kernel is allowed to dispatch. Fail safe end to end: any inconsistency =
+// scalar path.
+
 struct GfniCalib {
     bool valid{false};
     bool composite_ok{false};
-    int slot[8];  // slot[i] = qword byte index that transforms input bit i
-    bool flip[8]; // flip[i] = output bits arrive bit-reversed for input bit i
+    int qbit_of[8][8]; // qbit_of[row][col] = qword bit index for that entry
 };
 
 core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 K, bool high_half,
                                   const GfniCalib& cal);
 
-// Encode the byte map T(b) = one half of K*b as a qword under the measured
-// convention: input bit i's contribution (the output byte T(2^i)) is placed
-// in qword byte slot[i], bit-reversed when the calibration said so.
-core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 K, bool high_half,
-                                  const GfniCalib& cal) {
-    core::uint64 q = 0;
-    for (int i = 0; i < 8; ++i) {
-        const core::uint32 product = rs.gf_mul(K, 1u << i);
-        core::uint8 out_b =
-            static_cast<core::uint8>(high_half ? (product >> 8) & 0xFF : product & 0xFF);
-        if (cal.flip[i]) {
-            core::uint8 r = 0;
-            for (int b = 0; b < 8; ++b) {
-                r |= static_cast<core::uint8>(((out_b >> b) & 1) << (7 - b));
-            }
-            out_b = r;
-        }
-        q |= static_cast<core::uint64>(out_b) << (8 * cal.slot[i]);
-    }
-    return q;
-}
-
-// The _mm512_gf2p8affine_epi64_epi8 instruction applies a per-byte 8x8 GF(2)
-// bit-matrix taken from the 8 bytes of a 64-bit lane. Rather than trusting a
-// spec reading of the byte/bit ordering, the calibration MEASURES the
-// mapping on the executing machine: one-hot qwords (single set bit in one
-// byte slot) folded against one-hot input bytes reveal, for every input bit
-// i, which qword byte slot transforms it (slot[i]) and whether the output
-// bits come back reversed (flip[i]). The measured mapping must be a
-// bijection over the byte slots; the composite fold is then re-verified
-// against the scalar table reference before the kernel is allowed to
-// dispatch. Fail safe end to end: any inconsistency = scalar path.
-
 const GfniCalib& gfni_calib() {
     static const GfniCalib cached = [] {
         GfniCalib c{};
         if (!core::get_cpu_features().gfni) return c;
-        for (int i = 0; i < 8; ++i) {
-            c.slot[i] = -1;
-            c.flip[i] = false;
+        for (int r = 0; r < 8; ++r) {
+            for (int col = 0; col < 8; ++col) c.qbit_of[r][col] = -1;
         }
         ReedSolomon16 rs; // GF tables only; matrix state is irrelevant here
 
-        const bool diag = std::getenv("OPENRAR_GFNI_DIAG") != nullptr;
-        for (int s = 0; s < 8; ++s) {
-            for (int b = 0; b < 8; ++b) {
-                const core::uint64 q = static_cast<core::uint64>(1u << b) << (8 * s);
-                const core::uint64 m[4] = {q, q, q, q};
-                for (int i = 0; i < 8; ++i) {
-                    alignas(64) core::byte data[64] = {};
-                    alignas(64) core::byte ecc[64] = {};
-                    data[0] = static_cast<core::byte>(1u << i); // lo byte of word 0
-                    rs16_fold_gfni(data, ecc, sizeof(data), m);
-                    if (diag) {
-                        std::cout << "[gfni-diag] qbyte=" << s << " qbit=" << b
-                                  << " in_bit=" << i << " ecc0=0x" << std::hex
-                                  << static_cast<unsigned>(ecc[0]) << std::dec
-                                  << " ecc1=0x" << std::hex << static_cast<unsigned>(ecc[1])
-                                  << std::dec << "\n";
+        bool consistent = true;
+        for (int p = 0; p < 64 && consistent; ++p) {
+            const core::uint64 q = 1ULL << p;
+            const core::uint64 m[4] = {q, q, q, q};
+            for (int k = 0; k < 8 && consistent; ++k) {
+                alignas(64) core::byte data[64] = {};
+                alignas(64) core::byte ecc[64] = {};
+                data[0] = static_cast<core::byte>(1u << k); // lo byte of word 0
+                rs16_fold_gfni(data, ecc, sizeof(data), m);
+                if (std::getenv("OPENRAR_GFNI_DIAG") != nullptr) {
+                    std::cout << "[gfni-diag] qbit=" << p << " in_bit=" << k << " ecc0=0x"
+                              << std::hex << static_cast<unsigned>(ecc[0]) << std::dec << " ecc1=0x"
+                              << std::hex << static_cast<unsigned>(ecc[1]) << std::dec << "\n";
+                }
+                // hi byte of word 0 is zero and the transform is purely
+                // linear, so ecc[0] == ecc[1] == the matrix column product.
+                if (ecc[0] != ecc[1]) {
+                    if (std::getenv("OPENRAR_GFNI_DIAG") != nullptr) {
+                        std::cout << "[gfni-diag] INCONSISTENT at qbit=" << p << "\n";
                     }
-                    // hi byte of word 0 is zero -> aff(0, q) = 0 (pure linear),
-                    // so ecc[0] == ecc[1] == the transform of the single bit.
-                    if (ecc[0] == 0 && ecc[1] == 0) continue;
-                    if (ecc[0] != ecc[1]) return c; // inconsistent primitive
-                    const int found_slot = s;
-                    const bool found_flip = (ecc[0] != (1u << b));
-                    if (ecc[0] != (1u << b) && ecc[0] != (1u << (7 - b))) return c;
-                    if (c.slot[i] >= 0) {
-                        // Repeat observation must agree.
-                        if (c.slot[i] != found_slot || c.flip[i] != found_flip) return c;
-                    } else {
-                        c.slot[i] = found_slot;
-                        c.flip[i] = found_flip;
+                    consistent = false;
+                    break;
+                }
+                if (ecc[0] == 0) continue; // this qbit does not touch column k
+                // Exactly one output bit must fire: the entry's row.
+                int row = -1;
+                int ones = 0;
+                for (int b = 0; b < 8; ++b) {
+                    if (ecc[0] & (1u << b)) {
+                        row = b;
+                        ones++;
                     }
+                }
+                if (ones != 1 || c.qbit_of[row][k] >= 0) {
+                    consistent = false;
+                    break;
+                }
+                c.qbit_of[row][k] = p;
+            }
+        }
+        if (consistent) {
+            for (int r = 0; r < 8 && consistent; ++r) {
+                for (int col = 0; col < 8 && consistent; ++col) {
+                    if (c.qbit_of[r][col] < 0) consistent = false; // incomplete
                 }
             }
         }
+        if (std::getenv("OPENRAR_GFNI_DIAG") != nullptr) {
+            std::cout << "[gfni-diag] consistent=" << consistent << "\n";
+        }
+        c.valid = consistent;
 
-        // Every input bit must map to exactly one slot; slots a bijection.
-        bool seen[8] = {};
-        for (int i = 0; i < 8; ++i) {
-            if (c.slot[i] < 0 || c.slot[i] > 7 || seen[c.slot[i]]) return c;
-            seen[c.slot[i]] = true;
-        }
-        c.valid = true;
+        if (c.valid) {
+            // Composite check: full 64-byte fold through the measured encoding
+            // vs the scalar table reference, for a non-trivial coefficient.
+            constexpr core::uint32 kCoeff = 0x1234;
+            alignas(64) core::byte ref_ecc[64] = {};
+            core::uint16 mul_lo[256], mul_hi[256];
+            for (core::uint32 b = 0; b < 256; ++b) {
+                mul_lo[b] = static_cast<core::uint16>(rs.gf_mul(kCoeff, b));
+                mul_hi[b] = static_cast<core::uint16>(rs.gf_mul(kCoeff, b << 8));
+            }
+            alignas(64) core::byte block[64];
+            for (core::uint32 w = 0; w < 32; ++w) {
+                const core::uint16 word =
+                    static_cast<core::uint16>((w * 251 + 7) | ((w * 31 + 3) << 8));
+                block[2 * w] = static_cast<core::byte>(word & 0xFF);
+                block[2 * w + 1] = static_cast<core::byte>((word >> 8) & 0xFF);
+                const core::uint16 folded =
+                    static_cast<core::uint16>(mul_lo[word & 0xFF] ^ mul_hi[(word >> 8) & 0xFF]);
+                ref_ecc[2 * w] = static_cast<core::byte>(folded & 0xFF);
+                ref_ecc[2 * w + 1] = static_cast<core::byte>((folded >> 8) & 0xFF);
+            }
+            const core::uint32 K1 = rs.gf_mul(kCoeff, 0x100u);
+            core::uint64 m[4];
+            m[0] = gfni_encode_byte_map(rs, kCoeff, false, c);
+            m[1] = gfni_encode_byte_map(rs, kCoeff, true, c);
+            m[2] = gfni_encode_byte_map(rs, K1, false, c);
+            m[3] = gfni_encode_byte_map(rs, K1, true, c);
 
-        // Composite check: full 64-byte fold through the calibrated encoding
-        // vs the scalar table reference, for a non-trivial coefficient.
-        constexpr core::uint32 kCoeff = 0x1234;
-        alignas(64) core::byte ref_ecc[64] = {};
-        core::uint16 mul_lo[256], mul_hi[256];
-        for (core::uint32 b = 0; b < 256; ++b) {
-            mul_lo[b] = static_cast<core::uint16>(rs.gf_mul(kCoeff, b));
-            mul_hi[b] = static_cast<core::uint16>(rs.gf_mul(kCoeff, b << 8));
+            // Split composites: isolate the lo-byte path (m0/m1) from the
+            // hi-byte path (m2/m3 + odd de-interleave), so a calibration
+            // that validates one half but not the other is diagnosable.
+            const bool diag = std::getenv("OPENRAR_GFNI_DIAG") != nullptr;
+            for (int variant = 0; variant < 3 && c.valid; ++variant) {
+                alignas(64) core::byte blk[64] = {};
+                for (core::uint32 w = 0; w < 32; ++w) {
+                    const core::uint16 word =
+                        static_cast<core::uint16>((w * 251 + 7) | ((w * 31 + 3) << 8));
+                    if (variant == 0) { // full
+                        blk[2 * w] = static_cast<core::byte>(word & 0xFF);
+                        blk[2 * w + 1] = static_cast<core::byte>((word >> 8) & 0xFF);
+                    } else if (variant == 1) { // lo bytes only (hi = 0)
+                        blk[2 * w] = static_cast<core::byte>(word & 0xFF);
+                    } else { // hi bytes only (lo = 0)
+                        blk[2 * w + 1] = static_cast<core::byte>((word >> 8) & 0xFF);
+                    }
+                }
+                alignas(64) core::byte ecc[64] = {};
+                rs16_fold_gfni(blk, ecc, sizeof(ecc), m);
+                const bool ok = std::memcmp(ecc, ref_ecc, sizeof(ecc)) == 0;
+                if (diag) {
+                    std::cout << "[gfni-diag] composite variant=" << variant
+                              << (variant == 0   ? " (full)"
+                                  : variant == 1 ? " (lo-only)"
+                                                 : " (hi-only)")
+                              << " ok=" << ok << "\n";
+                    for (int w = 0; w < 4; ++w) {
+                        std::cout << "[gfni-diag]   w" << w << " ref=0x" << std::hex
+                                  << static_cast<unsigned>(ref_ecc[2 * w]) << std::hex
+                                  << static_cast<unsigned>(ref_ecc[2 * w + 1]) << std::dec
+                                  << " got=0x" << std::hex << static_cast<unsigned>(ecc[2 * w])
+                                  << std::hex << static_cast<unsigned>(ecc[2 * w + 1]) << std::dec
+                                  << " in=0x" << std::hex << static_cast<unsigned>(blk[2 * w])
+                                  << std::hex << static_cast<unsigned>(blk[2 * w + 1]) << std::dec
+                                  << "\n";
+                    }
+                }
+                if (variant == 0) c.composite_ok = ok;
+            }
         }
-        alignas(64) core::byte block[64];
-        for (core::uint32 w = 0; w < 32; ++w) {
-            const core::uint16 word =
-                static_cast<core::uint16>((w * 251 + 7) | ((w * 31 + 3) << 8));
-            block[2 * w] = static_cast<core::byte>(word & 0xFF);
-            block[2 * w + 1] = static_cast<core::byte>((word >> 8) & 0xFF);
-            const core::uint16 folded =
-                static_cast<core::uint16>(mul_lo[word & 0xFF] ^ mul_hi[(word >> 8) & 0xFF]);
-            ref_ecc[2 * w] = static_cast<core::byte>(folded & 0xFF);
-            ref_ecc[2 * w + 1] = static_cast<core::byte>((folded >> 8) & 0xFF);
-        }
-        const core::uint32 K1 = rs.gf_mul(kCoeff, 0x100u);
-        core::uint64 m[4];
-        m[0] = gfni_encode_byte_map(rs, kCoeff, false, c);
-        m[1] = gfni_encode_byte_map(rs, kCoeff, true, c);
-        m[2] = gfni_encode_byte_map(rs, K1, false, c);
-        m[3] = gfni_encode_byte_map(rs, K1, true, c);
-        alignas(64) core::byte ecc[64] = {};
-        rs16_fold_gfni(block, ecc, sizeof(ecc), m);
-        c.composite_ok = std::memcmp(ecc, ref_ecc, sizeof(ecc)) == 0;
         return c;
     }();
     return cached;
+}
+
+// Encode the byte map T(b) = one half of K*b as a qword under the measured
+// convention: matrix entry (row, col) — dst_bit(row) = src_bit(col) AND
+// entry — is placed at the calibrated qword bit for T's bit pattern.
+core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 K, bool high_half,
+                                  const GfniCalib& cal) {
+    core::uint64 q = 0;
+    for (int k = 0; k < 8; ++k) {
+        const core::uint32 product = rs.gf_mul(K, 1u << k);
+        const core::uint8 out_b =
+            static_cast<core::uint8>(high_half ? (product >> 8) & 0xFF : product & 0xFF);
+        for (int r = 0; r < 8; ++r) {
+            if (out_b & (1u << r)) {
+                q |= 1ULL << cal.qbit_of[r][k];
+            }
+        }
+    }
+    return q;
 }
 
 #endif // OPENRAR_HAS_GFNI_KERNEL
