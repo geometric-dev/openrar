@@ -320,6 +320,10 @@ jobs:
           test -x "${SDE_DIR}/sde64"
           echo "SDE_EXE=${SDE_DIR}/sde64" >> "$GITHUB_ENV"
 
+      - name: Diagnostic — CPU features as seen under SDE
+        run: |
+          "${SDE_EXE}" -future -- ./build/compress_tests | head -4
+
       - name: GFNI RS16 fold kernel under SDE (must ACTIVATE and match scalar)
         run: |
           "${SDE_EXE}" -future -- ./build/recovery_tests | tee sde_recovery.log

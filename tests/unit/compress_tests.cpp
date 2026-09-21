@@ -667,6 +667,8 @@ void test_cpu_features() {
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     if (cpu.sse2) std::cout << " SSE2";
     if (cpu.avx2) std::cout << " AVX2";
+    if (cpu.avx512f) std::cout << " AVX512F";
+    if (cpu.gfni) std::cout << " GFNI";
     if (cpu.aes_ni) std::cout << " AES-NI";
     if (cpu.pclmulqdq) std::cout << " PCLMUL";
     if (cpu.sha_ni) std::cout << " SHA-NI";
