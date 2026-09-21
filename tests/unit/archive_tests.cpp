@@ -1157,9 +1157,31 @@ void test_decompressor_bad_alloc_returns_nomem() {
     assert(reader.open_ex(arc, "", status, detail));
     assert(reader.entries().size() == 1);
 
+    // Environment probe (v1.22.0 CI fix): this test observes the
+    // bad_alloc -> RAR_ERR_NOMEM mapping, which only exists where the host
+    // REFUSES a 64 GiB window. Lazily-committing allocators (macOS) answer
+    // the allocation with lazily-backed zero pages — there is nothing to
+    // observe, and insisting would assert or get the process jetsammed.
+    bool alloc_refuses = false;
+    {
+        try {
+            std::vector<core::byte> probe;
+            probe.assign(64ULL * 1024 * 1024 * 1024, core::byte(0));
+        } catch (const std::bad_alloc&) {
+            alloc_refuses = true;
+        } catch (...) {
+            alloc_refuses = true;
+        }
+    }
     ReaderHooks hooks;
 #if !defined(__EMSCRIPTEN__) && !defined(__wasm__) && !defined(_M_IX86) && !defined(__i386__)
-    // On 64-bit platforms: window is <= 64 GiB ALLOC_LIMIT, so window allocation throws bad_alloc -> RAR_ERR_NOMEM
+    if (!alloc_refuses) {
+        std::cout << "[SKIP] decompressor bad_alloc -> RAR_ERR_NOMEM"
+                     " (host materializes 64 GiB windows)\n";
+        fs::remove_all(dir, ec);
+        return;
+    }
+    // On 64-bit platforms where the allocation refuses: bad_alloc -> RAR_ERR_NOMEM
     int rc = reader.test_entry_stream(0, hooks);
     assert(rc == RAR_ERR_NOMEM);
 #else

@@ -196,6 +196,11 @@ private:
 class ThreadPool {
 public:
     explicit ThreadPool(unsigned thread_count) { (void)thread_count; }
+    // Inline execution preserves the caller-visible contract (the job runs
+    // before submit returns); parallel-compression callers (which rely on
+    // the pool for overlap) never run in this configuration anyway since
+    // hardware_thread_hint() pins threads to 1 (v1.21.2 wasm build fix).
+    void submit(std::function<void()> job) { job(); }
     unsigned worker_count() const { return 1; }
 };
 
@@ -210,7 +215,7 @@ public:
     void release(uint64) {}
 };
 
-#endif // OPENRAR_NO_THREADS
+#endif // OPENRAR_NO_THREADS (threaded / inline-degraded implementations)
 
 } // namespace openrar::core
 

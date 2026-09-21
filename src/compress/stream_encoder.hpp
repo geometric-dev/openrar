@@ -77,8 +77,8 @@ private:
     int method_;
     size_t win_size_;
     FilterConfig filter_cfg_{};
-    std::vector<core::byte> output_;    // accumulated output when no flush sink
-    std::vector<core::byte> scratch_;   // per-feed block bytes from the packer
+    std::vector<core::byte> output_;  // accumulated output when no flush sink
+    std::vector<core::byte> scratch_; // per-feed block bytes from the packer
     Compressor50 packer_;
     bool started_{false}; // packer session open (methods 1..5)
     bool finished_{false};

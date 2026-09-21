@@ -963,9 +963,12 @@ void Compressor50::add_filter(const FilterToken& ft) {
 
 void Compressor50::emit_filter_data(BitOutput& out, core::uint32 val) {
     core::uint32 byte_cnt = 1;
-    if (val > 0xFFFFFF) byte_cnt = 4;
-    else if (val > 0xFFFF) byte_cnt = 3;
-    else if (val > 0xFF) byte_cnt = 2;
+    if (val > 0xFFFFFF)
+        byte_cnt = 4;
+    else if (val > 0xFFFF)
+        byte_cnt = 3;
+    else if (val > 0xFF)
+        byte_cnt = 2;
 
     out.put_bits(byte_cnt - 1, 2);
     for (core::uint32 i = 0; i < byte_cnt; ++i) {
@@ -1165,22 +1168,26 @@ int Compressor50::process_available(bool final) {
             if (chunk_len > 0) {
                 if (!external_buf_ && filter_emitted_until_ >= pos_base_) {
                     size_t buf_off = static_cast<size_t>(filter_emitted_until_ - pos_base_);
-                    size_t avail_in_buf = (src_loaded_ > filter_emitted_until_)
-                                              ? static_cast<size_t>(src_loaded_ - filter_emitted_until_)
-                                              : 0;
+                    size_t avail_in_buf =
+                        (src_loaded_ > filter_emitted_until_)
+                            ? static_cast<size_t>(src_loaded_ - filter_emitted_until_)
+                            : 0;
                     size_t trans_len = std::min<size_t>(chunk_len, avail_in_buf);
                     if (trans_len > 0) {
                         core::uint64 file_rel_offset = filter_emitted_until_ - file_start_pos_;
                         if (active_filter_ == FilterType::E8) {
-                            Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset, false);
+                            Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset,
+                                                 false);
                         } else if (active_filter_ == FilterType::E8E9) {
-                            Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset, true);
+                            Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset,
+                                                 true);
                         } else if (active_filter_ == FilterType::Arm) {
-                            Filters50::encode_arm(buf_.data() + buf_off, trans_len, file_rel_offset);
+                            Filters50::encode_arm(buf_.data() + buf_off, trans_len,
+                                                  file_rel_offset);
                         } else if (active_filter_ == FilterType::Delta) {
                             std::vector<core::byte> tmp(trans_len);
                             Filters50::encode_delta(buf_.data() + buf_off, tmp.data(), trans_len,
-                                                   filter_channels_);
+                                                    filter_channels_);
                             std::memcpy(buf_.data() + buf_off, tmp.data(), trans_len);
                         }
                     }
@@ -1459,7 +1466,7 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
         } else if (detected_filter == FilterType::Delta) {
             std::vector<core::byte> tmp(chunk_len);
             Filters50::encode_delta(filtered.data() + chunk_start, tmp.data(), chunk_len,
-                                   detected_channels);
+                                    detected_channels);
             std::memcpy(filtered.data() + chunk_start, tmp.data(), chunk_len);
         }
         chunk_start += chunk_len;
@@ -1495,10 +1502,9 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
 }
 
 bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_size,
-                                             std::vector<core::byte>& dest, int method,
-                                             size_t win_size,
-                                             const FilterConfig& filter_cfg,
-                                             unsigned threads) {
+                                            std::vector<core::byte>& dest, int method,
+                                            size_t win_size, const FilterConfig& filter_cfg,
+                                            unsigned threads) {
     if (src_size == 0) {
         dest.clear();
         return true;
@@ -1529,8 +1535,8 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
         }
     }
 
-    size_t chunk_size = std::max<size_t>(1024 * 1024,
-        std::min<size_t>(4 * 1024 * 1024, (src_size + eff_threads - 1) / eff_threads));
+    size_t chunk_size = std::max<size_t>(
+        1024 * 1024, std::min<size_t>(4 * 1024 * 1024, (src_size + eff_threads - 1) / eff_threads));
     size_t num_chunks = (src_size + chunk_size - 1) / chunk_size;
     if (num_chunks <= 1) {
         return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);

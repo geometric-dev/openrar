@@ -520,7 +520,8 @@ static void test_cli_v1_10_features() {
     }
 
     fs::path arc1 = temp_dir / "test_list.rar";
-    std::string cmd = get_cli_path() + " a -q " + arc1.string() + " @" + listfile.string() + " > " DEVNULL " 2>&1";
+    std::string cmd = get_cli_path() + " a -q " + arc1.string() + " @" + listfile.string() +
+                      " > " DEVNULL " 2>&1";
     int rc = std::system(cmd.c_str());
     assert(rc == 0);
     assert(fs::exists(arc1));
@@ -543,8 +544,8 @@ static void test_cli_v1_10_features() {
 
     // 2. Test -x<pattern> exclusion
     fs::path arc2 = temp_dir / "test_x.rar";
-    cmd = get_cli_path() + " a -q -x*.log " + arc2.string() + " " +
-          f_a.string() + " " + f_b.string() + " " + f_c.string() + " > " DEVNULL " 2>&1";
+    cmd = get_cli_path() + " a -q -x*.log " + arc2.string() + " " + f_a.string() + " " +
+          f_b.string() + " " + f_c.string() + " > " DEVNULL " 2>&1";
     rc = std::system(cmd.c_str());
     assert(rc == 0);
 
@@ -624,7 +625,8 @@ void test_cli_dict_size_flag() {
 
     std::string exe = get_cli_path();
 
-    auto find_file = [](const openrar::archive::ArchiveReader& r) -> const openrar::archive::ArchiveEntry* {
+    auto find_file =
+        [](const openrar::archive::ArchiveReader& r) -> const openrar::archive::ArchiveEntry* {
         for (const auto& e : r.entries()) {
             if (!e.header.is_service) return &e;
         }
@@ -633,7 +635,8 @@ void test_cli_dict_size_flag() {
 
     // 1. Valid -md16m with -m3
     fs::path arc_16m = temp_dir / "test_16m.rar";
-    std::string cmd = exe + " a -q -m3 -md16m " + arc_16m.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    std::string cmd = exe + " a -q -m3 -md16m " + arc_16m.string() + " " + src_file.string() +
+                      " > " DEVNULL " 2>&1";
     int res = std::system(cmd.c_str());
     assert(res == 0);
     {
@@ -646,7 +649,8 @@ void test_cli_dict_size_flag() {
 
     // 2. Valid -md64m with -m5
     fs::path arc_64m = temp_dir / "test_64m.rar";
-    cmd = exe + " a -q -m5 -md64m " + arc_64m.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    cmd = exe + " a -q -m5 -md64m " + arc_64m.string() + " " + src_file.string() +
+          " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
     assert(res == 0);
     {
@@ -659,7 +663,8 @@ void test_cli_dict_size_flag() {
 
     // 3. Non-power-of-two -md10m is now valid with RAR 7.0 dictionary sizing
     fs::path arc_npot = temp_dir / "npot.rar";
-    cmd = exe + " a -q -md10m " + arc_npot.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    cmd =
+        exe + " a -q -md10m " + arc_npot.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
     assert(res == 0);
     {
@@ -672,13 +677,15 @@ void test_cli_dict_size_flag() {
 
     // 3b. Invalid -md invalid syntax (e.g. -mdxyz) -> fail
     fs::path arc_bad1 = temp_dir / "bad1.rar";
-    cmd = exe + " a -q -mdxyz " + arc_bad1.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    cmd =
+        exe + " a -q -mdxyz " + arc_bad1.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
     assert(res != 0);
 
     // 4. Invalid -md out of range (< 128k, e.g. -md64k) -> fail
     fs::path arc_bad2 = temp_dir / "bad2.rar";
-    cmd = exe + " a -q -md64k " + arc_bad2.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
+    cmd =
+        exe + " a -q -md64k " + arc_bad2.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
     assert(res != 0);
 
@@ -710,4 +717,3 @@ int main() {
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
 }
-

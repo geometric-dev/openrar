@@ -177,10 +177,8 @@ static void test_cpp_wrapper_create() {
     }
 
     auto out_rar = temp_dir / "cpp_created.rar";
-    std::vector<std::pair<std::filesystem::path, std::string>> entries = {
-        {src1, "cpp_f1.txt"},
-        {src2, "sub/cpp_f2.txt"}
-    };
+    std::vector<std::pair<std::filesystem::path, std::string>> entries = {{src1, "cpp_f1.txt"},
+                                                                          {src2, "sub/cpp_f2.txt"}};
 
     openrar::Archive::create(out_rar, entries, 3, 0);
     assert(std::filesystem::exists(out_rar));

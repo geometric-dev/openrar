@@ -622,8 +622,8 @@ int openrar_archive_handle_extract_all2(uint32_t handle, const ArchiveHooks* hoo
         int rc = h->ba.extract_all(
             h->data.data(), h->data.size(), files, hooks ? hooks->progress : nullptr,
             hooks ? hooks->progress_user : nullptr, hooks ? hooks->cancel : nullptr,
-            hooks ? hooks->cancel_user : nullptr,
-            h->has_limits ? &h->limits : nullptr, &h->limit_state);
+            hooks ? hooks->cancel_user : nullptr, h->has_limits ? &h->limits : nullptr,
+            &h->limit_state);
         if (rc != RAR_OK) return fail_code(rc);
         return pack_extract_all(files, buf_out_ptr, buf_size_out, offsets_out_ptr,
                                 offsets_count_out);
