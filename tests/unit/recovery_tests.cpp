@@ -747,6 +747,137 @@ void test_rev_volumes_roundtrip() {
     std::cout << "[PASS] Multi-threaded .rev volume generation and full volume reconstruction\n";
 }
 
+// ── v1.21.1: foreign .rev sets must not poison repair ───────────────────────
+// Two independent sets share one directory. The old unanchored .rev scan let
+// the aaa set's recovery volumes supply the authoritative table for zzz,
+// which then failed every real zzz volume's CRC and renamed the valid set to
+// .bad. Repair must anchor candidates to the archive stem.
+namespace fs = std::filesystem;
+
+static fs::path build_rev_set(const fs::path& dir, const std::string& stem,
+                              const std::vector<core::byte>& payload) {
+    fs::path src = dir / (stem + "_src.bin");
+    {
+        io::FileStream f;
+        assert(f.open(src, io::FileMode::CreateAlways));
+        assert(f.write(payload.data(), payload.size()) == payload.size());
+    }
+    fs::path p1 = dir / (stem + ".part1.rar");
+    assert(archive::ArchiveMutator::add_file_to_archive_vol(p1, src, "data.bin",
+                                                            /*method=*/0, /*vol_size=*/10 * 1024));
+    assert(recovery::RecoveryWriter::write_rev_volumes(p1, 1, /*is_percent=*/false,
+                                                       /*threads=*/2));
+    std::error_code ec;
+    fs::remove(src, ec);
+    return p1;
+}
+
+static void test_rev_foreign_set_refused() {
+    namespace fs = std::filesystem;
+    fs::path dir = openrar::test::scratch_dir("recovery_foreign");
+    std::vector<core::byte> aaa_payload(15 * 1024), zzz_payload(15 * 1024);
+    for (size_t i = 0; i < aaa_payload.size(); ++i) {
+        aaa_payload[i] = static_cast<core::byte>((i * 31 + 5) & 0xFF);
+        zzz_payload[i] = static_cast<core::byte>((i * 71 + 9) & 0xFF);
+    }
+    build_rev_set(dir, "aaa", aaa_payload);
+    fs::path zzz1 = build_rev_set(dir, "zzz", zzz_payload);
+    fs::path zzz2 = dir / "zzz.part2.rar";
+
+    // Snapshot zzz.part2 content.
+    uintmax_t zzz2_size = fs::file_size(zzz2);
+    std::vector<core::byte> saved(static_cast<size_t>(zzz2_size));
+    {
+        io::FileStream f;
+        assert(f.open(zzz2, io::FileMode::ReadOnly));
+        assert(f.read(saved.data(), saved.size()) == saved.size());
+    }
+
+    // Case 1: foreign .rev files present, zzz repair still succeeds.
+    std::error_code ec;
+    fs::remove(zzz2, ec);
+    assert(recovery::RecoveryWriter::repair(zzz1));
+    assert(fs::exists(zzz2));
+    {
+        io::FileStream f;
+        assert(f.open(zzz2, io::FileMode::ReadOnly));
+        std::vector<core::byte> recon(static_cast<size_t>(zzz2_size));
+        assert(f.read(recon.data(), recon.size()) == recon.size());
+        assert(recon == saved && "foreign set poisoned reconstruction");
+    }
+
+    // Case 2: zzz's own revs removed — repair must refuse WITHOUT renaming
+    // the intact zzz volumes to .bad (the old behavior destroyed the set).
+    fs::remove(dir / "zzz.part1.rev", ec);
+    fs::remove(dir / "zzz.part2.rev", ec);
+    fs::remove(zzz2, ec);
+    assert(!recovery::RecoveryWriter::repair(zzz1));
+    assert(fs::exists(zzz1) && "repair destroyed the first volume");
+    for (auto& e : fs::directory_iterator(dir, ec)) {
+        std::string ext = e.path().extension().string();
+        assert(ext != ".bad" && "valid volume renamed to .bad by foreign table");
+    }
+    std::cout << "[PASS] Foreign .rev sets are stem-anchored out of repair\n";
+}
+
+// ── v1.21.1: legacy old-numbering sets (.rar/.rNN) are repairable ────────────
+// The data-volume scan only admitted .rar/.exe, so legacy sets were invisible
+// to repair. Rename a new-numbering chain to legacy names and roundtrip.
+static void test_rev_legacy_numbering() {
+    namespace fs = std::filesystem;
+    fs::path dir = openrar::test::scratch_dir("recovery_legacy");
+    std::vector<core::byte> payload(15 * 1024);
+    for (size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<core::byte>((i * 53 + 11) & 0xFF);
+    }
+    fs::path src = dir / "legacy_src.bin";
+    {
+        io::FileStream f;
+        assert(f.open(src, io::FileMode::CreateAlways));
+        assert(f.write(payload.data(), payload.size()) == payload.size());
+    }
+    fs::path p1 = dir / "legacy.part1.rar";
+    assert(archive::ArchiveMutator::add_file_to_archive_vol(p1, src, "data.bin",
+                                                            /*method=*/0, /*vol_size=*/10 * 1024));
+    std::error_code ec;
+    fs::remove(src, ec);
+
+    // Rewrite to legacy names: slot0=legacy.rar, slot1=legacy.r00.
+    fs::path leg0 = dir / "legacy.rar";
+    fs::path leg1 = dir / "legacy.r00";
+    fs::rename(dir / "legacy.part1.rar", leg0, ec);
+    fs::rename(dir / "legacy.part2.rar", leg1, ec);
+    fs::remove(dir / "legacy.part3.rar", ec);
+    assert(fs::exists(leg0) && fs::exists(leg1));
+
+    // Recovery volumes for the legacy chain.
+    assert(recovery::RecoveryWriter::write_rev_volumes(leg0, 1, /*is_percent=*/false,
+                                                       /*threads=*/2));
+    fs::path rev1 = dir / "legacy.r00.rev";
+    assert(fs::exists(rev1) && "legacy chain must produce legacy-named .rev files");
+
+    uintmax_t leg1_size = fs::file_size(leg1);
+    std::vector<core::byte> saved(static_cast<size_t>(leg1_size));
+    {
+        io::FileStream f;
+        assert(f.open(leg1, io::FileMode::ReadOnly));
+        assert(f.read(saved.data(), saved.size()) == saved.size());
+    }
+
+    fs::remove(leg1, ec);
+    assert(!fs::exists(leg1));
+    assert(recovery::RecoveryWriter::repair(leg0));
+    assert(fs::exists(leg1));
+    {
+        io::FileStream f;
+        assert(f.open(leg1, io::FileMode::ReadOnly));
+        std::vector<core::byte> recon(static_cast<size_t>(leg1_size));
+        assert(f.read(recon.data(), recon.size()) == recon.size());
+        assert(recon == saved && "legacy volume reconstruction mismatched");
+    }
+    std::cout << "[PASS] Legacy .rNN sets are visible to .rev repair\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -769,6 +900,8 @@ int main() {
     test_b5_unrecoverable_inconsistent_corruption();
     test_rev_single_volume_rejection();
     test_rev_volumes_roundtrip();
+    test_rev_foreign_set_refused();
+    test_rev_legacy_numbering();
     std::cout << "All Milestone 4 Recovery & Reed-Solomon Primitives PASSED!\n";
     return 0;
 }

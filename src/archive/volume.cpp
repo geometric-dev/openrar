@@ -142,7 +142,9 @@ std::filesystem::path vol_name_to_first_name(const std::filesystem::path& cur, b
         std::string e = (dot == std::string::npos) ? "" : fname.substr(dot);
         std::filesystem::path parent = cur.parent_path();
         std::error_code ec;
-        for (const char* pfx : {".part1", ".part01", ".part001", ".part0001"}) {
+        for (const char* pfx : {".part1", ".part01", ".part001", ".part0001", ".part00001"}) {
+            // 5-digit width included: sets up to MAX_CHAIN (65535) may need
+            // five digits, and rv-from-base-name must find them (v1.21.1).
             std::filesystem::path candidate = parent.empty() ? std::filesystem::path(stem + pfx + e)
                                                              : parent / (stem + pfx + e);
             if (std::filesystem::exists(candidate, ec) && !ec) {

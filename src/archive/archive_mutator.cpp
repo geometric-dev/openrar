@@ -59,7 +59,9 @@ struct TempFileCleanupGuard {
 // Returns false on any short read or write so callers can abort.
 bool copy_stream_region(io::FileStream& src, io::FileStream& dest, core::uint64 src_offset,
                         core::uint64 size) {
-    src.seek(static_cast<core::int64>(src_offset), io::SeekOrigin::Begin);
+    // A failed seek would silently copy from the stream's current position —
+    // verbatim-garbage in the rewritten archive. Check it.
+    if (!src.seek(static_cast<core::int64>(src_offset), io::SeekOrigin::Begin)) return false;
     std::vector<core::byte> buf(1048576); // 1 MiB transfer buffer for mechanical sympathy
     core::uint64 remaining = size;
 
@@ -330,6 +332,10 @@ struct PayloadEntry {
 // more than one slice at a time.
 static bool read_packed_slice(const PayloadEntry& pe, core::uint64 offset, core::uint64 length,
                               std::vector<core::byte>& out) {
+    // 32-bit/WASM guard: a slice larger than addressable memory cannot be
+    // materialised — the resize must never truncate `length`, or the
+    // subsequent writes run past the small buffer (v1.21.1 fix).
+    if (length > static_cast<core::uint64>(SIZE_MAX)) return false;
     out.resize(static_cast<size_t>(length));
     if (length == 0) return true;
     if (!pe.packed_mem.empty()) {
@@ -477,14 +483,24 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
         }
 
         // Signature
-        format::HeaderWriter::write_signature(out);
+        if (!format::HeaderWriter::write_signature(out)) {
+            out.close();
+            std::filesystem::remove(tmp_path);
+            detail_out = "rewrite failed";
+            return RAR_ERR_IO;
+        }
 
         // Main block: Strip QuickOpen locator on mutation per spec
         format::MainBlock mb = reader.main_block();
         mb.has_locator = false;
         mb.locator_qo_offset = -1;
         mb.locator_rr_offset = -1;
-        format::HeaderWriter::write_main_block(out, mb);
+        if (!format::HeaderWriter::write_main_block(out, mb)) {
+            out.close();
+            std::filesystem::remove(tmp_path);
+            detail_out = "rewrite failed";
+            return RAR_ERR_IO;
+        }
 
         // Copy surviving entries
         const std::vector<ArchiveEntry>& entries = reader.entries();
@@ -512,7 +528,12 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
         // End of archive block
         format::EndArcBlock eb;
         eb.end_flags = 0;
-        format::HeaderWriter::write_end_block(out, eb);
+        if (!format::HeaderWriter::write_end_block(out, eb)) {
+            out.close();
+            std::filesystem::remove(tmp_path);
+            detail_out = "rewrite failed";
+            return RAR_ERR_IO;
+        }
 
         reader.close();
         out.close();
@@ -527,6 +548,10 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
     }
 
     if (!atomic_replace(tmp_path, arc_path)) {
+        // Remove the temp so a failed replace does not leave scratch litter
+        // next to the archive (parity with write_batch_add_ex's tmp_guard).
+        std::error_code rm_ec;
+        std::filesystem::remove(tmp_path, rm_ec);
         detail_out = "atomic replace failed";
         return RAR_ERR_IO;
     }
@@ -534,6 +559,22 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
 }
 
 } // namespace
+
+// Mark the child service records (NTFS ADS/ACL streams etc.) that trail a
+// removed or replaced file entry. Extraction pairs children with the
+// immediately preceding file entry, so leaving them behind would reattach
+// this file's streams/security onto the next surviving entry (v1.21.1 fix).
+// QO (stripped separately), CMT and RR (archive-level records re-spliced by
+// RecoveryWriter) are exempt.
+static void mark_trailing_child_services(const std::vector<ArchiveEntry>& entries,
+                                         std::vector<char>& removed, size_t head) {
+    for (size_t j = head + 1; j < entries.size() && entries[j].header.is_service; ++j) {
+        if (entries[j].header.service_type != "QO" && entries[j].header.service_type != "CMT" &&
+            entries[j].header.service_type != "RR") {
+            removed[j] = 1;
+        }
+    }
+}
 
 bool ArchiveMutator::delete_entries(const std::filesystem::path& arc_path,
                                     const std::vector<std::string>& masks) {
@@ -553,6 +594,7 @@ bool ArchiveMutator::delete_entries(const std::filesystem::path& arc_path,
         for (const auto& mask : masks) {
             if (io::wildcard_match(mask, h.file_name)) {
                 removed[i] = 1;
+                mark_trailing_child_services(reader.entries(), removed, i);
                 break;
             }
         }
@@ -602,7 +644,10 @@ int ArchiveMutator::delete_entries_by_index(const std::filesystem::path& arc_pat
     std::vector<char> removed(entries.size(), 0);
     for (const core::uint64 off : header_offsets) {
         for (size_t i = 0; i < entries.size(); ++i) {
-            if (!entries[i].header.is_service && entries[i].header_offset == off) removed[i] = 1;
+            if (!entries[i].header.is_service && entries[i].header_offset == off) {
+                removed[i] = 1;
+                mark_trailing_child_services(entries, removed, i);
+            }
         }
     }
 
@@ -645,6 +690,11 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         core::uint64 first_sfx = reader.sfx_offset();
         reader.close();
 
+        // Two-phase commit: phase 1 writes every volume's locked copy to a
+        // temp file; phase 2 (after the loop) atomically replaces the
+        // originals. No original volume is touched until every temp exists.
+        std::vector<std::pair<std::filesystem::path, std::filesystem::path>> pending;
+
         for (size_t vi = 0; vi < vols.size(); ++vi) {
             const auto& v = vols[vi];
             core::uint64 sfx_off = (vi == 0) ? first_sfx : 0;
@@ -670,7 +720,12 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
                     std::filesystem::remove(tmp_path);
                     return false;
                 }
-                format::HeaderWriter::write_signature(out);
+                if (!format::HeaderWriter::write_signature(out)) {
+                    out.close();
+                    in_s.close();
+                    std::filesystem::remove(tmp_path);
+                    return false;
+                }
 
                 format::HeaderCryptReader hcr;
                 format::HeaderCryptWriter hcw;
@@ -735,18 +790,27 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
 
                 in_s.close();
                 out.close();
-                std::error_code ec;
-                std::filesystem::remove(v, ec);
-                std::filesystem::rename(tmp_path, v, ec);
-                if (ec) {
-                    std::filesystem::remove(tmp_path, ec);
-                    return false;
-                }
+                // Phase 1: temp file complete; the original is untouched.
+                pending.emplace_back(tmp_path, v);
             } catch (...) {
                 out.close();
                 in_s.close();
                 std::error_code ec;
                 std::filesystem::remove(tmp_path, ec);
+                return false;
+            }
+        }
+
+        // Phase 2: commit via atomic replace, volume by volume. A failure
+        // leaves the already-committed volumes individually consistent
+        // (locked) and the rest untouched — never a half-rewritten volume,
+        // and the original of the failing volume survives (v1.21.1).
+        for (auto it = pending.begin(); it != pending.end(); ++it) {
+            if (!atomic_replace(it->first, it->second)) {
+                std::error_code rm_ec;
+                for (auto jt = it; jt != pending.end(); ++jt) {
+                    std::filesystem::remove(jt->first, rm_ec);
+                }
                 return false;
             }
         }
@@ -772,7 +836,11 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         }
 
         // Signature
-        format::HeaderWriter::write_signature(out);
+        if (!format::HeaderWriter::write_signature(out)) {
+            out.close();
+            std::filesystem::remove(tmp_path);
+            return false;
+        }
 
         format::HeaderCryptWriter hcw;
         bool is_enc = reader.is_header_encrypted();
@@ -792,7 +860,11 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         // Main block with MHFL_LOCK set
         format::MainBlock mb = reader.main_block();
         mb.arc_flags |= format::MHFL_LOCK;
-        format::HeaderWriter::write_main_block(out, mb, is_enc ? &hcw : nullptr);
+        if (!format::HeaderWriter::write_main_block(out, mb, is_enc ? &hcw : nullptr)) {
+            out.close();
+            std::filesystem::remove(tmp_path);
+            return false;
+        }
 
         // Copy all entries verbatim
         for (const auto& entry : reader.entries()) {
@@ -807,7 +879,11 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         // End block
         format::EndArcBlock eb;
         eb.end_flags = 0;
-        format::HeaderWriter::write_end_block(out, eb, is_enc ? &hcw : nullptr);
+        if (!format::HeaderWriter::write_end_block(out, eb, is_enc ? &hcw : nullptr)) {
+            out.close();
+            std::filesystem::remove(tmp_path);
+            return false;
+        }
 
         reader.close();
         out.close();
@@ -821,10 +897,10 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         throw;
     }
 
-    std::error_code ren_ec;
-    std::filesystem::remove(arc_path, ren_ec);
-    std::filesystem::rename(tmp_path, arc_path, ren_ec);
-    if (ren_ec) {
+    // Commit via atomic replace: never remove the original before the
+    // replacement is in place — a failed rename after a successful remove
+    // used to destroy the archive (v1.21.1 fix).
+    if (!atomic_replace(tmp_path, arc_path)) {
         std::error_code rm_ec;
         std::filesystem::remove(tmp_path, rm_ec);
         return false;
@@ -1058,6 +1134,13 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
             fb.data_crc32 = crc;
             fb.has_crc32 = true;
             fb.method = static_cast<core::uint32>(method);
+            // Deliberately record the full dictionary window, even for chunk-
+            // parallel files (v1.21.1): recording min(dict, chunk) would need
+            // the ENCODER window snapped to the FCI grid first (the header
+            // writer floor-quantizes to base + base/32*F), or the decoded
+            // window could come out smaller than a distance actually used.
+            // The conservative value is always safe; unpackers just reserve
+            // more RAM than strictly necessary.
             fb.win_size = (method > 0) ? win_size : 0;
             if (method == 0) fb.unp_ver = 0;
 
@@ -1158,7 +1241,28 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
 
                 if (method > 0) {
                     bool comp_ok = true;
-                    if (eff_threads > 1) {
+                    // Filter parity (v1.21.1): the chunked pipeline cannot honor
+                    // pre-processing transforms — chunk-relative offsets would
+                    // corrupt the position-dependent E8/E8E9/ARM transforms and
+                    // regions must not cross chunk boundaries. Run the same
+                    // leading-sample detection the sequential encoder performs;
+                    // if a filter would trigger, take the sequential path so
+                    // -mc is honored and -mt1/-mt>1 make the same decision for
+                    // the same data.
+                    bool use_parallel = eff_threads > 1;
+                    if (use_parallel && filter_cfg.mode != compress::FilterMode::DisableAll) {
+                        std::vector<core::byte> sample(
+                            static_cast<size_t>(std::min<core::uint64>(file_sz, 65536)));
+                        if (!sample.empty() &&
+                            src.read(sample.data(), sample.size()) == sample.size()) {
+                            core::uint8 det_channels = 1;
+                            use_parallel = compress::Filters50::detect_filter(
+                                               sample.data(), sample.size(), det_channels,
+                                               filter_cfg) != compress::FilterType::None;
+                        }
+                        src.seek(0, io::SeekOrigin::Begin);
+                    }
+                    if (use_parallel) {
                         compress::ParallelCompressConfig pcfg;
                         pcfg.method = method;
                         pcfg.win_size = static_cast<size_t>(win_size);
@@ -1172,7 +1276,9 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                             crc = stream_crc;
                         }
                     } else {
-                        compress::StreamEncoder encoder(method, win_size);
+                        // Sequential spool path: honor the caller's filter config
+                        // (parity with the direct-stream path, which passes it too).
+                        compress::StreamEncoder encoder(method, win_size, filter_cfg);
                         struct FlushCtx {
                             decltype(write_spool_chunk)* writer;
                             bool ok;
@@ -1477,22 +1583,6 @@ bool ArchiveMutator::get_file_mtime(const std::filesystem::path& path, core::uin
     return true;
 }
 
-compress::CompressPlan ArchiveMutator::plan_batch(const std::vector<PreparedAdd>& files, bool solid,
-                                                  bool continue_solid_stream) {
-    std::vector<compress::EntryPlan> requests;
-    requests.reserve(files.size());
-    for (const auto& pf : files) {
-        compress::EntryPlan ep;
-        ep.is_dir = (pf.fb.file_flags & format::FHFL_DIRECTORY) != 0;
-        ep.method = static_cast<uint32_t>(pf.fb.method);
-        ep.dict_size = pf.fb.win_size;
-        ep.raw_size = pf.fb.unp_size;
-        requests.push_back(ep);
-    }
-    return compress::CompressPlan::plan_entries(requests, solid, /*default_method=*/3,
-                                                /*default_dict_size=*/0, continue_solid_stream);
-}
-
 int ArchiveMutator::write_batch_add_ex(
     const std::filesystem::path& arc_path, std::vector<PreparedAdd>& files,
     const std::filesystem::path& sfx_stub_path, const std::string& password, bool encrypt_headers,
@@ -1592,7 +1682,8 @@ int ArchiveMutator::write_batch_add_ex(
                             for (size_t j = i + 1; j < entries.size() && entries[j].header.is_service;
                                  ++j) {
                                 if (entries[j].header.service_type != "QO" &&
-                                    entries[j].header.service_type != "CMT") {
+                                    entries[j].header.service_type != "CMT" &&
+                                    entries[j].header.service_type != "RR") {
                                     replaced[j] = 1;
                                 }
                             }
@@ -1634,7 +1725,8 @@ int ArchiveMutator::write_batch_add_ex(
                             replaced[p_idx] = 1;
                             for (size_t j = p_idx + 1; j < entries.size() && entries[j].header.is_service; ++j) {
                                 if (entries[j].header.service_type != "QO" &&
-                                    entries[j].header.service_type != "CMT") {
+                                    entries[j].header.service_type != "CMT" &&
+                                    entries[j].header.service_type != "RR") {
                                     replaced[j] = 1;
                                 }
                             }
@@ -1706,7 +1798,12 @@ int ArchiveMutator::write_batch_add_ex(
                     return RAR_ERR_IO;
                 }
             }
-            format::HeaderWriter::write_signature(out);
+            if (!format::HeaderWriter::write_signature(out)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "rewrite failed";
+                return RAR_ERR_IO;
+            }
 
             if (header_encrypt_mode) {
                 // Re-emit HEAD_CRYPT with the archive's original parameters so
@@ -1737,14 +1834,19 @@ int ArchiveMutator::write_batch_add_ex(
                 written_main_block.metadata_is_unix_time = false;
                 written_main_block.metadata_is_nanoseconds = false;
             }
-            if (want_qo) {
+            if (want_qo && !header_encrypt_mode) {
                 written_main_block.has_locator = true;
                 written_main_block.locator_qo_offset = 0;
             }
             if (solid) written_main_block.arc_flags |= format::MHFL_SOLID;
             main_header_pos = out.tell();
-            format::HeaderWriter::write_main_block(out, written_main_block,
-                                                   header_encrypt_mode ? &hcw : nullptr);
+            if (!format::HeaderWriter::write_main_block(out, written_main_block,
+                                                        header_encrypt_mode ? &hcw : nullptr)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "rewrite failed";
+                return RAR_ERR_IO;
+            }
 
             // A new CMT replaces the archive's previous comment; QO is always stripped per spec.
             continue_solid_stream = reader.is_solid();
@@ -1826,7 +1928,12 @@ int ArchiveMutator::write_batch_add_ex(
                 header_encrypt_mode = true;
             }
 
-            format::HeaderWriter::write_signature(out);
+            if (!format::HeaderWriter::write_signature(out)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "rewrite failed";
+                return RAR_ERR_IO;
+            }
             if (header_encrypt_mode) {
                 if (!format::HeaderWriter::write_crypt_block(out, new_crypt)) {
                     out.close();
@@ -1858,8 +1965,13 @@ int ArchiveMutator::write_batch_add_ex(
                 written_main_block.locator_qo_offset = 0;
             }
             main_header_pos = out.tell();
-            format::HeaderWriter::write_main_block(out, written_main_block,
-                                                   header_encrypt_mode ? &hcw : nullptr);
+            if (!format::HeaderWriter::write_main_block(out, written_main_block,
+                                                        header_encrypt_mode ? &hcw : nullptr)) {
+                out.close();
+                std::filesystem::remove(tmp_path);
+                detail_out = "rewrite failed";
+                return RAR_ERR_IO;
+            }
         }
 
         // A requested comment (-z) becomes a CMT service header right after the
@@ -1944,7 +2056,12 @@ int ArchiveMutator::write_batch_add_ex(
                 return RAR_ERR_IO;
             }
             if (!pf.payload.empty()) {
-                out.write(pf.payload.data(), pf.payload.size());
+                if (out.write(pf.payload.data(), pf.payload.size()) != pf.payload.size()) {
+                    out.close();
+                    std::filesystem::remove(tmp_path);
+                    detail_out = "payload write failed";
+                    return RAR_ERR_IO;
+                }
             } else if (!pf.spool_path.empty()) {
                 io::FileStream spool_in;
                 if (!spool_in.open(pf.spool_path, io::FileMode::ReadOnly)) {
@@ -2212,10 +2329,21 @@ int ArchiveMutator::write_batch_add_ex(
                     qo_arena.insert(qo_arena.end(), child_bytes.begin(), child_bytes.end());
                     qo_indices.push_back({child_orig_pos, offset, child_bytes.size()});
                 }
-                format::HeaderWriter::emit_block(out, child_bytes,
-                                                 header_encrypt_mode ? &hcw : nullptr);
+                if (!format::HeaderWriter::emit_block(out, child_bytes,
+                                                      header_encrypt_mode ? &hcw : nullptr)) {
+                    out.close();
+                    std::filesystem::remove(tmp_path);
+                    detail_out = "rewrite failed";
+                    return RAR_ERR_IO;
+                }
                 if (!child.payload.empty()) {
-                    out.write(child.payload.data(), child.payload.size());
+                    if (out.write(child.payload.data(), child.payload.size()) !=
+                        child.payload.size()) {
+                        out.close();
+                        std::filesystem::remove(tmp_path);
+                        detail_out = "payload write failed";
+                        return RAR_ERR_IO;
+                    }
                 }
                 std::vector<core::byte>().swap(child.payload);
             }
@@ -2317,7 +2445,12 @@ int ArchiveMutator::write_batch_add_ex(
         }
 
         format::EndArcBlock eb;
-        format::HeaderWriter::write_end_block(out, eb, header_encrypt_mode ? &hcw : nullptr);
+        if (!format::HeaderWriter::write_end_block(out, eb, header_encrypt_mode ? &hcw : nullptr)) {
+            out.close();
+            std::filesystem::remove(tmp_path);
+            detail_out = "rewrite failed";
+            return RAR_ERR_IO;
+        }
         out.close();
 
         // Atomically replace the archive (no pre-delete needed)
@@ -2396,6 +2529,9 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         return add_or_move_file(arc_path, src_file, arc_entry_name, false, method, {}, password, encrypt_headers, dict_size, filter_cfg);
     }
     if (vol_size < 1024) return false; // too small
+    // Absurd on every target, and on 32-bit/WASM a slice of this size would
+    // truncate through size_t (read_packed_slice). Reject up front.
+    if (vol_size > static_cast<core::uint64>(SIZE_MAX)) return false;
     if (!std::filesystem::exists(src_file)) return false;
     if (encrypt_headers && password.empty()) return false;
 
@@ -2694,6 +2830,10 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     format::HeaderCryptWriter hcw;
     format::CryptBlock new_crypt;
     bool header_encrypt_mode = false;
+    // Main header of the existing chain, captured so the rewrite preserves
+    // MHEXTRA_METADATA and retained arc flags (v1.21.1 fix).
+    format::MainBlock prior_main;
+    bool have_prior_main = false;
 
     if (!existing_path.empty()) {
         ArchiveReader r;
@@ -2707,6 +2847,8 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         // original contents — so refuse instead.
         if (!r.open(existing_path, password)) return false;
         if (r.is_locked()) return false;
+        prior_main = r.main_block();
+        have_prior_main = true;
         if (r.is_header_encrypted()) {
             if (password.empty()) return false;
             new_crypt = r.header_crypt();
@@ -2722,7 +2864,9 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             io::FileStream s;
             if (s.open(existing_path, io::FileMode::ReadOnly)) {
                 sfx_bytes.resize(static_cast<size_t>(sfx_off));
-                s.read(sfx_bytes.data(), sfx_bytes.size());
+                // Short read must fail loudly: zero-filled SFX prefix bytes
+                // would corrupt the converted executable stub.
+                if (s.read(sfx_bytes.data(), sfx_bytes.size()) != sfx_bytes.size()) return false;
             }
         }
         for (auto& e : r.entries()) {
@@ -2871,7 +3015,14 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             if (!format::HeaderWriter::write_crypt_block(cur, new_crypt)) return false;
         }
         format::MainBlock mb;
-        mb.arc_flags = format::MHFL_VOLUME;
+        if (have_prior_main) {
+            // Seed from the existing chain's main header so MHEXTRA_METADATA
+            // and retained arc flags survive the rewrite; per-volume fields
+            // are re-derived below.
+            mb = prior_main;
+            mb.arc_flags &= ~(format::MHFL_VOLUME | format::MHFL_VOLNUMBER);
+        }
+        mb.arc_flags |= format::MHFL_VOLUME;
         if (vol_solid) mb.arc_flags |= format::MHFL_SOLID;
         if (lock) mb.arc_flags |= format::MHFL_LOCK;
         if (idx != 0) {
@@ -3162,12 +3313,18 @@ bool ArchiveMutator::convert_to_sfx(const std::filesystem::path& arc_path,
     std::filesystem::path target_path = apply_sfx_extension(arc_path);
     std::filesystem::path parent = target_path.parent_path();
     if (parent.empty()) parent = ".";
-    std::filesystem::path tmp_path =
-        parent / (target_path.filename().string() + ".sfx_tmp." +
-                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    // Use the hardened unpredictable temp path with CreateNew: the old
+    // steady-clock name was predictable, so a same-directory attacker could
+    // pre-plant a symlink and truncate an arbitrary file on open.
+    std::filesystem::path tmp_path;
+    {
+        std::error_code mk_ec;
+        std::filesystem::create_directories(parent, mk_ec);
+        tmp_path = mutation_temp_path(target_path, "sfx_tmp");
+    }
 
     io::FileStream out;
-    if (!out.open(tmp_path, io::FileMode::CreateAlways)) {
+    if (!out.open(tmp_path, io::FileMode::CreateNew)) {
         err_detail = "cannot create temporary file " + io::u8_str(tmp_path);
         return false;
     }

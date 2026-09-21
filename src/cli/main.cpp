@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <condition_variable>
 #include <iostream>
 #include <memory>
@@ -199,7 +200,15 @@ int print_archive_to_stdout(const std::string& arc_path, const std::vector<std::
                             const std::vector<std::string>& exclude_patterns,
                             const std::string& password = "") {
 #ifdef _WIN32
-    _setmode(_fileno(stdout), _O_BINARY);
+    // Restore the previous stdout translation mode on every exit path so any
+    // later in-process output is not emitted through binary mode (v1.21.1).
+    int prev_stdout_mode = _setmode(_fileno(stdout), _O_BINARY);
+    struct StdoutModeRestore {
+        int prev;
+        ~StdoutModeRestore() {
+            if (prev != -1) _setmode(_fileno(stdout), prev);
+        }
+    } stdout_mode_restore{prev_stdout_mode};
 #endif
 
     archive::ArchiveReader reader;
@@ -479,6 +488,19 @@ struct EntryFlags {
     }
 };
 
+// Extraction target identity key. Windows filesystems are case-insensitive,
+// so "ReadMe.txt" and "readme.txt" denote the same physical file: the
+// duplicate-target guard must treat case-variant targets as identical, or
+// two parallel extraction jobs race on the same path (v1.21.1 fix).
+// ASCII-only folding covers the collisions that matter in practice.
+static std::string target_key(const std::filesystem::path& p) {
+    std::string s = p.string();
+#ifdef _WIN32
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+#endif
+    return s;
+}
+
 struct ReaderSlots {
     std::vector<std::unique_ptr<archive::ArchiveReader>> readers;
     std::vector<char> in_use;
@@ -589,10 +611,28 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
     // the reader's password and applies the same hash policy as extraction
     // (including the tweaked-checksum exception, 0x0002). Without a password
     // there is nothing to verify against — the skip stays, but says so.
-    auto test_one = [&](archive::ArchiveReader& r, const TestJob& job) -> bool {
-        if (!job.entry->header.is_encrypted || password.empty()) return r.test_entry(*job.entry);
+    // Three-state verdict for one entry. Fail-closed (v1.21.1): an encrypted
+    // entry with no password can NOT be verified — it must be reported as a
+    // skip and counted as an error, never as OK (test_entry returns true for
+    // encrypted entries without decoding anything).
+    enum class TestResult { Ok, Failed, SkippedNoPassword };
+    auto test_one = [&](archive::ArchiveReader& r, const TestJob& job) -> TestResult {
+        if (job.entry->header.is_encrypted && password.empty()) {
+            return TestResult::SkippedNoPassword;
+        }
+        if (!job.entry->header.is_encrypted) {
+            return r.test_entry(*job.entry) ? TestResult::Ok : TestResult::Failed;
+        }
         archive::ReaderHooks hooks{};
-        return r.test_entry_stream(job.index, hooks) == archive::RAR_OK;
+        return r.test_entry_stream(job.index, hooks) == archive::RAR_OK ? TestResult::Ok
+                                                                        : TestResult::Failed;
+    };
+    auto test_verdict_str = [](TestResult r) -> const char* {
+        switch (r) {
+            case TestResult::Ok: return "OK";
+            case TestResult::Failed: return "FAILED";
+            default: return "SKIPPED (encrypted - no password)";
+        }
     };
 
     if (slots.readers.empty()) {
@@ -605,36 +645,35 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
                           << "... ";
             }
 
-            if (test_one(reader, job)) {
-                if (!g_quiet_mode && !is_vt_supported()) std::cout << "OK\n";
-            } else {
-                if (!g_quiet_mode && !is_vt_supported()) std::cout << "FAILED\n";
-                error_count++;
-            }
+            TestResult res = test_one(reader, job);
+            if (!g_quiet_mode && !is_vt_supported()) std::cout << test_verdict_str(res) << "\n";
+            if (res != TestResult::Ok) error_count++;
             Prog.update_bytes(job.entry->header.unp_size);
         }
     } else {
         EntryFlags flags;
         flags.resize(jobs.size());
+        std::vector<TestResult> verdicts(jobs.size(), TestResult::Failed);
         ThreadPool pool(static_cast<unsigned>(slots.readers.size()));
         for (size_t i = 0; i < jobs.size(); ++i) {
-            pool.submit([&slots, &flags, &jobs, &test_one, i] {
+            pool.submit([&slots, &flags, &verdicts, &jobs, &test_one, i] {
                 // test_entry/test_entry_stream decode untrusted archive data
                 // and can throw (bad_alloc, filesystem errors); an escaping
                 // exception would skip flags.finish and hang the reporting
                 // loop, and pre-guard it also kept the process alive (H2).
-                bool okv = false;
+                TestResult res = TestResult::Failed;
                 size_t s = 0;
                 bool acquired = false;
                 try {
                     s = slots.acquire();
                     acquired = true;
-                    okv = test_one(*slots.readers[s], jobs[i]);
+                    res = test_one(*slots.readers[s], jobs[i]);
                 } catch (...) {
-                    okv = false;
+                    res = TestResult::Failed;
                 }
                 if (acquired) slots.release(s);
-                flags.finish(i, okv);
+                verdicts[i] = res;
+                flags.finish(i, res == TestResult::Ok);
                 try {
                     Prog.note_file_done(jobs[i].entry->header.file_name,
                                         jobs[i].entry->header.unp_size);
@@ -646,8 +685,9 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         for (size_t i = 0; i < jobs.size(); ++i) {
             const bool okv = flags.wait(i);
             if (!g_quiet_mode && !is_vt_supported()) {
-                std::cout << "Testing     " << sanitize_for_display(jobs[i].entry->header.file_name)
-                          << "... " << (okv ? "OK" : "FAILED") << "\n";
+                std::cout << "Testing     "
+                          << sanitize_for_display(jobs[i].entry->header.file_name) << "... "
+                          << test_verdict_str(verdicts[i]) << "\n";
             }
             if (!okv) error_count++;
         }
@@ -1650,7 +1690,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                           << sanitize_for_display(entry.header.file_name) << "\n";
                 continue;
             }
-            if (!seen_targets.insert(target.string()).second) duplicate_targets = true;
+            if (!seen_targets.insert(target_key(target)).second) duplicate_targets = true;
             std::vector<const archive::ArchiveEntry*> children;
             for (size_t j = i + 1; j < all_entries.size() && all_entries[j].header.is_service;
                  ++j) {
@@ -1669,13 +1709,13 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         // both orders of the pair).
         if (!duplicate_targets) {
             std::set<std::string> all_targets;
-            for (const auto& j : extract_jobs) all_targets.insert(j.target.string());
+            for (const auto& j : extract_jobs) all_targets.insert(target_key(j.target));
             for (const auto& j : extract_jobs) {
                 const std::filesystem::path& t = j.target;
                 std::filesystem::path anc;
                 for (auto it = t.begin(); it != t.end() && std::next(it) != t.end(); ++it) {
                     anc /= *it;
-                    if (all_targets.count(anc.string())) {
+                    if (all_targets.count(target_key(anc))) {
                         duplicate_targets = true;
                         break;
                     }
@@ -2003,9 +2043,9 @@ int repair_archive(const std::string& arc_path) {
             std::cout << "Archive " << arc_path << ": OK (reconstruction / structure verified)\n";
         return 0;
     }
-    std::cerr << "Cannot repair " << arc_path
-              << " (RR block damaged, damage exceeds parity, or unsupported "
-                 "recovery format)\n";
+    std::cerr << "Cannot repair " << arc_path << "\n";
+    std::cerr << "       (no usable recovery data, damage exceeds parity, .rev set "
+                 "mismatched or incomplete, or unsupported recovery format)\n";
     return 1;
 }
 
@@ -2360,9 +2400,19 @@ static int cli_main(int argc, char* argv[]) {
             }
             uint64_t val = 0;
             try {
-                double dval = std::stod(tail);
-                if (dval < 0) {
+                size_t consumed = 0;
+                double dval = std::stod(tail, &consumed);
+                // Strict parse: the whole numeric tail must be consumed
+                // ("-md16mxyz" is an error, not 16 MB) and non-finite values
+                // are rejected before the double→uint64 cast, which is UB for
+                // out-of-range floats (v1.21.1 fix).
+                if (consumed != tail.size() || !std::isfinite(dval) || dval < 0) {
                     std::cerr << "Error: invalid dictionary size '" << s << "'\n";
+                    return 7;
+                }
+                const double kMaxDict = 1024.0 * 1024.0 * 1024.0 * 1024.0; // 1 TB
+                if (dval * static_cast<double>(mult) > kMaxDict) {
+                    std::cerr << "Error: dictionary size > 1 TB not allowed\n";
                     return 7;
                 }
                 val = static_cast<uint64_t>(dval * static_cast<double>(mult));
@@ -2698,7 +2748,11 @@ static int cli_main(int argc, char* argv[]) {
                 }
             } else {
                 const std::string& last = files.back();
-                if (last.back() == '/' || last.back() == '\\' || std::filesystem::is_directory(last)) {
+                // Guard the empty-string argument ("x arc \"\""): back() on an
+                // empty string is UB (v1.21.1 fix).
+                if (!last.empty() &&
+                    (last.back() == '/' || last.back() == '\\' ||
+                     std::filesystem::is_directory(last))) {
                     dest = last;
                     for (size_t fi = 0; fi + 1 < files.size(); ++fi) {
                         file_patterns.push_back(files[fi]);
@@ -2785,7 +2839,11 @@ static int cli_main(int argc, char* argv[]) {
         bool ok = openrar::recovery::RecoveryWriter::write_rev_volumes(
             arc_path, count_or_pct, is_pct, threads);
         if (!ok) {
-            std::cerr << "Cannot create recovery volumes for a non-volume archive\n";
+            // Honest diagnostics (v1.21.1): a false return covers IO/parity
+            // failures too, not just a non-volume archive.
+            std::cerr << "Cannot create recovery volumes for " << arc_path << "\n";
+            std::cerr << "       (archive may not be a multi-volume set, or an IO/parity "
+                         "error occurred)\n";
             return 1;
         }
         if (!openrar::cli::g_quiet_mode) {

@@ -74,3 +74,4 @@ test_small.txt
 # Python cache
 __pycache__/
 *.pyc
+.agents/

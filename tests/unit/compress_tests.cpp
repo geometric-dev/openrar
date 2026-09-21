@@ -2,6 +2,8 @@
 #include "../../src/compress/filters50.hpp"
 #include "../../src/compress/compressor50.hpp"
 #include "../../src/compress/decompressor50.hpp"
+#include "../../src/compress/stream_encoder.hpp"
+#include "../../src/compress/stream_decoder.hpp"
 #include "../../src/compress/arch/match_simd.hpp"
 
 #include <cassert>
@@ -1513,6 +1515,92 @@ void test_filter_detect_disable_all() {
     std::cout << "    - DisableAll bypasses detection: OK" << std::endl;
 }
 
+void test_detect_filter_hostile_pe_offset() {
+    std::cout << "[+] test_detect_filter_hostile_pe_offset" << std::endl;
+    // Crafted "MZ" payload whose e_lfanew sits near UINT32_MAX: the old 32-bit
+    // guard (pe_off + 6 < size) wrapped around, passed, and read ~4 GiB out of
+    // bounds (SIGSEGV repro). The 64-bit guard must reject the probe.
+    std::vector<core::byte> data(256, 0x00);
+    data[0] = 'M';
+    data[1] = 'Z';
+    core::write_le32(data.data() + 0x3C, 0xFFFFFFFCu);
+    FilterConfig cfg;  // Auto
+    core::uint8 channels = 0;
+    FilterType ft = Filters50::detect_filter(data.data(), data.size(), channels, cfg);
+    assert(ft == FilterType::None);
+    // Boundary values of the wraparound range must also be rejected cleanly.
+    for (core::uint32 bad_off : {0xFFFFFFFAu, 0xFFFFFFFBu, 0xFFFFFFFDu, 0xFFFFFFFFu}) {
+        core::write_le32(data.data() + 0x3C, bad_off);
+        ft = Filters50::detect_filter(data.data(), data.size(), channels, cfg);
+        assert(ft == FilterType::None);
+    }
+    std::cout << "    - Hostile e_lfanew rejected without OOB: OK" << std::endl;
+}
+
+void test_stream_encoder_decoder_filter_roundtrip() {
+    std::cout << "[+] test_stream_encoder_decoder_filter_roundtrip" << std::endl;
+    // The v1.21.1 regression: an active E8 filter with 1 MiB regions and
+    // encoder blocks every 0x80000 input bytes means regions routinely span
+    // block boundaries. The per-block decode path (StreamDecoder) must carry
+    // pending regions across calls; it previously aborted mid-stream.
+    auto data = make_x86_binary(600000);
+    data.resize(3 * 1024 * 1024, 0x90);
+
+    for (int method : {1, 3, 5}) {
+        compress::StreamEncoder enc(method, 4 * 1024 * 1024);
+        std::vector<core::byte> packed;
+        const size_t kFeed = 65536;
+        for (size_t off = 0; off < data.size(); off += kFeed) {
+            size_t n = std::min(kFeed, data.size() - off);
+            assert(enc.feed(data.data() + off, n));
+        }
+        assert(enc.finish(packed));
+        assert(!packed.empty());
+
+        // Reference: whole-stream decode (single decompress call) must match.
+        Decompressor50 dec_ref(4 * 1024 * 1024);
+        std::vector<core::byte> reference;
+        assert(dec_ref.decompress_to_vector(packed.data(), packed.size(), reference, false));
+        assert(reference.size() == data.size());
+        assert(std::memcmp(reference.data(), data.data(), data.size()) == 0);
+
+        // Regression target: per-block decode through StreamDecoder.
+        compress::StreamDecoder sdec(4 * 1024 * 1024, method);
+        std::vector<core::byte> out;
+        for (size_t off = 0; off < packed.size(); off += kFeed) {
+            size_t n = std::min(kFeed, packed.size() - off);
+            assert(sdec.feed(packed.data() + off, n));
+        }
+        assert(sdec.finish(out));
+        assert(out.size() == data.size());
+        assert(std::memcmp(out.data(), data.data(), data.size()) == 0);
+    }
+    std::cout << "    - StreamEncoder→StreamDecoder with spanning E8 regions: OK (m1/m3/m5)" << std::endl;
+}
+
+void test_stream_decoder_defense() {
+    std::cout << "[+] test_stream_decoder_defense" << std::endl;
+    // Zero window must clamp to a usable default, never construct a
+    // decompressor with win_size_ == 0 (undefined window arithmetic).
+    compress::StreamDecoder zdec(0, 3);
+    std::vector<core::byte> out;
+    // Empty stream: nothing decoded and no LastBlock flag -> fail closed.
+    assert(!zdec.finish(out));
+
+    // Truncated stream: valid blocks but the LastBlock-framed final block
+    // never arrives -> finish() must fail instead of passing the payload.
+    auto data = make_patterned_data(1 << 20);
+    compress::StreamEncoder enc(3, 1024 * 1024);
+    std::vector<core::byte> packed;
+    assert(enc.feed(data.data(), data.size()));
+    assert(enc.finish(packed));
+    assert(packed.size() > 16);
+    compress::StreamDecoder tdec(1024 * 1024, 3);
+    assert(tdec.feed(packed.data(), packed.size() / 2));
+    assert(!tdec.finish(out));
+    std::cout << "    - Zero-window clamp and truncated-stream rejection: OK" << std::endl;
+}
+
 void test_filter_e8_roundtrip() {
     std::cout << "[+] test_filter_e8_roundtrip" << std::endl;
     auto original = make_x86_binary(500);
@@ -1753,6 +1841,12 @@ int main() {
     test_filter_detect_delta_wav();
     std::cout << std::flush;
     test_filter_detect_disable_all();
+    std::cout << std::flush;
+    test_detect_filter_hostile_pe_offset();
+    std::cout << std::flush;
+    test_stream_encoder_decoder_filter_roundtrip();
+    std::cout << std::flush;
+    test_stream_decoder_defense();
     std::cout << std::flush;
     test_filter_e8_roundtrip();
     std::cout << std::flush;

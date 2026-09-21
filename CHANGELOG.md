@@ -5,6 +5,180 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.1] - 2026-09-20
+
+Stabilization release ("Tight Base"): the blocking gate of the v1.22.0+ roadmap
+(`docs/ROADMAP.md`). Closes the 16 P1 defects found by the v1.6.0 → v1.21.0
+architect walkthrough audit — concentrated in error paths, commit atomicity,
+the `.rev` repair scan, the parallel/WASM surface — and corrects five
+inaccurate historical changelog claims (see "Corrected claims" below).
+
+### Fixed
+
+- **Compression — crafted-content OOB read (P1)**: `Filters50::detect_filter`
+  computed `pe_off + 6 < size` in 32-bit arithmetic; a crafted `e_lfanew`
+  near `UINT32_MAX` wrapped past the guard and read ~4 GiB out of bounds
+  (reproduced SIGSEGV). The probe now uses 64-bit arithmetic; regression test
+  `test_detect_filter_hostile_pe_offset`.
+- **Compression — StreamDecoder filter-state carry (P1)**: the per-block
+  decode path cleared the filter queue on every block and flushed
+  `flush_all=true` at block end, so filter regions spanning RAR5 block
+  boundaries aborted the stream (reproduced). Filter regions are now recorded
+  in absolute file coordinates and carried across blocks of the same file;
+  incomplete regions are applied when their data completes; the strict final
+  flush runs only on the last block. Regression test
+  `test_stream_encoder_decoder_filter_roundtrip` (m1/m3/m5).
+- **Compression — StreamDecoder truncation fail-open (P1)**: `finish()`
+  accepted a stream whose LastBlock-framed final block never arrived. It now
+  fails closed.
+- **Compression — crafted-stream filter amplification**: overlapping or
+  backward filter regions are rejected at registration (disjoint, ordered
+  regions only), removing the transform-amplification vector; the queue cap
+  was raised 8192 → 65536 (large legitimately-filtered files emit one region
+  per ~1 MiB and previously exhausted the budget).
+- **Compression — >4 GiB-window OOB**: the 4-wide batched hash-insert loop
+  wrote to the (empty) 32-bit tables on large-window builds; it is now
+  skipped when `is_large_window_` (the 64-bit `insert_position` path handles
+  those positions).
+- **Compression — zero-window construction**: `StreamDecoder(0)` /
+  `Decompressor50(0)` clamped after building the decompressor with
+  `win_size_ == 0` (undefined window arithmetic); both now clamp in the
+  constructor initialization path.
+- **Mutation — commit atomicity (P1)**: `lock_archive` committed via
+  `remove` → `rename`; a failed rename after a successful remove destroyed
+  the archive. Single-volume commit now uses `atomic_replace`, and the
+  multi-volume chain is committed in two phases (all temp files written
+  first, then atomic replaces) so no volume is ever half-rewritten.
+- **Mutation — checked commit-path writes (P1)**: ~20 unchecked
+  `FileStream::write` / `HeaderWriter::write_*` calls on commit paths (entry
+  payloads, ADS/ACL child payloads, signatures, main/end blocks) silently
+  committed truncated archives on disk-full; every one is now checked and
+  fails with the temp file removed.
+- **Mutation — ADS/ACL orphaning on delete (P1)**: `delete_entries` /
+  `delete_entries_by_index` marked only non-service entries, so a deleted
+  file's trailing NTFS stream/security child records survived and extraction
+  reattached them to the next surviving file. Child services now die with
+  their file (`mark_trailing_child_services`); RR records are exempt and
+  remain RecoveryWriter's responsibility. Regression test
+  `test_delete_removes_ads_children`.
+- **Mutation — volume-rewrite metadata loss (P1)**: `add_file_to_archive_vol`
+  built a fresh `MainBlock` per volume, dropping `MHEXTRA_METADATA` and
+  retained arc flags on rewrite; the new chain now seeds from the existing
+  head volume's parsed main block.
+- **Mutation — 32-bit slice truncation**: `read_packed_slice` resized through
+  `size_t` from a full `uint64` length; oversized slices are now rejected,
+  and `-v` sizes above `SIZE_MAX` are refused up front.
+- **Recovery — foreign `.rev` adoption (P1)**: the `.rev` scan had no stem
+  anchoring, so a sibling set's recovery volumes supplied the authoritative
+  table and repair renamed valid volumes to `.bad` (reproduced). Candidates
+  are stem-anchored (same rule as `check_has_rev_files`), a table under which
+  every present volume fails CRC is refused, and `.bad` renames are the only
+  destructive step. Regression test `test_rev_foreign_set_refused`.
+- **Recovery — legacy `.rNN` invisibility (P1)**: the data-volume scan
+  admitted only `.rar`/`.exe`, so legacy old-numbering sets were invisible to
+  repair (reproduced refusal; overwrite-from-parity without `.bad`
+  preservation). `.{letter}NN` extensions are now admitted and mapped.
+  Regression test `test_rev_legacy_numbering`.
+- **Recovery — `RevCleanupGuard` deleting pre-existing `.rev` files**: the
+  failure path removed every output's `final_path`, including `.rev` files
+  from an earlier successful run that this run never touched. Only outputs
+  published *this run* are removed, and publication is a single atomic
+  replace (no remove-then-rename window).
+- **Recovery — resource bounds**: the output-stream leak on a failed
+  `CreateAlways` open in `repair_rev_volumes` (left volumes locked open on
+  Windows) is fixed; the `.rev` parity workspace is capped at 1 GiB with an
+  honest failure instead of `bad_alloc` from absurd `-rv` requests.
+- **DLL — `set_limits` TOCTOU race (P1)**: the busy flag was checked-then-
+  acted; a concurrent extraction could start between the check and the
+  non-atomic limit writes, racing on the limit state. Claiming is now an
+  atomic CAS on both handle types, and every extract/test/list path claims
+  through the same CAS (also closing same-handle callback reentrancy).
+- **DLL — repair exports misreported committed mutations (P1)**:
+  `openrar_archive_repair`, `openrar_archive_create_rev_volumes` and
+  `openrar_archive_add_recovery_record` sampled the cancel callback *after*
+  the operation and returned `RAR_ERR_ABORTED` for mutations that had already
+  committed. The post-operation polls are removed (pre-op polling remains).
+- **DLL — `create_file_ex` undocumented bit-smuggling**: bits 8-15 of the
+  `solid` parameter were hijacked as a hidden filter-flag channel, so a
+  `solid` value like `0x100` silently produced a NON-solid archive. `solid`
+  now honors the documented "any non-zero value" contract; filters go
+  through `create_file_opts` (`OPENRAR_FILTER_*` flags).
+- **DLL — `entry_owner` OOM contract violation**: an allocation failure left
+  the `HAS_USER`/`HAS_GROUP` flag set with a NULL string and returned
+  `RAR_OK`; it now clears flags, frees any sibling string, and returns
+  `RAR_ERR_NOMEM`. Added the missing `static_assert(sizeof(openrar_entry_owner_t) == 20)`.
+- **CLI — `t` fail-open on encrypted entries (P1)**: `openrar t enc.rar`
+  without a password reported OK for every entry and exited 0 while nothing
+  was verified. Encrypted entries without a password now print
+  `SKIPPED (encrypted - no password)` and count as errors (non-zero exit).
+- **CLI — `-md` parse hardening**: the numeric tail must now be fully
+  consumed (`-md16mxyz` is an error), non-finite values are rejected before
+  the double→uint64 cast (latent UB on `-md1e19` / `-mdinf`), and the range
+  check runs pre-cast.
+- **CLI — `x`/`e` argument UB**: `last.back()` on an empty string argument
+  (`openrar x arc ""`) is guarded.
+- **CLI — Windows case-insensitive extraction race**: the duplicate-target
+  guard compared paths case-sensitively, so `ReadMe.txt` and `readme.txt`
+  extracted as two parallel jobs writing one physical file; target identity
+  is case-folded on Windows.
+- **CLI — `p` stdout mode leak**: the binary translation mode set for raw
+  `p` output is now restored on every exit path.
+- **CLI — honest repair/rv diagnostics**: `rv` failures reported "non-volume
+  archive" for IO/parity errors and `r` failures lumped `.rev`-set mismatches
+  into one message; both now state the actual failure classes.
+- **WASM — `createArchive` hooks double-free (P1)**: the hooks pointer was
+  freed in `unwireHooks` *and* again in the `finally` block, double-freeing
+  into the shared dlmalloc heap on every hooks-using call. Regression test
+  added (`createArchive ... hooks conformance`).
+- **WASM — progress callback signature trap (P1)**: the callback was
+  registered as `'vijj'` while the C ABI is `(i64 done, i64 total, i32 user)`
+  = `'vjji'`, trapping the module on the first C-ABI progress callback.
+- **Format — `MHEXTRA_METADATA` name-length overflow**: an addition-form
+  guard (`cur + name_len <= rec_end`) wrapped on crafted near-2^64 vint
+  lengths and issued an unbounded `std::string::assign` (length_error
+  natively, wasm-aborting); replaced with the subtraction form used by the
+  filename path.
+- **Hygiene**: SFX conversion uses the hardened unpredictable temp path with
+  `CreateNew` (the old steady-clock name was predictable and pre-plantable);
+  `copy_stream_region` checks its seek; dead `ArchiveMutator::plan_batch` and
+  the ambiguous `move_file_to_archive_vol` overload were removed; a short
+  SFX-stub read no longer silently zero-fills; the append-path QO locator is
+  guarded under header encryption (matching the fresh-create path).
+
+### Changed
+
+- **Architect skills relocated out of the repository**: the `architect-challenge` and
+  `architect-walkthrough` review workflows (bundled into the repo in 1.8.0) now live at
+  the user level (`~/.agents/skills/`) where they apply across all workspaces; `.agents/`
+  is untracked and gitignored. Historical releases retain their copies.
+- **Parallel filter parity**: the chunk-parallel pipeline cannot honor
+  pre-processing transforms (chunk-relative offsets would corrupt the
+  position-dependent E8/E8E9/ARM transforms, and regions must not cross chunk
+  boundaries). Content is now probed with the same leading-sample
+  `detect_filter` call the sequential path uses: if a filter would trigger,
+  the file takes the sequential path and the request is honored; otherwise it
+  compresses chunk-parallel filter-free — which is what the sequential path
+  would produce. `-mt1` and `-mt>1` now always take the same path for the
+  same input (byte-identical output for filter-triggering content; regression
+  test `test_parallel_filter_parity`).
+
+### Corrected claims (historical entries)
+
+- [1.21.0]: header windows record the full (adaptively clamped) dictionary,
+  NOT `min(dict, chunk_size)` — the claimed reduced-RAM recording was never
+  implemented (it requires grid-snapping the encoder window to the FCI
+  quantization first; see the code comment at the recording site). The
+  `-mt` switch itself clamps to 64; the 16-worker clamp applies to the
+  single-file chunk pipeline only.
+- [1.20.0]: the described "per-chunk parity zeroing" defects were not
+  observable in shipped v1.19.0 (rs16 already zeroes on the first fold);
+  the memsets added in v1.20.0 are defense-in-depth, not a repair.
+- [1.19.0]/[1.14.0]: the multi-volume slicing stage buffers one volume slice
+  (O(vol_size)), not O(dictionary window); the minimum volume-size guard is
+  `vol_size < 1024` → reject, not `>= 4096`.
+- [1.9.3]: strict UTF-8 filename rejection maps to `RAR_ERR_TRUNCATED`
+  (`-3`); the claimed `RAR_ERR_BAD_DATA` code does not exist.
+
 ## [1.21.0] - 2026-09-20
 
 ### Added
@@ -15,13 +189,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Guarantees 100% compatibility with official `UnRAR.exe` 7.20 and native `Decompressor50` without any format extensions or unpacker modifications.
   - **Exclusive Concurrency Dimension Architecture**:
     - Eliminates nested thread-pool deadlock hazards by strictly enforcing the single-dimension concurrency rule: multi-file batches parallelize across files with single-threaded compression per file (`file_threads = 1`), while single files parallelize across chunks (`chunk_threads = mt_threads`).
-    - Resolves bare `-mt` to `core::hardware_thread_hint()`, with `-mt1` forcing single-threaded mode and worker counts clamped to 16 to guarantee strict memory boundaries.
+    - Resolves bare `-mt` to `core::hardware_thread_hint()`, with `-mt1` forcing single-threaded mode. (Corrected in 1.21.1: the switch-level clamp is 64; the 16-worker clamp applies to the single-file chunk pipeline only.)
   - **Bounded-Memory Streaming Block Pipeline (`ParallelBlockPipeline`)**:
     - Implements streaming pipeline for files $> 16\text{ MiB}$ with in-order chunk emission and bounded in-flight memory throttled to $2 \times \text{threads}$.
     - Memory footprint is strictly bounded by clamping worker dictionary windows to chunk size ($\le 16\text{ MiB}$ per worker), with instant vector deallocation after block emission.
     - Enforces match-finder clamping at chunk boundaries (`src_loaded_ = chunk_len`) and disables filters in chunked mode (`FilterMode::DisableAll`) to prevent cross-boundary corruptions.
     - Sentinel repeat match initialization (`old_dist_ = -1`) mathematically prevents cross-chunk distance state contamination.
-    - Honest header window recording: marks `win_size = min(dict, chunk_size)` in file headers, reducing unpacker resident RAM.
+    - Header windows record the full (adaptively clamped) dictionary. (Corrected in 1.21.1: the claimed `win_size = min(dict, chunk_size)` recording was never implemented; see also the claim ledger in the 1.21.1 entry.)
   - **Additive C DLL ABI Parallel Interfaces**:
     - Added `#define OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS (1ull << 15)` in `openrar_dll.h`.
     - Exported `openrar_archive_create_file_opts_mt` supporting caller-specified thread counts, with legacy `openrar_archive_create_file_opts` delegating to it with `threads = 1`.
@@ -37,8 +211,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Standalone Recovery Volumes (`.rev` / `-rv`) Generation & Engine Parity**:
   - Multi-Chunk Reed-Solomon Parity Accumulation Integrity:
-    - Fixed per-chunk parity zeroing bug in `RecoveryWriter::write_rev_volumes` for multi-chunk volume sets (>1 MiB per volume), eliminating residual buffer contamination across chunk boundaries.
-    - Fixed per-chunk reconstruction zeroing bug in `RecoveryWriter::repair_rev_volumes` during Cauchy Reed-Solomon decode passes.
+    - Added per-chunk parity zeroing to `RecoveryWriter::write_rev_volumes` for multi-chunk volume sets (>1 MiB per volume). (Corrected in 1.21.1: the described residual contamination was not observable in shipped 1.19.0; the zeroing is defense-in-depth.)
+    - Added per-chunk reconstruction zeroing to `RecoveryWriter::repair_rev_volumes` during Cauchy Reed-Solomon decode passes (defense-in-depth; see 1.21.1 corrections).
     - Guarantees byte-for-byte exact parity encoding and reconstruction for multi-volume archives of arbitrary size.
   - Missing-Volume Direct Repair Entry Parity:
     - Prioritized `has_rev_files` check ahead of volume existence in `RecoveryWriter::repair`, permitting recovery volume reconstruction when passed missing volume paths (e.g. `openrar r archive.part02.rar`).
@@ -183,7 +357,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Streaming Multi-Volume Creation (`-v<size>`) Without Whole-File RAM Buffering**:
   - Overhauled `ArchiveMutator::add_file_to_archive_vol` to guarantee an invariant $O(\text{dictionary window})$ memory ceiling during multi-volume creation, completely eliminating `uncompressed.resize(file_sz)` whole-file RAM buffering.
   - Stream-compresses large files through bounded spool buffers and slices payloads across volume boundaries using 64-bit extents and offsets.
-  - Connected the `-md` custom dictionary switch to multi-volume archiving, added a minimum volume size guard (`vol_size >= 4096`), and preserved transactional `.mv_bak` sidecar replacement.
+  - Connected the `-md` custom dictionary switch to multi-volume archiving and preserved transactional `.mv_bak` sidecar replacement. (Corrected in 1.21.1: the minimum volume-size guard is `vol_size < 1024` -> reject, not `>= 4096`.)
 - **Direct-to-Archive Streaming Compression (Zero Double-Spooling via Fixed-Width vint Back-Patching)**:
   - Eliminated temporary disk spool files (`spool_tmp`) for large unencrypted files during single-file and sequential additions, cutting disk write I/O by 50% and peak scratch disk usage to 1x payload.
   - Implemented 10-byte fixed-width vint (`push_vint_fixed`) header back-patching in `HeaderWriter::serialize_file_block`, allowing in-place updating of `pack_size`, `data_crc32`, and header CRC without shifting byte offsets or violating RAR5 specification leniency.
@@ -286,7 +460,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Architectural contract specifying cancellation granularity, CRC/BLAKE2sp checksum verification ordering, solid archive replay semantics, memory and byte budget limits, and multi-volume boundaries.
 - **RFC 3629 UTF-8 Filename Validation Hardening**:
   - Implemented strict RFC 3629 UTF-8 validator in `core::is_valid_utf8` rejecting non-shortest forms, surrogate code points (`U+D800`..`U+DFFF`), and out-of-range values.
-  - Enforced in `HeaderReader` for RAR5 file header filenames, rejecting corrupted or malicious archives with `RAR_ERR_BAD_DATA`.
+  - Enforced in `HeaderReader` for RAR5 file header filenames, rejecting corrupted or malicious archives. (Corrected in 1.21.1: the failure maps to `RAR_ERR_TRUNCATED` (-3); no `RAR_ERR_BAD_DATA` code exists.)
 - **Golden Fixture Harness & Deterministic Tooling**:
   - Cross-platform golden fixture suite with portable `=key=value` naming scheme to avoid Windows NTFS alternate data stream collisions (`tests/fixtures/README.md`).
   - Automated generator (`tools/generate_golden.ps1`) and hash verifier (`tools/check_golden.ps1`) validating writer and mutator archives against companion `.sha256` files.

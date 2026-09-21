@@ -208,8 +208,12 @@ core::uint32 HuffmanDecoder::decode(BitReader& reader) const {
 // Decompressor50
 // ------------------------------------------------------------------
 Decompressor50::Decompressor50(size_t win_size)
-    : win_size_(win_size), win_mask_(win_size ? win_size - 1 : 0) {
-    win_pow2_ = (win_size != 0) && ((win_size & (win_size - 1)) == 0);
+    : win_size_(win_size ? win_size : 1024 * 1024),
+      win_mask_(win_size_ ? win_size_ - 1 : 0) {
+    // win_size == 0 is rejected here: a zero window makes the circular-window
+    // arithmetic (modulo win_size_, window_[win_pos_]) undefined. Callers that
+    // genuinely want a placeholder window get the default 1 MiB one.
+    win_pow2_ = (win_size_ & (win_size_ - 1)) == 0;
     last_error_ = DecompressErrorCode::Ok;
     last_error_str_.clear();
 
@@ -523,9 +527,15 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
         }
     }
 
-    // Filter queue is per-file: a filter region never spans a file boundary,
-    // so always start with an empty queue even when the LZ state carries over.
-    filters_.clear();
+    // Filter queue lifecycle: a filter region never spans a file boundary, so
+    // whole-stream calls (per-file) always start with an empty queue. In
+    // per-block mode (single_block) regions may span block boundaries — the
+    // queue carries across blocks of the SAME file (solid=true) and is applied
+    // when each region's data completes. StreamDecoder resets by constructing
+    // a fresh Decompressor50 per file, so no region leaks across files.
+    if (!single_block || !solid) {
+        filters_.clear();
+    }
     core::uint64 base_at_entry = solid ? file_base_ : 0;
     if (!solid) {
         file_base_ = 0;
@@ -562,6 +572,20 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     size_t last_flushed = 0;
     // Aggregate filter budget for this decode (report M7).
     size_t filters_total_len = 0;
+    // Pending regions are recorded in ABSOLUTE file coordinates (block_start
+    // includes base_at_entry) so a queue carried across per-block calls keeps
+    // a stable frame. abs_pos() is this call's current absolute output
+    // position; local_region_start() converts a region into this call's local
+    // frame (regions carried from an earlier block clamp to 0 — their leading
+    // plain bytes were already flushed before this call started).
+    auto abs_pos = [&]() -> core::uint64 {
+        return base_at_entry + static_cast<core::uint64>(total_written);
+    };
+    auto local_region_start = [&](const FilterEntry& f) -> size_t {
+        return f.block_start > base_at_entry
+                   ? static_cast<size_t>(f.block_start - base_at_entry)
+                   : 0;
+    };
 
     auto flush_plain_up_to = [&](size_t target) -> bool {
         if (target > dest_size) target = dest_size;
@@ -583,19 +607,20 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     auto flush_pending_blocks = [&](bool flush_all) -> bool {
         while (!filters_.empty()) {
             const auto& f = filters_.front();
-            if (f.block_start + f.block_length <= total_written) {
+            if (f.block_start + f.block_length <= abs_pos()) {
                 // 1. Flush any plain data preceding this filter:
-                if (last_flushed < f.block_start) {
-                    if (!flush_plain_up_to(f.block_start)) return false;
+                size_t region_local = local_region_start(f);
+                if (last_flushed < region_local) {
+                    if (!flush_plain_up_to(region_local)) return false;
                 }
 
                 // 2. Extract filter region from circular window WITHOUT modifying window_:
                 size_t len = f.block_length;
                 if (len > 0) {
-                    if (total_written - f.block_start >= win_size_) {
+                    if (abs_pos() - f.block_start >= win_size_) {
                         return false;
                     }
-                    size_t back = (total_written - f.block_start) % win_size_;
+                    size_t back = static_cast<size_t>((abs_pos() - f.block_start) % win_size_);
                     size_t circ_start = (unp_ptr_ + win_size_ - back) % win_size_;
                     std::vector<core::byte> buf(len);
                     size_t cur = circ_start;
@@ -635,7 +660,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
                 filters_.erase(filters_.begin());
             } else {
                 if (flush_all) {
-                    if (f.block_start < total_written) {
+                    if (f.block_start < abs_pos()) {
                         return false;
                     }
                     filters_.erase(filters_.begin());
@@ -650,8 +675,9 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
         size_t safe_limit = total_written;
         if (!flush_all) {
             for (const auto& f : filters_) {
-                if (f.block_start < safe_limit) {
-                    safe_limit = f.block_start;
+                size_t region_local = local_region_start(f);
+                if (region_local < safe_limit) {
+                    safe_limit = region_local;
                 }
             }
         }
@@ -724,7 +750,9 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             FilterEntry fe;
             fe.type = static_cast<core::uint8>(f_type);
             fe.channels = static_cast<core::uint8>(f_ch);
-            fe.block_start = total_written + static_cast<size_t>(f_start);
+            // ABSOLUTE file coordinates: carried across per-block calls without
+            // frame drift (see abs_pos()/local_region_start() above).
+            fe.block_start = static_cast<size_t>(base_at_entry) + total_written + f_start;
             fe.file_offset = base_at_entry + static_cast<core::uint64>(total_written) + f_start;
             fe.block_length = f_len;
             // A filter region larger than the window can never be applied
@@ -743,7 +771,20 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
                 filters_total_len > dest_size + win_size_) {
                 return false;
             }
-            if (filters_.size() >= 8192) return false;
+            // Legitimate encoders emit disjoint, ordered regions. Overlapping
+            // or backward regions would let a crafted stream emit transform
+            // output beyond the region data and out of frame order.
+            if (!filters_.empty()) {
+                const FilterEntry& prev = filters_.back();
+                if (fe.block_start < prev.block_start + prev.block_length) {
+                    return false;
+                }
+            }
+            // Queue bound: with disjoint regions enforced, per-region work is
+            // bounded by the region length itself, so this only bounds queue
+            // memory (65536 entries ~= 2 MiB) — large filtered files emit one
+            // region per ~1 MiB and legitimately exceed the old 8192 cap.
+            if (filters_.size() >= 65536) return false;
             filters_.push_back(fe);
             continue;
         }
@@ -849,7 +890,16 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
         }
     }
 
-    if (!flush_pending_blocks(true)) return false;
+    // End-of-call flush. Whole-stream calls and the final block of a
+    // per-block stream flush strictly: incomplete regions mean a corrupt
+    // stream. Non-final per-block calls flush only completed regions and
+    // leave regions spanning into the next block queued (they are applied
+    // there once their data has fully arrived).
+    if (!single_block || header.last_block_in_file) {
+        if (!flush_pending_blocks(true)) return false;
+    } else if (!flush_pending_blocks(false)) {
+        return false;
+    }
 
     // Truncation check: if the stream ended without a LastBlock flag before
     // producing dest_size bytes, the payload is incomplete.
