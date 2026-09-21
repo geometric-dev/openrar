@@ -45,6 +45,7 @@ set(OPENRAR_CORE_SOURCES
     src/compress/stream_encoder.cpp
     src/compress/stream_decoder.cpp
     src/compress/parallel_compressor.cpp
+    src/compress/arch/match_avx512.cpp
     src/archive/archive_reader.cpp
     src/archive/archive_mutator.cpp
     src/archive/volume.cpp
@@ -153,6 +154,28 @@ if(OPENRAR_WARNINGS_AS_ERRORS)
     else()
         add_compile_options(-Werror)
     endif()
+endif()
+
+# ── AVX-512 match-length kernel (v1.22.0) ────────────────────────────────────
+# The kernel TU is the ONLY translation unit compiled with /arch:AVX512, so
+# 512-bit intrinsics never leak into baseline codegen (a global /arch would
+# emit AVX-512 outside guarded paths and #UD on older CPUs). The runtime
+# dispatcher still requires cpu.avx512f (CPUID + OS XSTATE) before selecting
+# it. GCC/Clang need no per-TU flag (function-level target attribute inside
+# the TU); the define only exists where the kernel is actually compiled.
+set(OPENRAR_AVX512_KERNEL OFF)
+if(NOT EMSCRIPTEN)
+    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(OPENRAR_AVX512_KERNEL ON)
+        set_source_files_properties(src/compress/arch/match_avx512.cpp
+            PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+    elseif((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)")
+        set(OPENRAR_AVX512_KERNEL ON)
+    endif()
+endif()
+if(OPENRAR_AVX512_KERNEL)
+    add_compile_definitions(OPENRAR_HAS_AVX512_KERNEL=1)
 endif()
 
 # ── Sanitizers (must be set before any target is defined) ────────────────────

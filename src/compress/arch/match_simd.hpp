@@ -251,9 +251,19 @@ inline size_t match_length_wasm(const core::byte* p, const core::byte* q, size_t
 
 using MatchFn = size_t (*)(const core::byte*, const core::byte*, size_t) noexcept;
 
+#if defined(OPENRAR_HAS_X86_SIMD) && defined(OPENRAR_HAS_AVX512_KERNEL)
+// Defined in match_avx512.cpp — the one TU compiled with /arch:AVX512
+// (MSVC) or function-level target attributes (GCC/Clang). Only reachable
+// when cpu.avx512f proves CPU + OS ZMM state support.
+size_t match_length_avx512_kernel(const core::byte* p, const core::byte* q, size_t cap) noexcept;
+#endif
+
 inline MatchFn resolve_match_fn() noexcept {
 #if defined(OPENRAR_HAS_X86_SIMD)
     const auto& cpu = core::get_cpu_features();
+#if defined(OPENRAR_HAS_AVX512_KERNEL)
+    if (cpu.avx512f) return match_length_avx512_kernel;
+#endif
     if (cpu.avx2) return match_length_avx2;
     if (cpu.sse2) return match_length_sse2;
     return match_length_scalar;

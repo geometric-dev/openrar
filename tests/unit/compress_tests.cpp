@@ -1764,6 +1764,72 @@ void test_chunk_framing_spike() {
               << original.size() << " -> " << concatenated_stream.size() << ")" << std::endl;
 }
 
+// ── v1.22.0: cross-implementation bit-exactness gate for the match finder ───
+// Every implementation the running CPU supports must produce results
+// identical to the scalar reference, across random data and every boundary
+// size class (0, 1, word, SIMD-lane and multi-lane widths, plus tails). This
+// is the roadmap's "Scalar == AVX2 == AVX-512 == NEON" gate: kernels are
+// only exercised where the hardware supports them, so the gate validates
+// exactly what a given machine can execute.
+void test_match_length_bit_exactness() {
+    std::cout << "[+] test_match_length_bit_exactness" << std::endl;
+    const auto& cpu = core::get_cpu_features();
+    std::vector<std::pair<const char*, arch::MatchFn>> impls;
+    impls.push_back({"scalar", arch::match_length_scalar});
+#if defined(OPENRAR_HAS_X86_SIMD)
+    if (cpu.sse2) impls.push_back({"sse2", arch::match_length_sse2});
+    if (cpu.avx2) impls.push_back({"avx2", arch::match_length_avx2});
+#endif
+#if defined(OPENRAR_HAS_X86_SIMD) && defined(OPENRAR_HAS_AVX512_KERNEL)
+    if (cpu.avx512f) impls.push_back({"avx512", arch::match_length_avx512_kernel});
+#endif
+    assert(impls.size() >= 1);
+
+    // Deterministic corpus: high-entropy noise (frequent mismatches), long
+    // runs (long matches), and near-identical buffers with late first
+    // differences at lane-boundary-sensitive offsets.
+    std::vector<std::vector<core::byte>> corpus;
+    std::mt19937 rng(0xC0FFEE);
+    std::uniform_int_distribution<int> byte(0, 255);
+    {
+        std::vector<core::byte> noise(4096);
+        for (auto& b : noise) b = static_cast<core::byte>(byte(rng));
+        corpus.push_back(noise);
+        std::vector<core::byte> runs(4096, core::byte(0xAB));
+        corpus.push_back(runs);
+        std::vector<core::byte> shifted(noise);
+        for (int d : {1, 7, 8, 32, 63, 64, 65, 255}) {
+            shifted = noise;
+            if (d < static_cast<int>(shifted.size())) {
+                shifted[static_cast<size_t>(d)] =
+                    static_cast<core::byte>(static_cast<uint8_t>(noise[static_cast<size_t>(d)]) ^ 0xFF);
+            }
+            corpus.push_back(shifted);
+        }
+    }
+
+    const size_t caps[] = {0, 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33,
+                           63, 64, 65, 127, 128, 129, 255, 256, 1024, 4095, 4096};
+    size_t checked = 0;
+    for (const auto& buf : corpus) {
+        for (const auto& other : corpus) {
+            for (size_t cap : caps) {
+                const size_t expect = arch::match_length_scalar(buf.data(), other.data(), cap);
+                for (const auto& impl : impls) {
+                    const size_t got = impl.second(buf.data(), other.data(), cap);
+                    assert(got == expect && "SIMD match length diverged from scalar");
+                }
+                checked++;
+            }
+        }
+    }
+    std::cout << "    - " << impls.size() << " paths (";
+    for (size_t k = 0; k < impls.size(); ++k) {
+        std::cout << impls[k].first << (k + 1 < impls.size() ? "," : "");
+    }
+    std::cout << ") identical over " << checked << " cases: OK" << std::endl;
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -1774,6 +1840,8 @@ int main() {
 #endif
     std::cout << "Running Clean-Room Milestone 6 Compression Verification...\n" << std::flush;
     test_cpu_features();
+    std::cout << std::flush;
+    test_match_length_bit_exactness();
     std::cout << std::flush;
     test_delta_filter();
     std::cout << std::flush;

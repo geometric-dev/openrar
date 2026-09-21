@@ -123,6 +123,11 @@ CpuFeatures detect_cpu_features() {
         f.avx2 = os_ymm && (ebx & (1 << 5)) != 0;
         f.sha_ni = (ebx & (1 << 29)) != 0;
         f.avx512f = os_zmm && (ebx & (1 << 16)) != 0;
+        // GFNI (leaf 7 ECX bit 8) is required in its 512-bit form for the
+        // RS16 parity kernel, so it is gated on ZMM OS state like AVX-512F
+        // (v1.22.0 groundwork). The 128/256-bit GFNI forms (AVX2-class /
+        // SSE-class) remain unused.
+        f.gfni = f.avx512f && (ecx & (1 << 8)) != 0;
         // VAES / VPCLMULQDQ exist in 128/256-bit (AVX2-class) and 512-bit
         // forms; we only commit to the AVX2-class forms here, so the OS
         // requirement is YMM state, not ZMM.
@@ -204,6 +209,11 @@ AccelerationReport describe_acceleration() {
     constexpr bool match_simd_x86 = true;
 #endif
     if (match_simd_x86) {
+#if defined(OPENRAR_HAS_AVX512_KERNEL)
+        if (f.avx512f)
+            r.tags.push_back("AVX512 LZ");
+        else
+#endif
         if (f.avx2)
             r.tags.push_back("AVX2 LZ");
         else if (f.sse2)
