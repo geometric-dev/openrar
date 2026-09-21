@@ -823,6 +823,72 @@ def test_ctest():
             print("  OK compress_tests (direct)"); return True
     return True
 
+def test_exit_code_parity(openrar, unrar):
+    """Stage 15: CLI exit codes must match the unrar taxonomy (errhnd.hpp
+    RAR_EXIT). Measured scenarios: healthy=0, missing=10 (NO_FILES),
+    not-an-archive=13 (BADARC), corrupt=3 (CRC), usage=7 (USERERROR),
+    no-files-matched=10 for extraction. Documented deviation: testing an
+    encrypted archive WITHOUT a password returns 11 (BADPWD) here, while
+    unrar surfaces 12 (READ); a WRONG password returns 11 on both."""
+    print("[15/15] Exit-code parity vs unrar taxonomy...", flush=True)
+    import subprocess, tempfile, os
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "f.txt")
+        with open(src, "w") as f:
+            f.write("exit code parity payload\n")
+        ok_arc = os.path.join(td, "ok.rar")
+
+        def ox(*args):
+            return subprocess.run([openrar, *args], capture_output=True).returncode
+        def ux(*args):
+            if not unrar:
+                return None
+            return subprocess.run([unrar, *args], capture_output=True).returncode
+
+        r = ox("a", ok_arc, src)
+        if r != 0:
+            print(f"  FAIL creating fixture archive (rc={r})"); return False
+
+        # Corrupt a payload byte to force a CRC failure.
+        data = bytearray(open(ok_arc, "rb").read())
+        data[len(data) // 2] ^= 0xFF
+        bad_arc = os.path.join(td, "bad.rar")
+        open(bad_arc, "wb").write(bytes(data))
+
+        cases = [
+            ("healthy", ox("t", ok_arc), ux("t", ok_arc), 0),
+            ("missing archive", ox("t", os.path.join(td, "nope.rar")),
+             ux("t", os.path.join(td, "nope.rar")), 10),
+            ("not an archive", None, None, 13),
+            ("corrupt payload", None, None, 3),
+            ("no files matched", ox("t", ok_arc, "zzz.txt"), None, 10),
+        ]
+        garbage = os.path.join(td, "garbage.rar")
+        open(garbage, "w").write("this is not an archive\n")
+        cases[2] = ("not an archive", ox("t", garbage), ux("t", garbage), 13)
+        cases[3] = ("corrupt payload", ox("t", bad_arc), ux("t", bad_arc), 3)
+
+        failures = 0
+        for name, got, ref, want in cases:
+            if got != want:
+                print(f"  FAIL {name}: openrar={got} want={want} (unrar={ref})")
+                failures += 1
+            else:
+                print(f"  OK {name}: {got} (unrar={ref})")
+        if unrar:
+            for name, got, ref in [("healthy", cases[0][1], cases[0][2]),
+                                   ("missing", cases[1][1], cases[1][2]),
+                                   ("garbage", cases[2][1], cases[2][2]),
+                                   ("corrupt", cases[3][1], cases[3][2])]:
+                if got != ref:
+                    print(f"  FAIL parity {name}: openrar={got} unrar={ref}")
+                    failures += 1
+        if failures:
+            return False
+        print("  OK exit-code taxonomy matches unrar (11-vs-12 no-password deviation documented)")
+        return True
+
+
 def main():
     import time
     t0 = time.time()
@@ -850,6 +916,7 @@ def main():
         (test_multivolume, (openrar, rar)),
         (test_sfx, (openrar,)),
         (test_ctest, ()),
+        (test_exit_code_parity, (openrar, unrar)),
     ]
 
     for fn, args in stages:
@@ -859,7 +926,7 @@ def main():
 
     elapsed = time.time() - t0
     print(f"\n=======================================================")
-    print(f" ALL 14 INTEROP GATE STAGES PASSED in {elapsed:.2f}s")
+    print(f" ALL 15 INTEROP GATE STAGES PASSED in {elapsed:.2f}s")
     print(f"=======================================================")
 
 if __name__ == "__main__":

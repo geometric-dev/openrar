@@ -1018,6 +1018,57 @@ static void test_deferred_store_and_adaptive_clamping() {
     std::cout << "[PASS] DeferredStoreAndAdaptiveClamping\n";
 }
 
+// ── v1.21.2: off-grid dictionary windows must be snapped to the FCI grid ────
+// A library caller passing an arbitrary dict_size (e.g. 3'000'000 bytes,
+// between grid steps) previously produced an encoder whose slot-table and
+// match horizon were chosen from the REQUESTED window while the header
+// recorded the FLOOR-QUANTIZED value — a window smaller than a distance the
+// encoder actually used is undeclarable. The snap makes them agree.
+static void test_off_grid_dict_snap_roundtrip() {
+    std::cout << "Starting test_off_grid_dict_snap_roundtrip...\n" << std::flush;
+    const fs::path dir = make_scratch_dir("off_grid_dict");
+    // 3'000'000 = 2 MiB + 902'848: NOT on the FCI grid (steps of 64 KiB above
+    // the 2 MiB base), and > 16 MiB spool threshold is irrelevant here — this
+    // exercises the in-memory path with an explicit off-grid dict_size.
+    const std::uint64_t off_grid = 3000000ULL;
+    const std::vector<uint8_t> data = make_pattern(1 << 21, 11);  // 2 MiB payload
+    const fs::path src = dir / "src.bin";
+    write_bytes(src, data);
+    const fs::path arc = dir / "offgrid.rar";
+
+    ArchiveMutator::PreparedAdd prep;
+    assert(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", prep,
+                                            engine::time_flags::MTIME, off_grid));
+    std::vector<ArchiveMutator::PreparedAdd> batch;
+    batch.push_back(std::move(prep));
+    assert(ArchiveMutator::write_batch_add(arc, batch, {}, "", false, {}, /*solid=*/false));
+
+    // The written header must record a value the FCI decode returns exactly:
+    // base 2 MiB + fraction*(64 KiB), i.e. the snapped window — never the raw
+    // off-grid request. Read it back and require a clean roundtrip, which
+    // fails with "distance > window" if encoder and header disagree.
+    engine::ArchiveReader reader;
+    assert(reader.open(arc));
+    bool found = false;
+    for (const auto& e : reader.entries()) {
+        if (e.header.is_service || e.header.file_name != "data.bin") continue;
+        found = true;
+        const std::uint64_t win = e.header.win_size;
+        const std::uint64_t base = 2ULL * 1024 * 1024;
+        assert(win >= base && win <= base + 31 * (base / 32));
+        assert((win - base) % (base / 32) == 0 && "header window is not on the FCI grid");
+    }
+    assert(found && "entry missing after off-grid dict add");
+    reader.close();
+
+    // Extract and verify byte-exactness through the quantized window.
+    assert(handle_extract(arc, 0) == data && "off-grid dict roundtrip mismatch");
+
+    std::error_code rm_ec;
+    fs::remove_all(dir, rm_ec);
+    std::cout << "test_off_grid_dict_snap_roundtrip OK\n";
+}
+
 static void test_direct_stream_compression_and_backpatch() {
     fs::path dir = make_scratch_dir("direct_stream");
     std::error_code ec;
@@ -1285,6 +1336,7 @@ int main() {
     test_streaming_and_spooling();
     test_deferred_store_and_adaptive_clamping();
     test_direct_stream_compression_and_backpatch();
+    test_off_grid_dict_snap_roundtrip();
     std::cout << "ALL MUTATION TESTS PASSED\n";
     return 0;
 }

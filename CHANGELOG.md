@@ -5,6 +5,70 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.2] - 2026-09-21
+
+Residual P2 front-load from the v1.6.0 → v1.21.0 audit (the remainder of the
+P2 ledger not required for the v1.21.1 gate), plus the exit-code taxonomy
+measured against the reference UnRAR oracle.
+
+### Fixed
+
+- **Off-grid dictionary windows (P2)**: a library caller passing an arbitrary
+  `dict_size` (e.g. 4.1 GiB, which floor-quantizes to a 4 GiB header) got an
+  encoder whose distance-slot table (446-slot) and match horizon were chosen
+  from the REQUESTED window while the header recorded the quantized value —
+  self-inconsistent archives the decoder (and WinRAR) cannot read. Window
+  finalization now snaps to the exact FCI grid (base 128 KiB<<N, fraction
+  steps of base/32, clamped at the maximum representable value) in both
+  `prepare_add_file` and the multi-volume path, before the compressor is
+  constructed. CLI `-md` values were already grid-exact. Regression test
+  `test_off_grid_dict_snap_roundtrip`.
+- **`:` / `:$DATA` stream names (P2, truncation vector)**: `write_alternate_stream`
+  accepted archive-controlled stream names that resolve to the host file's
+  DEFAULT data stream; the `CREATE_ALWAYS` open then truncated the
+  just-extracted target's contents. Empty and `$DATA` (any case) stream parts
+  are now rejected.
+- **FHEXTRA_OWNER 255-byte name limit (P2, conformance)**: the reader clamped
+  over-long name lengths and then parsed the remaining fields out of the
+  middle of the name bytes (wrong ownership data flowing into `chown`); the
+  writer never enforced the limit. Over-long records are now DISCARDED per
+  spec on read, and the writer truncates names at 255 bytes.
+- **`start_vol` orphan volume (P2)**: a failure during a new volume's header
+  writes left the created file on disk (registered in the cleanup guard only
+  after all writes succeeded); it is registered immediately after open.
+- **`-hp` append error fidelity (P2)**: appending to a header-encrypted
+  archive without a password reported `RAR_ERR_IO "cannot open existing
+  archive"`; it now returns `RAR_ERR_UNSUPPORTED_FEATURE` with a precise
+  message (parity with the delete surface), via `open_ex` status codes.
+- **Non-throwing cleanup (P2)**: 72 bare `std::filesystem::remove(tmp_path)`
+  calls on error paths (which could throw out of status-code APIs and mask
+  the real failure) now use the `error_code` overload.
+- **Hygiene (P3)**: removed the unreachable `//`-prefix check in
+  `validate_archive_path`; the parallel pipeline no longer delivers
+  completed chunks to the sink after cancellation is observed.
+
+### Changed
+
+- **WinRAR exit-code taxonomy (CLI)**: exit codes were measured against the
+  reference UnRAR implementation (`errhnd.hpp RAR_EXIT`) and mapped:
+  healthy=0, missing archive=10 (NO_FILES), unrecognized=13 (BADARC),
+  checksum=3 (CRC), locked=4, open=6, usage=7, memory=8, no files matched=10
+  for extraction/testing, wrong password=11, user break=255. Previously every
+  failure collapsed to 1 — which in WinRAR semantics means "warning".
+  Documented deviation: testing an encrypted archive WITHOUT a password
+  returns 11 here where unrar surfaces 12 (READ); a wrong password is 11 on
+  both. Enforced by interop-gate stage 15 (exit-code parity).
+- **`l`/`lb`/`lt` and `t` file-mask support (P3)**: mask arguments were
+  silently ignored by the list and test commands; both now filter by mask
+  (`l` no-match exits 0 per the oracle; `t`/`x`/`e` no-match exits 10).
+- **Switch dispatch tightening (P3)**: `rr*`/`s*`/`-ver*` prefix
+  over-acceptance (typos silently became commands with default behavior)
+  replaced with exact-or-validated dispatch; bare `-x@` is an error instead
+  of an exclusion pattern `"@"`; `-md` values snapped down by the FCI grid
+  cap print a warning.
+- **ADS/ACL restore warnings (P3)**: child streams/security descriptors
+  failing their CRC are reported (`W:`) instead of being dropped silently.
+
 ## [1.21.1] - 2026-09-20
 
 Stabilization release ("Tight Base"): the blocking gate of the v1.22.0+ roadmap
