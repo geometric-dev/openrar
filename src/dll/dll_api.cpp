@@ -12,6 +12,7 @@
 #include "../archive/volume.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <exception>
 #include <cstdlib>
 #include <cstddef>
@@ -319,8 +320,8 @@ struct BufferArchiveHandle : ArchiveHandleBase {
     openrar::archive::LimitState limit_state;
     bool has_limits{false};
 
-    int set_limits(uint64_t max_member_bytes, uint64_t max_total_bytes,
-                   uint64_t max_header_count, uint64_t max_header_bytes) override {
+    int set_limits(uint64_t max_member_bytes, uint64_t max_total_bytes, uint64_t max_header_count,
+                   uint64_t max_header_bytes) override {
         // Atomic claim: closes the check-then-act window where a concurrent
         // extraction could start between the old busy.load() and these
         // non-atomic limit writes (v1.21.1 fix).
@@ -485,8 +486,8 @@ struct FileArchiveHandle : ArchiveHandleBase {
     openrar::archive::LimitState limit_state;
     bool has_limits{false};
 
-    int set_limits(uint64_t max_member_bytes, uint64_t max_total_bytes,
-                   uint64_t max_header_count, uint64_t max_header_bytes) override {
+    int set_limits(uint64_t max_member_bytes, uint64_t max_total_bytes, uint64_t max_header_count,
+                   uint64_t max_header_bytes) override {
         // Atomic claim: closes the check-then-act window where a concurrent
         // extraction could start between the old busy.load() and these
         // non-atomic limit writes (v1.21.1 fix).
@@ -562,9 +563,10 @@ struct FileArchiveHandle : ArchiveHandleBase {
             if (rc == RAR_ERR_LIMIT_EXCEEDED)
                 set_error("resource limit exceeded");
             else
-                set_error(rc == RAR_ERR_NOMEM ? "entry exceeds the 256 MiB in-memory extract cap; use "
-                                                "openrar_archive_handle_extract_to_path"
-                                              : "extract failed");
+                set_error(rc == RAR_ERR_NOMEM
+                              ? "entry exceeds the 256 MiB in-memory extract cap; use "
+                                "openrar_archive_handle_extract_to_path"
+                              : "extract failed");
             return rc;
         }
         *out_ptr = openrar::api::heap_dup(out.data(), out.size());
@@ -620,7 +622,7 @@ struct FileArchiveHandle : ArchiveHandleBase {
         }
         return durable_write_to(dest, [&](openrar::io::FileStream& f) {
             int rc = reader->extract_entry_stream(reader_index[entry_index], f, hooks,
-                                                 has_limits ? &limits : nullptr, &limit_state);
+                                                  has_limits ? &limits : nullptr, &limit_state);
             if (rc == RAR_ERR_LIMIT_EXCEEDED) set_error("resource limit exceeded");
             return rc;
         });
@@ -793,8 +795,8 @@ struct FileArchiveHandle : ArchiveHandleBase {
         return RAR_OK; // no CMT service
     }
 
-    int entry_owner(uint32_t entry_index, openrar_entry_owner_t* owner_out,
-                    char** username_out, char** groupname_out) override {
+    int entry_owner(uint32_t entry_index, openrar_entry_owner_t* owner_out, char** username_out,
+                    char** groupname_out) override {
         if (!owner_out) {
             set_error("null argument");
             return RAR_ERR_INVALID_ARG;
@@ -886,10 +888,10 @@ uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
            OPENRAR_ABI_FEATURE_HANDLE_OPEN_PROGRESS | OPENRAR_ABI_FEATURE_FILE_HANDLE |
            OPENRAR_ABI_FEATURE_MUTATION | OPENRAR_ABI_FEATURE_ENTRY_EX |
            OPENRAR_ABI_FEATURE_PACKAGE_VERSION | OPENRAR_ABI_FEATURE_SET_LIMITS |
-           OPENRAR_ABI_FEATURE_REPAIR | OPENRAR_ABI_FEATURE_CREATE |
-           OPENRAR_ABI_FEATURE_FILTERS | OPENRAR_ABI_FEATURE_OWNER |
-           OPENRAR_ABI_FEATURE_DICT_EX | OPENRAR_ABI_FEATURE_VOL_ENCRYPT |
-           OPENRAR_ABI_FEATURE_REC_VOL | OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS;
+           OPENRAR_ABI_FEATURE_REPAIR | OPENRAR_ABI_FEATURE_CREATE | OPENRAR_ABI_FEATURE_FILTERS |
+           OPENRAR_ABI_FEATURE_OWNER | OPENRAR_ABI_FEATURE_DICT_EX |
+           OPENRAR_ABI_FEATURE_VOL_ENCRYPT | OPENRAR_ABI_FEATURE_REC_VOL |
+           OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1417,11 +1419,10 @@ int OPENRAR_DLL_CALL openrar_archive_handle_test(uint32_t handle, uint32_t entry
     }
 }
 
-int OPENRAR_DLL_CALL openrar_archive_handle_set_limits(uint32_t handle,
-                                                      uint64_t max_member_bytes,
-                                                      uint64_t max_total_bytes,
-                                                      uint64_t max_header_count,
-                                                      uint64_t max_header_bytes) {
+int OPENRAR_DLL_CALL openrar_archive_handle_set_limits(uint32_t handle, uint64_t max_member_bytes,
+                                                       uint64_t max_total_bytes,
+                                                       uint64_t max_header_count,
+                                                       uint64_t max_header_bytes) {
     try {
         auto h = g_handles.pin(handle);
         if (!h) {
@@ -1636,8 +1637,8 @@ int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
                 }
             } else if (!openrar::archive::ArchiveMutator::prepare_add_file(
                            p.src_path, name, method, /*password=*/"", p,
-                           openrar::archive::time_flags::MTIME, window_log2,
-                           false, false, false, /*direct_stream=*/true)) {
+                           openrar::archive::time_flags::MTIME, window_log2, false, false, false,
+                           /*direct_stream=*/true)) {
                 set_error("cannot read " + std::string(src_paths[i]));
                 return RAR_ERR_IO;
             }
@@ -1663,9 +1664,9 @@ int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* arc_path,
     }
 }
 
-int OPENRAR_DLL_CALL openrar_archive_create_file(
-    const char* arc_path, const char* const* src_paths, const char* const* arc_names,
-    uint32_t file_count, int method, uint64_t dict_size) {
+int OPENRAR_DLL_CALL openrar_archive_create_file(const char* arc_path, const char* const* src_paths,
+                                                 const char* const* arc_names, uint32_t file_count,
+                                                 int method, uint64_t dict_size) {
     return openrar_archive_create_file_ex(arc_path, src_paths, arc_names, file_count, method,
                                           dict_size, nullptr, 0, 0, nullptr, nullptr, nullptr);
 }
@@ -1676,14 +1677,20 @@ static openrar::compress::FilterConfig filter_cfg_from_flags(uint32_t flags) {
         cfg.mode = openrar::compress::FilterMode::DisableAll;
         return cfg;
     }
-    if (flags & OPENRAR_FILTER_FORCE_E8) cfg.e8_override = 1;
-    else if (flags & OPENRAR_FILTER_DISABLE_E8) cfg.e8_override = -1;
+    if (flags & OPENRAR_FILTER_FORCE_E8)
+        cfg.e8_override = 1;
+    else if (flags & OPENRAR_FILTER_DISABLE_E8)
+        cfg.e8_override = -1;
 
-    if (flags & OPENRAR_FILTER_FORCE_ARM) cfg.arm_override = 1;
-    else if (flags & OPENRAR_FILTER_DISABLE_ARM) cfg.arm_override = -1;
+    if (flags & OPENRAR_FILTER_FORCE_ARM)
+        cfg.arm_override = 1;
+    else if (flags & OPENRAR_FILTER_DISABLE_ARM)
+        cfg.arm_override = -1;
 
-    if (flags & OPENRAR_FILTER_FORCE_DELTA) cfg.delta_override = 1;
-    else if (flags & OPENRAR_FILTER_DISABLE_DELTA) cfg.delta_override = -1;
+    if (flags & OPENRAR_FILTER_FORCE_DELTA)
+        cfg.delta_override = 1;
+    else if (flags & OPENRAR_FILTER_DISABLE_DELTA)
+        cfg.delta_override = -1;
 
     return cfg;
 }
@@ -1700,8 +1707,8 @@ int OPENRAR_DLL_CALL openrar_archive_create_file_ex(
     // (v1.21.1 fix).
     int is_solid = (solid != 0) ? 1 : 0;
     return openrar_archive_create_file_opts(arc_path, src_paths, arc_names, file_count, method,
-                                           dict_size, password_utf8, encrypt_headers, is_solid,
-                                           OPENRAR_FILTER_DEFAULT, progress, cancel, user);
+                                            dict_size, password_utf8, encrypt_headers, is_solid,
+                                            OPENRAR_FILTER_DEFAULT, progress, cancel, user);
 }
 
 int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
@@ -1709,10 +1716,9 @@ int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
     uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
     int encrypt_headers, int solid, uint32_t filter_flags, openrar_progress_cb progress,
     openrar_cancel_cb cancel, void* user) {
-    return openrar_archive_create_file_opts_mt(
-        arc_path, src_paths, arc_names, file_count, method, dict_size,
-        password_utf8, encrypt_headers, solid, filter_flags, /*threads=*/1,
-        progress, cancel, user);
+    return openrar_archive_create_file_opts_mt(arc_path, src_paths, arc_names, file_count, method,
+                                               dict_size, password_utf8, encrypt_headers, solid,
+                                               filter_flags, /*threads=*/1, progress, cancel, user);
 }
 
 int OPENRAR_DLL_CALL openrar_archive_create_file_opts_mt(
@@ -1817,10 +1823,8 @@ int OPENRAR_DLL_CALL openrar_archive_create_file_opts_mt(
     }
 }
 
-int OPENRAR_DLL_CALL openrar_archive_repair(const char* arc_path,
-                                            openrar_progress_cb progress,
-                                            openrar_cancel_cb cancel,
-                                            void* user) {
+int OPENRAR_DLL_CALL openrar_archive_repair(const char* arc_path, openrar_progress_cb progress,
+                                            openrar_cancel_cb cancel, void* user) {
     try {
         if (!arc_path) {
             set_error("null argument");
@@ -1832,13 +1836,15 @@ int OPENRAR_DLL_CALL openrar_archive_repair(const char* arc_path,
         }
         // If .rev files are present, repair reconstructs missing volumes,
         // so arc_path itself does not strictly need to exist on disk.
-        bool has_rev = openrar::recovery::RecoveryWriter::has_rev_files(std::filesystem::u8path(arc_path));
+        bool has_rev =
+            openrar::recovery::RecoveryWriter::has_rev_files(std::filesystem::u8path(arc_path));
         int pre = mutation_precheck(arc_path, /*must_exist=*/!has_rev);
         if (pre != RAR_OK) return pre;
 
         if (progress) progress(user, 0, 100);
 
-        bool ok = openrar::recovery::RecoveryWriter::repair(std::filesystem::u8path(arc_path));        // No post-operation cancel poll: RecoveryWriter takes no cancel
+        bool ok = openrar::recovery::RecoveryWriter::repair(std::filesystem::u8path(
+            arc_path)); // No post-operation cancel poll: RecoveryWriter takes no cancel
         // callback, so the operation has already committed by the time the
         // flag could be sampled here (v1.21.1 fix).
         if (!ok) {
@@ -1857,12 +1863,10 @@ int OPENRAR_DLL_CALL openrar_archive_repair(const char* arc_path,
 }
 
 int OPENRAR_DLL_CALL openrar_archive_create_rev_volumes(const char* arc_path,
-                                                        uint32_t count_or_percent,
-                                                        int is_percent,
+                                                        uint32_t count_or_percent, int is_percent,
                                                         unsigned int threads,
                                                         openrar_progress_cb progress,
-                                                        openrar_cancel_cb cancel,
-                                                        void* user) {
+                                                        openrar_cancel_cb cancel, void* user) {
     try {
         if (!arc_path) {
             set_error("null argument");
@@ -1879,7 +1883,8 @@ int OPENRAR_DLL_CALL openrar_archive_create_rev_volumes(const char* arc_path,
 
         bool ok = openrar::recovery::RecoveryWriter::write_rev_volumes(
             std::filesystem::u8path(arc_path), count_or_percent, is_percent != 0,
-            threads > 0 ? threads : 1);        // No post-operation cancel poll: RecoveryWriter takes no cancel
+            threads > 0 ? threads
+                        : 1); // No post-operation cancel poll: RecoveryWriter takes no cancel
         // callback, so the operation has already committed by the time the
         // flag could be sampled here (v1.21.1 fix).
         if (!ok) {
@@ -1897,12 +1902,10 @@ int OPENRAR_DLL_CALL openrar_archive_create_rev_volumes(const char* arc_path,
     }
 }
 
-int OPENRAR_DLL_CALL openrar_archive_add_recovery_record(const char* arc_path,
-                                                         uint32_t percent,
+int OPENRAR_DLL_CALL openrar_archive_add_recovery_record(const char* arc_path, uint32_t percent,
                                                          unsigned int threads,
                                                          openrar_progress_cb progress,
-                                                         openrar_cancel_cb cancel,
-                                                         void* user) {
+                                                         openrar_cancel_cb cancel, void* user) {
     try {
         if (!arc_path) {
             set_error("null argument");
@@ -1922,7 +1925,9 @@ int OPENRAR_DLL_CALL openrar_archive_add_recovery_record(const char* arc_path,
         if (progress) progress(user, 0, 100);
 
         bool ok = openrar::recovery::RecoveryWriter::add_recovery_record(
-            std::filesystem::u8path(arc_path), percent, threads > 0 ? threads : 1);        // No post-operation cancel poll: RecoveryWriter takes no cancel
+            std::filesystem::u8path(arc_path), percent,
+            threads > 0 ? threads
+                        : 1); // No post-operation cancel poll: RecoveryWriter takes no cancel
         // callback, so the operation has already committed by the time the
         // flag could be sampled here (v1.21.1 fix).
         if (!ok) {
@@ -1977,8 +1982,7 @@ void OPENRAR_DLL_CALL openrar_archive_entry_ex_free(void* extra) {
 
 int OPENRAR_DLL_CALL openrar_archive_handle_entry_owner(uint32_t handle, uint32_t entry_index,
                                                         openrar_entry_owner_t* owner_out,
-                                                        char** username_out,
-                                                        char** groupname_out) {
+                                                        char** username_out, char** groupname_out) {
     try {
         if (!owner_out) {
             set_error("null argument");

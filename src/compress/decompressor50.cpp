@@ -83,7 +83,8 @@ core::uint64 BitReader::get_bits64(unsigned int count) {
     if (count > 64) count = 64;
     if (n_ < count) refill();
     if (n_ >= count) {
-        core::uint64 val = (count == 64) ? acc_ : ((acc_ >> (n_ - count)) & ((core::uint64(1) << count) - 1));
+        core::uint64 val =
+            (count == 64) ? acc_ : ((acc_ >> (n_ - count)) & ((core::uint64(1) << count) - 1));
         consume_bits(count);
         return val;
     }
@@ -208,8 +209,7 @@ core::uint32 HuffmanDecoder::decode(BitReader& reader) const {
 // Decompressor50
 // ------------------------------------------------------------------
 Decompressor50::Decompressor50(size_t win_size)
-    : win_size_(win_size ? win_size : 1024 * 1024),
-      win_mask_(win_size_ ? win_size_ - 1 : 0) {
+    : win_size_(win_size ? win_size : 1024 * 1024), win_mask_(win_size_ ? win_size_ - 1 : 0) {
     // win_size == 0 is rejected here: a zero window makes the circular-window
     // arithmetic (modulo win_size_, window_[win_pos_]) undefined. Callers that
     // genuinely want a placeholder window get the default 1 MiB one.
@@ -582,9 +582,8 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
         return base_at_entry + static_cast<core::uint64>(total_written);
     };
     auto local_region_start = [&](const FilterEntry& f) -> size_t {
-        return f.block_start > base_at_entry
-                   ? static_cast<size_t>(f.block_start - base_at_entry)
-                   : 0;
+        return f.block_start > base_at_entry ? static_cast<size_t>(f.block_start - base_at_entry)
+                                             : 0;
     };
 
     auto flush_plain_up_to = [&](size_t target) -> bool {

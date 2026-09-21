@@ -75,3 +75,4 @@ test_small.txt
 __pycache__/
 *.pyc
 .agents/
+pin-tool-log.txt
