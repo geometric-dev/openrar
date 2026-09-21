@@ -127,12 +127,9 @@ const GfniCalib& gfni_calib() {
                 mul_lo[b] = static_cast<core::uint16>(rs.gf_mul(kCoeff, b));
                 mul_hi[b] = static_cast<core::uint16>(rs.gf_mul(kCoeff, b << 8));
             }
-            alignas(64) core::byte block[64];
             for (core::uint32 w = 0; w < 32; ++w) {
                 const core::uint16 word =
                     static_cast<core::uint16>((w * 251 + 7) | ((w * 31 + 3) << 8));
-                block[2 * w] = static_cast<core::byte>(word & 0xFF);
-                block[2 * w + 1] = static_cast<core::byte>((word >> 8) & 0xFF);
                 const core::uint16 folded =
                     static_cast<core::uint16>(mul_lo[word & 0xFF] ^ mul_hi[(word >> 8) & 0xFF]);
                 ref_ecc[2 * w] = static_cast<core::byte>(folded & 0xFF);
