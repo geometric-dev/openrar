@@ -167,7 +167,10 @@ endif()
 # actually compiled.
 set(OPENRAR_AVX512_KERNEL OFF)
 if(NOT EMSCRIPTEN)
-    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_GENERATOR_PLATFORM MATCHES "x64|X64|AMD64")
+        # Generator-platform check keeps the kernels off the MSVC ARM64
+        # cross legs: /arch:AVX512 there is meaningless and immintrin.h is
+        # x86-family only (v1.22.0 CI fix).
         set(OPENRAR_AVX512_KERNEL ON)
         set_source_files_properties(src/compress/arch/match_avx512.cpp src/recovery/rs16_gfni.cpp
             PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
