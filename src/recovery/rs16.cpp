@@ -69,7 +69,7 @@ core::uint64 gfni_pack_candidate(const ReedSolomon16& rs, core::uint32 K, bool h
 }
 
 // Index of the matrix-convention candidate validated against the scalar
-// table fold (0..3), or -1 when the CPU lacks GFNI or no candidate matched.
+// table fold (0..5), or -1 when the CPU lacks GFNI or no candidate matched.
 // First caller runs the probe (magic static = thread safe). All paths fail
 // safe: no match -> no GFNI dispatch.
 int gfni_convention() {
@@ -96,7 +96,7 @@ int gfni_convention() {
             ref_ecc[2 * w + 1] = static_cast<core::byte>((folded >> 8) & 0xFF);
         }
         // Try each matrix-convention candidate.
-        for (int candidate = 0; candidate < 4; ++candidate) {
+        for (int candidate = 0; candidate < 6; ++candidate) {
             core::uint64 m[4];
             m[0] = gfni_pack_candidate(rs, kCoeff, /*high_half=*/false, candidate);
             m[1] = gfni_pack_candidate(rs, kCoeff, /*high_half=*/true, candidate);
