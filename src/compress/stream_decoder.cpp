@@ -77,7 +77,8 @@ bool StreamDecoder::process_blocks() {
             block_size |= static_cast<core::uint32>(in_queue_[2 + i]) << (i * 8);
         }
 
-        core::uint32 chk = (0x5A ^ flags ^ block_size ^ (block_size >> 8) ^ (block_size >> 16)) & 0xFF;
+        core::uint32 chk =
+            (0x5A ^ flags ^ block_size ^ (block_size >> 8) ^ (block_size >> 16)) & 0xFF;
         if (chk != saved) {
             aborted_ = true;
             return false; // Corrupt block header checksum
@@ -105,9 +106,8 @@ bool StreamDecoder::process_blocks() {
             return true;
         };
 
-        bool ok = decompressor_.decompress_block(
-            in_queue_.data(), total_block_bytes, sink, &written, &block_finished, has_decoded_block_
-        );
+        bool ok = decompressor_.decompress_block(in_queue_.data(), total_block_bytes, sink,
+                                                 &written, &block_finished, has_decoded_block_);
         if (!ok) {
             aborted_ = true;
             return false;

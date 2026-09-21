@@ -291,18 +291,26 @@ static void test_archive_repair() {
     // Null arc_path returns RAR_ERR_INVALID_ARG
     assert(openrar_archive_repair(nullptr, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
     // Non-existent path without .rev siblings returns RAR_ERR_IO
-    assert(openrar_archive_repair("non_existent_archive_file_12345.rar", nullptr, nullptr, nullptr) == RAR_ERR_IO);
+    assert(openrar_archive_repair("non_existent_archive_file_12345.rar", nullptr, nullptr,
+                                  nullptr) == RAR_ERR_IO);
     // Cancelled callback returns RAR_ERR_ABORTED
-    auto cancel_now = [](void*) -> int { return 1; };
-    assert(openrar_archive_repair("non_existent_archive_file_12345.rar", nullptr, cancel_now, nullptr) == RAR_ERR_ABORTED);
+    auto cancel_now = [](void*) -> int {
+        return 1;
+    };
+    assert(openrar_archive_repair("non_existent_archive_file_12345.rar", nullptr, cancel_now,
+                                  nullptr) == RAR_ERR_ABORTED);
     std::cout << "PASS test_archive_repair\n";
 }
 
 static void test_archive_recovery_volumes() {
-    assert(openrar_archive_create_rev_volumes(nullptr, 1, 0, 1, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
-    assert(openrar_archive_add_recovery_record(nullptr, 5, 1, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
-    assert(openrar_archive_add_recovery_record("nonexistent.rar", 0, 1, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
-    assert(openrar_archive_add_recovery_record("nonexistent.rar", 1001, 1, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
+    assert(openrar_archive_create_rev_volumes(nullptr, 1, 0, 1, nullptr, nullptr, nullptr) ==
+           RAR_ERR_INVALID_ARG);
+    assert(openrar_archive_add_recovery_record(nullptr, 5, 1, nullptr, nullptr, nullptr) ==
+           RAR_ERR_INVALID_ARG);
+    assert(openrar_archive_add_recovery_record("nonexistent.rar", 0, 1, nullptr, nullptr,
+                                               nullptr) == RAR_ERR_INVALID_ARG);
+    assert(openrar_archive_add_recovery_record("nonexistent.rar", 1001, 1, nullptr, nullptr,
+                                               nullptr) == RAR_ERR_INVALID_ARG);
     std::cout << "PASS test_archive_recovery_volumes\n";
 }
 
@@ -735,7 +743,7 @@ static void test_archive_handle_set_limits() {
     assert(openrar_archive_handle_set_limits(999999, 10, 100, 10, 1000) == RAR_ERR_INVALID_ARG);
 
     const char* paths[] = {"small.txt", "large.txt"};
-    const uint8_t data1[] = "12345"; // 5 bytes
+    const uint8_t data1[] = "12345";                // 5 bytes
     const uint8_t data2[] = "12345678901234567890"; // 20 bytes
     const uint8_t* datas[] = {data1, data2};
     size_t sizes[] = {sizeof(data1) - 1, sizeof(data2) - 1};
@@ -812,7 +820,8 @@ static void test_archive_create() {
     assert(std::filesystem::file_size(out_rar) > 0);
 
     // Verify using open_file handle
-    uint32_t h = openrar_archive_open_file(out_rar.string().c_str(), nullptr, nullptr, nullptr, nullptr);
+    uint32_t h =
+        openrar_archive_open_file(out_rar.string().c_str(), nullptr, nullptr, nullptr, nullptr);
     assert(h != 0);
     uint32_t count = 0;
     void* entries = nullptr;
@@ -825,7 +834,8 @@ static void test_archive_create() {
 
     // Test extracting member 0 to path
     auto ext1 = temp_dir / "extracted1.txt";
-    rc = openrar_archive_handle_extract_to_path(h, 0, ext1.string().c_str(), nullptr, nullptr, nullptr);
+    rc = openrar_archive_handle_extract_to_path(h, 0, ext1.string().c_str(), nullptr, nullptr,
+                                                nullptr);
     assert(rc == RAR_OK);
     assert(std::filesystem::exists(ext1));
     assert(std::filesystem::file_size(ext1) == std::filesystem::file_size(src1));
@@ -841,7 +851,8 @@ static void test_archive_create() {
     assert(std::filesystem::exists(out_pw_rar));
 
     // Verify encrypted archive requires password
-    uint32_t h_pw = openrar_archive_open_file(out_pw_rar.string().c_str(), "secret123", nullptr, nullptr, nullptr);
+    uint32_t h_pw = openrar_archive_open_file(out_pw_rar.string().c_str(), "secret123", nullptr,
+                                              nullptr, nullptr);
     assert(h_pw != 0);
     rc = openrar_archive_handle_test(h_pw, 0, nullptr, nullptr, nullptr);
     assert(rc == RAR_OK);
@@ -856,10 +867,12 @@ static void test_archive_create() {
     // 4. Test openrar_archive_create_file_opts with filter options
     auto out_opts_rar = temp_dir / "created_opts.rar";
     rc = openrar_archive_create_file_opts(out_opts_rar.string().c_str(), src_paths, arc_names, 2, 3,
-                                          0, nullptr, 0, 0, OPENRAR_FILTER_FORCE_E8, nullptr, nullptr, nullptr);
+                                          0, nullptr, 0, 0, OPENRAR_FILTER_FORCE_E8, nullptr,
+                                          nullptr, nullptr);
     assert(rc == RAR_OK);
     assert(std::filesystem::exists(out_opts_rar));
-    uint32_t h_opts = openrar_archive_open_file(out_opts_rar.string().c_str(), nullptr, nullptr, nullptr, nullptr);
+    uint32_t h_opts = openrar_archive_open_file(out_opts_rar.string().c_str(), nullptr, nullptr,
+                                                nullptr, nullptr);
     assert(h_opts != 0);
     rc = openrar_archive_handle_test(h_opts, 0, nullptr, nullptr, nullptr);
     assert(rc == RAR_OK);

@@ -51,10 +51,10 @@ struct ExtractionLimits {
     // Maximum cumulative header bytes parsed across all volumes in the set.
     uint64_t max_header_bytes{UNLIMITED};
 
-    bool member_limited()    const noexcept { return max_member_output_bytes != UNLIMITED; }
-    bool total_limited()     const noexcept { return max_total_output_bytes  != UNLIMITED; }
-    bool hdr_count_limited() const noexcept { return max_header_count        != UNLIMITED; }
-    bool hdr_bytes_limited() const noexcept { return max_header_bytes        != UNLIMITED; }
+    bool member_limited() const noexcept { return max_member_output_bytes != UNLIMITED; }
+    bool total_limited() const noexcept { return max_total_output_bytes != UNLIMITED; }
+    bool hdr_count_limited() const noexcept { return max_header_count != UNLIMITED; }
+    bool hdr_bytes_limited() const noexcept { return max_header_bytes != UNLIMITED; }
 };
 
 // Mutable accumulator for limit tracking. Created and owned by the caller;

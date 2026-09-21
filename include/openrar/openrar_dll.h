@@ -95,13 +95,18 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 #define OPENRAR_ABI_FEATURE_PACKAGE_VERSION (1ull << 6)      // openrar_package_version_string
 #define OPENRAR_ABI_FEATURE_SET_LIMITS (1ull << 7)           // openrar_archive_handle_set_limits
 #define OPENRAR_ABI_FEATURE_REPAIR (1ull << 8)               // openrar_archive_repair
-#define OPENRAR_ABI_FEATURE_CREATE (1ull << 9)               // openrar_archive_create_file / create_file_ex
-#define OPENRAR_ABI_FEATURE_FILTERS (1ull << 10)             // openrar_archive_create_file_opts / filter controls
-#define OPENRAR_ABI_FEATURE_OWNER (1ull << 11)               // openrar_archive_handle_entry_owner / owner controls
-#define OPENRAR_ABI_FEATURE_DICT_EX (1ull << 12)             // RAR 7.0 fractional & non-power-of-two dictionary sizing
-#define OPENRAR_ABI_FEATURE_VOL_ENCRYPT (1ull << 13)         // multi-volume encryption & metadata parity
-#define OPENRAR_ABI_FEATURE_REC_VOL (1ull << 14)             // recovery volume (.rev) & recovery record creation
-#define OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS (1ull << 15)   // High-throughput parallel compression (-mt)
+#define OPENRAR_ABI_FEATURE_CREATE (1ull << 9) // openrar_archive_create_file / create_file_ex
+#define OPENRAR_ABI_FEATURE_FILTERS                                                                \
+    (1ull << 10) // openrar_archive_create_file_opts / filter controls
+#define OPENRAR_ABI_FEATURE_OWNER                                                                  \
+    (1ull << 11) // openrar_archive_handle_entry_owner / owner controls
+#define OPENRAR_ABI_FEATURE_DICT_EX                                                                \
+    (1ull << 12) // RAR 7.0 fractional & non-power-of-two dictionary sizing
+#define OPENRAR_ABI_FEATURE_VOL_ENCRYPT (1ull << 13) // multi-volume encryption & metadata parity
+#define OPENRAR_ABI_FEATURE_REC_VOL                                                                \
+    (1ull << 14) // recovery volume (.rev) & recovery record creation
+#define OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS                                                      \
+    (1ull << 15) // High-throughput parallel compression (-mt)
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -300,10 +305,11 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_stream_set_cancel(uint32_t handle,
 // handle to start a fresh accounting (v1.21.1 documentation).
 // Returns RAR_OK on success, RAR_ERR_INVALID_ARG if handle is invalid,
 // or RAR_ERR_BUSY if an operation is currently executing on the handle.
-OPENRAR_DLL_API int OPENRAR_DLL_CALL
-openrar_archive_handle_set_limits(uint32_t handle, uint64_t max_member_bytes,
-                                  uint64_t max_total_bytes, uint64_t max_header_count,
-                                  uint64_t max_header_bytes);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_set_limits(uint32_t handle,
+                                                                       uint64_t max_member_bytes,
+                                                                       uint64_t max_total_bytes,
+                                                                       uint64_t max_header_count,
+                                                                       uint64_t max_header_bytes);
 
 // ── Listing with progress / cancel (_ex variants; additive) ──────────────────
 // Byte-based progress: done = archive bytes consumed (includes any SFX
@@ -578,18 +584,20 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* 
 // Errors: RAR_ERR_INVALID_ARG on null args / empty batch / method not in 0..5;
 // RAR_ERR_BUSY (-14) if an open file-mode handle in this process holds arc_path;
 // Filter flags for openrar_archive_create_file_opts or filter configuration (bit 10):
-#define OPENRAR_FILTER_DEFAULT         0u
-#define OPENRAR_FILTER_DISABLE_ALL    (1u << 0) // Force disable all filters (-mc-)
-#define OPENRAR_FILTER_FORCE_E8       (1u << 1) // Force x86 E8/E8E9 filter (-mcE+)
-#define OPENRAR_FILTER_DISABLE_E8     (1u << 2) // Disable x86 E8/E8E9 filter (-mcE-)
-#define OPENRAR_FILTER_FORCE_ARM      (1u << 3) // Force ARM BL filter (-mcA+)
-#define OPENRAR_FILTER_DISABLE_ARM    (1u << 4) // Disable ARM BL filter (-mcA-)
-#define OPENRAR_FILTER_FORCE_DELTA    (1u << 5) // Force delta filter (-mcD+)
-#define OPENRAR_FILTER_DISABLE_DELTA  (1u << 6) // Disable delta filter (-mcD-)
+#define OPENRAR_FILTER_DEFAULT 0u
+#define OPENRAR_FILTER_DISABLE_ALL (1u << 0)   // Force disable all filters (-mc-)
+#define OPENRAR_FILTER_FORCE_E8 (1u << 1)      // Force x86 E8/E8E9 filter (-mcE+)
+#define OPENRAR_FILTER_DISABLE_E8 (1u << 2)    // Disable x86 E8/E8E9 filter (-mcE-)
+#define OPENRAR_FILTER_FORCE_ARM (1u << 3)     // Force ARM BL filter (-mcA+)
+#define OPENRAR_FILTER_DISABLE_ARM (1u << 4)   // Disable ARM BL filter (-mcA-)
+#define OPENRAR_FILTER_FORCE_DELTA (1u << 5)   // Force delta filter (-mcD+)
+#define OPENRAR_FILTER_DISABLE_DELTA (1u << 6) // Disable delta filter (-mcD-)
 
-OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file(
-    const char* arc_path, const char* const* src_paths, const char* const* arc_names,
-    uint32_t file_count, int method, uint64_t dict_size);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file(const char* arc_path,
+                                                                 const char* const* src_paths,
+                                                                 const char* const* arc_names,
+                                                                 uint32_t file_count, int method,
+                                                                 uint64_t dict_size);
 
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_file_ex(
     const char* arc_path, const char* const* src_paths, const char* const* arc_names,
@@ -675,7 +683,7 @@ OPENRAR_DLL_API void OPENRAR_DLL_CALL openrar_archive_entry_ex_free(void* extra)
 typedef struct {
     uint64_t uid;
     uint64_t gid;
-    uint32_t flags; // Bitmask of OPENRAR_OWNER_FLAG_*
+    uint32_t flags;      // Bitmask of OPENRAR_OWNER_FLAG_*
 } openrar_entry_owner_t; // 20 bytes packed
 #pragma pack(pop)
 
@@ -686,8 +694,8 @@ typedef struct {
 // If the entry has no owner extra, owner_out receives 0s, strings receive NULL,
 // and RAR_OK is returned.
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_entry_owner(
-    uint32_t handle, uint32_t entry_index, openrar_entry_owner_t* owner_out,
-    char** username_out, char** groupname_out);
+    uint32_t handle, uint32_t entry_index, openrar_entry_owner_t* owner_out, char** username_out,
+    char** groupname_out);
 
 // Free helper for username_out and groupname_out strings (openrar_free is also valid).
 OPENRAR_DLL_API void OPENRAR_DLL_CALL openrar_archive_entry_owner_free(char* str);
@@ -724,37 +732,26 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_info(uint32_t handle
 // Repairs corrupted or missing archive volumes via inline Recovery Records (RR)
 // or external Cauchy Reed-Solomon parity volumes (.rev).
 // Returns RAR_OK (0) on success, or a negative RAR_ERR_* code on failure.
-OPENRAR_DLL_API int OPENRAR_DLL_CALL
-openrar_archive_repair(const char* arc_path,
-                       openrar_progress_cb progress,
-                       openrar_cancel_cb cancel,
-                       void* user);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_repair(const char* arc_path,
+                                                            openrar_progress_cb progress,
+                                                            openrar_cancel_cb cancel, void* user);
 
 // ── Recovery Volume & Record Creation (v1.20.0, additive) ───────────────────
 // Generates external Reed-Solomon (.rev) recovery volumes for a multi-volume set.
 // count_or_percent: number of .rev volumes (if is_percent == 0) or percentage (if is_percent != 0).
 // threads: number of worker threads (1 = serial).
 // Returns RAR_OK (0) on success, or a negative RAR_ERR_* code on failure.
-OPENRAR_DLL_API int OPENRAR_DLL_CALL
-openrar_archive_create_rev_volumes(const char* arc_path,
-                                   uint32_t count_or_percent,
-                                   int is_percent,
-                                   unsigned int threads,
-                                   openrar_progress_cb progress,
-                                   openrar_cancel_cb cancel,
-                                   void* user);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_rev_volumes(
+    const char* arc_path, uint32_t count_or_percent, int is_percent, unsigned int threads,
+    openrar_progress_cb progress, openrar_cancel_cb cancel, void* user);
 
 // Appends an inline Recovery Record (RR) service block to a single-volume archive.
 // percent: recovery percentage (1..1000).
 // threads: number of worker threads (1 = serial).
 // Returns RAR_OK (0) on success, or a negative RAR_ERR_* code on failure.
-OPENRAR_DLL_API int OPENRAR_DLL_CALL
-openrar_archive_add_recovery_record(const char* arc_path,
-                                    uint32_t percent,
-                                    unsigned int threads,
-                                    openrar_progress_cb progress,
-                                    openrar_cancel_cb cancel,
-                                    void* user);
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_add_recovery_record(
+    const char* arc_path, uint32_t percent, unsigned int threads, openrar_progress_cb progress,
+    openrar_cancel_cb cancel, void* user);
 
 #ifdef __cplusplus
 } // extern "C"

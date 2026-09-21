@@ -39,13 +39,12 @@ static std::vector<core::byte> generate_payload(size_t size, uint32_t seed = 42)
     return data;
 }
 
-static bool decompress_buffer(const std::vector<core::byte>& compressed,
-                              size_t original_size,
-                              size_t win_size,
-                              std::vector<core::byte>& out_decompressed) {
+static bool decompress_buffer(const std::vector<core::byte>& compressed, size_t original_size,
+                              size_t win_size, std::vector<core::byte>& out_decompressed) {
     out_decompressed.clear();
     Decompressor50 decomp(win_size);
-    bool ok = decomp.decompress_to_vector(compressed.data(), compressed.size(), out_decompressed, false);
+    bool ok =
+        decomp.decompress_to_vector(compressed.data(), compressed.size(), out_decompressed, false);
     return ok && (out_decompressed.size() == original_size);
 }
 
@@ -73,12 +72,14 @@ static void test_framing_spike() {
     bool ok = decompress_buffer(full_compressed, data.size(), 128 * 1024, decompressed);
     assert(ok && "Decompression of framed chunks failed");
     assert(decompressed == data && "Payload mismatch");
-    std::cout << "    - Framing spike: OK (decompressed " << decompressed.size() << " bytes)" << std::endl;
+    std::cout << "    - Framing spike: OK (decompressed " << decompressed.size() << " bytes)"
+              << std::endl;
 }
 
 // 2. Roundtrip Tests across methods 1..5 using Compressor50::compress_buffer_parallel
 static void test_parallel_roundtrip_methods() {
-    std::cout << "[+] test_parallel_roundtrip_methods: testing methods 1..5 with 4 threads" << std::endl;
+    std::cout << "[+] test_parallel_roundtrip_methods: testing methods 1..5 with 4 threads"
+              << std::endl;
     const size_t payload_size = 5 * 1024 * 1024; // 5 MB payload (spans multiple chunks)
     auto original = generate_payload(payload_size, 202);
 
@@ -102,25 +103,31 @@ static void test_parallel_roundtrip_methods() {
 
 // 3. Determinism Test: Byte-identical compressed stream across repeated runs
 static void test_parallel_determinism() {
-    std::cout << "[+] test_parallel_determinism: checking byte-identical outputs at -mt4" << std::endl;
+    std::cout << "[+] test_parallel_determinism: checking byte-identical outputs at -mt4"
+              << std::endl;
     const size_t payload_size = 4 * 1024 * 1024;
     auto data = generate_payload(payload_size, 303);
 
     std::vector<core::byte> run1, run2, run3;
-    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), run1, 3, 2 * 1024 * 1024, {}, 4));
-    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), run2, 3, 2 * 1024 * 1024, {}, 4));
-    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), run3, 3, 2 * 1024 * 1024, {}, 4));
+    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), run1, 3,
+                                                  2 * 1024 * 1024, {}, 4));
+    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), run2, 3,
+                                                  2 * 1024 * 1024, {}, 4));
+    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), run3, 3,
+                                                  2 * 1024 * 1024, {}, 4));
 
     assert(run1.size() == run2.size() && "Size differs between run1 and run2");
     assert(run1.size() == run3.size() && "Size differs between run1 and run3");
     assert(run1 == run2 && "Bitstream differs between run1 and run2");
     assert(run1 == run3 && "Bitstream differs between run1 and run3");
-    std::cout << "    - Determinism: OK (3 runs byte-identical, " << run1.size() << " bytes)" << std::endl;
+    std::cout << "    - Determinism: OK (3 runs byte-identical, " << run1.size() << " bytes)"
+              << std::endl;
 }
 
 // 4. ParallelBlockPipeline Streaming Test
 static void test_parallel_pipeline_streaming() {
-    std::cout << "[+] test_parallel_pipeline_streaming: testing ParallelBlockPipeline streaming" << std::endl;
+    std::cout << "[+] test_parallel_pipeline_streaming: testing ParallelBlockPipeline streaming"
+              << std::endl;
     const size_t total_size = 6 * 1024 * 1024;
     auto data = generate_payload(total_size, 404);
 
@@ -150,7 +157,8 @@ static void test_parallel_pipeline_streaming() {
         bool ok = pipeline.compress_stream(
             in_stream, total_size,
             [&](const core::byte* chunk_bytes, size_t chunk_len) {
-                compressed_stream.insert(compressed_stream.end(), chunk_bytes, chunk_bytes + chunk_len);
+                compressed_stream.insert(compressed_stream.end(), chunk_bytes,
+                                         chunk_bytes + chunk_len);
                 return true;
             },
             out_crc, out_packed);
@@ -173,12 +181,14 @@ static void test_parallel_pipeline_streaming() {
     bool dec_ok = decompress_buffer(compressed_stream, total_size, cfg.win_size, decompressed);
     assert(dec_ok && "Decompression failed");
     assert(decompressed == data && "Content mismatch");
-    std::cout << "    - Pipeline streaming: OK (" << total_size << " bytes streamed and verified)" << std::endl;
+    std::cout << "    - Pipeline streaming: OK (" << total_size << " bytes streamed and verified)"
+              << std::endl;
 }
 
 // 5. Cancellation Test
 static void test_parallel_pipeline_cancellation() {
-    std::cout << "[+] test_parallel_pipeline_cancellation: testing mid-stream cancellation" << std::endl;
+    std::cout << "[+] test_parallel_pipeline_cancellation: testing mid-stream cancellation"
+              << std::endl;
     const size_t total_size = 4 * 1024 * 1024;
     auto data = generate_payload(total_size, 501);
 
@@ -214,10 +224,7 @@ static void test_parallel_pipeline_cancellation() {
     core::uint64 out_packed = 0;
 
     bool ok = pipeline.compress_stream(
-        in_stream, total_size,
-        [&](const core::byte* /*chunk*/, size_t /*len*/) {
-            return true;
-        },
+        in_stream, total_size, [&](const core::byte* /*chunk*/, size_t /*len*/) { return true; },
         out_crc, out_packed);
 
     assert(!ok && "compress_stream should have aborted upon cancellation");
@@ -231,13 +238,15 @@ static void test_parallel_pipeline_cancellation() {
 
 // 6. Small File Bypass Smoke Tests (< chunk threshold)
 static void test_small_file_bypass() {
-    std::cout << "[+] test_small_file_bypass: testing small payloads (< chunk threshold)" << std::endl;
+    std::cout << "[+] test_small_file_bypass: testing small payloads (< chunk threshold)"
+              << std::endl;
     std::vector<size_t> small_sizes = {100, 4096, 65536, 512 * 1024, 1024 * 1024};
 
     for (size_t sz : small_sizes) {
         auto data = generate_payload(sz, static_cast<uint32_t>(sz));
         std::vector<core::byte> comp;
-        assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), comp, 3, 128 * 1024, {}, 4));
+        assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), comp, 3, 128 * 1024,
+                                                      {}, 4));
         assert(!comp.empty());
 
         std::vector<core::byte> decompressed;
@@ -253,7 +262,10 @@ static std::vector<core::byte> generate_e8_dense(size_t size) {
     data[0] = 'M';
     data[1] = 'Z';
     core::write_le32(data.data() + 0x3C, 64);
-    data[64] = 'P'; data[65] = 'E'; data[66] = 0; data[67] = 0;
+    data[64] = 'P';
+    data[65] = 'E';
+    data[66] = 0;
+    data[67] = 0;
     core::write_le16(data.data() + 68, 0x8664);
     for (size_t off = 128; off + 5 <= size; off += 5) {
         data[off] = 0xE8;
@@ -269,7 +281,9 @@ static std::vector<core::byte> generate_e8_dense(size_t size) {
 // call. Without this, -mt1 and -mt4 produced different archives for the same
 // input (and -mc was silently dropped under -mt>1).
 static void test_parallel_filter_parity() {
-    std::cout << "[+] test_parallel_filter_parity: filter-triggering content matches sequential output" << std::endl;
+    std::cout
+        << "[+] test_parallel_filter_parity: filter-triggering content matches sequential output"
+        << std::endl;
     auto data = generate_e8_dense(6 * 1024 * 1024);
 
     std::vector<core::byte> sequential;

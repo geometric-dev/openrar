@@ -122,14 +122,20 @@ static openrar::compress::FilterConfig filter_cfg_from_wasm_flags(uint32_t flags
         cfg.mode = openrar::compress::FilterMode::DisableAll;
         return cfg;
     }
-    if (flags & (1u << 1)) cfg.e8_override = 1;
-    else if (flags & (1u << 2)) cfg.e8_override = -1;
+    if (flags & (1u << 1))
+        cfg.e8_override = 1;
+    else if (flags & (1u << 2))
+        cfg.e8_override = -1;
 
-    if (flags & (1u << 3)) cfg.arm_override = 1;
-    else if (flags & (1u << 4)) cfg.arm_override = -1;
+    if (flags & (1u << 3))
+        cfg.arm_override = 1;
+    else if (flags & (1u << 4))
+        cfg.arm_override = -1;
 
-    if (flags & (1u << 5)) cfg.delta_override = 1;
-    else if (flags & (1u << 6)) cfg.delta_override = -1;
+    if (flags & (1u << 5))
+        cfg.delta_override = 1;
+    else if (flags & (1u << 6))
+        cfg.delta_override = -1;
 
     return cfg;
 }

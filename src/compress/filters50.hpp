@@ -15,16 +15,13 @@ enum class FilterType : core::uint8 {
     None = 255 // No filter
 };
 
-enum class FilterMode {
-    Auto,
-    DisableAll
-};
+enum class FilterMode { Auto, DisableAll };
 
 struct FilterConfig {
     FilterMode mode{FilterMode::Auto};
-    int e8_override{0};    // 0: auto, 1: force, -1: disable
-    int arm_override{0};   // 0: auto, 1: force, -1: disable
-    int delta_override{0}; // 0: auto, 1: force, -1: disable
+    int e8_override{0};            // 0: auto, 1: force, -1: disable
+    int arm_override{0};           // 0: auto, 1: force, -1: disable
+    int delta_override{0};         // 0: auto, 1: force, -1: disable
     core::uint8 delta_channels{0}; // 0: auto
 };
 

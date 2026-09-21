@@ -629,8 +629,7 @@ int list_file_stream(const std::filesystem::path& arc_path,
 // BufferArchive::extract
 // ─────────────────────────────────────────────────────────────────────────────
 int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
-                           std::vector<uint8_t>& out,
-                           const ExtractionLimits* limits,
+                           std::vector<uint8_t>& out, const ExtractionLimits* limits,
                            LimitState* state) {
     out.clear();
 
@@ -706,7 +705,8 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
         if (limits->member_limited() && out.size() > limits->max_member_output_bytes) {
             return RAR_ERR_LIMIT_EXCEEDED;
         }
-        if (limits->total_limited() && state->total_out + out.size() > limits->max_total_output_bytes) {
+        if (limits->total_limited() &&
+            state->total_out + out.size() > limits->max_total_output_bytes) {
             return RAR_ERR_LIMIT_EXCEEDED;
         }
         state->member_out = out.size();
@@ -736,8 +736,7 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
 int BufferArchive::extract_all(const uint8_t* data, size_t size,
                                std::vector<std::pair<std::string, std::vector<uint8_t>>>& out_files,
                                progress_cb on_progress, void* user, cancel_cb on_cancel,
-                               void* cancel_user,
-                               const ExtractionLimits* limits,
+                               void* cancel_user, const ExtractionLimits* limits,
                                LimitState* state) {
     out_files.clear();
 
@@ -790,7 +789,8 @@ int BufferArchive::extract_all(const uint8_t* data, size_t size,
         if (limits) {
             if (limits->member_limited() && e.size > limits->max_member_output_bytes)
                 return RAR_ERR_LIMIT_EXCEEDED;
-            if (limits->total_limited() && state->total_out + e.size > limits->max_total_output_bytes)
+            if (limits->total_limited() &&
+                state->total_out + e.size > limits->max_total_output_bytes)
                 return RAR_ERR_LIMIT_EXCEEDED;
         }
         if (cumulative + e.size > MAX_TOTAL_OUTPUT) return RAR_ERR_NOMEM;
