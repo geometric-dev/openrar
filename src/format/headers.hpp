@@ -147,12 +147,15 @@ inline constexpr core::uint64 RAR_DICT_MAX_V1 = RAR_DICT_BASE << 23; // 1 TiB = 
 inline constexpr core::uint64 RAR_DICT_SPEC_MAX_ABSOLUTE = RAR_DICT_MAX_V1;
 
 // Compression Information bit flags & masks (spec 01-headers.md:85-92 / 06-encoding.md:86-91)
-inline constexpr core::uint32 FCI_ALGO_MASK = 0x003F;       // Version of compression algorithm (0=RAR5, 1=RAR7)
-inline constexpr core::uint32 FCI_SOLID = 0x0040;           // Solid flag
-inline constexpr core::uint32 FCI_METHOD_MASK = 0x0380;     // Method 0..5
-inline constexpr core::uint32 FCI_DICT_MASK = 0x7C00;       // Dictionary size power 0..23 (128 KiB << N)
-inline constexpr core::uint32 FCI_DICT_FRACT_MASK = 0xF8000;// Dictionary fraction (version 1) in 1/32 of size
-inline constexpr core::uint32 FCI_RAR5_COMPAT = 0x100000;   // RAR7 dict sizing with RAR5 compression algorithm
+inline constexpr core::uint32 FCI_ALGO_MASK =
+    0x003F; // Version of compression algorithm (0=RAR5, 1=RAR7)
+inline constexpr core::uint32 FCI_SOLID = 0x0040;       // Solid flag
+inline constexpr core::uint32 FCI_METHOD_MASK = 0x0380; // Method 0..5
+inline constexpr core::uint32 FCI_DICT_MASK = 0x7C00; // Dictionary size power 0..23 (128 KiB << N)
+inline constexpr core::uint32 FCI_DICT_FRACT_MASK =
+    0xF8000; // Dictionary fraction (version 1) in 1/32 of size
+inline constexpr core::uint32 FCI_RAR5_COMPAT =
+    0x100000; // RAR7 dict sizing with RAR5 compression algorithm
 #if defined(__EMSCRIPTEN__) || defined(__wasm__) || defined(_M_IX86) || defined(__i386__)
 inline constexpr size_t RAR_DICT_ALLOC_LIMIT =
     1ULL * 1024 * 1024 * 1024; // implementation alloc limit 1 GiB on 32-bit / WASM
