@@ -43,10 +43,13 @@ if (!existsSync(distJs)) {
     assert.equal(rc, 1);
     const len = m.HEAPU32[outLen >>> 2];
     assert.ok(len > 0, 'out_len must be set on success');
-    // Failure path must zero the out params, never leave garbage.
+    // Failure path must zero the out params, never leave garbage. A window
+    // above MAX_WIN_SIZE cannot be expressed through this 32-bit ABI
+    // (size_t truncates 5 GiB to 1 GiB, which is legal), so the exercised
+    // failure is a null source with a non-zero length.
     const rc2 = m.ccall('openrar_compress2', 'number',
       ['number', 'number', 'number', 'number', 'number', 'number'],
-      [ptr, src.length, outPtr, outLen, 3, 5 * 1024 * 1024 * 1024]);
+      [0, src.length, outPtr, outLen, 3, 2 * 1024 * 1024]);
     assert.equal(rc2, 0);
     assert.equal(m.HEAPU32[outLen >>> 2], 0, 'out_len must be zeroed on failure');
     m._openrar_free(ptr);
