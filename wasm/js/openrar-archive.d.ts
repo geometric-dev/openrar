@@ -43,7 +43,7 @@ export interface RarEntry {
   packedSize: number;
   mtime: number;            // UNIX seconds (0 if unset on disk)
   crc32: number;            // 0 if unknown (UNVERIFIED)
-  method: 0 | 3 | 5;
+  method: 0 | 1 | 2 | 3 | 4 | 5;  // RAR5 compression method (0 = store)
   isDir: boolean;
   isEncrypted: boolean;
   index: number;

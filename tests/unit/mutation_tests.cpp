@@ -1157,6 +1157,105 @@ static void test_direct_stream_compression_and_backpatch() {
     std::cout << "[PASS] DirectStreamCompressionAndBackpatch\n";
 }
 
+// ── ADS children die with their file: delete must not orphan STM children ────
+// Fixture: victim.bin + trailing child STM service (NTFS ADS shape:
+// HFL_CHILD|HFL_INHERITED) + survivor.txt. Extraction pairs child services
+// with the immediately preceding file entry, so a delete that keeps the STM
+// would reattach victim.bin's stream onto survivor.txt (v1.21.1 fix).
+static fs::path create_ads_archive(const fs::path& dir, const char* name) {
+    const std::vector<uint8_t> victim = make_pattern(1024, 7);
+    const std::vector<uint8_t> keep = make_pattern(1024, 8);
+    const std::vector<uint8_t> stm_payload = {'Z', 'o', 'n', 'e', '.', 'I', 'd'};
+    fs::path arc = dir / name;
+    openrar::io::FileStream out;
+    assert(out.open(arc, openrar::io::FileMode::CreateAlways));
+    using openrar::format::HeaderWriter;
+    assert(HeaderWriter::write_signature(out));
+    openrar::format::MainBlock mb;
+    assert(HeaderWriter::write_main_block(out, mb));
+
+    auto write_entry = [&](openrar::format::FileBlock fb, const std::vector<uint8_t>& payload,
+                           uint64_t extra_flags) {
+        fb.has_crc32 = true;
+        openrar::crypto::Crc32 crc;
+        crc.update(payload.data(), payload.size());
+        fb.data_crc32 = crc.get();
+        assert(HeaderWriter::write_file_block(out, fb, extra_flags));
+        assert(out.write(payload.data(), payload.size()) == payload.size());
+    };
+
+    openrar::format::FileBlock victim_fb;
+    victim_fb.file_name = "victim.bin";
+    victim_fb.unp_size = victim.size();
+    victim_fb.pack_size = static_cast<openrar::core::int64>(victim.size());
+    victim_fb.attributes = 0x20;
+    victim_fb.method = 0;
+    victim_fb.win_size = 0;
+    write_entry(victim_fb, victim, 0);
+
+    openrar::format::FileBlock stm;
+    stm.is_service = true;
+    stm.service_type = "STM";
+    stm.file_name = "STM";
+    stm.sub_data.assign({':', 'a', 'd', 's'});
+    stm.unp_size = stm_payload.size();
+    stm.pack_size = static_cast<openrar::core::int64>(stm_payload.size());
+    stm.attributes = 0x20;
+    stm.method = 0;
+    stm.win_size = 0;
+    stm.unp_ver = 0;
+    write_entry(stm, stm_payload,
+                openrar::format::HFL_CHILD | openrar::format::HFL_INHERITED);
+
+    openrar::format::FileBlock keep_fb;
+    keep_fb.file_name = "survivor.txt";
+    keep_fb.unp_size = keep.size();
+    keep_fb.pack_size = static_cast<openrar::core::int64>(keep.size());
+    keep_fb.attributes = 0x20;
+    keep_fb.method = 0;
+    keep_fb.win_size = 0;
+    write_entry(keep_fb, keep, 0);
+
+    openrar::format::EndArcBlock eb;
+    assert(HeaderWriter::write_end_block(out, eb));
+    out.close();
+    return arc;
+}
+
+static void test_delete_removes_ads_children() {
+    std::cout << "Starting test_delete_removes_ads_children...\n" << std::flush;
+    const fs::path dir = make_scratch_dir("ads_orphan");
+    const fs::path arc = create_ads_archive(dir, "ads.rar");
+
+    // Precondition: reader sees victim.bin, the STM child, survivor.txt.
+    {
+        engine::ArchiveReader reader;
+        assert(reader.open(arc));
+        size_t stm_count = 0;
+        for (const auto& e : reader.entries()) {
+            if (e.header.is_service && e.header.service_type == "STM") ++stm_count;
+        }
+        assert(stm_count == 1);
+        reader.close();
+    }
+
+    assert(engine::ArchiveMutator::delete_entries(arc, {"victim.bin"}));
+
+    // Postcondition: the STM child died with its file.
+    engine::ArchiveReader reader;
+    assert(reader.open(arc));
+    std::vector<std::string> names;
+    size_t stm_count = 0;
+    for (const auto& e : reader.entries()) {
+        if (e.header.is_service && e.header.service_type == "STM") ++stm_count;
+        if (!e.header.is_service) names.push_back(e.header.file_name);
+    }
+    reader.close();
+    assert(names == std::vector<std::string>({"survivor.txt"}));
+    assert(stm_count == 0 && "orphaned STM child survived the delete");
+    std::cout << "test_delete_removes_ads_children OK\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr under ctest (piped stdio).
@@ -1166,6 +1265,7 @@ int main() {
     _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
 #endif
     test_delete_roundtrip();
+    test_delete_removes_ads_children();
     test_solid_orphan_delete_refused();
     test_solid_suffix_and_whole_run_delete();
     test_locked_volume_hp_refused();

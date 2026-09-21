@@ -47,7 +47,9 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
     if (config.e8_override >= 0) {
         if (data[0] == 'M' && data[1] == 'Z' && size >= 128) {
             core::uint32 pe_off = core::read_le32(data + 0x3C);
-            if (pe_off + 6 < size && data[pe_off] == 'P' && data[pe_off + 1] == 'E' &&
+            // 64-bit arithmetic: pe_off is untrusted and near-UINT32_MAX values
+            // would wrap below in 32-bit and pass the guard (OOB read).
+            if (static_cast<core::uint64>(pe_off) + 6 < size && data[pe_off] == 'P' && data[pe_off + 1] == 'E' &&
                 data[pe_off + 2] == 0 && data[pe_off + 3] == 0) {
                 core::uint16 machine = core::read_le16(data + pe_off + 4);
                 if (config.arm_override >= 0 && (machine == 0x01C0 || machine == 0x01C2 || machine == 0x01C4)) {

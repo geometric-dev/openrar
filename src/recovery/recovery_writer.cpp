@@ -781,6 +781,12 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
     const size_t body_size = REV_HEADER_MIN_BODY + 12u * nd;
     if (body_size > 0x100000u) return false; // HeaderSize cap per spec
 
+    // Parity workspace cap: nr × 1 MiB buffers are allocated up front and
+    // persist for the whole fold. Beyond this bound the request is hostile
+    // (an absurd -rv percentage on a huge chain) — fail honestly instead of
+    // throwing bad_alloc out of the writer (v1.21.1 fix).
+    if (static_cast<core::uint64>(nr) * (1ull << 20) > (1ull << 30)) return false;
+
     ReedSolomon16 rs;
     if (!rs.init(nd, static_cast<core::uint32>(nr))) return false;
 
@@ -796,6 +802,7 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
         io::FileStream file;
         std::filesystem::path tmp_path;
         std::filesystem::path final_path;
+        bool published{false}; // this run renamed the final into place
     };
     std::vector<RevOut> outs(static_cast<size_t>(nr));
 
@@ -808,7 +815,13 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
                     o.file.close();
                     std::error_code ec;
                     if (!o.tmp_path.empty()) std::filesystem::remove(o.tmp_path, ec);
-                    if (!o.final_path.empty()) std::filesystem::remove(o.final_path, ec);
+                    // Only remove final_path when THIS run published it: an
+                    // incomplete set must not leave fresh partial shards, but
+                    // a pre-existing .rev from an earlier successful run is
+                    // the only recovery data the user may have (v1.21.1 fix).
+                    if (o.published && !o.final_path.empty()) {
+                        std::filesystem::remove(o.final_path, ec);
+                    }
                 }
             }
         }
@@ -953,10 +966,14 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
                 break;
             }
             outs[j].file.close();
-            std::error_code ec;
-            std::filesystem::remove(outs[j].final_path, ec);
-            std::filesystem::rename(outs[j].tmp_path, outs[j].final_path, ec);
-            if (ec) ok = false;
+            // Atomic publish: the replace is a single rename against the
+            // existing target, so a pre-existing .rev is never destroyed if
+            // the rename fails (v1.21.1 fix; no remove-then-rename window).
+            if (!atomic_replace(outs[j].tmp_path, outs[j].final_path)) {
+                ok = false;
+                break;
+            }
+            outs[j].published = true;
         }
     }
 
@@ -1216,10 +1233,39 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     std::vector<core::uint64> table_size;
     std::vector<core::uint32> table_crc;
 
+    // Stem-anchor the candidate set: repair must only adopt recovery volumes
+    // belonging to THIS archive. An unanchored scan let a sibling set's .rev
+    // files supply the authoritative table, which then failed every real
+    // volume's CRC and renamed the valid set to .bad (v1.21.1 fix; same
+    // anchor rule as check_has_rev_files, report L3).
+    std::wstring arc_stem = arc_path.stem().wstring();
+    size_t pdot = arc_stem.rfind(L".part");
+    if (pdot != std::wstring::npos) arc_stem = arc_stem.substr(0, pdot);
+    auto rev_belongs = [&](const fs::path& p) -> bool {
+        std::wstring name = p.stem().wstring();
+        size_t rd = name.rfind(L".part");
+        if (rd != std::wstring::npos) {
+            name = name.substr(0, rd);
+        } else {
+            // Legacy parity names carry a .rNN-style slot suffix.
+            size_t d = name.rfind(L'.');
+            if (d != std::wstring::npos && name.size() - d == 4 &&
+                std::isalpha(static_cast<unsigned char>(name[d + 1])) &&
+                std::isdigit(static_cast<unsigned char>(name[d + 2])) &&
+                std::isdigit(static_cast<unsigned char>(name[d + 3]))) {
+                name = name.substr(0, d);
+            }
+        }
+        return name == arc_stem ||
+               (name.size() > arc_stem.size() &&
+                name.compare(0, arc_stem.size(), arc_stem) == 0 && name[arc_stem.size()] == L'.');
+    };
+
     std::error_code ec;
     for (auto& e : fs::directory_iterator(dir, ec)) {
         if (ec) return false;
         if (e.path().extension() != ".rev") continue;
+        if (!rev_belongs(e.path())) continue;
         io::FileStream f;
         if (!f.open(e.path(), io::FileMode::ReadOnly)) continue;
         core::byte head[16];
@@ -1336,12 +1382,20 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         if (ec) break;
         if (!e.is_regular_file()) continue;
         std::wstring name = e.path().filename().wstring();
-        // Data-volume extensions: .rar plus SFX volumes (.exe, any letter
-        // case); skip .rev files themselves.
+        // Data-volume extensions: .rar, SFX volumes (.exe, any letter case),
+        // and the legacy sequence .rNN/.sNN/.tNN (letter + two digits); skip
+        // .rev files themselves. (Legacy admission fixed in v1.21.1 — the
+        // scan previously ignored .rNN volumes entirely, so repair refused
+        // undamaged legacy sets and could overwrite them from parity without
+        // the .bad preservation.)
         std::string uext = e.path().extension().string();
         for (char& c : uext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (uext == ".rev") continue;
-        if (uext != ".rar" && uext != ".exe") continue;
+        bool legacy_vol = uext.size() == 4 && uext[0] == '.' &&
+                          std::isalpha(static_cast<unsigned char>(uext[1])) &&
+                          std::isdigit(static_cast<unsigned char>(uext[2])) &&
+                          std::isdigit(static_cast<unsigned char>(uext[3]));
+        if (uext != ".rar" && uext != ".exe" && !legacy_vol) continue;
         bool matched = false;
         core::int64 slot = slot_for_name(name, matched);
         if (!matched || slot < 0 || slot >= static_cast<core::int64>(nd)) continue;
@@ -1413,6 +1467,20 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         if (!vols[i].valid) missing++;
     }
     if (missing == 0) return true; // nothing to reconstruct
+
+    // Foreign-table belt: if present volumes exist and EVERY one of them
+    // fails its CRC, the adopted table almost certainly belongs to a
+    // different set (or the .rev files are hostile). Refuse rather than
+    // renaming valid volumes to .bad. A single matching volume proves the
+    // table belongs to this set.
+    {
+        core::uint32 present_valid = 0, present_corrupt = 0;
+        for (core::uint32 i = 0; i < nd; ++i) {
+            if (vols[i].valid) present_valid++;
+            else if (vols[i].corrupt) present_corrupt++;
+        }
+        if (present_corrupt > 0 && present_valid == 0) return false;
+    }
 
     core::uint32 valid_revs = 0;
     for (auto& r : revs)
@@ -1513,6 +1581,16 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         io::FileStream* f = new io::FileStream();
         if (!f->open(vols[i].path, io::FileMode::CreateAlways)) {
             delete f;
+            // Release every handle this loop opened (plus the sources);
+            // otherwise the freshly truncated volumes stay locked open on
+            // Windows until process exit (v1.21.1 fix).
+            for (core::uint32 k = 0; k < nd; ++k) {
+                if (out[k]) {
+                    out[k]->close();
+                    delete out[k];
+                    out[k] = nullptr;
+                }
+            }
             for (auto* g : owned) {
                 g->close();
                 delete g;

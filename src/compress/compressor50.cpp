@@ -1222,7 +1222,10 @@ int Compressor50::process_available(bool final) {
             continue;
         }
 
-        while (unhashed_pos_ + 7 <= cur_ && unhashed_pos_ + 7 <= src_loaded_) {
+        // 4-wide batched insert uses the 32-bit tables; large windows (> 4 GiB)
+        // use the 64-bit tables via insert_position and must never touch
+        // head_/prev_ (empty vectors, plus 32-bit position truncation).
+        while (!is_large_window_ && unhashed_pos_ + 7 <= cur_ && unhashed_pos_ + 7 <= src_loaded_) {
             core::uint64 q;
             std::memcpy(&q, &buf_data_[static_cast<size_t>(unhashed_pos_ - pos_base_)], 8);
             core::uint32 h0 = ((static_cast<core::uint32>(q)) * 0x9e3779b1u) >> (32 - HASH_BITS);
@@ -1508,6 +1511,22 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
     // Files < 1 MiB or single-threaded execution bypass chunking
     if (eff_threads <= 1 || src_size < 1024 * 1024) {
         return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
+    }
+
+    // Filter parity (v1.21.1): the chunked pipeline cannot honor pre-processing
+    // transforms — chunk-relative offsets would corrupt the position-dependent
+    // E8/E8E9/ARM transforms, and regions must never cross chunk boundaries.
+    // Decide exactly the way the sequential path decides (same detect_filter
+    // call over the same data): if that decision selects a filter, take the
+    // sequential path so the request is honored; otherwise the chunks run
+    // filter-free, which is what the sequential path would produce anyway.
+    // The decision is content-based only, so -mt1 and -mt>1 always take the
+    // same path for the same input.
+    if (filter_cfg.mode != FilterMode::DisableAll) {
+        core::uint8 det_channels = 1;
+        if (Filters50::detect_filter(src, src_size, det_channels, filter_cfg) != FilterType::None) {
+            return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
+        }
     }
 
     size_t chunk_size = std::max<size_t>(1024 * 1024,

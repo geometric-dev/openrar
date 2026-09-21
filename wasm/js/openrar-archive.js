@@ -156,8 +156,10 @@ export const DEFAULT_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 
 // ── progress/cancel hooks (v2) ──────────────────────────────────────────────
 // The C side calls back through function pointers registered with
-// addFunction. The progress signature is (void* user, uint64_t done,
-// uint64_t total) — with WASM_BIGINT=1 the u64 params arrive as BigInt.
+// addFunction. The C ABI is void (*)(uint64_t done, uint64_t total,
+// void* user) — with WASM_BIGINT=1 the u64 params arrive as BigInt, so the
+// wasm signature is 'vjji' (v=void, j=i64 done, j=i64 total, i=i32 user).
+// ('vijj' traps the module on the first callback — signature mismatch.)
 function wireHooks(m, opts) {
   if (!opts || (!opts.onProgress && !opts.signal)) return null;
   const state = { fns: [], hooksPtr: 0 };
@@ -175,7 +177,7 @@ function wireHooks(m, opts) {
       // A throw inside a wasm callback becomes a trap — user callback
       // errors are swallowed (documented).
       try { opts.onProgress(Number(done), Number(total)); } catch { /* non-fatal */ }
-    }, 'vijj');
+    }, 'vjji');
     state.fns.push(state.progressFn);
   }
   return state;
@@ -336,7 +338,10 @@ export async function createArchive(files, opts = {}) {
   } finally {
     unwireHooks(m, hooks);
     for (const p of allocatedPtrs) { try { m._free(p); } catch {} }
-    for (const p of [filesArrPtr, optsPtr, hooksPtr, outPtr, outLenPtr]) {
+    // hooksPtr is NOT in this list: unwireHooks owns its lifetime (freeing it
+    // here too double-freed the pointer into the shared dlmalloc heap on
+    // every hooks-using createArchive call — v1.21.1 fix).
+    for (const p of [filesArrPtr, optsPtr, outPtr, outLenPtr]) {
       if (p) { try { m._free(p); } catch {} }
     }
     if (outHeapPtr) { try { m._openrar_archive_free(outHeapPtr); } catch {} }

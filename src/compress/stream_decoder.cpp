@@ -5,8 +5,12 @@
 namespace openrar::compress {
 
 StreamDecoder::StreamDecoder(size_t win_size, int method)
-    : win_size_(win_size), method_(method), decompressor_(win_size) {
-    if (win_size_ == 0) win_size_ = 4 * 1024 * 1024;
+    : win_size_(win_size ? win_size : 4 * 1024 * 1024), method_(method),
+      decompressor_(win_size_ ? win_size_ : 4 * 1024 * 1024) {
+    // Clamp before the member-init list builds the decompressor: a zero window
+    // previously reached Decompressor50 with win_size_ == 0 (undefined window
+    // arithmetic). Decompressor50 self-clamps too; this keeps win_size_
+    // consistent with the decompressor's view.
 #if defined(__EMSCRIPTEN__)
     // Enforce 64 MiB allocation ceiling in 32-bit WASM to prevent heap exhaustion.
     if (win_size_ > 64ULL * 1024 * 1024) {
@@ -144,6 +148,14 @@ bool StreamDecoder::finish(std::vector<core::byte>& out) {
 
     // A valid finished stream must not have leftover unparsed bytes
     if (!in_queue_.empty()) {
+        aborted_ = true;
+        return false;
+    }
+
+    // A valid stream ends with the LastBlock flag (the decompressor sets
+    // finished_ only then). Accepting a stream that merely ran out of input
+    // would silently pass truncated payloads through.
+    if (!finished_) {
         aborted_ = true;
         return false;
     }

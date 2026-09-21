@@ -385,7 +385,11 @@ bool HeaderReader::parse_main_header(const core::byte* body, size_t body_size,
                         core::uint64 name_len = 0;
                         if (core::read_vint(body + cur, rec_end - cur, name_len, rb)) {
                             cur += rb;
-                            if (cur + name_len <= rec_end) {
+                            // Subtraction form: name_len is a raw vint that can
+                            // approach 2^64, so cur + name_len wraps and passes
+                            // an addition-based guard, then an ~2^64-length
+                            // assign throws (or aborts the wasm module).
+                            if (name_len <= static_cast<core::uint64>(rec_end - cur)) {
                                 out_block.metadata_name.assign(
                                     reinterpret_cast<const char*>(body + cur),
                                     static_cast<size_t>(name_len));

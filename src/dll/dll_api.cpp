@@ -77,6 +77,7 @@ static_assert(sizeof(openrar_archive_entry_t) == sizeof(openrar::api::ArchiveEnt
               "openrar_archive_entry_t layout drifted from api::ArchiveEntryOut");
 static_assert(sizeof(openrar_entry_ex_t) == 48, "openrar_entry_ex_t must stay 48 bytes");
 static_assert(sizeof(openrar_archive_info_t) == 24, "openrar_archive_info_t must stay 24 bytes");
+static_assert(sizeof(openrar_entry_owner_t) == 20, "openrar_entry_owner_t must stay 20 bytes");
 #define OPENRAR_DLL_ENTRY_FIELD(field)                                                             \
     static_assert(offsetof(openrar_archive_entry_t, field) ==                                      \
                       offsetof(openrar::api::ArchiveEntryOut, field),                              \
@@ -143,10 +144,22 @@ struct ArchiveHandleBase {
                            uint64_t max_header_count, uint64_t max_header_bytes) = 0;
 };
 
+// Claims the handle's busy flag atomically (CAS). The old unconditional
+// store made every extraction path check-then-act: a concurrent set_limits
+// could slip between its busy check and its non-atomic limit writes, and a
+// callback re-entering the same handle could interleave two operations.
+// Construction now either claims exclusively or reports claimed() == false.
 struct BusyGuard {
     std::atomic<bool>& flag;
-    explicit BusyGuard(std::atomic<bool>& f) : flag(f) { flag.store(true, std::memory_order_release); }
-    ~BusyGuard() { flag.store(false, std::memory_order_release); }
+    bool claimed{false};
+    explicit BusyGuard(std::atomic<bool>& f) : flag(f) {
+        bool expected = false;
+        claimed = flag.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+                                               std::memory_order_acquire);
+    }
+    ~BusyGuard() {
+        if (claimed) flag.store(false, std::memory_order_release);
+    }
 };
 openrar::api::HandleTable<ArchiveHandleBase> g_handles;
 
@@ -308,7 +321,12 @@ struct BufferArchiveHandle : ArchiveHandleBase {
 
     int set_limits(uint64_t max_member_bytes, uint64_t max_total_bytes,
                    uint64_t max_header_count, uint64_t max_header_bytes) override {
-        if (busy.load(std::memory_order_acquire)) {
+        // Atomic claim: closes the check-then-act window where a concurrent
+        // extraction could start between the old busy.load() and these
+        // non-atomic limit writes (v1.21.1 fix).
+        bool expected = false;
+        if (!busy.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+                                          std::memory_order_acquire)) {
             set_error("handle is busy with active operation");
             return RAR_ERR_BUSY;
         }
@@ -317,6 +335,7 @@ struct BufferArchiveHandle : ArchiveHandleBase {
         limits.max_header_count = max_header_count;
         limits.max_header_bytes = max_header_bytes;
         has_limits = true;
+        busy.store(false, std::memory_order_release);
         return RAR_OK;
     }
 
@@ -330,6 +349,10 @@ struct BufferArchiveHandle : ArchiveHandleBase {
             return RAR_ERR_INVALID_ARG;
         }
         BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         std::vector<uint8_t> out;
         int rc = ba.extract(data.data(), data.size(), entry_index, out,
                             has_limits ? &limits : nullptr, &limit_state);
@@ -348,6 +371,10 @@ struct BufferArchiveHandle : ArchiveHandleBase {
     int extract_all(uint8_t** buf_out_ptr, size_t* buf_size_out, uint64_t** offsets_out_ptr,
                     uint32_t* offsets_count_out) override {
         BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
         int rc = ba.extract_all(data.data(), data.size(), files, nullptr, nullptr, nullptr, nullptr,
                                 has_limits ? &limits : nullptr, &limit_state);
@@ -410,6 +437,10 @@ struct BufferArchiveHandle : ArchiveHandleBase {
             return RAR_ERR_INVALID_ARG;
         }
         BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         ListCallbackCtx ctx{progress, cancel, user};
         if (ctx.cancel && ctx.cancel(ctx.user)) return RAR_ERR_ABORTED;
         const auto& e = entries[entry_index];
@@ -456,7 +487,12 @@ struct FileArchiveHandle : ArchiveHandleBase {
 
     int set_limits(uint64_t max_member_bytes, uint64_t max_total_bytes,
                    uint64_t max_header_count, uint64_t max_header_bytes) override {
-        if (busy.load(std::memory_order_acquire)) {
+        // Atomic claim: closes the check-then-act window where a concurrent
+        // extraction could start between the old busy.load() and these
+        // non-atomic limit writes (v1.21.1 fix).
+        bool expected = false;
+        if (!busy.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+                                          std::memory_order_acquire)) {
             set_error("handle is busy with active operation");
             return RAR_ERR_BUSY;
         }
@@ -465,6 +501,7 @@ struct FileArchiveHandle : ArchiveHandleBase {
         limits.max_header_count = max_header_count;
         limits.max_header_bytes = max_header_bytes;
         has_limits = true;
+        busy.store(false, std::memory_order_release);
         return RAR_OK;
     }
 
@@ -513,6 +550,10 @@ struct FileArchiveHandle : ArchiveHandleBase {
             return RAR_ERR_INVALID_ARG;
         }
         BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         std::vector<uint8_t> out;
         int rc = reader->extract_entry_to_memory(reader_index[entry_index], out,
                                                  OPENRAR_MAX_HEAP_EXTRACT_SIZE, {},
@@ -546,6 +587,10 @@ struct FileArchiveHandle : ArchiveHandleBase {
             return RAR_ERR_INVALID_ARG;
         }
         BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         ListCallbackCtx ctx{progress, cancel, user};
         openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
         const auto& re = reader->entries()[reader_index[entry_index]];
@@ -587,6 +632,10 @@ struct FileArchiveHandle : ArchiveHandleBase {
             return RAR_ERR_INVALID_ARG;
         }
         BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         ListCallbackCtx ctx{progress, cancel, user};
         openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
         int rc = reader->test_entry_stream(reader_index[entry_index], hooks,
@@ -771,24 +820,43 @@ struct FileArchiveHandle : ArchiveHandleBase {
             owner_out->gid = h.owner_gid;
             flags |= OPENRAR_OWNER_FLAG_HAS_GID;
         }
+        // String contract (openrar_dll.h): when a HAS_* flag is set the
+        // corresponding out param receives a malloc'd NUL-terminated UTF-8
+        // string. An allocation failure must therefore clear the flag and
+        // fail with RAR_ERR_NOMEM — never RAR_OK with a flag and a NULL
+        // string (v1.21.1 fix).
         if (!h.owner_user.empty()) {
-            flags |= OPENRAR_OWNER_FLAG_HAS_USER;
             if (username_out) {
                 char* u = static_cast<char*>(std::malloc(h.owner_user.size() + 1));
-                if (u) {
-                    std::memcpy(u, h.owner_user.c_str(), h.owner_user.size() + 1);
-                    *username_out = u;
+                if (!u) {
+                    if (*groupname_out) std::free(*groupname_out);
+                    *groupname_out = nullptr;
+                    owner_out->flags = 0;
+                    set_error("out of memory");
+                    return RAR_ERR_NOMEM;
                 }
+                std::memcpy(u, h.owner_user.c_str(), h.owner_user.size() + 1);
+                *username_out = u;
+                flags |= OPENRAR_OWNER_FLAG_HAS_USER;
+            } else {
+                flags |= OPENRAR_OWNER_FLAG_HAS_USER;
             }
         }
         if (!h.owner_group.empty()) {
-            flags |= OPENRAR_OWNER_FLAG_HAS_GROUP;
             if (groupname_out) {
                 char* g = static_cast<char*>(std::malloc(h.owner_group.size() + 1));
-                if (g) {
-                    std::memcpy(g, h.owner_group.c_str(), h.owner_group.size() + 1);
-                    *groupname_out = g;
+                if (!g) {
+                    if (*username_out) std::free(*username_out);
+                    *username_out = nullptr;
+                    owner_out->flags = 0;
+                    set_error("out of memory");
+                    return RAR_ERR_NOMEM;
                 }
+                std::memcpy(g, h.owner_group.c_str(), h.owner_group.size() + 1);
+                *groupname_out = g;
+                flags |= OPENRAR_OWNER_FLAG_HAS_GROUP;
+            } else {
+                flags |= OPENRAR_OWNER_FLAG_HAS_GROUP;
             }
         }
         owner_out->flags = flags;
@@ -1625,11 +1693,15 @@ int OPENRAR_DLL_CALL openrar_archive_create_file_ex(
     uint32_t file_count, int method, uint64_t dict_size, const char* password_utf8,
     int encrypt_headers, int solid, openrar_progress_cb progress, openrar_cancel_cb cancel,
     void* user) {
-    uint32_t filter_flags = static_cast<uint32_t>((solid >> 8) & 0xFF);
-    int is_solid = solid & 0xFF;
+    // Honor the documented contract: ANY non-zero value means solid. The
+    // hidden encoding that carried filter flags in bits 8-15 silently
+    // produced a NON-solid archive for values like 0x100 — that undocumented
+    // wire format is removed; filter flags go through create_file_opts
+    // (v1.21.1 fix).
+    int is_solid = (solid != 0) ? 1 : 0;
     return openrar_archive_create_file_opts(arc_path, src_paths, arc_names, file_count, method,
                                            dict_size, password_utf8, encrypt_headers, is_solid,
-                                           filter_flags, progress, cancel, user);
+                                           OPENRAR_FILTER_DEFAULT, progress, cancel, user);
 }
 
 int OPENRAR_DLL_CALL openrar_archive_create_file_opts(
@@ -1766,11 +1838,9 @@ int OPENRAR_DLL_CALL openrar_archive_repair(const char* arc_path,
 
         if (progress) progress(user, 0, 100);
 
-        bool ok = openrar::recovery::RecoveryWriter::repair(std::filesystem::u8path(arc_path));
-        if (cancel && cancel(user)) {
-            set_error("aborted");
-            return RAR_ERR_ABORTED;
-        }
+        bool ok = openrar::recovery::RecoveryWriter::repair(std::filesystem::u8path(arc_path));        // No post-operation cancel poll: RecoveryWriter takes no cancel
+        // callback, so the operation has already committed by the time the
+        // flag could be sampled here (v1.21.1 fix).
         if (!ok) {
             set_error("repair failed");
             return RAR_ERR_IO;
@@ -1809,11 +1879,9 @@ int OPENRAR_DLL_CALL openrar_archive_create_rev_volumes(const char* arc_path,
 
         bool ok = openrar::recovery::RecoveryWriter::write_rev_volumes(
             std::filesystem::u8path(arc_path), count_or_percent, is_percent != 0,
-            threads > 0 ? threads : 1);
-        if (cancel && cancel(user)) {
-            set_error("aborted");
-            return RAR_ERR_ABORTED;
-        }
+            threads > 0 ? threads : 1);        // No post-operation cancel poll: RecoveryWriter takes no cancel
+        // callback, so the operation has already committed by the time the
+        // flag could be sampled here (v1.21.1 fix).
         if (!ok) {
             set_error("create recovery volumes failed: not a volume archive or invalid params");
             return RAR_ERR_UNSUPPORTED_FEATURE;
@@ -1854,11 +1922,9 @@ int OPENRAR_DLL_CALL openrar_archive_add_recovery_record(const char* arc_path,
         if (progress) progress(user, 0, 100);
 
         bool ok = openrar::recovery::RecoveryWriter::add_recovery_record(
-            std::filesystem::u8path(arc_path), percent, threads > 0 ? threads : 1);
-        if (cancel && cancel(user)) {
-            set_error("aborted");
-            return RAR_ERR_ABORTED;
-        }
+            std::filesystem::u8path(arc_path), percent, threads > 0 ? threads : 1);        // No post-operation cancel poll: RecoveryWriter takes no cancel
+        // callback, so the operation has already committed by the time the
+        // flag could be sampled here (v1.21.1 fix).
         if (!ok) {
             set_error("add recovery record failed");
             return RAR_ERR_IO;
