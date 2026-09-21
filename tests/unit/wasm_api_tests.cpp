@@ -224,7 +224,8 @@ static void test_stream_compress_incremental_pull() {
 
     uint8_t* restored = nullptr;
     size_t restored_len = 0;
-    CHECK(openrar_decompress2(all_comp.data(), all_comp.size(), &restored, &restored_len, 1024 * 1024) == 1);
+    CHECK(openrar_decompress2(all_comp.data(), all_comp.size(), &restored, &restored_len,
+                              1024 * 1024) == 1);
     CHECK(restored_len == src.size());
     CHECK(std::memcmp(restored, src.data(), src.size()) == 0);
     openrar_free(restored);

@@ -13,7 +13,8 @@ ParallelBlockPipeline::ParallelBlockPipeline(const ParallelCompressConfig& cfg) 
 bool ParallelBlockPipeline::compress_buffer(const core::byte* src, size_t src_size,
                                             std::vector<core::byte>& dest, int method,
                                             size_t win_size, unsigned threads) {
-    return Compressor50::compress_buffer_parallel(src, src_size, dest, method, win_size, {}, threads);
+    return Compressor50::compress_buffer_parallel(src, src_size, dest, method, win_size, {},
+                                                  threads);
 }
 
 bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::uint64 file_size,
@@ -40,17 +41,19 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
             bool ok;
         } fctx{&sink_fn, &out_packed_bytes, true};
 
-        encoder.set_flush([](void* user, const core::byte* data, size_t size) -> int {
-            auto* ctx = static_cast<FlushSinkCtx*>(user);
-            if (size > 0) {
-                if (!(*ctx->sink)(data, size)) {
-                    ctx->ok = false;
-                    return -1;
+        encoder.set_flush(
+            [](void* user, const core::byte* data, size_t size) -> int {
+                auto* ctx = static_cast<FlushSinkCtx*>(user);
+                if (size > 0) {
+                    if (!(*ctx->sink)(data, size)) {
+                        ctx->ok = false;
+                        return -1;
+                    }
+                    *(ctx->packed_count) += size;
                 }
-                *(ctx->packed_count) += size;
-            }
-            return 0;
-        }, &fctx);
+                return 0;
+            },
+            &fctx);
 
         crypto::Crc32 crc_c;
         std::vector<core::byte> read_buf(chunk_size);
@@ -58,7 +61,8 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
         core::uint64 done = 0;
         while (remaining > 0) {
             if (cfg_.cancel_cb && cfg_.cancel_cb(cfg_.cancel_user) != 0) return false;
-            size_t to_read = static_cast<size_t>(std::min<core::uint64>(remaining, read_buf.size()));
+            size_t to_read =
+                static_cast<size_t>(std::min<core::uint64>(remaining, read_buf.size()));
             if (src_stream.read(read_buf.data(), to_read) != to_read) return false;
             crc_c.update(read_buf.data(), to_read);
             if (!encoder.feed(read_buf.data(), to_read) || !fctx.ok) return false;
@@ -111,7 +115,8 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
             // already completed. Callers must discard partial sink output.
             if (abort_flag.load(std::memory_order_relaxed)) return false;
 
-            if (wait_for_front && !in_flight.front()->ready && !abort_flag.load(std::memory_order_relaxed)) {
+            if (wait_for_front && !in_flight.front()->ready &&
+                !abort_flag.load(std::memory_order_relaxed)) {
                 cv_ready.wait(lk, [&] {
                     return abort_flag.load(std::memory_order_relaxed) ||
                            (!in_flight.empty() && in_flight.front()->ready);
