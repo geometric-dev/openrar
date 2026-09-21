@@ -326,7 +326,7 @@ jobs:
 
       - name: GFNI RS16 fold kernel under SDE (must ACTIVATE and match scalar)
         run: |
-          "${SDE_EXE}" -future -- ./build/recovery_tests | tee sde_recovery.log
+          OPENRAR_GFNI_DIAG=1 "${SDE_EXE}" -future -- ./build/recovery_tests | tee sde_recovery.log
           grep -q "GFNI KERNEL ACTIVE" sde_recovery.log \
             || { echo "FAIL: GFNI kernel did not activate under SDE (probe fell back to scalar)"; exit 1; }
 
