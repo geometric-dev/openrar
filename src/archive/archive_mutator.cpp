@@ -476,7 +476,7 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
         if (reader.sfx_offset() > 0) {
             if (!copy_stream_region(reader.stream(), out, 0, reader.sfx_offset())) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
@@ -485,7 +485,7 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
         // Signature
         if (!format::HeaderWriter::write_signature(out)) {
             out.close();
-            std::filesystem::remove(tmp_path);
+            { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
             detail_out = "rewrite failed";
             return RAR_ERR_IO;
         }
@@ -497,7 +497,7 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
         mb.locator_rr_offset = -1;
         if (!format::HeaderWriter::write_main_block(out, mb)) {
             out.close();
-            std::filesystem::remove(tmp_path);
+            { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
             detail_out = "rewrite failed";
             return RAR_ERR_IO;
         }
@@ -519,7 +519,7 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
             if (!copy_stream_region(reader.stream(), out, entry.header_offset,
                                     entry.header_size + entry.data_size)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
@@ -530,7 +530,7 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
         eb.end_flags = 0;
         if (!format::HeaderWriter::write_end_block(out, eb)) {
             out.close();
-            std::filesystem::remove(tmp_path);
+            { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
             detail_out = "rewrite failed";
             return RAR_ERR_IO;
         }
@@ -709,7 +709,7 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
                     if (!copy_stream_region(in_s, out, 0, sfx_off)) {
                         out.close();
                         in_s.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         return false;
                     }
                 }
@@ -717,13 +717,13 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
                 if (!format::HeaderReader::read_signature(in_s)) {
                     out.close();
                     in_s.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     return false;
                 }
                 if (!format::HeaderWriter::write_signature(out)) {
                     out.close();
                     in_s.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     return false;
                 }
 
@@ -733,7 +733,7 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
                     if (password.empty() || !hcr.init(password, cb) || !hcw.init_existing(password, cb)) {
                         out.close();
                         in_s.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         return false;
                     }
                     core::uint64 ctype = 0, cflags = 0, cdata_size = 0;
@@ -742,13 +742,13 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
                     if (cres != format::HeaderResult::Ok || ctype != format::HEAD_CRYPT) {
                         out.close();
                         in_s.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         return false;
                     }
                     if (!format::HeaderWriter::write_crypt_block(out, cb)) {
                         out.close();
                         in_s.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         return false;
                     }
                 }
@@ -759,21 +759,21 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
                 if (mres != format::HeaderResult::Ok || mtype != format::HEAD_MAIN) {
                     out.close();
                     in_s.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     return false;
                 }
                 format::MainBlock mb;
                 if (!format::HeaderReader::parse_main_header(mbody.data(), mbody.size(), mb)) {
                     out.close();
                     in_s.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     return false;
                 }
                 mb.arc_flags |= format::MHFL_LOCK;
                 if (!format::HeaderWriter::write_main_block(out, mb, is_enc ? &hcw : nullptr)) {
                     out.close();
                     in_s.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     return false;
                 }
 
@@ -783,7 +783,7 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
                     if (!copy_stream_region(in_s, out, cur_in_pos, total_in_sz - cur_in_pos)) {
                         out.close();
                         in_s.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         return false;
                     }
                 }
@@ -830,7 +830,7 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         if (reader.sfx_offset() > 0) {
             if (!copy_stream_region(reader.stream(), out, 0, reader.sfx_offset())) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 return false;
             }
         }
@@ -838,7 +838,7 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         // Signature
         if (!format::HeaderWriter::write_signature(out)) {
             out.close();
-            std::filesystem::remove(tmp_path);
+            { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
             return false;
         }
 
@@ -847,12 +847,12 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         if (is_enc) {
             if (password.empty() || !hcw.init_existing(password, reader.header_crypt())) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 return false;
             }
             if (!format::HeaderWriter::write_crypt_block(out, reader.header_crypt())) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 return false;
             }
         }
@@ -862,7 +862,7 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         mb.arc_flags |= format::MHFL_LOCK;
         if (!format::HeaderWriter::write_main_block(out, mb, is_enc ? &hcw : nullptr)) {
             out.close();
-            std::filesystem::remove(tmp_path);
+            { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
             return false;
         }
 
@@ -871,7 +871,7 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
             if (!copy_stream_region(reader.stream(), out, entry.header_offset,
                                     entry.header_size + entry.data_size)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 return false;
             }
         }
@@ -881,7 +881,7 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         eb.end_flags = 0;
         if (!format::HeaderWriter::write_end_block(out, eb, is_enc ? &hcw : nullptr)) {
             out.close();
-            std::filesystem::remove(tmp_path);
+            { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
             return false;
         }
 
@@ -993,6 +993,31 @@ static void apply_owner_overrides(format::FileBlock& fb, const std::string& defa
     }
 }
 
+// Snap a requested dictionary window down to the exact FCI grid the header
+// writer encodes (base = 128 KiB<<bits, bits ≤ 23; fraction = floor((win-base)
+// *32/base) ≤ 31). The compressor picks its distance-slot table and match
+// horizon from the requested window while the decoder only sees the
+// header-quantized value: a requested window between grid points (e.g.
+// 4.1 GiB, which floor-quantizes to exactly 4 GiB with fraction 0) made the
+// encoder emit a 446-slot distance table the header's 4 GiB window cannot
+// decode, and below the table boundary, distances beyond the quantized window
+// are undeclarable. Quantizing at window finalization makes encoder and
+// emitted header agree by construction (v1.21.2). CLI -md values are already
+// grid-exact, so this is a no-op for them.
+static core::uint64 snap_window_to_fci_grid(core::uint64 win) {
+    if (win < 0x20000ULL) return win; // store/small windows are not FCI-encoded
+    core::uint64 pow2 = 0x20000ULL;
+    core::uint32 bits = 0;
+    while (2 * pow2 <= win && bits < 23) {
+        pow2 *= 2;
+        bits++;
+    }
+    if (win <= pow2) return pow2;
+    if (bits == 23) return pow2 + (pow2 / 32) * 31; // clamp to max representable
+    core::uint64 fraction = (win - pow2) * 32 / pow2;
+    return pow2 + (pow2 / 32) * fraction;
+}
+
 bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                                       const std::string& arc_entry_name, int method,
                                       const std::string& password, PreparedAdd& out,
@@ -1048,6 +1073,7 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
     } else {
         win_size = dict_size;
     }
+    win_size = snap_window_to_fci_grid(win_size);
 
     core::uint64 file_sz = 0;
     core::uint32 crc = 0;
@@ -1625,7 +1651,7 @@ int ArchiveMutator::write_batch_add_ex(
         if (have_sfx) {
             if (!copy_sfx_stub(sfx_stub_path, out)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "cannot copy sfx stub";
                 return RAR_ERR_IO;
             }
@@ -1651,16 +1677,23 @@ int ArchiveMutator::write_batch_add_ex(
         if (std::filesystem::exists(arc_path)) {
             ArchiveReader reader;
             // -hp archives carry encrypted headers: reading them back for the
-            // append path requires the password.
-            if (!reader.open(arc_path, password)) {
+            // append path requires the password. Use open_ex so the -hp
+            // verdict arrives as a status code (flags reset on failed open).
+            int open_status = RAR_OK;
+            std::string open_detail;
+            if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
-                detail_out = "cannot open existing archive";
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
+                if (open_status == RAR_ERR_ENCRYPTED || open_status == RAR_ERR_BAD_PASSWORD) {
+                    detail_out = "appending to a header-encrypted archive requires a password";
+                    return RAR_ERR_UNSUPPORTED_FEATURE;
+                }
+                detail_out = "cannot open existing archive: " + open_detail;
                 return RAR_ERR_IO;
             }
             if (reader.is_locked() || reader.is_volume()) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = reader.is_locked() ? "archive is locked"
                                                 : "cannot mutate a multi-volume archive";
                 return RAR_ERR_UNSUPPORTED_FEATURE;
@@ -1764,7 +1797,7 @@ int ArchiveMutator::write_batch_add_ex(
                 if (!solid_replace_permitted(entries, replaced, run_head, detail_out) ||
                     !solid_delete_permitted(entries, replaced, run_head, detail_out)) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     return RAR_ERR_UNSUPPORTED_FEATURE;
                 }
             }
@@ -1776,7 +1809,7 @@ int ArchiveMutator::write_batch_add_ex(
             if (reader.is_header_encrypted()) {
                 if (!hcw.init_existing(password, reader.header_crypt())) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "cannot initialize header encryption";
                     return RAR_ERR_IO;
                 }
@@ -1784,7 +1817,7 @@ int ArchiveMutator::write_batch_add_ex(
                 header_encrypt_mode = true;
             } else if (encrypt_headers) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "cannot convert a plaintext archive to header encryption";
                 return RAR_ERR_INVALID_ARG;
             }
@@ -1793,14 +1826,14 @@ int ArchiveMutator::write_batch_add_ex(
             if (!have_sfx && reader.sfx_offset() > 0) {
                 if (!copy_stream_region(reader.stream(), out, 0, reader.sfx_offset())) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "rewrite failed";
                     return RAR_ERR_IO;
                 }
             }
             if (!format::HeaderWriter::write_signature(out)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
@@ -1811,7 +1844,7 @@ int ArchiveMutator::write_batch_add_ex(
                 // old ones.
                 if (!format::HeaderWriter::write_crypt_block(out, new_crypt)) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "rewrite failed";
                     return RAR_ERR_IO;
                 }
@@ -1843,7 +1876,7 @@ int ArchiveMutator::write_batch_add_ex(
             if (!format::HeaderWriter::write_main_block(out, written_main_block,
                                                         header_encrypt_mode ? &hcw : nullptr)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
@@ -1875,14 +1908,14 @@ int ArchiveMutator::write_batch_add_ex(
                     if (!format::HeaderWriter::emit_block(out, block_bytes,
                                                           header_encrypt_mode ? &hcw : nullptr)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "rewrite failed";
                         return RAR_ERR_IO;
                     }
                     if (entry.data_size > 0) {
                         if (!copy_stream_region(reader.stream(), out, entry.data_offset, entry.data_size)) {
                             out.close();
-                            std::filesystem::remove(tmp_path);
+                            { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                             detail_out = "rewrite failed";
                             return RAR_ERR_IO;
                         }
@@ -1904,7 +1937,7 @@ int ArchiveMutator::write_batch_add_ex(
                     if (!copy_stream_region(reader.stream(), out, entry.header_offset,
                                             entry.header_size + entry.data_size)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "rewrite failed";
                         return RAR_ERR_IO;
                     }
@@ -1914,14 +1947,14 @@ int ArchiveMutator::write_batch_add_ex(
         } else {
             if (encrypt_headers && password.empty()) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "encrypt_headers requires a password";
                 return RAR_ERR_INVALID_ARG;
             }
             if (encrypt_headers) {
                 if (!hcw.init_new(password, new_crypt)) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "cannot initialize header encryption";
                     return RAR_ERR_IO;
                 }
@@ -1930,14 +1963,14 @@ int ArchiveMutator::write_batch_add_ex(
 
             if (!format::HeaderWriter::write_signature(out)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
             if (header_encrypt_mode) {
                 if (!format::HeaderWriter::write_crypt_block(out, new_crypt)) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "rewrite failed";
                     return RAR_ERR_IO;
                 }
@@ -1968,7 +2001,7 @@ int ArchiveMutator::write_batch_add_ex(
             if (!format::HeaderWriter::write_main_block(out, written_main_block,
                                                         header_encrypt_mode ? &hcw : nullptr)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
@@ -2001,13 +2034,13 @@ int ArchiveMutator::write_batch_add_ex(
             if (!format::HeaderWriter::emit_block(out, cmt_bytes,
                                                   header_encrypt_mode ? &hcw : nullptr)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
             if (out.write(comment.data(), comment.size()) != comment.size()) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
@@ -2051,14 +2084,14 @@ int ArchiveMutator::write_batch_add_ex(
             if (!format::HeaderWriter::emit_block(out, block_bytes,
                                                   header_encrypt_mode ? &hcw : nullptr)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
             if (!pf.payload.empty()) {
                 if (out.write(pf.payload.data(), pf.payload.size()) != pf.payload.size()) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "payload write failed";
                     return RAR_ERR_IO;
                 }
@@ -2066,7 +2099,7 @@ int ArchiveMutator::write_batch_add_ex(
                 io::FileStream spool_in;
                 if (!spool_in.open(pf.spool_path, io::FileMode::ReadOnly)) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "cannot read spool file";
                     return RAR_ERR_IO;
                 }
@@ -2074,7 +2107,7 @@ int ArchiveMutator::write_batch_add_ex(
                 if (!copy_stream_region(spool_in, out, 0, spool_sz)) {
                     spool_in.close();
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "spool stream copy failed";
                     return RAR_ERR_IO;
                 }
@@ -2086,7 +2119,7 @@ int ArchiveMutator::write_batch_add_ex(
                 io::FileStream src_in;
                 if (!src_in.open(pf.src_path, io::FileMode::ReadOnly)) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "cannot read source file for direct streaming compression";
                     return RAR_ERR_IO;
                 }
@@ -2147,7 +2180,7 @@ int ArchiveMutator::write_batch_add_ex(
 
                 if (!stream_ok) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "direct streaming compression failed";
                     return RAR_ERR_IO;
                 }
@@ -2157,7 +2190,7 @@ int ArchiveMutator::write_batch_add_ex(
                     if (!out.seek(static_cast<core::int64>(orig_pos), io::SeekOrigin::Begin) ||
                         !out.truncate(orig_pos)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "failed to truncate archive for store fallback";
                         return RAR_ERR_IO;
                     }
@@ -2172,7 +2205,7 @@ int ArchiveMutator::write_batch_add_ex(
                     if (!format::HeaderWriter::emit_block(out, store_block_bytes,
                                                           header_encrypt_mode ? &hcw : nullptr)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "failed to write store header on compression expansion";
                         return RAR_ERR_IO;
                     }
@@ -2186,7 +2219,7 @@ int ArchiveMutator::write_batch_add_ex(
 
                     if (!src_in.open(pf.src_path, io::FileMode::ReadOnly)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "cannot reopen source file for store fallback";
                         return RAR_ERR_IO;
                     }
@@ -2194,7 +2227,7 @@ int ArchiveMutator::write_batch_add_ex(
                     if (!copy_stream_region(src_in, out, 0, pf.fb.unp_size)) {
                         src_in.close();
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "source copy failed during store fallback";
                         return RAR_ERR_IO;
                     }
@@ -2208,7 +2241,7 @@ int ArchiveMutator::write_batch_add_ex(
                     auto updated_block_bytes = format::HeaderWriter::serialize_file_block(pf.fb, 0, true);
                     if (updated_block_bytes.size() != block_bytes.size()) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "header size invariant broken on streaming pack_size back-patch";
                         return RAR_ERR_IO;
                     }
@@ -2220,7 +2253,7 @@ int ArchiveMutator::write_batch_add_ex(
 
                     if (!out.seek(static_cast<core::int64>(orig_pos), io::SeekOrigin::Begin)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "failed to seek to header for pack_size back-patch";
                         return RAR_ERR_IO;
                     }
@@ -2228,14 +2261,14 @@ int ArchiveMutator::write_batch_add_ex(
                     if (!format::HeaderWriter::emit_block(out, updated_block_bytes,
                                                           header_encrypt_mode ? &hcw : nullptr)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "failed to rewrite header for pack_size back-patch";
                         return RAR_ERR_IO;
                     }
 
                     if (!out.seek(static_cast<core::int64>(payload_end), io::SeekOrigin::Begin)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "failed to seek to payload end after pack_size back-patch";
                         return RAR_ERR_IO;
                     }
@@ -2244,7 +2277,7 @@ int ArchiveMutator::write_batch_add_ex(
                 io::FileStream src_in;
                 if (!src_in.open(pf.src_path, io::FileMode::ReadOnly)) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "cannot read source file for store copy";
                     return RAR_ERR_IO;
                 }
@@ -2257,14 +2290,14 @@ int ArchiveMutator::write_batch_add_ex(
                         if (src_in.read(buf.data(), take) != take) {
                             src_in.close();
                             out.close();
-                            std::filesystem::remove(tmp_path);
+                            { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                             detail_out = "source stream read failed";
                             return RAR_ERR_IO;
                         }
                         if (out.write(buf.data(), take) != take) {
                             src_in.close();
                             out.close();
-                            std::filesystem::remove(tmp_path);
+                            { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                             detail_out = "archive write failed";
                             return RAR_ERR_IO;
                         }
@@ -2278,7 +2311,7 @@ int ArchiveMutator::write_batch_add_ex(
                     auto updated_block_bytes = format::HeaderWriter::serialize_file_block(pf.fb, 0);
                     if (updated_block_bytes.size() != block_bytes.size()) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "header size invariant broken on CRC back-patch";
                         return RAR_ERR_IO;
                     }
@@ -2288,20 +2321,20 @@ int ArchiveMutator::write_batch_add_ex(
                     }
                     if (!out.seek(static_cast<core::int64>(orig_pos), io::SeekOrigin::Begin)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "failed to seek to header for CRC back-patch";
                         return RAR_ERR_IO;
                     }
                     if (!format::HeaderWriter::emit_block(out, updated_block_bytes,
                                                           header_encrypt_mode ? &hcw : nullptr)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "failed to rewrite header for CRC back-patch";
                         return RAR_ERR_IO;
                     }
                     if (!out.seek(static_cast<core::int64>(payload_end), io::SeekOrigin::Begin)) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "failed to seek to payload end after CRC back-patch";
                         return RAR_ERR_IO;
                     }
@@ -2309,7 +2342,7 @@ int ArchiveMutator::write_batch_add_ex(
                     if (!copy_stream_region(src_in, out, 0, pf.fb.unp_size)) {
                         src_in.close();
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "source stream copy failed";
                         return RAR_ERR_IO;
                     }
@@ -2332,7 +2365,7 @@ int ArchiveMutator::write_batch_add_ex(
                 if (!format::HeaderWriter::emit_block(out, child_bytes,
                                                       header_encrypt_mode ? &hcw : nullptr)) {
                     out.close();
-                    std::filesystem::remove(tmp_path);
+                    { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                     detail_out = "rewrite failed";
                     return RAR_ERR_IO;
                 }
@@ -2340,7 +2373,7 @@ int ArchiveMutator::write_batch_add_ex(
                     if (out.write(child.payload.data(), child.payload.size()) !=
                         child.payload.size()) {
                         out.close();
-                        std::filesystem::remove(tmp_path);
+                        { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                         detail_out = "payload write failed";
                         return RAR_ERR_IO;
                     }
@@ -2407,13 +2440,13 @@ int ArchiveMutator::write_batch_add_ex(
             if (!format::HeaderWriter::write_file_block(out, qo_block, 0,
                                                         header_encrypt_mode ? &hcw : nullptr)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
             if (out.write(qo_payload.data(), qo_payload.size()) != qo_payload.size()) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
@@ -2425,20 +2458,20 @@ int ArchiveMutator::write_batch_add_ex(
                 static_cast<core::int64>(qo_header_pos - main_header_pos);
             if (!out.seek(static_cast<core::int64>(main_header_pos), io::SeekOrigin::Begin)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "seek failed";
                 return RAR_ERR_IO;
             }
             if (!format::HeaderWriter::write_main_block(out, written_main_block,
                                                         header_encrypt_mode ? &hcw : nullptr)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "rewrite failed";
                 return RAR_ERR_IO;
             }
             if (!out.seek(static_cast<core::int64>(end_after_qo), io::SeekOrigin::Begin)) {
                 out.close();
-                std::filesystem::remove(tmp_path);
+                { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
                 detail_out = "seek failed";
                 return RAR_ERR_IO;
             }
@@ -2447,7 +2480,7 @@ int ArchiveMutator::write_batch_add_ex(
         format::EndArcBlock eb;
         if (!format::HeaderWriter::write_end_block(out, eb, header_encrypt_mode ? &hcw : nullptr)) {
             out.close();
-            std::filesystem::remove(tmp_path);
+            { std::error_code rm_ec; std::filesystem::remove(tmp_path, rm_ec); }
             detail_out = "rewrite failed";
             return RAR_ERR_IO;
         }
@@ -2544,6 +2577,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     }
 
     core::uint64 win_size = (dict_size > 0) ? dict_size : 0x200000ULL; // 2 MiB default
+    win_size = snap_window_to_fci_grid(win_size);
     if (dict_size == 0 && !solid && method > 0 && file_sz > 0) {
         core::uint64 file_pow2 = 0x20000ULL; // 128 KiB floor
         while (file_pow2 < file_sz && file_pow2 < win_size) {
@@ -3007,6 +3041,10 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     auto start_vol = [&](std::filesystem::path path, int idx) -> bool {
         // close previous already handled
         if (!cur.open(path, io::FileMode::CreateAlways)) return false;
+        // Register immediately after a successful open: a failure in any of
+        // the writes below must leave the created file to the cleanup guard,
+        // not orphaned on disk (v1.21.2 fix).
+        created.push_back(path);
         if (!sfx_bytes.empty() && idx == 0) {
             if (cur.write(sfx_bytes.data(), sfx_bytes.size()) != sfx_bytes.size()) return false;
         }
@@ -3051,7 +3089,6 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             if (cur.write(comment->data(), comment->size()) != comment->size()) return false;
         }
 
-        created.push_back(path);
         return true;
     };
     if (!start_vol(curPath, vol_idx)) return false;

@@ -52,6 +52,25 @@ bool g_plain_mode = false;
 bool g_quiet_mode = false;
 bool g_assume_yes = false;
 
+// WinRAR/unrar exit-code taxonomy (unrar errhnd.hpp RAR_EXIT; v1.21.2).
+// Previously every failure collapsed to 1 — which in WinRAR semantics means
+// "warning, operation succeeded" — so scripts could not distinguish corrupt
+// archives from password failures from open failures. Handlers map the
+// diagnosable causes; unknown failures are fatal (2).
+constexpr int EXIT_OK = 0;
+constexpr int EXIT_WARNING = 1;    // warnings only; operation succeeded
+constexpr int EXIT_FATAL = 2;      // generic failure
+constexpr int EXIT_CRC = 3;        // checksum error
+constexpr int EXIT_LOCKED = 4;     // locked archive
+constexpr int EXIT_WRITE = 5;      // write error
+constexpr int EXIT_OPEN = 6;       // archive open error
+constexpr int EXIT_USAGE = 7;      // command-line error
+constexpr int EXIT_MEMORY = 8;     // not enough memory
+constexpr int EXIT_NO_FILES = 10;  // no files matched
+constexpr int EXIT_BAD_PASSWORD = 11;
+constexpr int EXIT_BAD_ARCHIVE = 13;  // unrar RARX_BADARC: unrecognized archive
+constexpr int EXIT_USER_BREAK = 255;
+
 enum class OverwriteMode { Prompt, Overwrite, SkipExisting };
 
 // Answer to one extraction overwrite query (B8: the query itself was never
@@ -212,15 +231,29 @@ int print_archive_to_stdout(const std::string& arc_path, const std::vector<std::
 #endif
 
     archive::ArchiveReader reader;
-    if (!reader.open(arc_path, password)) {
-        if (reader.has_bad_password()) {
-            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
-        } else {
+    int open_status = archive::RAR_OK;
+    std::string open_detail;
+    if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
+        // Oracle-mapped taxonomy (unrar errhnd.hpp): missing archive =
+        // 10 (NO_FILES), unrecognized = 13 (BADARC), password = 11.
+        if (!std::filesystem::exists(arc_path)) {
             std::cerr << "Cannot open " << arc_path << "\n";
+            return EXIT_NO_FILES;
         }
-        return 1;
+        if (open_status == archive::RAR_ERR_ENCRYPTED ||
+            open_status == archive::RAR_ERR_BAD_PASSWORD) {
+            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
+            return EXIT_BAD_PASSWORD;
+        }
+        if (open_status == archive::RAR_ERR_NOT_RAR) {
+            std::cerr << "Not a RAR archive: " << arc_path << "\n";
+            return EXIT_BAD_ARCHIVE;
+        }
+        std::cerr << "Cannot open " << arc_path << "\n";
+        return EXIT_OPEN;
     }
 
+    size_t printed_entries = 0;
     for (size_t i = 0; i < reader.entries().size(); ++i) {
         const auto& entry = reader.entries()[i];
         if (entry.header.is_service) continue;
@@ -244,21 +277,25 @@ int print_archive_to_stdout(const std::string& arc_path, const std::vector<std::
         int rc = reader.extract_entry_sink(i, [](const core::byte* p, size_t n) -> bool {
             return std::fwrite(p, 1, n, stdout) == n;
         });
+        ++printed_entries;
 
         if (rc != archive::RAR_OK) {
             std::fflush(stdout);
             if (reader.has_bad_password() || rc == archive::RAR_ERR_BAD_PASSWORD) {
                 std::cerr << "Cannot decrypt: BADPSW (bad password) for " << name << "\n";
-            } else if (rc == archive::RAR_ERR_CRC_MISMATCH) {
-                std::cerr << "Checksum error in " << name << "\n";
-            } else {
-                std::cerr << "Extraction failed for " << name << "\n";
+                return EXIT_BAD_PASSWORD;
             }
-            return 1;
+            if (rc == archive::RAR_ERR_CRC_MISMATCH) {
+                std::cerr << "Checksum error in " << name << "\n";
+                return EXIT_CRC;
+            }
+            std::cerr << "Extraction failed for " << name << "\n";
+            return EXIT_FATAL;
         }
     }
 
     std::fflush(stdout);
+    if (printed_entries == 0 && !file_masks.empty()) return EXIT_NO_FILES;
     return 0;
 }
 
@@ -352,18 +389,32 @@ void print_help() {
 
 int list_archive(const std::string& arc_path, bool bare, bool technical,
                  const std::string& password = "",
-                 const std::vector<std::string>& exclude_patterns = {}) {
+                 const std::vector<std::string>& exclude_patterns = {},
+                 const std::vector<std::string>& file_masks = {}) {
     // INFO8: quiet mode only suppresses OUTPUT. The archive must still be
     // opened and validated here so a quiet list of a missing archive exits
     // nonzero instead of reporting success without ever touching the archive.
     archive::ArchiveReader reader;
-    if (!reader.open(arc_path, password)) {
-        if (reader.has_bad_password()) {
-            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
-        } else {
+    int open_status = archive::RAR_OK;
+    std::string open_detail;
+    if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
+        // Oracle-mapped taxonomy (unrar errhnd.hpp): missing archive =
+        // 10 (NO_FILES), unrecognized = 13 (BADARC), password = 11.
+        if (!std::filesystem::exists(arc_path)) {
             std::cerr << "Cannot open " << arc_path << "\n";
+            return EXIT_NO_FILES;
         }
-        return 1;
+        if (open_status == archive::RAR_ERR_ENCRYPTED ||
+            open_status == archive::RAR_ERR_BAD_PASSWORD) {
+            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
+            return EXIT_BAD_PASSWORD;
+        }
+        if (open_status == archive::RAR_ERR_NOT_RAR) {
+            std::cerr << "Not a RAR archive: " << arc_path << "\n";
+            return EXIT_BAD_ARCHIVE;
+        }
+        std::cerr << "Cannot open " << arc_path << "\n";
+        return EXIT_OPEN;
     }
 
     if (!g_quiet_mode) {
@@ -398,9 +449,26 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
             }
         }
 
+        size_t listed = 0;
         for (const auto& entry : reader.entries()) {
             if (entry.header.is_service) continue;
             if (is_path_excluded(entry.header.file_name, exclude_patterns)) continue;
+            // File-mask support (v1.21.2): `l`/`lb`/`lt` previously ignored
+            // mask arguments entirely.
+            if (!file_masks.empty()) {
+                bool matched = false;
+                for (const auto& mask : file_masks) {
+                    if (io::wildcard_match(mask, entry.header.file_name) ||
+                        io::wildcard_match(mask, std::filesystem::path(entry.header.file_name)
+                                                         .filename()
+                                                         .string())) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) continue;
+            }
+            ++listed;
             std::string disp_name = entry.header.file_name;
             if (entry.header.has_file_version) {
                 disp_name += ";" + std::to_string(entry.header.file_version);
@@ -547,15 +615,29 @@ bool entries_independently_decodable(const archive::ArchiveReader& reader) {
 
 int test_archive(const std::string& arc_path, const std::string& password = "",
                  unsigned threads = 1,
-                 const std::vector<std::string>& exclude_patterns = {}) {
+                 const std::vector<std::string>& exclude_patterns = {},
+                 const std::vector<std::string>& file_masks = {}) {
     archive::ArchiveReader reader;
-    if (!reader.open(arc_path, password)) {
-        if (reader.has_bad_password()) {
-            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
-        } else {
+    int open_status = archive::RAR_OK;
+    std::string open_detail;
+    if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
+        // Oracle-mapped taxonomy (unrar errhnd.hpp): missing archive =
+        // 10 (NO_FILES), unrecognized = 13 (BADARC), password = 11.
+        if (!std::filesystem::exists(arc_path)) {
             std::cerr << "Cannot open " << arc_path << "\n";
+            return EXIT_NO_FILES;
         }
-        return 1;
+        if (open_status == archive::RAR_ERR_ENCRYPTED ||
+            open_status == archive::RAR_ERR_BAD_PASSWORD) {
+            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
+            return EXIT_BAD_PASSWORD;
+        }
+        if (open_status == archive::RAR_ERR_NOT_RAR) {
+            std::cerr << "Not a RAR archive: " << arc_path << "\n";
+            return EXIT_BAD_ARCHIVE;
+        }
+        std::cerr << "Cannot open " << arc_path << "\n";
+        return EXIT_OPEN;
     }
 
     if (!g_quiet_mode && !is_vt_supported()) {
@@ -589,6 +671,17 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         size_t ei = 0;
         for (const auto& entry : reader.entries()) {
             if (!entry.header.is_service && !is_path_excluded(entry.header.file_name, exclude_patterns)) {
+                if (!file_masks.empty()) {
+                    bool matched = false;
+                    for (const auto& mask : file_masks) {
+                        if (io::wildcard_match(mask, entry.header.file_name) ||
+                            io::wildcard_match(mask, std::filesystem::path(entry.header.file_name).filename().string())) {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched) { ei++; continue; }
+                }
                 jobs.push_back({&entry, ei});
             }
             ei++;
@@ -627,6 +720,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         return r.test_entry_stream(job.index, hooks) == archive::RAR_OK ? TestResult::Ok
                                                                         : TestResult::Failed;
     };
+    int skipped_count = 0;
     auto test_verdict_str = [](TestResult r) -> const char* {
         switch (r) {
             case TestResult::Ok: return "OK";
@@ -634,6 +728,11 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
             default: return "SKIPPED (encrypted - no password)";
         }
     };
+
+    if (jobs.empty()) {
+        // Oracle semantics: a command that matched no files exits 10.
+        return EXIT_NO_FILES;
+    }
 
     if (slots.readers.empty()) {
         for (const auto& job : jobs) {
@@ -646,6 +745,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
             }
 
             TestResult res = test_one(reader, job);
+            if (res == TestResult::SkippedNoPassword) skipped_count++;
             if (!g_quiet_mode && !is_vt_supported()) std::cout << test_verdict_str(res) << "\n";
             if (res != TestResult::Ok) error_count++;
             Prog.update_bytes(job.entry->header.unp_size);
@@ -656,7 +756,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         std::vector<TestResult> verdicts(jobs.size(), TestResult::Failed);
         ThreadPool pool(static_cast<unsigned>(slots.readers.size()));
         for (size_t i = 0; i < jobs.size(); ++i) {
-            pool.submit([&slots, &flags, &verdicts, &jobs, &test_one, i] {
+            pool.submit([&slots, &flags, &verdicts, &skipped_count, &jobs, &test_one, i] {
                 // test_entry/test_entry_stream decode untrusted archive data
                 // and can throw (bad_alloc, filesystem errors); an escaping
                 // exception would skip flags.finish and hang the reporting
@@ -673,6 +773,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
                 }
                 if (acquired) slots.release(s);
                 verdicts[i] = res;
+                if (res == TestResult::SkippedNoPassword) skipped_count++;
                 flags.finish(i, res == TestResult::Ok);
                 try {
                     Prog.note_file_done(jobs[i].entry->header.file_name,
@@ -695,18 +796,22 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
 
     Prog.done(total_entries, "tested", "", total_bytes, 0,
               error_count == 0 ? "all OK" : (std::to_string(error_count) + " errors"));
-    return error_count == 0 ? 0 : 1;
+    if (error_count == 0) return EXIT_OK;
+    // Taxonomy: unverified encrypted entries / BADPSW are password
+    // failures (11); other verification failures are checksum- or
+    // structure-level (3, matching WinRAR t on damaged archives).
+    return skipped_count > 0 ? EXIT_BAD_PASSWORD : EXIT_CRC;
 }
 
 int delete_from_archive(const std::string& arc_path, const std::vector<std::string>& files) {
     if (files.empty()) {
         std::cerr << "No files specified for deletion\n";
-        return 1;
+        return EXIT_FATAL;
     }
 
     if (!archive::ArchiveMutator::delete_entries(arc_path, files)) {
         std::cerr << "Cannot delete files from archive (archive may be locked or volume)\n";
-        return 1;
+        return EXIT_FATAL;
     }
 
     if (!g_quiet_mode) {
@@ -845,14 +950,14 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             if (announce && !g_quiet_mode && !is_vt_supported()) {
                 std::cout << "Adding    " << queue[0].entry_name << " ... FAILED\n";
             }
-            return 1;
+            return EXIT_FATAL;
         }
         prepared[0].delete_source = delete_source;
         Prog.note_file_done(queue[0].entry_name, queue[0].file_size);
         if (!archive::ArchiveMutator::write_batch_add(
                 arc_path, prepared, sfx_stub, password, encrypt_headers, {}, solid,
                 comment ? *comment : std::vector<core::byte>(), want_qo, want_ams, filter_cfg, max_versions)) {
-            return 1;
+            return EXIT_FATAL;
         }
         if (announce && !g_quiet_mode && !is_vt_supported()) {
             std::cout << "Adding    " << queue[0].entry_name << " ... OK\n";
@@ -1028,7 +1133,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         if (announce && !g_quiet_mode && !is_vt_supported() && failed_index < queue.size()) {
             std::cout << "Adding    " << queue[failed_index].entry_name << " ... FAILED\n";
         }
-        return 1;
+        return EXIT_FATAL;
     }
     if (announce && !g_quiet_mode && !is_vt_supported()) {
         for (const auto& item : queue) {
@@ -1058,14 +1163,14 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                    bool want_lock = false) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
-        return 1;
+        return EXIT_FATAL;
     }
 
     std::unordered_map<std::string, core::uint64> existing_files;
     if (freshen) {
         if (!std::filesystem::exists(arc_path)) return 0;
         archive::ArchiveReader r;
-        if (!r.open(arc_path)) return 1;
+        if (!r.open(arc_path)) return EXIT_FATAL;
         for (const auto& entry : r.entries()) {
             if (!entry.header.is_service) {
                 existing_files[entry.header.file_name] = entry.header.utime_unix;
@@ -1360,7 +1465,7 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
     if (queue.empty()) {
         if (freshen) return 0;
         std::cerr << "No files found to add\n";
-        return 1;
+        return EXIT_FATAL;
     }
 
     std::stable_sort(queue.begin(), queue.end(), [](const PendingFile& a, const PendingFile& b) {
@@ -1505,7 +1610,7 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                     encrypt_headers, comment.empty() ? nullptr : &comment, is_last ? want_lock : false);
             if (!ok) {
                 if (!g_quiet_mode && !is_vt_supported()) std::cout << "FAILED\n";
-                return 1;
+                return EXIT_FATAL;
             }
             if (!g_quiet_mode && !is_vt_supported()) std::cout << "OK\n";
             Prog.update_bytes(item.file_size);
@@ -1548,13 +1653,26 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     archive::ArchiveReader reader;
     reader.set_keep_broken(keep_broken);
     reader.set_extract_symlinks(extract_symlinks);
-    if (!reader.open(arc_path, password)) {
-        if (reader.has_bad_password()) {
-            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
-        } else {
+    int open_status = archive::RAR_OK;
+    std::string open_detail;
+    if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
+        // Oracle-mapped taxonomy (unrar errhnd.hpp): missing archive =
+        // 10 (NO_FILES), unrecognized = 13 (BADARC), password = 11.
+        if (!std::filesystem::exists(arc_path)) {
             std::cerr << "Cannot open " << arc_path << "\n";
+            return EXIT_NO_FILES;
         }
-        return 1;
+        if (open_status == archive::RAR_ERR_ENCRYPTED ||
+            open_status == archive::RAR_ERR_BAD_PASSWORD) {
+            std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
+            return EXIT_BAD_PASSWORD;
+        }
+        if (open_status == archive::RAR_ERR_NOT_RAR) {
+            std::cerr << "Not a RAR archive: " << arc_path << "\n";
+            return EXIT_BAD_ARCHIVE;
+        }
+        std::cerr << "Cannot open " << arc_path << "\n";
+        return EXIT_OPEN;
     }
 
     if (!g_quiet_mode && !is_vt_supported()) {
@@ -1767,7 +1885,12 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         slots.readers.clear();
     }
 
+    if (extract_jobs.empty()) {
+        // Oracle semantics: a command that matched no files exits 10.@N        return EXIT_NO_FILES;
+    }
+
     bool any_failed = false;
+    std::atomic<int> badpw_flag{0};
 
     auto restore_children = [](archive::ArchiveReader& r, const ExtractJob& j) {
         for (const auto* child : j.children) {
@@ -1777,7 +1900,16 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     if (child->header.has_crc32) {
                         crypto::Crc32 c;
                         c.update(payload.data(), payload.size());
-                        if (c.get() != child->header.data_crc32) continue;
+                        if (c.get() != child->header.data_crc32) {
+                            // Say so: a silently dropped ADS hides corruption
+                            // from the user (v1.21.2).
+                            std::cerr << "W: checksum mismatch, skipping stream "
+                                      << sanitize_for_display(
+                                             std::string(child->header.sub_data.begin(),
+                                                         child->header.sub_data.end()))
+                                      << " for " << j.display_name << "\n";
+                            continue;
+                        }
                     }
                     std::string sname(child->header.sub_data.begin(), child->header.sub_data.end());
                     if (!sname.empty() && sname[0] == ':') {
@@ -1790,7 +1922,11 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     if (child->header.has_crc32) {
                         crypto::Crc32 c;
                         c.update(payload.data(), payload.size());
-                        if (c.get() != child->header.data_crc32) continue;
+                        if (c.get() != child->header.data_crc32) {
+                            std::cerr << "W: checksum mismatch, skipping security descriptor for "
+                                      << j.display_name << "\n";
+                            continue;
+                        }
                     }
                     io::write_security_descriptor(j.target, payload.data(), payload.size());
                 }
@@ -1866,7 +2002,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     continue;
                 case OverwriteAnswer::Quit:
                     std::cerr << "User break\n";
-                    return 1;
+                    return EXIT_USER_BREAK;
                 }
             }
 
@@ -1881,14 +2017,13 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                         std::cout << "FAILED\n";
                     }
                 }
-                return 1;
+                return EXIT_FATAL;
             }
             Prog.update_bytes(job.entry->header.unp_size);
         }
     } else {
         EntryFlags flags;
         flags.resize(extract_jobs.size());
-        std::atomic<int> badpw_flag{0};
         ThreadPool pool(static_cast<unsigned>(slots.readers.size()));
         for (auto& r : slots.readers) {
             r->set_keep_broken(keep_broken);
@@ -2026,7 +2161,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
 
     if (any_failed) {
         Prog.done(extract_jobs.size(), "unpacked", arc_path, total_bytes, 0);
-        return 1;
+        return badpw_flag.load() ? EXIT_BAD_PASSWORD : EXIT_FATAL;
     }
     Prog.done(total_entries, "unpacked", arc_path, total_bytes, 0);
     return 0;
@@ -2046,13 +2181,13 @@ int repair_archive(const std::string& arc_path) {
     std::cerr << "Cannot repair " << arc_path << "\n";
     std::cerr << "       (no usable recovery data, damage exceeds parity, .rev set "
                  "mismatched or incomplete, or unsupported recovery format)\n";
-    return 1;
+    return EXIT_FATAL;
 }
 
 int lock_archive(const std::string& arc_path, const std::string& password = "") {
     if (!archive::ArchiveMutator::lock_archive(arc_path, password)) {
         std::cerr << "Cannot lock archive\n";
-        return 1;
+        return EXIT_FATAL;
     }
 
     if (!g_quiet_mode) {
@@ -2068,7 +2203,7 @@ int convert_to_sfx(const std::string& arc_path, const std::string& sfx_name_raw,
     std::string err;
     if (!archive::ArchiveMutator::convert_to_sfx(arc_path, sfx_stub_path, err)) {
         std::cerr << "Error: " << err << "\n";
-        return 1;
+        return EXIT_FATAL;
     }
     if (!g_quiet_mode) {
         std::cout << "Done\n";
@@ -2085,7 +2220,7 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
                     const compress::FilterConfig& filter_cfg = {}) {
     if (files.empty()) {
         std::cerr << "No files specified for move\n";
-        return 1;
+        return EXIT_FATAL;
     }
     std::vector<PendingFile> queue;
     for (const auto& f : files) {
@@ -2100,7 +2235,7 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
     }
     if (queue.empty()) {
         std::cerr << "No files found to move\n";
-        return 1;
+        return EXIT_FATAL;
     }
 
     if (vol_size != 0 && vol_size != archive::volume::VOLSIZE_AUTO) {
@@ -2112,7 +2247,7 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
             if (!ok) {
                 std::cerr << "Failed moving " << item.src_path.string() << " to " << arc_path
                           << "\n";
-                return 1;
+                return EXIT_FATAL;
             }
         }
         return 0;
@@ -2127,7 +2262,7 @@ int move_to_archive(const std::string& arc_path, const std::vector<std::string>&
         std::cerr << "Failed moving "
                   << (failed_name.empty() ? queue.front().src_path.string() : failed_name) << " to "
                   << arc_path << "\n";
-        return 1;
+        return EXIT_FATAL;
     }
     return 0;
 }
@@ -2254,7 +2389,7 @@ static int cli_main(int argc, char* argv[]) {
     if (arc_path.empty()) {
         std::cerr << "Error: No archive name specified.\n";
         openrar::cli::print_help();
-        return 1;
+        return EXIT_FATAL;
     }
 
     std::string password;
@@ -2430,6 +2565,7 @@ static int cli_main(int argc, char* argv[]) {
             }
             // In RAR 7.0, non-power-of-two dictionary sizes are permitted.
             // Adjust to the nearest discrete step: base 128K<<N + fraction*(base/32)
+            uint64_t requested = val;
             uint64_t pow2 = 0x20000;
             while (2 * pow2 <= val && pow2 < (1ULL << 39)) {
                 pow2 *= 2;
@@ -2442,8 +2578,21 @@ static int cli_main(int argc, char* argv[]) {
                     val = pow2 + fraction * step;
                 }
             }
+            if (val != requested) {
+                // Accepted-but-snapped values must not shrink silently
+                // (v1.21.2): -md1t snaps to 1008 GiB (grid cap), off-grid
+                // values floor to the nearest step.
+                std::cerr << "Warning: dictionary size snapped to " << (val >> 20)
+                          << " MiB (FCI grid limit)\n";
+            }
             opt_dict_size = val;
-        } else if (sw_starts(s, "-ver")) {
+        } else if (sw_starts(s, "-ver") &&
+                   (s.size() == 4 || std::all_of(s.begin() + 4, s.end(), [](unsigned char c) {
+                       return std::isdigit(c);
+                   }))) {
+            // Exact dispatch (v1.21.2): only "-ver" or "-ver<digits>"; other
+            // "-ver*" spellings (e.g. "-verbose") fall through to the
+            // unknown-switch error instead of silently enabling versioning.
             want_versioning = true;
             std::string tail = s.substr(4);
             if (tail.empty()) {
@@ -2576,6 +2725,11 @@ static int cli_main(int argc, char* argv[]) {
                 std::cerr << "Error: " << err << "\n";
                 return 7;
             }
+        } else if (sw_eq(s, "-x@")) {
+            // Bare "-x@" used to fall through and become the exclusion
+            // pattern "@" (v1.21.2).
+            std::cerr << "Error: -x@ requires a listfile path (-x@<listfile>).\n";
+            return 7;
         } else if (sw_starts(s, "-x") && s.size() > 2) {
             exclude_patterns.push_back(s.substr(2));
         } else if (sw_eq(s, "-x")) {
@@ -2672,7 +2826,7 @@ static int cli_main(int argc, char* argv[]) {
                 rc = 0;
             } else {
                 std::cerr << "No files specified for addition\n";
-                return 1;
+                return EXIT_FATAL;
             }
         } else {
             rc = openrar::cli::add_to_archive(target_arc, files, method, sfx_stub_path, vol_size,
@@ -2697,7 +2851,7 @@ static int cli_main(int argc, char* argv[]) {
             if (!rr_ok) {
                 std::cerr << "W: recovery record creation failed (-- vintage 0x11D not yet "
                              "implemented)\n";
-                return 1;
+                return EXIT_FATAL;
             }
             if (!openrar::cli::g_quiet_mode) {
                 if (is_vol_set)
@@ -2710,13 +2864,13 @@ static int cli_main(int argc, char* argv[]) {
             bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;
             if (!is_vol_set) {
                 std::cerr << "Cannot create recovery volumes for a non-volume archive\n";
-                return 1;
+                return EXIT_FATAL;
             }
             bool rv_ok = openrar::recovery::RecoveryWriter::write_rev_volumes(
                 target_arc, rv_count_or_percent, rv_is_percent, threads);
             if (!rv_ok) {
                 std::cerr << "W: recovery volume creation failed\n";
-                return 1;
+                return EXIT_FATAL;
             }
             if (!openrar::cli::g_quiet_mode) {
                 if (rv_is_percent)
@@ -2730,7 +2884,7 @@ static int cli_main(int argc, char* argv[]) {
         if (rc == 0 && want_lock) {
             if (!openrar::archive::ArchiveMutator::lock_archive(target_arc, password)) {
                 std::cerr << "Error: failed to lock " << target_arc << "\n";
-                return 1;
+                return EXIT_FATAL;
             }
         }
         return rc;
@@ -2769,10 +2923,14 @@ static int cli_main(int argc, char* argv[]) {
                                              extract_version, file_patterns, (want_acl || want_og));
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
-    } else if (cmd == "rr" || cmd.rfind("rr", 0) == 0) {
+    } else if (cmd == "rr" ||
+               (cmd.rfind("rr", 0) == 0 && cmd.size() > 2 &&
+                std::all_of(cmd.begin() + 2, cmd.end(), [](unsigned char c) {
+                    return std::isdigit(c) || c == '%' || c == 'p' || c == 'P';
+                }))) {
         if (!std::filesystem::exists(arc_path)) {
             std::cerr << "Cannot open " << arc_path << "\n";
-            return 1;
+            return EXIT_OPEN;
         }
         if (cmd.size() > 2) {
             std::string pct_str = cmd.substr(2);
@@ -2793,7 +2951,7 @@ static int cli_main(int argc, char* argv[]) {
             openrar::recovery::RecoveryWriter::add_recovery_record(arc_path, rr_percent, threads);
         if (!rr_ok) {
             std::cerr << "W: recovery record creation failed\n";
-            return 1;
+            return EXIT_FATAL;
         }
         if (!openrar::cli::g_quiet_mode) {
             std::cout << "Added RR " << rr_percent << "% (0x1100B)\n";
@@ -2811,7 +2969,7 @@ static int cli_main(int argc, char* argv[]) {
                     arc_path = first.string();
                 } else {
                     std::cerr << "Cannot open " << arc_path << "\n";
-                    return 1;
+                    return EXIT_FATAL;
                 }
             }
         }
@@ -2844,7 +3002,7 @@ static int cli_main(int argc, char* argv[]) {
             std::cerr << "Cannot create recovery volumes for " << arc_path << "\n";
             std::cerr << "       (archive may not be a multi-volume set, or an IO/parity "
                          "error occurred)\n";
-            return 1;
+            return EXIT_FATAL;
         }
         if (!openrar::cli::g_quiet_mode) {
             if (is_pct)
@@ -2854,13 +3012,13 @@ static int cli_main(int argc, char* argv[]) {
         }
         return 0;
     } else if (cmd == "l" || cmd == "v") {
-        return openrar::cli::list_archive(arc_path, false, false, password, exclude_patterns);
+        return openrar::cli::list_archive(arc_path, false, false, password, exclude_patterns, files);
     } else if (cmd == "lb") {
-        return openrar::cli::list_archive(arc_path, true, false, password, exclude_patterns);
+        return openrar::cli::list_archive(arc_path, true, false, password, exclude_patterns, files);
     } else if (cmd == "lt" || cmd == "lta") {
-        return openrar::cli::list_archive(arc_path, false, true, password, exclude_patterns);
+        return openrar::cli::list_archive(arc_path, false, true, password, exclude_patterns, files);
     } else if (cmd == "t") {
-        return openrar::cli::test_archive(arc_path, password, threads, exclude_patterns);
+        return openrar::cli::test_archive(arc_path, password, threads, exclude_patterns, files);
     } else if (cmd == "d") {
         return openrar::cli::delete_from_archive(arc_path, files);
     } else if (cmd == "k") {
@@ -2896,7 +3054,7 @@ static int cli_main(int argc, char* argv[]) {
             if (!rr_ok) {
                 std::cerr << "W: recovery record creation failed (-- vintage 0x11D not yet "
                              "implemented)\n";
-                return 1;
+                return EXIT_FATAL;
             }
             if (!openrar::cli::g_quiet_mode) {
                 if (is_vol_set)
@@ -2909,20 +3067,21 @@ static int cli_main(int argc, char* argv[]) {
         if (rc == 0 && want_lock) {
             if (!openrar::archive::ArchiveMutator::lock_archive(move_arc, password)) {
                 std::cerr << "Error: failed to lock " << move_arc << "\n";
-                return 1;
+                return EXIT_FATAL;
             }
         }
         return rc;
-    } else if (cmd == "s" || (cmd.size() > 1 && (cmd[0] == 's' || cmd[0] == 'S') && cmd != "sfx")) {
+    } else if (cmd == "s" || cmd == "sfx" || cmd == "S" || cmd == "SFX") {
+        // Exact dispatch (v1.21.2): the old `s*` prefix match silently
+        // accepted typos ("stats") as SFX conversion with the suffix as a
+        // module name that could never resolve. Modules are selected with
+        // the -sfx switch.
         std::string sfx_sub = sfx_name_raw;
-        if (sfx_sub.empty() && cmd.size() > 1) {
-            sfx_sub = cmd.substr(1);
-        }
         return openrar::cli::convert_to_sfx(arc_path, sfx_sub, argv[0]);
     } else {
         std::cerr << "Unknown command: " << cmd << "\n";
         openrar::cli::print_help();
-        return 1;
+        return EXIT_USAGE;
     }
 
     return 0;
@@ -2964,11 +3123,14 @@ int main(int argc, char* argv[]) {
         }
 #endif
         return cli_main(argc, argv);
+    } catch (const std::bad_alloc&) {
+        std::cerr << "openrar: error: out of memory\n";
+        return openrar::cli::EXIT_MEMORY;
     } catch (const std::exception& e) {
         std::cerr << "openrar: error: " << e.what() << "\n";
-        return 1;
+        return openrar::cli::EXIT_FATAL;
     } catch (...) {
         std::cerr << "openrar: error: unknown non-standard exception\n";
-        return 1;
+        return openrar::cli::EXIT_FATAL;
     }
 }

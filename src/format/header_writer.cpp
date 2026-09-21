@@ -360,16 +360,17 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
 
         std::vector<core::byte> owner_content;
         core::push_vint(owner_content, oflags);
-        if (oflags & 0x0001) {
-            core::push_vint(owner_content, block.owner_user.size());
-            owner_content.insert(owner_content.end(), block.owner_user.begin(),
-                                 block.owner_user.end());
-        }
-        if (oflags & 0x0002) {
-            core::push_vint(owner_content, block.owner_group.size());
-            owner_content.insert(owner_content.end(), block.owner_group.begin(),
-                                 block.owner_group.end());
-        }
+        // Spec limit: name fields are at most 255 bytes. Truncate over-long
+        // names at serialization — a longer field makes the record malformed
+        // for readers (ours discards such records rather than misparse)
+        // (v1.21.2).
+        auto push_owner_name = [&owner_content](const std::string& name) {
+            size_t len = std::min<size_t>(name.size(), 255);
+            core::push_vint(owner_content, len);
+            owner_content.insert(owner_content.end(), name.begin(), name.begin() + len);
+        };
+        if (oflags & 0x0001) push_owner_name(block.owner_user);
+        if (oflags & 0x0002) push_owner_name(block.owner_group);
         if (oflags & 0x0004) core::push_vint(owner_content, block.owner_uid);
         if (oflags & 0x0008) core::push_vint(owner_content, block.owner_gid);
 

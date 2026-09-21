@@ -430,13 +430,9 @@ bool validate_archive_path(const std::string& path, bool is_dir, std::string& er
         return false;
     }
     if (path[0] == '/') {
+        // Also covers "//" UNC-style prefixes: any leading '/' is rejected
+        // here, so no separate second-byte check is needed.
         err_out = "path has leading '/'";
-        return false;
-    }
-    // Per spec: no leading '/' applies to file path; we'll also reject paths
-    // starting with "//" (UNC-style). Detected via the second byte check below.
-    if (path.size() >= 2 && path[0] == '/' && path[1] == '/') {
-        err_out = "path has leading '//'";
         return false;
     }
     for (unsigned char c : path) {

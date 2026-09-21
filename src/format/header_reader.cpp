@@ -801,12 +801,43 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                     continue;
                 }
                 offset += orr;
+                // Spec limit: owner name fields are at most 255 bytes. A name
+                // length beyond that makes the record malformed — discard the
+                // whole record rather than clamping, which would parse the
+                // remaining fields out of the middle of the name bytes and
+                // feed wrong ownership data into chown (v1.21.2 fix).
+                {
+                    bool name_ok = true;
+                    core::uint64 probe_len = 0;
+                    size_t probe_rr = 0;
+                    size_t probe_off = offset;
+                    if (oflags & 0x0001) {
+                        if (!core::read_vint(body + probe_off, rec_end - probe_off, probe_len,
+                                             probe_rr) ||
+                            probe_len > 255) {
+                            name_ok = false;
+                        } else {
+                            probe_off += probe_rr + probe_len;
+                        }
+                    }
+                    if (name_ok && (oflags & 0x0002)) {
+                        if (!core::read_vint(body + probe_off, rec_end - probe_off, probe_len,
+                                             probe_rr) ||
+                            probe_len > 255) {
+                            name_ok = false;
+                        }
+                    }
+                    if (!name_ok) {
+                        out_block.has_owner = false;
+                        offset = rec_end;
+                        continue;
+                    }
+                }
                 out_block.has_owner = true;
                 if (oflags & 0x0001) {
                     core::uint64 ulen = 0;
                     if (core::read_vint(body + offset, rec_end - offset, ulen, orr)) {
                         offset += orr;
-                        if (ulen > 255) ulen = 255;
                         size_t take = std::min(static_cast<size_t>(ulen),
                                                rec_end >= offset ? rec_end - offset : 0);
                         out_block.owner_user.assign(reinterpret_cast<const char*>(body + offset),
@@ -818,7 +849,6 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                     core::uint64 glen = 0;
                     if (core::read_vint(body + offset, rec_end - offset, glen, orr)) {
                         offset += orr;
-                        if (glen > 255) glen = 255;
                         size_t take = std::min(static_cast<size_t>(glen),
                                                rec_end >= offset ? rec_end - offset : 0);
                         out_block.owner_group.assign(reinterpret_cast<const char*>(body + offset),

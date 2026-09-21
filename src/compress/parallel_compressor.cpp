@@ -106,6 +106,11 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
             std::unique_lock<std::mutex> lk(mu);
             if (in_flight.empty()) return true;
 
+            // Explicit post-abort contract: once cancellation is observed, no
+            // further output is delivered to the sink — not even chunks that
+            // already completed. Callers must discard partial sink output.
+            if (abort_flag.load(std::memory_order_relaxed)) return false;
+
             if (wait_for_front && !in_flight.front()->ready && !abort_flag.load(std::memory_order_relaxed)) {
                 cv_ready.wait(lk, [&] {
                     return abort_flag.load(std::memory_order_relaxed) ||

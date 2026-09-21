@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <winioctl.h>
 #include <aclapi.h>
+#include <cctype>
 #pragma comment(lib, "advapi32.lib")
 
 namespace openrar::io {
@@ -141,6 +142,16 @@ bool write_alternate_stream(const std::filesystem::path& host_file, const std::s
                             const void* data, size_t size) {
     if (stream_name.empty() || stream_name[0] != ':' || is_prohibited_stream(stream_name)) {
         return false;
+    }
+    // Reject names that resolve to the host file's DEFAULT data stream: ":"
+    // and ":$DATA" (any case, an "$data"/"$Data" spelling included). Both open
+    // the file itself, so the CREATE_ALWAYS below would truncate the
+    // just-extracted target's contents instead of writing an alternate stream
+    // (v1.21.2 fix; archive-controlled names reach this via STM restore).
+    {
+        std::string part = stream_name.substr(1);
+        for (char& c : part) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        if (part.empty() || part == "$DATA") return false;
     }
 
     std::wstring full_path = host_file.wstring() + utf8_to_wide(stream_name);
