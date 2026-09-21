@@ -33,51 +33,98 @@ namespace {
 // the scalar path if no candidate matches — worst case is "no speedup",
 // never wrong parity.
 
-// Build one matrix for the byte map T[b] = byte-half of K*b (8-bit b).
-// Row i (the mask byte selecting which input bits feed output bit i) is
-// assembled from T[1<<j] across the input basis vectors.
-core::uint8 gfni_matrix_row(const ReedSolomon16& rs, core::uint32 K, bool high_half,
-                            core::uint32 i) {
-    core::uint8 row = 0;
-    for (core::uint32 j = 0; j < 8; ++j) {
-        const core::uint32 product = rs.gf_mul(K, 1u << j);
-        const core::uint8 out_byte =
-            static_cast<core::uint8>(high_half ? (product >> 8) & 0xFF : product & 0xFF);
-        row |= static_cast<core::uint8>(((out_byte >> i) & 1) << j);
-    }
-    return row;
-}
+// ── GFNI calibration (v1.22.0) ───────────────────────────────────────────────
+struct GfniCalib {
+    bool valid{false};
+    bool composite_ok{false};
+    int slot[8];  // slot[i] = qword byte index that transforms input bit i
+    bool flip[8]; // flip[i] = output bits arrive bit-reversed for input bit i
+};
 
-core::uint64 gfni_pack_candidate(const ReedSolomon16& rs, core::uint32 K, bool high_half,
-                                 int convention) {
+core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 K, bool high_half,
+                                  const GfniCalib& cal);
+
+// Encode the byte map T(b) = one half of K*b as a qword under the measured
+// convention: input bit i's contribution (the output byte T(2^i)) is placed
+// in qword byte slot[i], bit-reversed when the calibration said so.
+core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 K, bool high_half,
+                                  const GfniCalib& cal) {
     core::uint64 q = 0;
-    for (core::uint32 i = 0; i < 8; ++i) {
-        core::uint8 row = gfni_matrix_row(rs, K, high_half, i);
-        core::uint32 lane_byte = i;
-        if (convention == 2 || convention == 3) lane_byte = 7 - i; // reversed rows
-        core::uint8 value = row;
-        if (convention == 1 || convention == 3) { // bit-reversed rows
+    for (int i = 0; i < 8; ++i) {
+        const core::uint32 product = rs.gf_mul(K, 1u << i);
+        core::uint8 out_b =
+            static_cast<core::uint8>(high_half ? (product >> 8) & 0xFF : product & 0xFF);
+        if (cal.flip[i]) {
             core::uint8 r = 0;
-            for (core::uint32 b = 0; b < 8; ++b) {
-                r |= static_cast<core::uint8>(((value >> b) & 1) << (7 - b));
+            for (int b = 0; b < 8; ++b) {
+                r |= static_cast<core::uint8>(((out_b >> b) & 1) << (7 - b));
             }
-            value = r;
+            out_b = r;
         }
-        q |= static_cast<core::uint64>(value) << (8 * lane_byte);
+        q |= static_cast<core::uint64>(out_b) << (8 * cal.slot[i]);
     }
     return q;
 }
 
-// Index of the matrix-convention candidate validated against the scalar
-// table fold (0..5), or -1 when the CPU lacks GFNI or no candidate matched.
-// First caller runs the probe (magic static = thread safe). All paths fail
-// safe: no match -> no GFNI dispatch.
-int gfni_convention() {
-    static const int convention = [] {
-        if (!core::get_cpu_features().gfni) return -1;
-        ReedSolomon16 rs; // gf tables only; init() state is irrelevant here
+// The _mm512_gf2p8affine_epi64_epi8 instruction applies a per-byte 8x8 GF(2)
+// bit-matrix taken from the 8 bytes of a 64-bit lane. Rather than trusting a
+// spec reading of the byte/bit ordering, the calibration MEASURES the
+// mapping on the executing machine: one-hot qwords (single set bit in one
+// byte slot) folded against one-hot input bytes reveal, for every input bit
+// i, which qword byte slot transforms it (slot[i]) and whether the output
+// bits come back reversed (flip[i]). The measured mapping must be a
+// bijection over the byte slots; the composite fold is then re-verified
+// against the scalar table reference before the kernel is allowed to
+// dispatch. Fail safe end to end: any inconsistency = scalar path.
+
+const GfniCalib& gfni_calib() {
+    static const GfniCalib cached = [] {
+        GfniCalib c{};
+        if (!core::get_cpu_features().gfni) return c;
+        for (int i = 0; i < 8; ++i) {
+            c.slot[i] = -1;
+            c.flip[i] = false;
+        }
+        ReedSolomon16 rs; // GF tables only; matrix state is irrelevant here
+
+        for (int s = 0; s < 8; ++s) {
+            for (int b = 0; b < 8; ++b) {
+                const core::uint64 q = static_cast<core::uint64>(1u << b) << (8 * s);
+                const core::uint64 m[4] = {q, q, q, q};
+                for (int i = 0; i < 8; ++i) {
+                    alignas(64) core::byte data[64] = {};
+                    alignas(64) core::byte ecc[64] = {};
+                    data[0] = static_cast<core::byte>(1u << i); // lo byte of word 0
+                    rs16_fold_gfni(data, ecc, sizeof(data), m);
+                    // hi byte of word 0 is zero -> aff(0, q) = 0 (pure linear),
+                    // so ecc[0] == ecc[1] == the transform of the single bit.
+                    if (ecc[0] == 0 && ecc[1] == 0) continue;
+                    if (ecc[0] != ecc[1]) return c; // inconsistent primitive
+                    const int found_slot = s;
+                    const bool found_flip = (ecc[0] != (1u << b));
+                    if (ecc[0] != (1u << b) && ecc[0] != (1u << (7 - b))) return c;
+                    if (c.slot[i] >= 0) {
+                        // Repeat observation must agree.
+                        if (c.slot[i] != found_slot || c.flip[i] != found_flip) return c;
+                    } else {
+                        c.slot[i] = found_slot;
+                        c.flip[i] = found_flip;
+                    }
+                }
+            }
+        }
+
+        // Every input bit must map to exactly one slot; slots a bijection.
+        bool seen[8] = {};
+        for (int i = 0; i < 8; ++i) {
+            if (c.slot[i] < 0 || c.slot[i] > 7 || seen[c.slot[i]]) return c;
+            seen[c.slot[i]] = true;
+        }
+        c.valid = true;
+
+        // Composite check: full 64-byte fold through the calibrated encoding
+        // vs the scalar table reference, for a non-trivial coefficient.
         constexpr core::uint32 kCoeff = 0x1234;
-        // Reference fold via the scalar tables for one 64-byte block.
         alignas(64) core::byte ref_ecc[64] = {};
         core::uint16 mul_lo[256], mul_hi[256];
         for (core::uint32 b = 0; b < 256; ++b) {
@@ -95,22 +142,18 @@ int gfni_convention() {
             ref_ecc[2 * w] = static_cast<core::byte>(folded & 0xFF);
             ref_ecc[2 * w + 1] = static_cast<core::byte>((folded >> 8) & 0xFF);
         }
-        // Try each matrix-convention candidate.
-        for (int candidate = 0; candidate < 6; ++candidate) {
-            core::uint64 m[4];
-            m[0] = gfni_pack_candidate(rs, kCoeff, /*high_half=*/false, candidate);
-            m[1] = gfni_pack_candidate(rs, kCoeff, /*high_half=*/true, candidate);
-            m[2] =
-                gfni_pack_candidate(rs, rs.gf_mul(kCoeff, 0x100u), /*high_half=*/false, candidate);
-            m[3] =
-                gfni_pack_candidate(rs, rs.gf_mul(kCoeff, 0x100u), /*high_half=*/true, candidate);
-            alignas(64) core::byte ecc[64] = {};
-            rs16_fold_gfni(block, ecc, sizeof(ecc), m);
-            if (std::memcmp(ecc, ref_ecc, sizeof(ecc)) == 0) return candidate;
-        }
-        return -1;
+        const core::uint32 K1 = rs.gf_mul(kCoeff, 0x100u);
+        core::uint64 m[4];
+        m[0] = gfni_encode_byte_map(rs, kCoeff, false, c);
+        m[1] = gfni_encode_byte_map(rs, kCoeff, true, c);
+        m[2] = gfni_encode_byte_map(rs, K1, false, c);
+        m[3] = gfni_encode_byte_map(rs, K1, true, c);
+        alignas(64) core::byte ecc[64] = {};
+        rs16_fold_gfni(block, ecc, sizeof(ecc), m);
+        c.composite_ok = std::memcmp(ecc, ref_ecc, sizeof(ecc)) == 0;
+        return c;
     }();
-    return convention;
+    return cached;
 }
 
 #endif // OPENRAR_HAS_GFNI_KERNEL
@@ -119,7 +162,8 @@ int gfni_convention() {
 
 bool ReedSolomon16::gfni_kernel_active() {
 #if defined(OPENRAR_HAS_GFNI_KERNEL)
-    return gfni_convention() >= 0;
+    const GfniCalib& cal = gfni_calib();
+    return cal.valid && cal.composite_ok;
 #else
     return false;
 #endif
@@ -337,19 +381,20 @@ void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, cons
     }
 
 #if defined(OPENRAR_HAS_GFNI_KERNEL)
-    const int convention = gfni_convention();
-    if (convention >= 0) {
+    const GfniCalib& cal = gfni_calib();
+    if (cal.valid && cal.composite_ok) {
         // GF(2^16) mul distributes over the byte halves:
         //   coeff * (hi<<8 | lo) = (lo * K0) ^ (hi * K1), K1 = coeff * x^8.
         // Each 8-bit x 16-bit-constant product is a GF(2)-linear byte map,
-        // i.e. two 8x8 matrices; the probe has pinned the instruction's
-        // convention, so the kernel is bit-identical to the scalar fold.
+        // i.e. two 8x8 matrices; the calibration has measured the
+        // instruction's byte/bit mapping empirically, so the kernel is
+        // bit-identical to the scalar fold.
         core::uint64 m[4];
-        m[0] = gfni_pack_candidate(*this, coeff, /*high_half=*/false, convention);
-        m[1] = gfni_pack_candidate(*this, coeff, /*high_half=*/true, convention);
+        m[0] = gfni_encode_byte_map(*this, coeff, /*high_half=*/false, cal);
+        m[1] = gfni_encode_byte_map(*this, coeff, /*high_half=*/true, cal);
         const core::uint32 K1 = gf_mul(coeff, 0x100u);
-        m[2] = gfni_pack_candidate(*this, K1, /*high_half=*/false, convention);
-        m[3] = gfni_pack_candidate(*this, K1, /*high_half=*/true, convention);
+        m[2] = gfni_encode_byte_map(*this, K1, /*high_half=*/false, cal);
+        m[3] = gfni_encode_byte_map(*this, K1, /*high_half=*/true, cal);
 
         const size_t body = block_size & ~static_cast<size_t>(63);
         if (body > 0) {
