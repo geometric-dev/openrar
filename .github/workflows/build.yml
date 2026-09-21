@@ -322,19 +322,19 @@ jobs:
 
       - name: GFNI RS16 fold kernel under SDE (must ACTIVATE and match scalar)
         run: |
-          "${SDE_EXE}" -gfni -avx512f -avx512bw -avx512vl -- ./build/recovery_tests | tee sde_recovery.log
+          "${SDE_EXE}" -future -- ./build/recovery_tests | tee sde_recovery.log
           grep -q "GFNI KERNEL ACTIVE" sde_recovery.log \
             || { echo "FAIL: GFNI kernel did not activate under SDE (probe fell back to scalar)"; exit 1; }
 
       - name: AVX-512 match kernel under SDE (must ACTIVATE and match scalar)
         run: |
-          "${SDE_EXE}" -gfni -avx512f -avx512bw -avx512vl -- ./build/compress_tests | tee sde_compress.log
+          "${SDE_EXE}" -future -- ./build/compress_tests | tee sde_compress.log
           grep -q "avx512" sde_compress.log \
             || { echo "FAIL: AVX-512 match path absent under SDE"; exit 1; }
 
       - name: Interop quick gate under SDE (end-to-end .rev parity through the GFNI kernel)
         run: |
-          "${SDE_EXE}" -gfni -avx512f -avx512bw -avx512vl -- python3 tools/interop_gate.py --quick
+          "${SDE_EXE}" -future -- python3 tools/interop_gate.py --quick
 
   wasm:
     name: WASM (Emscripten) — block codec + archive API
