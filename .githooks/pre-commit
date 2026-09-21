@@ -1,10 +1,68 @@
 #!/bin/sh
 # Shared pre-commit hook — install with:  git config core.hooksPath .githooks
 #
-# Runs the quick interop gate whenever compressor/archive/format code, the
-# gate itself, or the roundtrip tests change. Bypass with --no-verify (not
-# recommended; see CONTRIBUTING.md "Local gate").
+# Local gates, cheapest first:
+#   1. clang-format check — the SAME full-tree gate as the CI format leg
+#      (added after 46 files of format drift reached CI unnoticed: the
+#      interop gate alone cannot see formatting).
+#   2. quick interop gate when compressor/archive/format code, the gate
+#      itself, or the roundtrip tests change.
+# Bypass with --no-verify (not recommended; see CONTRIBUTING.md "Local gate").
 
+# ── Gate 1: clang-format (full tree, matches the CI format leg) ──────────────
+CF=""
+for candidate in clang-format-18 clang-format; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        CF="$candidate"
+        break
+    fi
+done
+if [ -z "$CF" ] && command -v python >/dev/null 2>&1; then
+    # The pip wheel ships the binary in a Python-versioned Scripts dir whose
+    # location differs per scheme (nt_user/posix_user/venv). Let Python do
+    # the file checks (deterministic) and print the single resolved binary;
+    # buffer writes bypass Windows \r\n translation so bash sees a clean path.
+    CF=$(python -c "
+import os, sys, sysconfig
+out = sys.stdout.buffer
+cands = []
+for scheme in ('nt_user', 'posix_user', 'default', None):
+    try:
+        p = sysconfig.get_path('scripts', scheme) if scheme else sysconfig.get_path('scripts')
+    except Exception:
+        p = None
+    if p:
+        cands.append(p)
+for p in cands:
+    for name in ('clang-format.exe', 'clang-format'):
+        full = os.path.join(p, name)
+        if os.path.isfile(full):
+            out.write(full.encode() + b'\n')
+            sys.exit(0)
+out.write(b'\n')
+" 2>/dev/null)
+    CF=${CF%$'\r'}
+fi
+
+if [ -n "$CF" ]; then
+    CF_MAJOR=$("$CF" --version 2>/dev/null | sed -n 's/.*version \([0-9]*\).*/\1/p')
+    if [ -n "$CF_MAJOR" ] && [ "$CF_MAJOR" != "18" ]; then
+        echo "WARNING: clang-format major version is $CF_MAJOR; CI pins 18 — results may differ."
+    fi
+    VIOLATIONS=$(find src include tests -name '*.cpp' -o -name '*.hpp' -o -name '*.h' 2>/dev/null |
+        xargs "$CF" --dry-run --Werror 2>&1 | grep -c "error:")
+    if [ "$VIOLATIONS" != "0" ]; then
+        echo "clang-format gate FAILED ($VIOLATIONS violation line(s)). Commit aborted."
+        echo "Fix:  find src include tests -name '*.cpp' -o -name '*.hpp' -o -name '*.h' | xargs clang-format -i"
+        echo "(bypass with --no-verify is not recommended: the CI format leg still blocks)"
+        exit 1
+    fi
+    echo "clang-format gate passed."
+else
+    echo "WARNING: clang-format not found — format gate skipped (CI still enforces it)."
+fi
+
+# ── Gate 2: quick interop gate ────────────────────────────────────────────────
 CHANGED=$(git diff --cached --name-only)
 
 if echo "$CHANGED" | grep -qE "^(src/compress/|src/archive/|src/format/|tools/interop_gate\.py|tests/test_roundtrip)"; then
