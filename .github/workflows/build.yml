@@ -276,7 +276,7 @@ jobs:
         run: node tools/run-tests.cjs
 
   simd-validation:
-    name: SIMD kernels (native + Intel SDE: AVX-512, GFNI)
+    name: "SIMD kernels (native + Intel SDE: AVX-512, GFNI)"
     # The AVX-512 match kernel and GFNI RS16 fold kernel dispatch only where
     # the CPU reports the feature. GitHub runners cannot be assumed to have
     # either, so the kernels are validated under Intel SDE (Software
