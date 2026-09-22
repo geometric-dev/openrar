@@ -246,7 +246,23 @@ void Decompressor50::copy_match(size_t distance, size_t length,
                                 [[maybe_unused]] size_t total_written) {
 #ifdef OPENRAR_CROSS_VALIDATE
     if (val_src_ != nullptr) {
-        if (total_written >= distance && total_written + length <= val_size_) {
+        // Filter-awareness: the window holds the TRANSFORMED stream inside
+        // decoded filter regions, so a match whose dictionary range
+        // intersects a region legitimately differs from the raw source.
+        bool range_transformed = false;
+        const size_t win_lo = total_written >= distance ? total_written - distance : 0;
+        const size_t win_hi = win_lo + length; // exclusive
+        for (const auto& region : val_regions_) {
+            if (region.first >= win_hi) break; // regions are ascending
+            if (region.first + region.second > win_lo) {
+                range_transformed = true;
+                break;
+            }
+        }
+        // Suppresses only the VALIDATION below - the copy itself always runs
+        // (an early return here would corrupt the decoded output).
+        if (!range_transformed && total_written >= distance &&
+            total_written + length <= val_size_) {
             for (size_t i = 0; i < length; ++i) {
                 if (val_src_[total_written - distance + i] != val_src_[total_written + i]) {
                     // Match failed cross-validation: the byte we are about to copy
@@ -784,6 +800,11 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             // memory (65536 entries ~= 2 MiB) — large filtered files emit one
             // region per ~1 MiB and legitimately exceed the old 8192 cap.
             if (filters_.size() >= 65536) return false;
+#ifdef OPENRAR_CROSS_VALIDATE
+            if (val_src_ != nullptr) {
+                val_regions_.emplace_back(static_cast<size_t>(fe.block_start), fe.block_length);
+            }
+#endif
             filters_.push_back(fe);
             continue;
         }
