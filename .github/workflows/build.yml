@@ -245,6 +245,20 @@ jobs:
       - name: Run unit tests under QEMU (aarch64 NEON / scalar paths)
         run: ctest --test-dir build -C Release --output-on-failure
 
+      - name: Assert NEON RS16 kernel activated (not the scalar fallback)
+        # Same R1 silent-degradation guard as the SDE GFNI gate: a build
+        # misconfiguration that quietly compiles the kernel out must fail
+        # loudly, not pass with both sides of the bit-exactness gate scalar.
+        run: |
+          QEMU="qemu-aarch64-static -L /usr/aarch64-linux-gnu"
+          OUT=$($QEMU ./build/recovery_tests 2>&1)
+          echo "$OUT" | grep -q "NEON KERNEL ACTIVE" || {
+            echo "::error::NEON RS16 kernel did not activate under QEMU (scalar fallback ran)"
+            echo "$OUT" | grep -A2 "test_rs16_neon_bit_exactness" || true
+            exit 1
+          }
+          echo "NEON RS16 kernel activation confirmed on aarch64"
+
       - name: CLI smoke (create/test/extract under QEMU)
         run: |
           QEMU="qemu-aarch64-static -L /usr/aarch64-linux-gnu"
