@@ -105,7 +105,10 @@ inline bool pack_entries(const std::vector<openrar::archive::BufferArchiveEntry>
     auto* out = reinterpret_cast<ArchiveEntryOut*>(entries.data());
     for (size_t i = 0; i < src.size(); ++i) {
         const auto& e = src[i];
-        if (paths.size() + e.path.size() > 0xFFFFFFFFull) return false;
+        // 64-bit intermediate: on ILP32 a size_t sum would wrap BEFORE the
+        // check, making the u32-width guard tautologically false (found by
+        // -Werror=type-limits on the armv7 leg).
+        if (static_cast<uint64_t>(paths.size()) + e.path.size() > 0xFFFFFFFFull) return false;
         out[i].path_offset = static_cast<uint32_t>(paths.size());
         out[i].path_len = static_cast<uint32_t>(e.path.size());
         out[i].is_dir = e.is_dir ? 1u : 0u;
