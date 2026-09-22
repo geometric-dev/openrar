@@ -5,6 +5,10 @@
 #include <cstdlib>
 #include <iostream>
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#endif
+
 #if defined(OPENRAR_HAS_GFNI_KERNEL)
 namespace openrar::recovery {
 // Defined in rs16_gfni.cpp (the only TU compiled with AVX-512/GFNI flags).
@@ -209,12 +213,96 @@ core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 K, bool 
 
 #endif // OPENRAR_HAS_GFNI_KERNEL
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+
+// ── NEON fold kernel (v1.22.0) ───────────────────────────────────────────────
+// GF(2^16) multiply-by-constant distributes over the byte halves:
+//   coeff * (hi<<8 | lo) = (lo * K0) ^ (hi * K1), K0 = coeff, K1 = coeff * x^8
+// (the same algebra as mul_lo / mul_hi in update_ecc_scalar). Each byte *
+// 16-bit-constant product is a GF(2)-linear byte map 8 -> 16, and a linear
+// map splits over the input nibbles:
+//   m(b) = m(b & 0xF) ^ m((b >> 4) << 4)
+// so each map is four 16-entry byte tables (two output bytes x two nibble
+// positions) applied with vqtbl1q — 16 words per iteration from two loads,
+// one deinterleave pair, eight table lookups and a re-interleaved XOR into
+// the ECC stream. Bit-exact by construction: the tables are built from the
+// same gf_mul the scalar fold uses.
+//
+// Design note (the roadmap sketch named vmull_p64): a carry-less product of
+// a byte by a degree-15 constant is NOT yet a field element — reducing it
+// mod P costs a chain of further PMULLs, so lane math only pays off for
+// 32/128-bit fields (CRC, GHASH). For degree-16 coefficients the nibble-map
+// lookups above are fewer instructions per byte than any PMULL arrangement,
+// and need no encoding calibration; the GFNI kernel covers the
+// wide-instruction niche on x86.
+struct NeonFoldTables {
+    uint8x16_t n0_lo; // map(b) low output byte,  n = b & 0xF
+    uint8x16_t n0_hi; // map(b) high output byte, n = b & 0xF
+    uint8x16_t n1_lo; // map(b) low output byte,  n = b >> 4
+    uint8x16_t n1_hi; // map(b) high output byte, n = b >> 4
+};
+
+NeonFoldTables make_neon_fold_tables(const ReedSolomon16& rs, core::uint32 K) {
+    alignas(16) core::byte lo0[16];
+    alignas(16) core::byte hi0[16];
+    alignas(16) core::byte lo1[16];
+    alignas(16) core::byte hi1[16];
+    for (core::uint32 n = 0; n < 16; ++n) {
+        const core::uint32 p0 = rs.gf_mul(K, n);
+        const core::uint32 p1 = rs.gf_mul(K, n << 4);
+        lo0[n] = static_cast<core::byte>(p0 & 0xFF);
+        hi0[n] = static_cast<core::byte>((p0 >> 8) & 0xFF);
+        lo1[n] = static_cast<core::byte>(p1 & 0xFF);
+        hi1[n] = static_cast<core::byte>((p1 >> 8) & 0xFF);
+    }
+    return NeonFoldTables{vld1q_u8(lo0), vld1q_u8(hi0), vld1q_u8(lo1), vld1q_u8(hi1)};
+}
+
+// Folds 32-byte multiples of the block (16 words per iteration); the caller
+// handles the remainder scalar-side.
+void rs16_fold_neon(const core::byte* data, core::byte* ecc, size_t bytes, const NeonFoldTables& k0,
+                    const NeonFoldTables& k1) noexcept {
+    const uint8x16_t mask0f = vdupq_n_u8(0x0F);
+    for (size_t off = 0; off + 32 <= bytes; off += 32) {
+        const uint8x16_t dA = vld1q_u8(data + off);
+        const uint8x16_t dB = vld1q_u8(data + off + 16);
+        // Little-endian words: even bytes are the low half, odd the high.
+        const uint8x16_t lo = vuzp1q_u8(dA, dB);
+        const uint8x16_t hi = vuzp2q_u8(dA, dB);
+        const uint8x16_t lon0 = vandq_u8(lo, mask0f);
+        const uint8x16_t lon1 = vshrq_n_u8(lo, 4);
+        const uint8x16_t hin0 = vandq_u8(hi, mask0f);
+        const uint8x16_t hin1 = vshrq_n_u8(hi, 4);
+        const uint8x16_t p_lo_lo = veorq_u8(vqtbl1q_u8(k0.n0_lo, lon0), vqtbl1q_u8(k0.n1_lo, lon1));
+        const uint8x16_t p_lo_hi = veorq_u8(vqtbl1q_u8(k0.n0_hi, lon0), vqtbl1q_u8(k0.n1_hi, lon1));
+        const uint8x16_t p_hi_lo = veorq_u8(vqtbl1q_u8(k1.n0_lo, hin0), vqtbl1q_u8(k1.n1_lo, hin1));
+        const uint8x16_t p_hi_hi = veorq_u8(vqtbl1q_u8(k1.n0_hi, hin0), vqtbl1q_u8(k1.n1_hi, hin1));
+        const uint8x16_t prod_lo = veorq_u8(p_lo_lo, p_hi_lo); // low bytes of the products
+        const uint8x16_t prod_hi = veorq_u8(p_lo_hi, p_hi_hi); // high bytes
+        // Back to memory order: word i = [low byte, high byte].
+        const uint8x16_t eA = vld1q_u8(ecc + off);
+        const uint8x16_t eB = vld1q_u8(ecc + off + 16);
+        vst1q_u8(ecc + off, veorq_u8(eA, vzip1q_u8(prod_lo, prod_hi)));
+        vst1q_u8(ecc + off + 16, veorq_u8(eB, vzip2q_u8(prod_lo, prod_hi)));
+    }
+}
+
+#endif // __aarch64__ || _M_ARM64
+
 } // namespace
 
 bool ReedSolomon16::gfni_kernel_active() {
 #if defined(OPENRAR_HAS_GFNI_KERNEL)
     const GfniCalib& cal = gfni_calib();
     return cal.valid && cal.composite_ok;
+#else
+    return false;
+#endif
+}
+
+bool ReedSolomon16::neon_kernel_active() {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return true;
 #else
     return false;
 #endif
@@ -455,6 +543,30 @@ void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, cons
         // Scalar remainder (< 64 bytes): direct log/exp muls, cheaper than
         // building 1 KiB of tables for a handful of words.
         for (size_t off = done; off + 2 <= block_size; off += 2) {
+            const core::uint16 word = static_cast<core::uint16>(data[off] | (data[off + 1] << 8));
+            const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
+            const core::uint16 ec = static_cast<core::uint16>(
+                static_cast<core::uint16>(ecc[off] | (ecc[off + 1] << 8)) ^ product);
+            ecc[off] = static_cast<core::byte>(ec & 0xFF);
+            ecc[off + 1] = static_cast<core::byte>((ec >> 8) & 0xFF);
+        }
+        return;
+    }
+#endif
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+    // NEON fold kernel: Advanced SIMD is architecturally mandatory on
+    // AArch64 (and baseline on MSVC ARM64), so compile-time gating is the
+    // whole dispatch — no runtime probe, no calibration (the tables are
+    // built from the same gf_mul the scalar path uses).
+    const size_t body = block_size & ~static_cast<size_t>(31);
+    if (body > 0) {
+        const NeonFoldTables k0 = make_neon_fold_tables(*this, coeff);
+        const NeonFoldTables k1 = make_neon_fold_tables(*this, gf_mul(coeff, 0x100u));
+        rs16_fold_neon(data, ecc, body, k0, k1);
+        // Scalar remainder (< 32 bytes): direct log/exp muls, cheaper than
+        // building tables for a handful of words.
+        for (size_t off = body; off + 2 <= block_size; off += 2) {
             const core::uint16 word = static_cast<core::uint16>(data[off] | (data[off + 1] << 8));
             const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
             const core::uint16 ec = static_cast<core::uint16>(
