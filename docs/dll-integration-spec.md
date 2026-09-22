@@ -167,7 +167,10 @@ int openrar_archive_get_error(char* buf, int len); // same
 ### 6.2 Block codec
 
 ```c
-// method 0..5 (0=store, 3=default, 5=max), win_size 0 => 2 MiB default, max 4 GiB.
+// compress: method 0..5 (0=store, 3=default, 5=max), win_size 0 => 2 MiB default, max 4 GiB.
+// decompress: win_size 0 (and the windowless openrar_decompress) => 2 MiB decoder
+//   window, mirroring the compress default. Raw block streams carry no dictionary-size
+//   header; a decoder window larger than the stream's actual dictionary is always safe.
 int openrar_compress(const uint8_t* src, size_t src_len, uint8_t** out_ptr, size_t* out_len, int method);
 int openrar_compress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr, size_t* out_len, int method, size_t win_size);
 int openrar_decompress(const uint8_t* src, size_t src_len, uint8_t** out_ptr, size_t* out_len);
@@ -541,7 +544,7 @@ using namespace openrar;
 // Block
 std::vector<uint8_t> compress_block(const std::vector<uint8_t>& src, int method=3, size_t win=2<<20);
 std::vector<uint8_t> compress_block(const uint8_t* data, size_t size, int method, size_t win);
-std::vector<uint8_t> decompress_block(const std::vector<uint8_t>& src, size_t win=1<<20);
+std::vector<uint8_t> decompress_block(const std::vector<uint8_t>& src, size_t win=2<<20);
 
 // Archive
 struct Entry { std::string path; uint64_t size, packed_size, mtime; uint32_t crc32, method; bool is_dir, is_encrypted; uint32_t index; };

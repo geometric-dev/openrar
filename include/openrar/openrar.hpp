@@ -79,8 +79,11 @@ inline std::vector<uint8_t> compress_block(const std::vector<uint8_t>& src, int 
                                            size_t win_size = 2 * 1024 * 1024) {
     return compress_block(src.data(), src.size(), method, win_size);
 }
+// decompress_block's default mirrors compress_block's 2 MiB: raw block
+// streams carry no dictionary-size header, so the decompress default has to
+// cover the compress default (a larger window is always safe).
 inline std::vector<uint8_t> decompress_block(const uint8_t* data, size_t size,
-                                             size_t win_size = 1024 * 1024) {
+                                             size_t win_size = 2 * 1024 * 1024) {
     uint8_t* out = nullptr;
     size_t out_len = 0;
     int rc = openrar_decompress2(data, size, &out, &out_len, win_size);
@@ -93,7 +96,7 @@ inline std::vector<uint8_t> decompress_block(const uint8_t* data, size_t size,
     return ret;
 }
 inline std::vector<uint8_t> decompress_block(const std::vector<uint8_t>& src,
-                                             size_t win_size = 1024 * 1024) {
+                                             size_t win_size = 2 * 1024 * 1024) {
     return decompress_block(src.data(), src.size(), win_size);
 }
 

@@ -42,7 +42,10 @@ bool decompress_buffer_raw(const core::byte* src, size_t src_len, std::vector<co
         out.clear();
         return true;
     }
-    if (win_size == 0) win_size = 1024 * 1024;
+    // Must mirror the compress fallback: raw block streams carry no
+    // dictionary-size header, so the decompress default has to cover the
+    // compress default (a larger window is always safe).
+    if (win_size == 0) win_size = 2 * 1024 * 1024;
     if (win_size > MAX_WIN_SIZE) return false; // §3.2 input validation
     openrar::compress::Decompressor50 dec(win_size);
     // §3.3: Decompressor50 may write partial output to the destination
@@ -101,7 +104,8 @@ int openrar_compress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr, siz
 }
 
 int openrar_decompress(const uint8_t* src, size_t src_len, uint8_t** out_ptr, size_t* out_len) {
-    return openrar_decompress2(src, src_len, out_ptr, out_len, 1024 * 1024);
+    // Mirrors openrar_compress's 2 MiB default (see decompress_buffer_raw).
+    return openrar_decompress2(src, src_len, out_ptr, out_len, 2 * 1024 * 1024);
 }
 
 // -- Streaming encoder (additive, v2) -----------------------------------------
@@ -274,7 +278,9 @@ openrar::api::HandleTable<openrar::compress::StreamDecoder> g_stream_decoders;
 
 uint32_t openrar_stream_decompress_create(size_t win_size) {
     try {
-        if (win_size == 0) win_size = 1024 * 1024;
+        // Mirrors the raw-block decompress fallback (2 MiB): a window larger
+        // than the stream's dictionary is always safe.
+        if (win_size == 0) win_size = 2 * 1024 * 1024;
         if (win_size > openrar::wasm::MAX_WIN_SIZE) return 0;
         auto dec = std::make_shared<openrar::compress::StreamDecoder>(win_size);
         if (!dec->is_valid()) return 0;
