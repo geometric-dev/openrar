@@ -26,9 +26,20 @@ advances it by one:
   resets; the 1.1 line it replaced anchored at `v1.1.0`.
 - Current counter: `git rev-list --count v1.2.0..HEAD`
 - Intermediate commits do **not** touch `project(VERSION)` — the stamp is
-  updated only in a release commit, which freezes the counter at that moment.
-  The release commit itself documents the state up to that point and is not
-  part of its own count.
+  updated only in a release commit.
+- **The release commit counts itself.** The stamped patch number equals
+  `git rev-list --count <anchor>..HEAD` evaluated AT the release commit:
+  read the counter on pre-release HEAD and add 1. Worked example
+  (v1.21.25): pre-release HEAD had 24 commits after `v1.21.0`, the release
+  commit is the 25th, and `git rev-list --count v1.21.0..v1.21.25` == 25.
+  This is verifiable from the tag alone — no release history required:
+  `git rev-list --count v1.21.0..<tag>` always equals the tag's patch
+  number for every tag on the 1.21 line.
+- Sanity check before tagging: after committing the release, confirm
+  `git rev-list --count <anchor>..HEAD` equals the stamped patch. If it
+  does not, fix the stamp before tagging (moving a tag that exists only
+  locally is fine; never move a pushed one — delete and re-tag only if the
+  tag was never consumed by CI).
 - On a MAJOR or MINOR bump the counter resets to 0 and the anchor moves to the
   new `vX.Y.0` release tag.
 
@@ -59,7 +70,9 @@ soname/dll file version automatically. Embedders keep probing
 
 ## Release procedure
 
-1. Read the counter: `git rev-list --count v1.2.0..HEAD` (adjust the anchor
+1. Read the counter and add 1 (the release commit counts itself — see
+   "The release commit counts itself" above):
+   `git rev-list --count v1.2.0..HEAD` + 1 (adjust the anchor
    tag for newer MAJOR.MINOR lines).
 2. Draft the new `CHANGELOG.md` section for `vX.Y.<counter>` from the commit
    range since the last release tag (highlights only).
