@@ -156,13 +156,19 @@ inline constexpr core::uint32 FCI_DICT_FRACT_MASK =
     0xF8000; // Dictionary fraction (version 1) in 1/32 of size
 inline constexpr core::uint32 FCI_RAR5_COMPAT =
     0x100000; // RAR7 dict sizing with RAR5 compression algorithm
-#if defined(__EMSCRIPTEN__) || defined(__wasm__) || defined(_M_IX86) || defined(__i386__)
+#if defined(__EMSCRIPTEN__) || defined(__wasm__) || defined(_M_IX86) || defined(__i386__) ||       \
+    defined(__arm__) || defined(_M_ARM)
 inline constexpr size_t RAR_DICT_ALLOC_LIMIT =
     1ULL * 1024 * 1024 * 1024; // implementation alloc limit 1 GiB on 32-bit / WASM
 #else
 inline constexpr size_t RAR_DICT_ALLOC_LIMIT =
     64ULL * 1024 * 1024 * 1024; // implementation alloc limit 64 GiB on 64-bit native
 #endif
+// ILP32 guard: on a 32-bit size_t the 64 GiB constant would silently truncate
+// to 0, making every dictionary look "too large" (armv7 leg finding).
+static_assert(RAR_DICT_ALLOC_LIMIT == 1ULL * 1024 * 1024 * 1024 ||
+                  RAR_DICT_ALLOC_LIMIT == 64ULL * 1024 * 1024 * 1024,
+              "RAR_DICT_ALLOC_LIMIT does not fit this target's size_t");
 
 inline bool is_dictionary_too_large_for_alloc(core::uint64 win_size) {
     return win_size > RAR_DICT_ALLOC_LIMIT;
