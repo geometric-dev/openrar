@@ -273,6 +273,126 @@ void test_forward_filters() {
     std::cout << "[PASS] RAR 5.0 Forward Filter Transforms & Mathematical Roundtrips\n";
 }
 
+// ---------------------------------------------------------------------------
+// P1 regression (fuzz iteration 727): filter chunk boundaries
+//
+// The decoder un-transforms exactly one filter-token region per token, and
+// the RAR5 filter scan skips any CALL whose operand crosses the region end
+// (the pos + 4 < size guard). The encoder-side transform must therefore run
+// over the SAME chunk boundaries the filter tokens declare: a wider
+// transform window transforms a boundary-crossing CALL that the decoder's
+// narrower region scan then never reverts (fuzz 727: E8 opcode at 65534,
+// first divergence 65535, operand bytes shifted by the translation).
+// ---------------------------------------------------------------------------
+
+// Minimal MZ/PE image so detect_filter() deterministically selects the E8
+// filter without relying on opcode-density heuristics.
+static void fill_pe_header(std::vector<core::byte>& d) {
+    d[0] = 'M';
+    d[1] = 'Z';
+    core::write_le32(d.data() + 0x3C, 0x80);
+    d[0x80] = 'P';
+    d[0x81] = 'E';
+    d[0x82] = 0;
+    d[0x83] = 0;
+    d[0x84] = 0x4C; // i386 machine -> E8
+    d[0x85] = 0x01;
+}
+
+// Deterministic filler so the LZ layer has structure; must not touch the
+// [65524, 65542) window around the planted boundary CALL below.
+static void fill_pattern(std::vector<core::byte>& d, size_t from) {
+    for (size_t i = from; i < d.size(); i += 251) d[i] = static_cast<core::byte>(i);
+}
+
+// A CALL whose operand arithmetic actually fires: addr < 0x01000000 and
+// addr + offset < 0x01000000 -> transform rewrites the operand.
+static void plant_call(std::vector<core::byte>& d, size_t pos) {
+    d[pos] = 0xE8;
+    core::write_le32(d.data() + pos + 1, 0x00EF1000);
+}
+
+void test_e8_filter_chunk_boundary_symmetry() {
+    std::cout << "[+] test_e8_filter_chunk_boundary_symmetry" << std::endl;
+    const size_t kChunk = 65536;
+    std::vector<core::byte> data(kChunk * 2, 0);
+    plant_call(data, 1000);        // interior of chunk 1: transform fires
+    plant_call(data, 65534);       // operand [65535, 65539) crosses the boundary: stays raw
+    plant_call(data, 65540 + 100); // interior of chunk 2: transform fires
+    fill_pattern(data, 0x90);
+    std::vector<core::byte> orig = data;
+
+    // Encode exactly the way compress_buffer() pre-transforms (per-chunk,
+    // file_offset = chunk start), decode exactly the way the decoder applies
+    // one filter-token region per token.
+    for (size_t off = 0; off < data.size(); off += kChunk) {
+        Filters50::encode_e8(data.data() + off, kChunk, off, false);
+    }
+    // Guard against a vacuous identity: interior sites must have been
+    // transformed (their operands moved).
+    assert(std::memcmp(data.data() + 1001, orig.data() + 1001, 4) != 0);
+    assert(std::memcmp(data.data() + 65641, orig.data() + 65641, 4) != 0);
+    // The boundary-crossing site must NOT be transformed by a kChunk window.
+    assert(std::memcmp(data.data() + 65535, orig.data() + 65535, 4) == 0);
+
+    for (size_t off = 0; off < data.size(); off += kChunk) {
+        Filters50::apply_e8(data.data() + off, kChunk, off, false);
+    }
+    assert(data.size() == orig.size() && std::memcmp(data.data(), orig.data(), data.size()) == 0);
+    std::cout << "[PASS] E8 filter chunk-boundary encode/decode symmetry\n";
+}
+
+void test_filter_chunk_boundary_roundtrip_p1() {
+    std::cout << "[+] test_filter_chunk_boundary_roundtrip_p1" << std::endl;
+    // 70000 bytes: compress_buffer clamps the packer window to 128 KiB, so
+    // filter tokens are 64 KiB and the planted CALL at 65534 lands in the
+    // token's last-4-bytes dead zone. Default compress_buffer args (2 MiB
+    // requested window) — the exact shape of fuzz iteration 727.
+    const size_t kSize = 70000;
+    std::vector<core::byte> data(kSize, 0);
+    fill_pe_header(data);
+    plant_call(data, 65534);
+    fill_pattern(data, 0x90);
+
+    std::vector<core::byte> compressed;
+    assert(Compressor50::compress_buffer(data.data(), data.size(), compressed));
+
+    std::vector<core::byte> out;
+    // Raw streams carry no dictionary-size header: the decoder window is
+    // caller knowledge, and compress_buffer() defaults to 0x200000 (its
+    // pow2 clamp only shrinks it). A default-constructed Decompressor50
+    // runs a 1 MiB window and cannot decode default-window streams once
+    // match distances or filter regions exceed 1 MiB.
+    Decompressor50 dec(0x200000);
+    assert(dec.decompress_to_vector(compressed.data(), compressed.size(), out));
+    assert(out.size() == data.size() && std::memcmp(out.data(), data.data(), data.size()) == 0);
+    std::cout << "[PASS] compress_buffer roundtrip with boundary-crossing CALL (P1, fuzz 727)\n";
+}
+
+void test_filter_multi_token_multiblock_roundtrip() {
+    std::cout << "[+] test_filter_multi_token_multiblock_roundtrip" << std::endl;
+    // 1228800: ~3 blocks (need_flush at 512 KiB input) and 2 filter tokens
+    // (1 MiB + 200 KiB regions) — two tokens broke the decoder before the
+    // window contract was understood. 8388608: exceeds comp_win + 4 MiB, so
+    // compress_buffer routes through the mem_src branch, where the packer
+    // must not re-transform the pre-transformed data.
+    for (size_t kSize : {1228800u, 8388608u}) {
+        std::vector<core::byte> data(kSize, 0);
+        fill_pe_header(data);
+        plant_call(data, 65534);
+        fill_pattern(data, 0x90);
+
+        std::vector<core::byte> compressed;
+        assert(Compressor50::compress_buffer(data.data(), data.size(), compressed));
+
+        std::vector<core::byte> out;
+        Decompressor50 dec(0x200000);
+        assert(dec.decompress_to_vector(compressed.data(), compressed.size(), out));
+        assert(out.size() == data.size() && std::memcmp(out.data(), data.data(), data.size()) == 0);
+    }
+    std::cout << "[PASS] filter roundtrip: multi-token, multi-block, mem_src branch\n";
+}
+
 void test_bit_reader_and_huffman() {
     core::byte data[4] = {0xAB, 0xCD, 0xEF, 0x12};
     BitReader reader(data, 4);
@@ -1866,6 +1986,12 @@ int main() {
     test_forced_scalar_filters();
     std::cout << std::flush;
     test_forward_filters();
+    std::cout << std::flush;
+    test_e8_filter_chunk_boundary_symmetry();
+    std::cout << std::flush;
+    test_filter_chunk_boundary_roundtrip_p1();
+    std::cout << std::flush;
+    test_filter_multi_token_multiblock_roundtrip();
     std::cout << std::flush;
     test_bit_reader_and_huffman();
     std::cout << std::flush;
