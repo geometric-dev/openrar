@@ -455,7 +455,6 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
             }
         }
 
-        size_t listed = 0;
         for (const auto& entry : reader.entries()) {
             if (entry.header.is_service) continue;
             if (is_path_excluded(entry.header.file_name, exclude_patterns)) continue;
@@ -474,7 +473,6 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
                 }
                 if (!matched) continue;
             }
-            ++listed;
             std::string disp_name = entry.header.file_name;
             if (entry.header.has_file_version) {
                 disp_name += ";" + std::to_string(entry.header.file_version);
