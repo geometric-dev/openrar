@@ -522,6 +522,7 @@ if(NOT EMSCRIPTEN)
         target_include_directories(fuzz_roundtrip PRIVATE ${OPENRAR_INCLUDES})
         openrar_enable_test_asserts(fuzz_roundtrip)
 
+
         add_executable(fuzz_decompress tests/fuzz/fuzz_decompress.cpp)
         target_link_libraries(fuzz_decompress PRIVATE openrar_core)
         target_include_directories(fuzz_decompress PRIVATE ${OPENRAR_INCLUDES})

@@ -7,6 +7,13 @@ on:
   pull_request:
     branches: [ master ]
 
+# Cancel superseded runs on the same branch/PR: a second push within the
+# ~9-minute matrix window replaces the first, halving feedback latency and
+# removing queue noise (commit-and-pray mitigation, v1.22.0).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     name: ${{ matrix.os }} - ${{ matrix.compiler }} (${{ matrix.build_type }})${{ matrix.arch_suffix }}
