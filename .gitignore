@@ -76,3 +76,6 @@ __pycache__/
 *.pyc
 .agents/
 pin-tool-log.txt
+
+# Scratch cross-validation build
+build_cv/
