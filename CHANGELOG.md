@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.22.0 work in progress
 
+Remaining for v1.22.0: NEON `vmull_p64` RS16 fold path; benchmark numbers for
+the 5–10× `.rev` claim; bit-exactness gate green across all dispatch paths.
+
+## [1.21.25] - 2026-09-22
+
+Core-codec correctness release: closes the OPEN P1 roundtrip divergence that
+blocked the v1.22.0 gate, aligns every decompress-side window default with
+the compressor's, and ships the v1.22.0 SIMD groundwork already merged to
+master since v1.21.2.
+
+### Fixed
+
+- **P1 roundtrip divergence (fuzz iteration 727; nightly cross-validation
+  abort at pos 12364)**: `compress_buffer()` derived its filter pre-transform
+  chunk length from the *requested* window (2 MiB → 1 MiB chunks) while the
+  embedded packer emitted filter tokens chunked by its *clamped* window
+  (pow2 clamp, 128 KiB floor → 64 KiB tokens). The decoder un-transforms
+  exactly one token region per token and its scan skips any CALL whose
+  operand crosses the region end, so a boundary-crossing E8 was transformed
+  by the encoder's wider window and never reverted (first divergence at
+  65535: operand bytes shifted by the translation). The same mismatch let
+  encoder matches cross decoder token regions, tripping the raw-source
+  match validation. The pre-transform now derives its chunking from the
+  packer's actual window via a single `filter_max_chunk()` helper shared
+  with token emission. Regression tests: chunk-boundary encode/apply
+  symmetry, boundary-crossing-CALL roundtrip, multi-token/multi-block and
+  mem_src-branch roundtrip; the roundtrip fuzzer decodes with the matching
+  raw-stream window (0x200000).
+- **Double transform in the large-input `mem_src` branch**: pre-transformed
+  data handed to a packer with `set_active_filter()` was transformed a
+  second time inside `process_available()`; a `filter_pretransformed_` latch
+  suppresses the in-loop transform for the `compress_buffer()` path.
+- **CI cross-compiler build**: missing `<algorithm>` include and lambda
+  capture fixed for the GCC/Clang legs; volume tests de-order-dependent on
+  directory iteration.
+
+### Changed
+
+- **Window defaults aligned (embedder note)**: raw block streams carry no
+  dictionary-size header, so every decompress-side default now mirrors the
+  compressor's 2 MiB default — `Decompressor50::DEFAULT_WIN_SIZE` (core
+  constructor default and explicit-0 fallback), dll `openrar_decompress` /
+  `openrar_decompress2(0)`, wasm raw + stream-decoder fallbacks, and
+  `decompress_block` in `include/openrar/openrar.hpp`. Streams decoded
+  before are decoded byte-identically; streams with match distances or
+  filter regions over 1 MiB now decode where they previously failed; cost
+  is one extra MiB of lazily-allocated window per decoder. Consumers
+  decoding non-default-window streams still pass the recorded dictionary
+  size explicitly (archive/dll layers do).
+
 ### Added
 
 - **AVX-512 match-length kernel (v1.22.0 groundwork)**: 64-byte-per-cycle
@@ -32,7 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the interop quick gate end-to-end (real `.rev` parity through the kernel).
   `test_rs16_gfni_bit_exactness` pins dispatched == scalar over 11 block
   classes x every Cauchy coefficient.
-  Remaining for v1.22.0: NEON `vmull_p64` path, benchmark numbers.
+- **Local CI-matrix preflight harness** (`tools/preflight.sh`): run the legs
+  a machine can run locally; residual push-and-pray scope stays visible.
+  Pre-commit runs the clang-format gate (CI parity); CI cancels superseded
+  runs; the roundtrip fuzzer dumps divergence state; normative security
+  architecture document added.
 
 ## [1.21.2] - 2026-09-21
 
