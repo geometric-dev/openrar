@@ -12,6 +12,8 @@
 #include "openrar/openrar_dll.h"
 #include "openrar/openrar.hpp"
 
+#include <cstdio>
+
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/archive/archive_reader.hpp"
 #include "../../src/crypto/crc32.hpp"
@@ -171,6 +173,12 @@ static std::vector<uint8_t> handle_extract(const fs::path& arc, uint32_t index) 
     uint8_t* out = nullptr;
     size_t len = 0;
     int rc = openrar_archive_handle_extract(h, index, &out, &len);
+    if (rc != RAR_OK) {
+        char msg[256] = {0};
+        openrar_last_error(msg, static_cast<int>(sizeof msg));
+        std::fprintf(stderr, "[diag] handle_extract(index=%u) rc=%d msg='%s'\n", index, rc, msg);
+        std::fflush(stderr);
+    }
     assert(rc == RAR_OK);
     std::vector<uint8_t> data(out, out + len);
     if (out) openrar_free(out);
@@ -184,6 +192,12 @@ static std::vector<uint8_t> handle_extract_via_handle(uint32_t h, uint32_t index
     uint8_t* out = nullptr;
     size_t len = 0;
     int rc = openrar_archive_handle_extract(h, index, &out, &len);
+    if (rc != RAR_OK) {
+        char msg[256] = {0};
+        openrar_last_error(msg, static_cast<int>(sizeof msg));
+        std::fprintf(stderr, "[diag] handle_extract(index=%u) rc=%d msg='%s'\n", index, rc, msg);
+        std::fflush(stderr);
+    }
     assert(rc == RAR_OK);
     std::vector<uint8_t> data(out, out + len);
     if (out) openrar_free(out);
