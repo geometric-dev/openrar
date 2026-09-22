@@ -503,10 +503,23 @@ static void test_volume_set() {
     const auto blob = make_pattern(500 * 1024, 41); // spans several 96 KiB volumes
     const fs::path base = make_volume_set(dir, blob);
 
-    // Discover the created volumes (.partNN.rar naming).
+    // Discover the created volumes (.partNN.rar naming). directory_iterator
+    // order is NOT sorted on ext4 (hash order) — sort by part number so the
+    // rename/open sequence below means part1/part2 deterministically (the
+    // CI ubuntu-clang leg hit exactly this: parts[0] was a middle volume,
+    // so the missing-first-volume error carried the strict-set message).
     std::vector<fs::path> parts;
     for (const auto& e : fs::directory_iterator(dir))
         if (e.path().u8string().find(".part") != std::string::npos) parts.push_back(e.path());
+    std::sort(parts.begin(), parts.end(), [](const fs::path& a, const fs::path& b) {
+        auto part_num = [](const fs::path& p) -> long {
+            const std::string s = p.stem().u8string();
+            const size_t pos = s.find(".part");
+            if (pos == std::string::npos) return 0;
+            return std::strtol(s.c_str() + pos + 5, nullptr, 10);
+        };
+        return part_num(a) < part_num(b);
+    });
     assert(parts.size() >= 2);
 
     // Open part1 (or the base name): one merged entry, extraction stitches.
@@ -545,7 +558,10 @@ static void test_volume_set() {
         h = openrar_archive_open_file(parts[1].u8string().c_str(), nullptr, nullptr, nullptr,
                                       nullptr);
         assert(h == 0);
-        assert(last_error().find("cannot open first volume") != std::string::npos);
+        if (last_error().find("cannot open first volume") == std::string::npos) {
+            std::fprintf(stderr, "volume-rewind error was: %s\n", last_error().c_str());
+            assert(false && "expected 'cannot open first volume' (see printed error)");
+        }
         fs::rename(hidden1, part1);
 
         // Missing middle volume at open time: strict set check.
@@ -553,7 +569,10 @@ static void test_volume_set() {
         fs::rename(parts[1], hidden2);
         h = openrar_archive_open_file(part1.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
         assert(h == 0);
-        assert(last_error().find("missing volume") != std::string::npos);
+        if (last_error().find("missing volume") == std::string::npos) {
+            std::fprintf(stderr, "strict-set error was: %s\n", last_error().c_str());
+            assert(false && "expected 'missing volume' (see printed error)");
+        }
         fs::rename(hidden2, parts[1]);
 
         // Missing middle volume at extract time: the handle opened while the
