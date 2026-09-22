@@ -46,11 +46,9 @@ a single `filter_max_chunk()` derived from the packer's actual window
 (`window_size()`), plus a `filter_pretransformed_` latch. Regression tests:
 `test_e8_filter_chunk_boundary_symmetry`, `test_filter_chunk_boundary_roundtrip_p1`,
 `test_filter_multi_token_multiblock_roundtrip`; the roundtrip fuzzer now
-decodes with the matching raw-stream window (0x200000). Residual (known, out
-of scope): a default-constructed `Decompressor50` runs a 1 MiB window while
-`compress_buffer()` defaults to 2 MiB — raw-stream consumers must size the
-decoder window explicitly (archive/dll layers already do; see the
-wasm-archive-spec interop note).
+decodes with the matching raw-stream window (0x200000). Follow-up (done):
+all decompress-side defaults were aligned to the compressor's 2 MiB default
+(see Risk Register item 1).
 
 ---
 
@@ -279,12 +277,13 @@ C# NuGet (`OpenRAR.NET`).
 
 ## ⚠️ Risk Register (top items)
 
-1. **Raw-stream window contract** — `compress_buffer()` defaults to a 2 MiB
-   window; a default-constructed `Decompressor50` decodes with 1 MiB. Any
-   raw-stream consumer must size the decoder window from the stream's
-   recorded dictionary size (archive/dll layers do; the fuzz harness now
-   does). Consider aligning the defaults in a dedicated change. The P1
-   roundtrip divergence it used to mask is fixed (see CLOSED P1 above).
+1. **Raw-stream window contract** — RESOLVED: all decompress-side defaults
+   (core `Decompressor50::DEFAULT_WIN_SIZE`, dll `openrar_decompress`/
+   `decompress2`/`decompress_block`, wasm raw + stream-decoder fallbacks) now
+   mirror the compressor's 2 MiB default; raw-stream consumers decoding
+   non-default-window streams still pass the recorded dictionary size
+   explicitly (archive/dll layers do). The P1 roundtrip divergence this item
+   used to track is fixed (see CLOSED P1 above).
 2. **v1.24 containment depth** — write-through-handle extraction touches
    every write path; the largest refactor of the arc. Budget accordingly.
 3. **v1.23 SFX auto-execution** — security-sensitive by construction;

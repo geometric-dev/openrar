@@ -209,10 +209,12 @@ core::uint32 HuffmanDecoder::decode(BitReader& reader) const {
 // Decompressor50
 // ------------------------------------------------------------------
 Decompressor50::Decompressor50(size_t win_size)
-    : win_size_(win_size ? win_size : 1024 * 1024), win_mask_(win_size_ ? win_size_ - 1 : 0) {
+    : win_size_(win_size ? win_size : DEFAULT_WIN_SIZE), win_mask_(win_size_ ? win_size_ - 1 : 0) {
     // win_size == 0 is rejected here: a zero window makes the circular-window
     // arithmetic (modulo win_size_, window_[win_pos_]) undefined. Callers that
-    // genuinely want a placeholder window get the default 1 MiB one.
+    // genuinely want a placeholder window get the default 2 MiB one
+    // (DEFAULT_WIN_SIZE - see decompressor50.hpp for why it must mirror the
+    // compressor's 2 MiB default).
     win_pow2_ = (win_size_ & (win_size_ - 1)) == 0;
     last_error_ = DecompressErrorCode::Ok;
     last_error_str_.clear();

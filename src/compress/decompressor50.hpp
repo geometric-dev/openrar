@@ -100,7 +100,17 @@ public:
     static constexpr core::uint64 SPEC_MAX_V1 = 128ULL * 1024 << 23;
     static constexpr core::uint64 SPEC_MAX_ABSOLUTE = SPEC_MAX_V1;
 
-    explicit Decompressor50(size_t win_size = 1024 * 1024);
+    // Default sliding-dictionary window. A raw block stream carries no
+    // dictionary-size header, so a decoder that is not told the window must
+    // assume the compressor's default: compress_buffer() defaults to
+    // 0x200000 (its pow2 clamp only ever shrinks the window) and the dll/wasm
+    // compress fallbacks document the same 2 MiB. A window larger than the
+    // stream's actual dictionary is strictly more permissive — decoded
+    // output is invariant once the window covers every distance and filter
+    // region the stream references.
+    static constexpr size_t DEFAULT_WIN_SIZE = 0x200000;
+
+    explicit Decompressor50(size_t win_size = DEFAULT_WIN_SIZE);
     ~Decompressor50() = default;
 
     DecompressErrorCode last_error() const { return last_error_; }
