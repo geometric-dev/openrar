@@ -63,7 +63,14 @@ void fuzz_one(int iteration) {
     assert(comp_ok);
 
     std::vector<core::byte> decompressed;
-    Decompressor50 dec;
+    // Raw streams carry no dictionary-size header: the decoder window is
+    // caller knowledge. compress_buffer() defaults to win_size 0x200000 (the
+    // pow2 clamp only ever shrinks it), so the matching oracle window is
+    // 0x200000. A default-constructed Decompressor50 runs a 1 MiB window,
+    // which cannot decode default-window streams once match distances or
+    // filter regions exceed 1 MiB (see docs/wasm-archive-spec.md interop
+    // note; the archive/dll layers pass the recorded window explicitly).
+    Decompressor50 dec(0x200000);
 #ifdef OPENRAR_CROSS_VALIDATE
     dec.set_validation_source(data.data(), data.size());
 #endif
