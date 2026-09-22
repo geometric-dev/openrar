@@ -68,8 +68,11 @@ soname/dll file version automatically. Embedders keep probing
 4. Commit as `release: vX.Y.<counter>`, tag `vX.Y.<counter>`, and push both.
    Pushing the tag runs the full CI matrix (the `v*` tag trigger) and its
    `release-assets` job packages every artifact of that run — per-platform
-   shared libraries, import libs, and the WASM modules, named
-   `openrar<version>-<target>.zip` — and attaches them to the GitHub release
+   native binaries (shared library `.dll`/`.so`/`.dylib`, import lib where
+   the platform has one, and the CLI) and the WASM modules — named
+   `openrar<version>-<platform-target>.zip` with no library-type segment
+   (the library form differs per platform; `wasm` is the one labeled
+   package) — and attaches them to the GitHub release
    named after the tag, creating the release with generated notes if it does
    not exist yet. Create or edit the release with the drafted CHANGELOG
    section as its notes.

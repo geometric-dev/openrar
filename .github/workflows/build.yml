@@ -185,10 +185,12 @@ jobs:
           diff -u ci_test_data/hello.txt ci_out/ci_test_data/hello.txt
           echo "Cross-platform CLI smoke test PASSED!"
 
-      - name: Upload DLL artifact
+      - name: Upload native shared-library artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: openrar-dll-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.arch }}
+          # "native", not "dll": the artifact carries whatever shared-library
+          # form the platform builds (.dll / .so / .dylib) plus the CLI.
+          name: openrar-native-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.arch }}
           path: |
             build/openrar*.dll
             build/Release/openrar*.dll
@@ -455,13 +457,17 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VER="${TAG#v}"
 
-          # Release zips carry the shared library, its import library, and the
-          # CLI executable (R5) — test-target static libs (openrar_core.lib,
-          # *_check.lib) are CI artifacts, not release assets.
+          # Release zips carry the platform shared library (.dll / .so / .dylib),
+          # its import library where the platform has one, and the CLI
+          # executable — test-target static libs (openrar_core.lib,
+          # openrar_core.a, *_check.lib) are CI artifacts, not release assets.
+          # Asset names are platform-identified, not "dll": the library form
+          # differs per platform, so no type segment in the name (the wasm
+          # module keeps its explicit label).
           find . -type f \( -name 'openrar_core.lib' -o -name 'openrar_core.a' -o -name 'openrar_*_check.lib' \) -delete
 
-          for d in openrar-dll-* openrar-wasm; do
-            short=$(echo "$d" | sed -e 's|^openrar-dll-|dll-|'                                    -e 's|^openrar-wasm$|wasm|'                                    -e 's|ubuntu-latest|linux|'                                    -e 's|macos-latest|macos|'                                    -e 's|windows-2022|windows|'                                    -e 's|-arm64-arm64|-arm64|')
+          for d in openrar-native-* openrar-wasm; do
+            short=$(echo "$d" | sed -e 's|^openrar-native-||'                                    -e 's|^openrar-wasm$|wasm|'                                    -e 's|ubuntu-latest|linux|'                                    -e 's|macos-latest|macos|'                                    -e 's|windows-2022|windows|'                                    -e 's|-arm64-arm64|-arm64|')
             zip -qr "openrar-${VER}-${short}.zip" "$d"
           done
 
