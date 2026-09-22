@@ -230,6 +230,8 @@ jobs:
       - name: Configure (cross aarch64)
         # CMAKE_CROSSCOMPILING_EMULATOR makes add_test()-registered CTest
         # entries run each target binary under QEMU automatically.
+        # Warnings-as-errors: the arm legs are the only place ILP32/ARM-only
+        # code paths compile, so a truncation warning must fail loudly.
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -237,6 +239,7 @@ jobs:
             -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
             -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
             -DCMAKE_CROSSCOMPILING_EMULATOR="/usr/bin/qemu-aarch64-static;-L;/usr/aarch64-linux-gnu" \
+            -DOPENRAR_WARNINGS_AS_ERRORS=ON \
             -DOPENRAR_INMEM_ARCHIVE=ON
 
       - name: Build
@@ -306,6 +309,8 @@ jobs:
       - name: Configure (cross armv7)
         # CMAKE_CROSSCOMPILING_EMULATOR makes add_test()-registered CTest
         # entries run each target binary under QEMU automatically.
+        # Warnings-as-errors: -Woverflow is what catches a 64-bit constant
+        # silently truncating in a 32-bit size_t (the ALLOC_LIMIT class).
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -313,6 +318,7 @@ jobs:
             -DCMAKE_SYSTEM_PROCESSOR=armv7 \
             -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
             -DCMAKE_CROSSCOMPILING_EMULATOR="/usr/bin/qemu-arm-static;-L;/usr/arm-linux-gnueabihf" \
+            -DOPENRAR_WARNINGS_AS_ERRORS=ON \
             -DOPENRAR_INMEM_ARCHIVE=ON
 
       - name: Build

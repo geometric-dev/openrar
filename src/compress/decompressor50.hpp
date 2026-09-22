@@ -88,13 +88,21 @@ enum class DecompressErrorCode {
 
 class Decompressor50 {
 public:
-#if defined(__EMSCRIPTEN__) || defined(__wasm__) || defined(_M_IX86) || defined(__i386__)
+#if defined(__EMSCRIPTEN__) || defined(__wasm__) || defined(_M_IX86) || defined(__i386__) ||       \
+    defined(__arm__) || defined(_M_ARM)
     // Implementation alloc limit 1 GiB on 32-bit/WASM; larger dictionaries fail instead of truncating.
     static constexpr size_t ALLOC_LIMIT = 1ULL * 1024 * 1024 * 1024;
 #else
     // Implementation alloc limit 64 GiB on 64-bit; larger dictionaries fail instead of truncating.
     static constexpr size_t ALLOC_LIMIT = 64ULL * 1024 * 1024 * 1024;
 #endif
+    // ILP32 guard: on a 32-bit size_t the 64 GiB constant above would silently
+    // truncate (mod 2^32 == 0), making EVERY decoder report DictionaryTooLarge
+    // (found by the armv7 CI leg: all 12 decompression tests failed at once).
+    // This assert turns that class of mistake into a compile error.
+    static_assert(ALLOC_LIMIT == 1ULL * 1024 * 1024 * 1024 ||
+                      ALLOC_LIMIT == 64ULL * 1024 * 1024 * 1024,
+                  "ALLOC_LIMIT does not fit this target's size_t");
     // Spec max per 01-headers.md:95 : 128 KiB << N  ; version0 N<=15 (4096 MiB), version1 N<=23 (1 TB) with FCI_DICT_FRACT
     static constexpr core::uint64 SPEC_MAX_V0 = 128ULL * 1024 << 15;
     static constexpr core::uint64 SPEC_MAX_V1 = 128ULL * 1024 << 23;
