@@ -194,7 +194,6 @@ const CpuFeatures& get_cpu_features() {
 }
 
 AccelerationReport describe_acceleration() {
-    const CpuFeatures& f = get_cpu_features();
     AccelerationReport r;
 
 #if defined(__EMSCRIPTEN__)
@@ -203,6 +202,7 @@ AccelerationReport describe_acceleration() {
 #elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     // Mirrors match_simd.hpp dispatch. MSVC 32-bit has no 64-bit scan
     // intrinsics, so match_simd keeps x86-64-only SIMD there (L14).
+    const CpuFeatures& f = get_cpu_features();
 #if defined(_MSC_VER) && !defined(_M_X64)
     constexpr bool match_simd_x86 = false;
 #else
@@ -223,10 +223,15 @@ AccelerationReport describe_acceleration() {
     if (f.sha_ni) r.tags.push_back("SHA-NI");
     if (f.pclmulqdq) r.tags.push_back("PCLMUL CRC");
 #elif defined(__aarch64__) || defined(_M_ARM64)
+    const CpuFeatures& f = get_cpu_features();
     if (f.neon) r.tags.push_back("NEON LZ");
     if (f.arm_aes) r.tags.push_back("AES");
     if (f.arm_sha2) r.tags.push_back("SHA");
     if (f.arm_crc32) r.tags.push_back("CRC");
+#elif defined(__arm__) || defined(_M_ARM)
+    // ARM32 (Raspberry Pi armhf): every kernel runs scalar — the SIMD match
+    // and RS16 fold kernels target AArch64 only.
+    r.tags.push_back("scalar");
 #endif
 
     return r;
