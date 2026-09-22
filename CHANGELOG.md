@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Remaining for v1.22.0: benchmark numbers for the 5–10× `.rev` claim;
 bit-exactness gate green across all dispatch paths.
 
+- **Raspberry Pi / ARM Linux release packages**: a new CI leg
+  cross-compiles for ARMv7-A hard-float (Raspberry Pi OS 32-bit; Pi 2/3/4/5;
+  armv6 is out of scope by policy) and runs the full test suite plus CLI
+  smoke under QEMU, and the aarch64 leg now publishes its artifact as well.
+  Releases gain `linux-gcc-armv7` and `linux-gcc-arm64` platform packages.
+  The RS16 fold stays scalar on armv7 by design — the NEON kernel's
+  vqtbl1q tables do not transfer to AArch32 VTBL, and recovery is not a
+  hot path on a Pi — an expectation the armv7 leg asserts instead of
+  leaving implicit.
+
 ## [1.21.25] - 2026-09-22
 
 Core-codec correctness release: closes the OPEN P1 roundtrip divergence that
