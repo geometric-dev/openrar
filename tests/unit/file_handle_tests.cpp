@@ -12,6 +12,7 @@
 #include "../../src/io/file_stream.hpp"
 
 #include <cassert>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -497,6 +498,20 @@ static void test_hp_open_flow() {
 }
 
 // ── 9. Multi-volume: stitching, rewind, missing volumes ──────────────────────
+// Deterministic part ordering: parse the numeric suffix after ".part"
+// (stem form "set.part2" -> 2) so volume tests never depend on directory
+// iteration order (ext4 is hash-ordered; NTFS/Apfs happen to sort).
+static long volume_part_num(const fs::path& p) {
+    const std::string s = p.stem().u8string();
+    const size_t pos = s.find(".part");
+    if (pos == std::string::npos) return 0;
+    return std::strtol(s.c_str() + pos + 5, nullptr, 10);
+}
+
+static bool volume_part_less(const fs::path& a, const fs::path& b) {
+    return volume_part_num(a) < volume_part_num(b);
+}
+
 static void test_volume_set() {
     std::cout << "Starting test_volume_set...\n" << std::flush;
     const fs::path dir = make_scratch_dir("volumes");
@@ -511,15 +526,7 @@ static void test_volume_set() {
     std::vector<fs::path> parts;
     for (const auto& e : fs::directory_iterator(dir))
         if (e.path().u8string().find(".part") != std::string::npos) parts.push_back(e.path());
-    std::sort(parts.begin(), parts.end(), [](const fs::path& a, const fs::path& b) {
-        auto part_num = [](const fs::path& p) -> long {
-            const std::string s = p.stem().u8string();
-            const size_t pos = s.find(".part");
-            if (pos == std::string::npos) return 0;
-            return std::strtol(s.c_str() + pos + 5, nullptr, 10);
-        };
-        return part_num(a) < part_num(b);
-    });
+    std::sort(parts.begin(), parts.end(), volume_part_less);
     assert(parts.size() >= 2);
 
     // Open part1 (or the base name): one merged entry, extraction stitches.
