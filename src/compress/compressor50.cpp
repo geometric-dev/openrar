@@ -242,6 +242,7 @@ void Compressor50::reset_state() {
     active_filter_ = FilterType::None;
     filter_channels_ = 1;
     filter_emitted_until_ = 0;
+    filter_pretransformed_ = false;
     file_start_pos_ = 0;
     is_large_window_ = false;
     head_.clear();
@@ -1122,6 +1123,25 @@ void Compressor50::slide_window() {
     pos_base_ = new_base;
 }
 
+// Length of one filter transform/token chunk for a session window of
+// `win_size`. Single source of truth for BOTH the in-loop token emission in
+// process_available() and the compress_buffer() pre-transform: the decoder
+// un-transforms exactly one filter-token region per token, and its scan
+// skips any CALL whose operand would cross the region end. If the encoder
+// transformed with wider chunk boundaries than the tokens declare, a CALL
+// near a token boundary is transformed on the encode side but never
+// un-transformed on the decode side (fuzz roundtrip_divergence_727: E8 at
+// offset 65534, first divergence 65535).
+static size_t filter_max_chunk(size_t win_size) {
+    size_t max_chunk = 0x100000; // 1 MiB clamp
+    if (win_size > 0x20000 && win_size / 2 < max_chunk) {
+        max_chunk = win_size / 2;
+    } else if (win_size <= 0x20000) {
+        max_chunk = win_size > 4 ? win_size / 2 : 1;
+    }
+    return max_chunk;
+}
+
 // One pass of the match/emit loop over everything loaded so far. Shared
 // verbatim by the one-shot compress() and streaming feed()/finish_stream();
 // the only input-dependent gates read src_loaded_/src_size_/src_eof_, all of
@@ -1157,16 +1177,20 @@ int Compressor50::process_available(bool final) {
 
         if (active_filter_ != FilterType::None && filter_emitted_until_ <= cur_ &&
             filter_emitted_until_ < src_size_) {
-            size_t max_chunk = 0x100000; // 1 MiB clamp
-            if (win_size_ > 0x20000 && win_size_ / 2 < max_chunk) {
-                max_chunk = win_size_ / 2;
-            } else if (win_size_ <= 0x20000) {
-                max_chunk = win_size_ > 4 ? win_size_ / 2 : 1;
-            }
+            size_t max_chunk = filter_max_chunk(win_size_);
             core::uint32 chunk_len = static_cast<core::uint32>(
                 std::min<core::uint64>(src_size_ - filter_emitted_until_, max_chunk));
             if (chunk_len > 0) {
-                if (!external_buf_ && filter_emitted_until_ >= pos_base_) {
+                // Transform the chunk in place just before the matcher can
+                // reach it — but never when the caller supplied data that is
+                // already transformed for this exact chunking
+                // (filter_pretransformed_, the compress_buffer() path).
+                // Streaming/memory sources always have the whole chunk
+                // loaded here (chunk_len <= src_size_ - filter_emitted_until_
+                // == src_loaded_ - filter_emitted_until_), so the transform
+                // below always covers the full token region.
+                if (!external_buf_ && !filter_pretransformed_ &&
+                    filter_emitted_until_ >= pos_base_) {
                     size_t buf_off = static_cast<size_t>(filter_emitted_until_ - pos_base_);
                     size_t avail_in_buf =
                         (src_loaded_ > filter_emitted_until_)
@@ -1445,14 +1469,22 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
         return !dest.empty();
     }
 
-    // Filter-assisted compression
-    size_t max_chunk = 0x100000; // 1 MiB clamp
-    if (win_size > 0x20000 && win_size / 2 < max_chunk) {
-        max_chunk = win_size / 2;
-    } else if (win_size <= 0x20000) {
-        max_chunk = win_size > 4 ? win_size / 2 : 1;
+    // Filter-assisted compression. The packer is begun first so the
+    // pre-transform below can chunk `filtered` exactly the way this packer
+    // emits filter tokens (filter_max_chunk of the packer's ACTUAL window,
+    // not the requested one): the decoder un-transforms one token region per
+    // token and skips CALLs whose operand crosses the region end, so the
+    // transform windows must coincide with the token regions.
+    Compressor50 packer;
+    if (src_size <= comp_win_size + 0x400000) {
+        packer.begin_archive(nullptr, method, comp_win_size);
+    } else {
+        packer.init(nullptr, nullptr, method, src_size, comp_win_size);
     }
+    packer.set_filter_config(filter_cfg);
+    packer.set_active_filter(detected_filter, detected_channels, /*pretransformed=*/true);
 
+    size_t max_chunk = filter_max_chunk(packer.window_size());
     std::vector<core::byte> filtered(src, src + src_size);
     size_t chunk_start = 0;
     while (chunk_start < src_size) {
@@ -1473,10 +1505,6 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
     }
 
     if (src_size <= comp_win_size + 0x400000) {
-        Compressor50 packer;
-        packer.begin_archive(nullptr, method, comp_win_size);
-        packer.set_filter_config(filter_cfg);
-        packer.set_active_filter(detected_filter, detected_channels);
         packer.set_external_buffer(filtered.data(), src_size);
         packer.set_memory_dest(&dest);
         if (packer.compress() < 0) {
@@ -1486,10 +1514,6 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
         return !dest.empty();
     }
 
-    Compressor50 packer;
-    packer.init(nullptr, nullptr, method, src_size, comp_win_size);
-    packer.set_filter_config(filter_cfg);
-    packer.set_active_filter(detected_filter, detected_channels);
     packer.mem_src_ptr_ = filtered.data();
     packer.mem_src_size_ = src_size;
     packer.mem_src_pos_ = 0;

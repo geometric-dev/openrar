@@ -252,6 +252,12 @@ private:
     FilterType active_filter_{FilterType::None};
     core::uint8 filter_channels_{1};
     core::uint64 filter_emitted_until_{0};
+    // Set when the caller feeds the packer data that is already transformed
+    // for the exact filter-token chunking this packer will emit (the
+    // compress_buffer() memory path pre-transforms). Suppresses the
+    // in-loop transform in process_available(), which would otherwise
+    // transform the same bytes a second time.
+    bool filter_pretransformed_{false};
     core::uint64 file_start_pos_{0};
     std::vector<core::byte> block_mem_;
     core::uint32 freq_ld_[NC], freq_dd_[DCX], freq_ldd_[LDC], freq_rd_[RC], freq_bd_[BC];
@@ -372,9 +378,16 @@ public:
     void set_filter_config(const FilterConfig& cfg) { filter_config_ = cfg; }
     const FilterConfig& get_filter_config() const { return filter_config_; }
     FilterType get_active_filter() const { return active_filter_; }
-    void set_active_filter(FilterType type, core::uint8 channels = 1) {
+    // The power-of-two window this session actually runs with (what
+    // begin_archive() derived from the requested size). Filter chunking
+    // decisions outside the class must derive from this, not from the
+    // requested size, so their chunk boundaries match the filter tokens
+    // process_available() emits.
+    size_t window_size() const { return win_size_; }
+    void set_active_filter(FilterType type, core::uint8 channels = 1, bool pretransformed = false) {
         active_filter_ = type;
         filter_channels_ = channels;
+        filter_pretransformed_ = pretransformed;
         filter_emitted_until_ = 0;
     }
 
