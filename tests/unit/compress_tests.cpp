@@ -393,6 +393,31 @@ void test_filter_multi_token_multiblock_roundtrip() {
     std::cout << "[PASS] filter roundtrip: multi-token, multi-block, mem_src branch\n";
 }
 
+void test_default_window_pairing_roundtrip() {
+    std::cout << "[+] test_default_window_pairing_roundtrip" << std::endl;
+    // Default-vs-default contract: a raw block stream carries no
+    // dictionary-size header, so the default Decompressor50 window must
+    // cover the default compress_buffer window (2 MiB). This input forces
+    // the full 2 MiB encoder window (1 MiB filter tokens, distances up to
+    // 2 MiB) and would fail against the old 1 MiB decoder default.
+    const size_t kSize = 1500000;
+    std::vector<core::byte> data(kSize, 0);
+    fill_pe_header(data);
+    plant_call(data, 65534);
+    fill_pattern(data, 0x90);
+
+    std::vector<core::byte> compressed;
+    assert(Compressor50::compress_buffer(data.data(), data.size(), compressed));
+
+    std::vector<core::byte> out;
+    Decompressor50 dec; // default window: must decode default-window streams
+    assert(dec.win_size() == Decompressor50::DEFAULT_WIN_SIZE);
+    assert(dec.win_size() == 0x200000);
+    assert(dec.decompress_to_vector(compressed.data(), compressed.size(), out));
+    assert(out.size() == data.size() && std::memcmp(out.data(), data.data(), data.size()) == 0);
+    std::cout << "[PASS] default compressor window decodable by default decoder window\n";
+}
+
 void test_bit_reader_and_huffman() {
     core::byte data[4] = {0xAB, 0xCD, 0xEF, 0x12};
     BitReader reader(data, 4);
@@ -1992,6 +2017,8 @@ int main() {
     test_filter_chunk_boundary_roundtrip_p1();
     std::cout << std::flush;
     test_filter_multi_token_multiblock_roundtrip();
+    std::cout << std::flush;
+    test_default_window_pairing_roundtrip();
     std::cout << std::flush;
     test_bit_reader_and_huffman();
     std::cout << std::flush;
