@@ -269,8 +269,15 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
     dest_file_ = dest;
     method_ = method < 1 || method > 5 ? 5 : method;
 
+    const core::uint64 SZ_CAP = sizeof(size_t) < 8 ? (1ULL << 30) : 0x1000000000ULL;
+    // SZ_CAP mirrors the decompressor's ILP32 ALLOC_LIMIT (1 GiB) so streams
+    // produced on 32-bit targets stay decodable in-family, and the pow2
+    // clamp below can never overflow a 32-bit size_t (a >= 2 GiB window
+    // would wrap pow2_ws to 0 and loop forever, and buf_size_'s +4 MiB
+    // slack would wrap on a 2 GiB win_size_). Identical to the previous
+    // behavior on 64-bit.
     const core::uint64 MAX_RETAIN = std::min<core::uint64>(
-        0x1000000000ULL, static_cast<core::uint64>(static_cast<size_t>(-1)) - 0x1000000);
+        SZ_CAP, static_cast<core::uint64>(static_cast<size_t>(-1)) - 0x1000000);
     max_dist_ = std::min(static_cast<core::uint64>(win_size), MAX_RETAIN);
     size_t ws = static_cast<size_t>(max_dist_ == 0 ? 0x20000 : max_dist_);
     size_t pow2_ws = 0x10000;
