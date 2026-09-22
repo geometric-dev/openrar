@@ -7,8 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — v1.22.0 work in progress
 
-Remaining for v1.22.0: NEON `vmull_p64` RS16 fold path; benchmark numbers for
-the 5–10× `.rev` claim; bit-exactness gate green across all dispatch paths.
+### Added
+
+- **NEON RS16 fold kernel**: the Cauchy parity fold now dispatches to an
+  AArch64 NEON path alongside the x86 GFNI kernel. Each byte × 16-bit
+  constant product is a GF(2)-linear byte map, which splits over input
+  nibbles into four 16-entry byte tables applied with `vqtbl1q` — 16 words
+  per iteration from two loads, one deinterleave pair and eight table
+  lookups. Bit-exact by construction (tables built from the same `gf_mul`
+  the scalar fold uses), so no runtime calibration is needed; Advanced SIMD
+  is architecturally mandatory on AArch64, making compile-time gating the
+  whole dispatch. Design note: the roadmap's original `vmull_p64` sketch
+  was replaced — a carry-less byte × degree-15 product needs a multi-step
+  reduction mod P, so lane math only pays off for 32/128-bit fields (CRC,
+  GHASH); for degree-16 constants the nibble-map lookups are fewer
+  instructions per byte than any PMULL arrangement.
+  `test_rs16_neon_bit_exactness` pins dispatched == scalar over 10 block
+  classes x every Cauchy coefficient (exercised for real on the ARM64 CI
+  legs).
+
+Remaining for v1.22.0: benchmark numbers for the 5–10× `.rev` claim;
+bit-exactness gate green across all dispatch paths.
 
 ## [1.21.25] - 2026-09-22
 

@@ -74,9 +74,10 @@ all decompress-side defaults were aligned to the compressor's 2 MiB default
 ## v1.22.0 — Hardware Vectorization + Security Baseline Sweep
 
 **SIMD (as re-scoped):** AVX-512 match kernel + GFNI RS16 fold ✅ (merged,
-SDE-validated). Remaining: NEON `vmull_p64` RS16 path; benchmark numbers for
-the 5–10× `.rev` claim; Scalar/AVX2/AVX-512/NEON bit-exactness gate green
-everywhere.
+SDE-validated). NEON RS16 fold ✅ (vqtbl nibble-linear-map design — the
+vmull_p64 sketch was replaced after the reduction-cost analysis; see the
+CHANGELOG design note). Remaining: benchmark numbers for the 5–10× `.rev`
+claim; Scalar/AVX2/AVX-512/NEON bit-exactness gate green everywhere.
 
 **Blocking gates:**
 1. ~~OPEN P1 roundtrip divergence~~ **FIXED** (see CLOSED P1 above) — root-

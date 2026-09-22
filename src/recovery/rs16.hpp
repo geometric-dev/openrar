@@ -44,6 +44,13 @@ public:
     // (compiled in, CPU-supported, and convention-probe validated).
     static bool gfni_kernel_active();
 
+    // True when the NEON fold kernel is compiled in. On AArch64 Advanced
+    // SIMD is architecturally mandatory (and baseline on MSVC ARM64), so
+    // compile-time gating is the whole dispatch — no runtime probe, and no
+    // calibration: the kernel's tables are built from the same gf_mul the
+    // scalar path uses.
+    static bool neon_kernel_active();
+
     // Field operations (public for testing and validation)
     core::uint32 gf_add(core::uint32 a, core::uint32 b) const { return a ^ b; }
     core::uint32 gf_mul(core::uint32 a, core::uint32 b) const {
