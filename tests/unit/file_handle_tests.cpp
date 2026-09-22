@@ -12,6 +12,7 @@
 #include "../../src/io/file_stream.hpp"
 
 #include <cassert>
+#include <cstdio>
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -210,7 +211,14 @@ static void test_plain_roundtrip() {
     // Memory extract matches the source bytes.
     uint8_t* out = nullptr;
     size_t len = 0;
-    assert(openrar_archive_handle_extract(h, 0, &out, &len) == RAR_OK);
+    int rc = openrar_archive_handle_extract(h, 0, &out, &len);
+    if (rc != RAR_OK) {
+        char msg[256] = {0};
+        openrar_last_error(msg, static_cast<int>(sizeof msg));
+        std::fprintf(stderr, "[diag] handle_extract rc=%d msg='%s' len=%zu\n", rc, msg, len);
+        std::fflush(stderr);
+    }
+    assert(rc == RAR_OK);
     assert(len == blob_a.size() && std::memcmp(out, blob_a.data(), len) == 0);
     openrar_free(out);
 
