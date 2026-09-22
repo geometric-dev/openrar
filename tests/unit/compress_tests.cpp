@@ -1932,7 +1932,12 @@ void test_chunk_framing_spike() {
 // exactly what a given machine can execute.
 void test_match_length_bit_exactness() {
     std::cout << "[+] test_match_length_bit_exactness" << std::endl;
+    // Only declared where a SIMD implementation can join the gate: on
+    // ARM32 every kernel runs scalar, so there is nothing to compare.
+#if defined(OPENRAR_HAS_X86_SIMD) || defined(__aarch64__) || defined(__ARM_NEON) ||                \
+    defined(_M_ARM64)
     const auto& cpu = core::get_cpu_features();
+#endif
     std::vector<std::pair<const char*, arch::MatchFn>> impls;
     impls.push_back({"scalar", arch::match_length_scalar});
 #if defined(OPENRAR_HAS_X86_SIMD)
@@ -1941,6 +1946,9 @@ void test_match_length_bit_exactness() {
 #endif
 #if defined(OPENRAR_HAS_X86_SIMD) && defined(OPENRAR_HAS_AVX512_KERNEL)
     if (cpu.avx512f) impls.push_back({"avx512", arch::match_length_avx512_kernel});
+#endif
+#if defined(__aarch64__) || defined(__ARM_NEON) || defined(_M_ARM64)
+    if (cpu.neon) impls.push_back({"neon", arch::match_length_neon});
 #endif
     assert(impls.size() >= 1);
 
