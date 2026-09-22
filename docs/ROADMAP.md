@@ -7,8 +7,8 @@
 > (`docs/SECURITY_ARCHITECTURE.md`) — every security item now has a home in a
 > specific release, with the policy conflicts it surfaced resolved in the
 > document itself (exit taxonomy, argv passwords, ownership restore, MSan
-> scoping, legacy-VM drop). It also carries one **OPEN P1** that blocks the
-> v1.22.0 release gate.
+> scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
+> v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
 ## Shipped Baseline (v1.21.1 / v1.21.2 / GFNI groundwork)
 
@@ -24,17 +24,33 @@
   preflight harness (`make preflight`) covering every CI leg that can run
   locally.
 
-## OPEN P1 (blocks v1.22.0)
+## CLOSED P1 (was blocking v1.22.0) — FIXED
 
 **Core-codec roundtrip divergence** — deterministic repro retained in
-`tests/fuzz/crashes/` (rng(42) sweep, iteration 727, 80519 bytes, filter-free
-LZ path; decoded output diverges at offset 65535; cross-validation window
-mismatch at pos 12364, dist 12114). Reproduces on v1.21.0 and master —
-pre-existing, surfaced by the nightly cross-validation fuzzer (the retained
-artifact + dump-on-divergence harness landed alongside). Filter-awareness was
-added to the validation engine (transformed-region exemption) and the
-harness now dumps state; **root cause is unfixed**. A codec that cannot
-roundtrip its own output cannot ship SIMD work on top of it.
+`tests/fuzz/crashes/` (rng(42) sweep, iteration 727, 80519 bytes; decoded
+output diverged at offset 65535; cross-validation abort at pos 12364,
+dist 12114 was the same defect seen through the match validator).
+Root cause: `compress_buffer()` derived its pre-transform chunk length from
+the *requested* window (1 MiB default) while the embedded packer emitted
+filter tokens chunked by its *clamped* window (pow2 clamp, 128 KiB floor →
+64 KiB tokens). The decoder un-transforms one token region per token and its
+scan skips any CALL whose operand crosses the region end, so a boundary-
+crossing E8 was transformed by the encoder's wider window and never reverted
+(divergence at 65535: operand `41 10 ef 00` → `40 10 f0 00`, i.e. `addr +
+0xFFFF`). The same mismatch let encoder matches cross decoder token regions,
+tripping the cross-validation raw-source check (pos 12364). Two adjacent
+defects fixed in the same pass: the large-input `mem_src` branch re-
+transformed already-pre-transformed data (double transform), and the
+pre-transform/token chunk length logic existed in two drifting copies — now
+a single `filter_max_chunk()` derived from the packer's actual window
+(`window_size()`), plus a `filter_pretransformed_` latch. Regression tests:
+`test_e8_filter_chunk_boundary_symmetry`, `test_filter_chunk_boundary_roundtrip_p1`,
+`test_filter_multi_token_multiblock_roundtrip`; the roundtrip fuzzer now
+decodes with the matching raw-stream window (0x200000). Residual (known, out
+of scope): a default-constructed `Decompressor50` runs a 1 MiB window while
+`compress_buffer()` defaults to 2 MiB — raw-stream consumers must size the
+decoder window explicitly (archive/dll layers already do; see the
+wasm-archive-spec interop note).
 
 ---
 
@@ -65,9 +81,9 @@ the 5–10× `.rev` claim; Scalar/AVX2/AVX-512/NEON bit-exactness gate green
 everywhere.
 
 **Blocking gates:**
-1. **OPEN P1 roundtrip divergence** (see above) — root-caused, fixed, and
-   pinned by a regression test built from the retained artifact. A codec
-   correctness bug outranks everything.
+1. ~~OPEN P1 roundtrip divergence~~ **FIXED** (see CLOSED P1 above) — root-
+   caused, fixed, and pinned by regression tests built from the retained
+   artifact. A codec correctness bug outranks everything.
 2. Bit-exactness across all dispatch paths including the multi-chunk and
    final-partial-chunk boundaries; parity fuzz across dispatch paths.
 
@@ -251,7 +267,7 @@ C# NuGet (`OpenRAR.NET`).
 
 | Release | Primary Focus | Security Items | Blocking Gate |
 | :--- | :--- | :--- | :--- |
-| **v1.22.0** | SIMD + security baseline sweep | Safe-math audit, sanitization audit, KDF caps | **OPEN P1 roundtrip divergence**; bit-exactness gates |
+| **v1.22.0** | SIMD + security baseline sweep | Safe-math audit, sanitization audit, KDF caps | ~~OPEN P1 roundtrip divergence~~ FIXED; bit-exactness gates |
 | **v1.23.0** | SFX scripting | Full §6 consent/runtime policy | Security design review; sandbox e2e |
 | **v1.24.0** | Extraction containment & integrity | §3/§4 syscall containment, atomic extraction, collisions, JSON summary | TOCTOU fault injection; collision matrix |
 | **v1.25.0** | mmap read engine (listing/random-read) | §5.2 normative no-mmap-for-extraction | Limits-not-bypassable; fault injection |
@@ -263,9 +279,12 @@ C# NuGet (`OpenRAR.NET`).
 
 ## ⚠️ Risk Register (top items)
 
-1. **OPEN P1 roundtrip divergence** — deterministic, retained, blocks
-   v1.22.0. Root cause unknown (window desync at pos ~250 of the failing
-   stream); needs a dedicated session with the retained artifact.
+1. **Raw-stream window contract** — `compress_buffer()` defaults to a 2 MiB
+   window; a default-constructed `Decompressor50` decodes with 1 MiB. Any
+   raw-stream consumer must size the decoder window from the stream's
+   recorded dictionary size (archive/dll layers do; the fuzz harness now
+   does). Consider aligning the defaults in a dedicated change. The P1
+   roundtrip divergence it used to mask is fixed (see CLOSED P1 above).
 2. **v1.24 containment depth** — write-through-handle extraction touches
    every write path; the largest refactor of the arc. Budget accordingly.
 3. **v1.23 SFX auto-execution** — security-sensitive by construction;
