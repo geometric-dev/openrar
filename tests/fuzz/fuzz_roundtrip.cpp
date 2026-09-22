@@ -56,7 +56,7 @@ std::vector<core::byte> generate_mutated_input() {
     return data;
 }
 
-void fuzz_one() {
+void fuzz_one(int iteration) {
     auto data = generate_mutated_input();
     std::vector<core::byte> compressed;
     bool comp_ok = Compressor50::compress_buffer(data.data(), data.size(), compressed);
@@ -69,9 +69,33 @@ void fuzz_one() {
 #endif
     bool dec_ok = dec.decompress_to_vector(compressed.data(), compressed.size(), decompressed);
 
-    assert(dec_ok);
-    assert(decompressed.size() == data.size());
-    assert(std::memcmp(decompressed.data(), data.data(), data.size()) == 0);
+    if (!dec_ok || decompressed.size() != data.size() ||
+        std::memcmp(decompressed.data(), data.data(), data.size()) != 0) {
+        // Dump the failing case so the divergence is reproducible offline.
+        size_t first_diff = data.size();
+        if (dec_ok && decompressed.size() == data.size()) {
+            for (size_t i = 0; i < data.size(); ++i) {
+                if (decompressed[i] != data[i]) {
+                    first_diff = i;
+                    break;
+                }
+            }
+        }
+        std::fprintf(stderr, "ROUNDTRIP DIVERGENCE at iteration %d (size %zu, first_diff %zu)\n",
+                     iteration, data.size(), first_diff);
+        std::FILE* f = std::fopen("fuzz_divergence_input.bin", "wb");
+        if (f) {
+            std::fwrite(data.data(), 1, data.size(), f);
+            std::fclose(f);
+        }
+        f = std::fopen("fuzz_divergence_compressed.bin", "wb");
+        if (f) {
+            std::fwrite(compressed.data(), 1, compressed.size(), f);
+            std::fclose(f);
+        }
+        std::fflush(stderr);
+        std::abort();
+    }
 
     // Overhead bound
     assert(compressed.size() <= data.size() + 256 + data.size() / 16);
@@ -81,7 +105,7 @@ int main() {
     std::cout << "Running deterministic roundtrip fuzzer sweep...\n";
     const int num_iterations = 2000;
     for (int i = 0; i < num_iterations; ++i) {
-        fuzz_one();
+        fuzz_one(i);
         if ((i + 1) % 100 == 0) {
             std::cout << "  Completed " << (i + 1) << " iterations...\n" << std::flush;
         }

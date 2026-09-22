@@ -157,9 +157,17 @@ public:
     // Seed the decompressor with the expected original source bytes.
     // When enabled, copy_match will verify that all dictionary references
     // produce identical bytes to the original source.
+    //
+    // Filter-awareness (v1.22.0): inside a filter region the window holds
+    // the TRANSFORMED stream (the encoder pre-transformed it), which
+    // legitimately differs from the raw source — the inverse transform is
+    // applied out-of-place on flush. Matches whose window range intersects
+    // a decoded filter region are therefore exempt from validation; the
+    // final memcmp in the harness still fully validates the output.
     void set_validation_source(const core::byte* src, size_t size) {
         val_src_ = src;
         val_size_ = size;
+        val_regions_.clear();
     }
 #endif
 
@@ -185,6 +193,9 @@ private:
 #ifdef OPENRAR_CROSS_VALIDATE
     const core::byte* val_src_{nullptr};
     size_t val_size_{0};
+    // (start, len) of every decoded filter region, ascending; validation is
+    // suppressed for matches whose dictionary range intersects one.
+    std::vector<std::pair<size_t, size_t>> val_regions_;
 #endif
 
     struct BlockHeader {

@@ -90,4 +90,16 @@ wasm-debug:
 clean-wasm:
 	rm -rf build/wasm build/wasm-debug build/wasm-cli build/wasm-archive
 
-.PHONY: all clean install uninstall wasm wasm-archive wasm-cli wasm-debug clean-wasm
+# ── Local CI-matrix preflight: run every leg that can run locally before ─────
+# pushing; lists the legs that remain CI-only (push-and-pray scope).
+preflight:
+	sh tools/preflight.sh
+
+preflight-quick:
+	PREFLIGHT_NO_WIN=1 sh tools/preflight.sh --quick
+
+# Watch the newest CI run for the current branch; exits with the run's status.
+ci-watch:
+	gh run watch $$(gh run list --branch $$(git rev-parse --abbrev-ref HEAD) --limit 1 --json databaseId --jq '.[0].databaseId') --exit-status
+
+.PHONY: preflight preflight-quick ci-watch
