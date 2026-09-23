@@ -73,16 +73,20 @@ all decompress-side defaults were aligned to the compressor's 2 MiB default
 
 ## v1.22.0 — Hardware Vectorization + Security Baseline Sweep
 
-**SIMD (as re-scoped):** AVX-512 match kernel + GFNI RS16 fold ✅ (merged,
-SDE-validated). NEON RS16 fold ✅ (vqtbl nibble-linear-map design — the
-vmull_p64 sketch was replaced after the reduction-cost analysis; see the
-CHANGELOG design note). Benchmarks ✅ (`tools/openrar_bench`: native AVX2
-match-length 7.7× scalar on the ubuntu leg, native NEON RS16 numbers from
-the macOS Apple Silicon leg; GFNI/AVX-512 native numbers stay open —
-neither CI nor local hosts have Ice Lake+ silicon, so only SDE-emulated,
-non-normative ratios exist for those kernels). Bit-exactness gate ✅ green
-across every dispatch path each leg can execute (Scalar/SSE2/AVX2/AVX-512
-x86-native + SDE, NEON on Apple Silicon + QEMU aarch64).
+**SIMD (as re-scoped):** ✅ complete, measured natively
+(`tools/openrar_bench`, informational CI step on native-hardware legs):
+- RS16 `.rev` fold: **GFNI 19.19× scalar** (55.4 GiB/s, ubuntu runner,
+  Ice Lake+ — the 5–10× claim is exceeded) and **NEON 5.72× scalar**
+  (14.6 GiB/s, macOS Apple Silicon) vs the scalar table fold.
+- Match-length: **AVX2 2.68× scalar** (79.5 GiB/s, ubuntu), SSE2 1.78×,
+  NEON 0.77× on Apple Silicon (the compiler auto-vectorizes the scalar
+  loop there — honest number, kept).
+- AVX-512 match kernel: correctness-validated under SDE only; no native
+  silicon in CI or locally, so no normative numbers (dispatching proven,
+  ratio labeled non-normative).
+Bit-exactness gate ✅ green across every dispatch path each leg can
+execute (Scalar/SSE2/AVX2 x86-native, AVX-512 + GFNI under SDE, NEON on
+Apple Silicon + QEMU aarch64).
 
 **Blocking gates:**
 1. ~~OPEN P1 roundtrip divergence~~ **FIXED** (see CLOSED P1 above) — root-

@@ -5,7 +5,18 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v1.22.0 work in progress
+## [Unreleased] — v1.23.0 work in progress
+
+Nothing yet — see the v1.23.0 arc (advanced SFX scripting, security-first
+delivery) in docs/ROADMAP.md.
+
+## [1.22.0] - 2026-09-23
+
+Hardware vectorization + security baseline sweep: the RS16 `.rev` parity
+fold and match-length kernels now dispatch to AVX-512/GFNI (x86) and NEON
+(AArch64), measured natively; the security baseline sweep (safe-integer
+math, terminal sanitization, KDF caps) is complete; the P1 roundtrip
+divergence that blocked this gate shipped fixed in 1.21.25.
 
 ### Added
 
@@ -45,16 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `read_le32/64` are byte-wise (alignment-UB-free). The additive-check
   forms are already the overflow-safe ones; routing them through
   `__builtin_*_overflow` helpers would be churn without a safety gain.
-- **Kernel benchmark harness** (`tools/openrar_bench.cpp`, wired as an
-  informational CI step on native-hardware legs): deterministic corpus,
-  best-of-3, grep-able output. Native x86-64 numbers (AVX2 host):
-  match-length scalar 508 MiB/s → SSE2 5.3× → AVX2 7.7×. RS16 fold runs
-  scalar (298.9 MiB/s) on GFNI-less hosts; native NEON numbers are
-  collected on the macOS Apple Silicon CI leg, and the GFNI fold ratio is
-  reported under Intel SDE labeled non-normative (emulated per-
-  instruction costs; native GFNI numbers require Ice Lake+ hardware,
-  which neither CI nor local hosts provide — the roadmap claim stays
-  "projected" until then).
+- **Kernel benchmark harness** (`tests/bench/openrar_bench.cpp`, wired as
+  an informational CI step on native-hardware legs): deterministic
+  corpus, full-cap periodic compare (throughput, not early-exit),
+  best-of-3, grep-able output. Measured natively in CI:
+  RS16 `.rev` fold — **GFNI 19.19× scalar** (55.4 GiB/s, ubuntu runner)
+  and **NEON 5.72× scalar** (14.6 GiB/s, macOS Apple Silicon); the
+  5–10× roadmap claim is met and, for GFNI, exceeded. Match-length:
+  **AVX2 2.68× scalar** (79.5 GiB/s), SSE2 1.78×, NEON 0.77× on Apple
+  Silicon (the scalar loop is auto-vectorized there). AVX-512 match
+  kernel numbers remain SDE-only (labeled non-normative) until native
+  Ice Lake+ silicon appears in a measurable position.
 
 - **PBKDF2 `lg2_count` ceilings pinned at both header paths** (security
   sweep): every KDF derivation site refuses `lg2_count > 24` —
