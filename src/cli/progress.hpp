@@ -23,16 +23,86 @@ namespace openrar::cli {
 extern bool g_plain_mode;
 extern bool g_quiet_mode;
 
-// L11: entry names come from untrusted archives. Strip C0 control characters
-// (0x00-0x1F) and DEL (0x7F) before echoing a name to the terminal so ESC-led
-// CSI/OSC sequences (title rewrite, cursor hide, OSC 52 clipboard writes)
-// cannot be injected through a crafted name. Display-only helper: never feed
-// its result back into filesystem operations.
+// L11: entry names come from untrusted archives. Sanitize before echoing a
+// name to the terminal (v1.22.0 sweep hardening; the per-category contract
+// is pinned by tests/unit/cli_tests.cpp test_sanitize_for_display):
+//   - C0 controls (0x00-0x1F) and DEL: ESC-led CSI/OSC injection (title
+//     rewrite, cursor hide, OSC 52 clipboard writes) -> '?'
+//   - C1 controls (U+0080..009F, incl. 8-bit CSI U+009B) -> '?'
+//   - invalid UTF-8 (bad leads, lone continuations, overlong forms,
+//     surrogates, > U+10FFFF, truncated tails) -> '?' per byte, so
+//     terminals cannot be pushed out of UTF-8 state
+//   - bidi/direction attacks: RTL/LTR overrides (U+202A..202E), isolates
+//     (U+2066..2069), directional marks (U+200E/200F), line/paragraph
+//     separators (U+2028/2029), soft hyphen (U+00AD) -> '?' per source byte
+//   - valid non-ASCII text (accents, CJK, emoji) passes through untouched
+// Display-only helper: never feed its result back into filesystem operations.
 inline std::string sanitize_for_display(const std::string& name) {
     std::string out;
     out.reserve(name.size());
-    for (unsigned char c : name) {
-        out += (c <= 0x1F || c == 0x7F) ? '?' : static_cast<char>(c);
+    const size_t n = name.size();
+    size_t i = 0;
+    while (i < n) {
+        const unsigned char c = static_cast<unsigned char>(name[i]);
+        if (c <= 0x1F || c == 0x7F) {
+            out += '?';
+            ++i;
+            continue;
+        }
+        if (c < 0x80) {
+            out += static_cast<char>(c);
+            ++i;
+            continue;
+        }
+
+        // Strict multi-byte decode: bad lead, bad continuation, overlong,
+        // surrogate, or out-of-range all degrade to '?' for this byte; any
+        // following continuation bytes then fail as bad leads, so a broken
+        // sequence costs one '?' per byte.
+        int len = 0;
+        core::uint32 cp = 0;
+        if (c >= 0xC2 && c <= 0xDF) {
+            len = 2;
+            cp = c & 0x1Fu;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            len = 3;
+            cp = c & 0x0Fu;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            len = 4;
+            cp = c & 0x07u;
+        } else {
+            out += '?';
+            ++i;
+            continue;
+        }
+        bool ok = i + static_cast<size_t>(len) <= n;
+        for (int k = 1; ok && k < len; ++k) {
+            const unsigned char cc = static_cast<unsigned char>(name[i + static_cast<size_t>(k)]);
+            if ((cc & 0xC0) != 0x80) {
+                ok = false;
+                break;
+            }
+            cp = (cp << 6) | (cc & 0x3Fu);
+        }
+        static const core::uint32 kMinCp[5] = {0, 0, 0x80, 0x800, 0x10000};
+        if (!ok || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu) || cp < kMinCp[len]) {
+            out += '?';
+            ++i;
+            continue;
+        }
+
+        const bool hostile = (cp >= 0x202Au && cp <= 0x202Eu) || // LRE/LRO/RLE/RLO/PDF overrides
+                             (cp >= 0x2066u && cp <= 0x2069u) || // LRI/RLI/FSI/PDI isolates
+                             cp == 0x200Eu || cp == 0x200Fu ||   // LRM/RLM directional marks
+                             cp == 0x2028u || cp == 0x2029u ||   // LINE/PARAGRAPH SEPARATOR
+                             cp == 0x00ADu ||              // SOFT HYPHEN (invisible in filenames)
+                             (cp >= 0x80u && cp <= 0x9Fu); // C1 controls
+        if (hostile) {
+            out.append(static_cast<size_t>(len), '?');
+        } else {
+            out.append(name, i, static_cast<size_t>(len)); // validated sequence verbatim
+        }
+        i += static_cast<size_t>(len);
     }
     return out;
 }
