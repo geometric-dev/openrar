@@ -11,6 +11,7 @@
 #include <iterator>
 #include <string>
 #include <vector>
+#include "../../src/cli/progress.hpp"
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #endif
@@ -190,6 +191,66 @@ void test_cli_list_sanitizes_esc_entry_name() {
     std::filesystem::remove(captured);
     std::filesystem::remove(src);
     std::cout << "[PASS] CLI list output has ESC entry name sanitized (L11)\n";
+}
+
+// v1.22.0 sweep: negative tests for every terminal-sanitization category the
+// audit calls out. Contract of sanitize_for_display (src/cli/progress.hpp):
+// C0/DEL, C1 controls, invalid UTF-8 and bidi/format attackers become '?';
+// valid non-ASCII text passes through byte-identical.
+void test_sanitize_for_display() {
+    using openrar::cli::sanitize_for_display;
+    std::cout << "[+] test_sanitize_for_display" << std::endl;
+
+    // ASCII passthrough.
+    assert(sanitize_for_display("plain-file_v2 [ok].txt") == "plain-file_v2 [ok].txt");
+
+    // ESC-led CSI / OSC / DCS injection: the ESC introducer (and any other
+    // C0 terminator like BEL) becomes '?', the visible text stays — the
+    // sequence can no longer fire, which is the contract, not redaction.
+    assert(sanitize_for_display("\x1b[2J\x1b[H") == "?[2J?[H");
+    assert(sanitize_for_display("\x1b]0;pwned\x07") == "?]0;pwned?");
+    assert(sanitize_for_display("\x1bP+q54sc;tm\x1b\\") == "?P+q54sc;tm?\\");
+
+    // C1 controls (U+0080..009F), incl. the 8-bit CSI U+009B.
+    assert(sanitize_for_display("a\xc2"
+                                "\x9b"
+                                "b") == "a??b");      // U+009B
+    assert(sanitize_for_display("\xc2\x85") == "??"); // U+0085 NEL
+
+    // Bidi direction attacks: RTL/LTR overrides, isolates, marks.
+    assert(sanitize_for_display("invoice\xe2\x80\xae"
+                                "exe.pdf") == "invoice???exe.pdf"); // RLO
+    assert(sanitize_for_display("\xe2\x81\xa6"
+                                "txt\xe2\x81\xa9") == "???txt???"); // LRI/PDI
+    assert(sanitize_for_display("a\xe2\x80\x8f"
+                                "b") == "a???b"); // RLM
+    assert(sanitize_for_display("note\xe2\x80\xa8"
+                                "line") == "note???line");                  // LINE SEP
+    assert(sanitize_for_display("invoice\xc2\xad.pdf") == "invoice??.pdf"); // soft hyphen
+
+    // Invalid UTF-8: lone continuation, overlong, surrogates, out of range,
+    // bad lead, truncated tail — one '?' per byte, nothing consumed blindly.
+    assert(sanitize_for_display("a\x80"
+                                "b") == "a?b");
+    assert(sanitize_for_display("\xc0\xaf") == "??");           // overlong '/'
+    assert(sanitize_for_display("\xe0\x80\xaf") == "???");      // overlong '/'
+    assert(sanitize_for_display("\xed\xa0\x80") == "???");      // UTF-16 surrogate
+    assert(sanitize_for_display("\xf5\x80\x80\x80") == "????"); // > U+10FFFF lead
+    assert(sanitize_for_display("tail\xe2\x80") == "tail??");   // truncated sequence
+    assert(sanitize_for_display("\xc2") == "?");                // truncated 2-byte
+
+    // Valid non-ASCII passes through byte-identical (accents, CJK, emoji).
+    const std::string legit = "h\xc3\xa9llo w\xc3\xb6rld \xe4\xb8\xad\xe6\x96\x87 \xf0\x9f\xa6\x96";
+    assert(sanitize_for_display(legit) == legit);
+
+    // Mixed: hostile pieces replaced ('?' per source byte), legitimate text
+    // and structure kept.
+    assert(sanitize_for_display("r\xc2\xad"
+                                "sum\xc3\xa9\xe2\x80\xae"
+                                ".txt") == "r??sum\xc3\xa9???.txt");
+
+    std::cout << "[PASS] sanitize_for_display negative coverage (ESC/CSI/OSC, C1, bidi, "
+                 "invalid UTF-8)\n";
 }
 
 void test_cli_mt_batch_equivalence() {
@@ -714,6 +775,7 @@ int main() {
     test_cli_help_switch_parity();
     test_cli_v1_10_features();
     test_cli_dict_size_flag();
+    test_sanitize_for_display();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
 }
