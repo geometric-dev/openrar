@@ -12,6 +12,14 @@ API**).
 
 **Architect Verdict:** 🟡 CONDITIONAL APPROVAL (REVISIONS REQUIRED)
 
+> **Status (2026-09-23): DIRECTIVES RESOLVED.** All ten directives are
+> addressed by `docs/sfx-v1.23-implementation-plan.md` (Revision 2), which
+> additionally closes a gap this review missed: `Path=` destination
+> containment (an archive-proposed extraction destination combined with
+> `Silent=2` would otherwise bypass the start dialog — now refused outside
+> the user profile, with negative tests 21–24). Parser/config-layer work is
+> cleared; execution/consent/containment code follows the revised plan.
+
 The security *direction* is correct and §6-aligned. The plan is **not**
 approved for implementation until the ten directives in §7 land — most
 critically the Failure-Mode Matrix, the process-execution contract, and the
