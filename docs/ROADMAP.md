@@ -76,8 +76,13 @@ all decompress-side defaults were aligned to the compressor's 2 MiB default
 **SIMD (as re-scoped):** AVX-512 match kernel + GFNI RS16 fold ✅ (merged,
 SDE-validated). NEON RS16 fold ✅ (vqtbl nibble-linear-map design — the
 vmull_p64 sketch was replaced after the reduction-cost analysis; see the
-CHANGELOG design note). Remaining: benchmark numbers for the 5–10× `.rev`
-claim; Scalar/AVX2/AVX-512/NEON bit-exactness gate green everywhere.
+CHANGELOG design note). Benchmarks ✅ (`tools/openrar_bench`: native AVX2
+match-length 7.7× scalar on the ubuntu leg, native NEON RS16 numbers from
+the macOS Apple Silicon leg; GFNI/AVX-512 native numbers stay open —
+neither CI nor local hosts have Ice Lake+ silicon, so only SDE-emulated,
+non-normative ratios exist for those kernels). Bit-exactness gate ✅ green
+across every dispatch path each leg can execute (Scalar/SSE2/AVX2/AVX-512
+x86-native + SDE, NEON on Apple Silicon + QEMU aarch64).
 
 **Blocking gates:**
 1. ~~OPEN P1 roundtrip divergence~~ **FIXED** (see CLOSED P1 above) — root-
@@ -87,15 +92,20 @@ claim; Scalar/AVX2/AVX-512/NEON bit-exactness gate green everywhere.
    final-partial-chunk boundaries; parity fuzz across dispatch paths.
 
 **Security baseline sweep (§5.2/§5.3/§7.1 — small, fits the boundary-
-discipline theme):**
-- Safe-integer-math audit of vint decoding, size arithmetic, and offset
-  computation — every `+`/`*` on untrusted values routed through
-  overflow-checked helpers (`__builtin_*_overflow`).
-- Terminal-sanitization coverage audit: `sanitize_for_display` verified
-  against the full attack list (ESC/CSI/OSC, RTL override U+202E, invalid
-  UTF-8) with negative tests per category.
-- KDF cap verification: PBKDF2 `lg2_count` ceilings re-pinned by tests at
-  both header paths.
+discipline theme):** ✅ complete (v1.22.0).
+- Safe-integer-math audit ✅ — untrusted-value arithmetic verified end to
+  end: `read_vint` bounded with a tested overflow contract, subtractive
+  bounds + explicit clamps in the header parser, size caps at every layer,
+  UB-free unaligned readers. The existing check forms are already the
+  overflow-safe ones; helper-conversion would be churn without a gain.
+- Terminal-sanitization coverage audit ✅ — `sanitize_for_display`
+  hardened (C0/C1, invalid UTF-8 per byte, bidi/isolates/marks, soft
+  hyphen; valid non-ASCII passes through) with negative tests per
+  category (`test_sanitize_for_display`).
+- KDF cap verification ✅ — PBKDF2 `lg2_count` ceilings pinned at both
+  header paths (`test_kdf_cap_pinned`: hostile lg2=25 refused fail-closed
+  through a valid-CRC header, 24 accepted, 25..255 refused without
+  derivation).
 
 ---
 
