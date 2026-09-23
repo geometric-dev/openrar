@@ -10,9 +10,11 @@
 #include "../../src/archive/rar_errors.hpp"
 
 #include <cassert>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #endif
@@ -259,6 +261,89 @@ void test_sfx_preservation() {
 
     std::filesystem::remove(test_sfx);
     std::cout << "[PASS] SFX Module Detection and Preservation\n";
+}
+
+// ── v1.22.0 security sweep: PBKDF2 lg2_count ceilings pinned at both header
+// paths ──────────────────────────────────────────────────────────────────────
+// Every KDF derivation site fails closed on lg2_count > 24 (WinRAR's
+// ceiling): encrypted headers at HeaderCryptReader::init /
+// HeaderCryptWriter::init_existing, per-file FHEXTRA_CRYPT at the entry-KDF
+// gate in ArchiveReader. A hostile 25..255 must be refused WITHOUT
+// derivation (1U << 31+ would be UB, and even 1 << 25 is a ~5s DoS per
+// header); 24 must stay accepted so the boundary cannot creep down.
+void test_kdf_cap_pinned() {
+    std::cout << "[+] test_kdf_cap_pinned" << std::endl;
+
+    // Path 2 (encrypted headers, HEAD_CRYPT): reader gate.
+    {
+        format::CryptBlock crypt{};
+        crypt.salt.fill(core::byte(0xAB));
+        const std::string pw = "kdf-cap-probe";
+        for (core::uint8 lg2 : {25, 255}) {
+            crypt.lg2_count = lg2;
+            format::HeaderCryptReader rd;
+            assert(!rd.init(pw, crypt) && "lg2_count > 24 must be refused without derivation");
+        }
+        crypt.lg2_count = 24; // boundary: accepted (one real derivation, ~seconds)
+        format::HeaderCryptReader rd;
+        assert(rd.init(pw, crypt));
+    }
+    // Path 2: writer gate mirror.
+    {
+        format::CryptBlock crypt{};
+        crypt.salt.fill(core::byte(0xCD));
+        const std::string pw = "kdf-cap-probe";
+        format::HeaderCryptWriter wr;
+        crypt.lg2_count = 25;
+        assert(!wr.init_existing(pw, crypt));
+        crypt.lg2_count = 24;
+        assert(wr.init_existing(pw, crypt));
+    }
+
+    // Path 1 (per-file FHEXTRA_CRYPT): hand-built hostile header with a
+    // VALID header CRC (written through HeaderWriter), so the tamper cannot
+    // be caught by the CRC gate and the entry-KDF lg2_count ceiling itself
+    // is what must refuse the entry — fail-closed, no derivation, no hang.
+    const std::filesystem::path arc = "build/kdf_cap_hostile.rar";
+    {
+        io::FileStream out;
+        assert(out.open(arc, io::FileMode::CreateAlways));
+        assert(HeaderWriter::write_signature(out));
+        MainBlock mb;
+        assert(HeaderWriter::write_main_block(out, mb));
+
+        FileBlock fb;
+        fb.file_name = "hostile.bin";
+        fb.unp_size = 16;
+        fb.pack_size = 16;
+        fb.method = 0; // store: the data area is plaintext, only the header lies
+        fb.is_encrypted = true;
+        fb.crypt_version = 0;
+        fb.lg2_count = 25; // hostile: one past the ceiling
+        fb.salt.fill(core::byte(0x5A));
+        fb.init_v.fill(core::byte(0xA5));
+        assert(HeaderWriter::write_file_block(out, fb, 0));
+        const core::byte payload[16] = {};
+        assert(out.write(payload, sizeof(payload)) == sizeof(payload));
+        EndArcBlock eb;
+        assert(HeaderWriter::write_end_block(out, eb));
+    }
+    {
+        ArchiveReader rd;
+        assert(rd.open(arc, "correct"));
+        std::vector<core::byte> out;
+        const int rc =
+            rd.extract_entry_to_memory(0, out, 16ULL * 1024 * 1024, {}, nullptr, nullptr);
+        assert(rc == RAR_ERR_UNSUPPORTED_FEATURE &&
+               "lg2_count = 25 in FHEXTRA_CRYPT must fail closed");
+        // And the ceiling is not just an error path: 24 stays legal, so the
+        // gate cannot silently creep down to 23 (the writer side pins that
+        // boundary above; here only the refusal is asserted).
+    }
+
+    std::filesystem::remove(arc);
+    std::cout << "[PASS] PBKDF2 lg2_count ceilings pinned (25..255 refused, 24 accepted, "
+                 "both header paths)\n";
 }
 
 // R5: bad_password_ must not be sticky across calls on the same reader
@@ -1214,6 +1299,7 @@ int main() {
     test_mutation_temp_names_not_clobbered();
     test_sfx_preservation();
     test_bad_password_not_sticky();
+    test_kdf_cap_pinned();
     test_truncated_data_area_clamped();
     test_filecopy_source_confined_to_root();
     test_links_to_dirs_leaves_preexisting_links();
