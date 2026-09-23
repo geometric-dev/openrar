@@ -29,15 +29,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Remaining for v1.22.0: benchmark numbers for the 5–10× `.rev` claim;
 bit-exactness gate green across all dispatch paths.
 
-- **Raspberry Pi / ARM Linux release packages**: a new CI leg
-  cross-compiles for ARMv7-A hard-float (Raspberry Pi OS 32-bit; Pi 2/3/4/5;
-  armv6 is out of scope by policy) and runs the full test suite plus CLI
-  smoke under QEMU, and the aarch64 leg now publishes its artifact as well.
-  Releases gain `linux-gcc-armv7` and `linux-gcc-arm64` platform packages.
-  The RS16 fold stays scalar on armv7 by design — the NEON kernel's
-  vqtbl1q tables do not transfer to AArch32 VTBL, and recovery is not a
-  hot path on a Pi — an expectation the armv7 leg asserts instead of
-  leaving implicit.
+- **Raspberry Pi / ARM Linux release packages (64-bit)**: the aarch64 QEMU
+  leg now publishes its artifact, so releases gain a `linux-gcc-arm64`
+  platform package (Raspberry Pi 3/4/5 on 64-bit Raspberry Pi OS). The arm
+  legs run with warnings-as-errors, and the NEON RS16 kernel activation is
+  asserted there rather than left implicit. 32-bit ARM (armv7) was
+  evaluated and deliberately not packaged — modern 64-bit only is the
+  platform policy (wasm32 remains the one ILP32 target, as the Emscripten
+  product surface). The evaluation still paid for itself: it surfaced a
+  class of ILP32 truncation bugs shared with the existing 32-bit code
+  paths — `ALLOC_LIMIT` and `RAR_DICT_ALLOC_LIMIT` (64 GiB constants)
+  truncated to 0 on a 32-bit `size_t`, `select_unpacker()` lost the
+  oversized-dictionary signal to the same cast, and `pack_entries()`' u32
+  width guard wrapped before it could fire. All are fixed, with
+  `static_assert`s turning any recurrence into compile errors, and the
+  compressor's window cap now mirrors the decompressor's 1 GiB ILP32
+  limit so wasm32-produced streams stay decodable in-family.
 
 ## [1.21.25] - 2026-09-22
 
