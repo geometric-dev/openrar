@@ -27,7 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   legs).
 
 Remaining for v1.22.0: benchmark numbers for the 5–10× `.rev` claim;
-bit-exactness gate green across all dispatch paths.
+bit-exactness gate green across all dispatch paths; security baseline
+sweep (KDF ceilings pinned — done; terminal-sanitization coverage audit;
+safe-integer-math audit).
+
+- **PBKDF2 `lg2_count` ceilings pinned at both header paths** (security
+  sweep): every KDF derivation site refuses `lg2_count > 24` —
+  `HeaderCryptReader::init` / `HeaderCryptWriter::init_existing` for
+  encrypted headers, and the entry-KDF gate for per-file FHEXTRA_CRYPT.
+  `test_kdf_cap_pinned` drives a hand-built hostile file header with a
+  valid CRC and `lg2_count = 25` through the full reader (fail-closed
+  RAR_ERR_UNSUPPORTED_FEATURE, no derivation, no hang), pins 25..255
+  refused and 24 accepted on the HEAD_CRYPT gates, and mirrors the
+  boundary on the writer side.
 
 - **Raspberry Pi / ARM Linux release packages (64-bit)**: the aarch64 QEMU
   leg now publishes its artifact, so releases gain a `linux-gcc-arm64`
