@@ -121,10 +121,14 @@ static void test_compress_buffer_raw_direct() {
 }
 
 static void test_oversize_win_size_rejected() {
-    // §3.2: refuse dictionaries larger than MAX_WIN_SIZE.
+    // §3.2: refuse dictionaries larger than MAX_WIN_SIZE. The >MAX boundary
+    // probe is 64-bit-only: the ABI takes size_t, and on ILP32 MAX_WIN_SIZE
+    // (4 GiB) plus one is not representable — the boundary is unreachable
+    // by construction there.
     auto src = make_payload(64);
     uint8_t* out = nullptr;
     size_t out_len = 0;
+#if SIZE_MAX >= UINT64_MAX
     int rc = openrar_compress2(src.data(), src.size(), &out, &out_len, 3,
                                openrar::wasm::MAX_WIN_SIZE + 1);
     CHECK(rc == 0);
@@ -135,6 +139,11 @@ static void test_oversize_win_size_rejected() {
                              openrar::wasm::MAX_WIN_SIZE + 1);
     CHECK(rc == 0);
     CHECK(out == nullptr);
+#else
+    (void)src;
+    (void)out;
+    (void)out_len;
+#endif
 }
 
 static void test_decompress_corrupt_returns_empty() {
