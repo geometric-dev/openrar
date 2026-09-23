@@ -1495,6 +1495,15 @@ bool stream_stored_entry_chunks(const archive::ArchiveEntry& entry, Fn&& chunk_s
 } // namespace
 
 bool ArchiveReader::select_unpacker(const ArchiveEntry& entry, UnpackerSelection& sel) {
+    // uint64 gate BEFORE the size_t cast: on ILP32 a >4 GiB header window
+    // truncates (64 GiB -> 0 -> silently the 2 MiB default window) and the
+    // stream would decode against the wrong dictionary instead of being
+    // refused. Same limit the Decompressor50 constructor enforces, so the
+    // 64-bit path is behavior-identical.
+    if (format::is_dictionary_too_large_for_alloc(entry.header.win_size)) {
+        last_decompress_error_ = compress::DecompressErrorCode::DictionaryTooLarge;
+        return false;
+    }
     size_t win = static_cast<size_t>(entry.header.win_size);
     bool chain = is_solid() || entry.header.is_solid;
 
