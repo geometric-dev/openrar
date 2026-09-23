@@ -144,6 +144,17 @@ jobs:
         run: |
           ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
 
+      - name: Kernel throughput report (native x86-64, informational)
+        # Real AVX2/SSE2 hardware numbers for the v1.22.0 SIMD arc. Native
+        # runners are shared and noisy: best-of-3 inside the bench damps
+        # spikes, and this step is informational, never a gate.
+        if: matrix.os == 'ubuntu-latest' && matrix.compiler == 'gcc'
+        run: ./build/openrar_bench
+
+      - name: Kernel throughput report (native Apple Silicon NEON, informational)
+        if: matrix.os == 'macos-latest'
+        run: ./build/openrar_bench
+
       - name: Interop Gate (local spec, no rar.exe in CI)
         if: matrix.arch != 'arm64'
         shell: bash
@@ -371,6 +382,17 @@ jobs:
           "${SDE_EXE}" -future -- ./build/compress_tests | tee sde_compress.log
           grep -q "avx512" sde_compress.log \
             || { echo "FAIL: AVX-512 match path absent under SDE"; exit 1; }
+
+      - name: RS16 fold ratio under SDE (EMULATED — non-normative)
+        # SDE emulates GFNI at a per-instruction cost very different from
+        # silicon, so these ratios must NOT be read as native performance.
+        # They only demonstrate the kernel does more work per instruction
+        # than the scalar fold even under emulation. Native GFNI numbers
+        # require Ice Lake+ hardware (none available in CI or locally).
+        run: |
+          "${SDE_EXE}" -future -- ./build/openrar_bench | tee sde_bench.log
+          grep -q "rs16_fold dispatched(GFNI)" sde_bench.log \
+            || { echo "FAIL: GFNI fold kernel did not dispatch under SDE"; exit 1; }
 
       - name: End-to-end .rev parity under SDE (CLI drives the GFNI kernel)
         # The full interop gate cannot run under SDE (it spawns cmake/shell

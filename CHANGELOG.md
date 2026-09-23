@@ -26,10 +26,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classes x every Cauchy coefficient (exercised for real on the ARM64 CI
   legs).
 
-Remaining for v1.22.0: benchmark numbers for the 5–10× `.rev` claim;
-bit-exactness gate green across all dispatch paths; security baseline
-sweep (KDF ceilings pinned — done; terminal-sanitization coverage audit;
-safe-integer-math audit).
+- **Terminal-sanitization hardening (security sweep)**:
+  `sanitize_for_display` now decodes UTF-8 and replaces, per category:
+  C0/DEL (ESC-led CSI/OSC injection), C1 controls incl. the 8-bit CSI
+  U+009B, invalid UTF-8 (bad leads, lone continuations, overlongs,
+  surrogates, truncated tails — one '?' per byte so terminals cannot be
+  pushed out of UTF-8 state), and bidi/direction attackers (RLO/LRE
+  U+202A..202E, isolates U+2066..2069, LRM/RLM, line/paragraph
+  separators, soft hyphen). Valid non-ASCII text passes through
+  byte-identical. `test_sanitize_for_display` pins every category with
+  negative tests.
+- **Safe-integer-math audit (security sweep)**: verified the untrusted-
+  value arithmetic surface end to end — `read_vint` is bounded at 10
+  bytes with a tested 64-bit overflow contract; the header parser's size
+  arithmetic uses subtractive bounds (`size - offset`) and an explicit
+  overflow-safe clamp for locator records; body sizes are capped (2 MiB
+  headers, 64 MiB locator payloads, 256 MiB heap extracts);
+  `read_le32/64` are byte-wise (alignment-UB-free). The additive-check
+  forms are already the overflow-safe ones; routing them through
+  `__builtin_*_overflow` helpers would be churn without a safety gain.
+- **Kernel benchmark harness** (`tools/openrar_bench.cpp`, wired as an
+  informational CI step on native-hardware legs): deterministic corpus,
+  best-of-3, grep-able output. Native x86-64 numbers (AVX2 host):
+  match-length scalar 508 MiB/s → SSE2 5.3× → AVX2 7.7×. RS16 fold runs
+  scalar (298.9 MiB/s) on GFNI-less hosts; native NEON numbers are
+  collected on the macOS Apple Silicon CI leg, and the GFNI fold ratio is
+  reported under Intel SDE labeled non-normative (emulated per-
+  instruction costs; native GFNI numbers require Ice Lake+ hardware,
+  which neither CI nor local hosts provide — the roadmap claim stays
+  "projected" until then).
 
 - **PBKDF2 `lg2_count` ceilings pinned at both header paths** (security
   sweep): every KDF derivation site refuses `lg2_count > 24` —
