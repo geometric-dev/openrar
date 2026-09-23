@@ -10,7 +10,7 @@
 > scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
 > v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
-## Shipped Baseline (v1.21.1 / v1.21.2 / GFNI groundwork)
+## Shipped Baseline (v1.21.1 / v1.21.2 / v1.21.25 / v1.22.0)
 
 - **v1.21.1 "Tight Base":** all 16 audit P1s closed; commit atomicity; `.rev`
   repair stem-anchoring + legacy `.rNN`; DLL CAS busy-claim; CLI fail-closed
@@ -18,6 +18,15 @@
 - **v1.21.2:** residual P2 ledger (FCI-grid window snap, `:$DATA` rejection,
   owner-record conformance, oracle-mapped exit codes + interop stage 15,
   switch-dispatch tightening).
+- **v1.21.25:** P1 roundtrip divergence closed (filter chunk-boundary root
+  cause, see CLOSED P1); decompress-side window defaults aligned with the
+  compressor's; platform-identified release asset names; linux-gcc-arm64
+  (Raspberry Pi 64-bit) release package.
+- **v1.22.0 (current):** SIMD arc complete and natively benchmarked —
+  AVX-512 match kernel, GFNI RS16 fold (19.19× scalar), NEON RS16 fold
+  (5.72× scalar); security baseline sweep complete (safe-integer math,
+  terminal sanitization, KDF ceilings); `tools/../tests/bench` throughput
+  harness in CI. See the v1.22.0 section below and CHANGELOG 1.22.0.
 - **GFNI groundwork (merged PR #1):** AVX-512 match kernel + GFNI RS16 fold
   kernel, empirically calibrated, validated under Intel SDE in CI
   (`simd-validation` job); cross-implementation bit-exactness gate; local
