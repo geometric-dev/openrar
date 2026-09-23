@@ -47,6 +47,19 @@ This gives every shipped build a unique, strictly increasing version
 (`1.0.126 > 1.0.9` in SemVer ordering) while MAJOR/MINOR keep answering the
 compatibility question.
 
+## Platform support policy
+
+Modern 64-bit only; no legacy CPU or legacy format support.
+
+- **Packaged targets**: x86-64 (Windows, Linux), ARM64 (Windows, Linux,
+  macOS universal), and wasm32 (Emscripten — the one ILP32 target, as the
+  browser product surface).
+- **Not supported**: 32-bit native (i386, ARMv7/armhf) and anything older
+  than the CPU baselines the kernels require (SSE2 x86, ARMv8 AArch64).
+  The ILP32 code guards that exist (1 GiB dictionary ceilings,
+  `static_assert`s on width constants) exist to keep the wasm32 build and
+  any accidental 32-bit compile *correct*, not to promise support.
+
 ## What bumps what
 
 | Bump  | Triggers |
