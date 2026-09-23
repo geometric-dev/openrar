@@ -505,6 +505,13 @@ if(NOT EMSCRIPTEN)
     openrar_enable_test_asserts(dll_cpp_tests)
     add_test(NAME dll_cpp_tests COMMAND dll_cpp_tests)
 
+    # ── Kernel throughput benchmark (informational, never a gate) ───────────
+    if(NOT EMSCRIPTEN)
+        add_executable(openrar_bench tests/bench/openrar_bench.cpp)
+        target_link_libraries(openrar_bench PRIVATE openrar_core)
+        target_include_directories(openrar_bench PRIVATE ${OPENRAR_INCLUDES})
+    endif()
+
     # ── Fuzzing Infrastructure ──────────────────────────────────────────────
     option(OPENRAR_FUZZ "Enable fuzzer targets" OFF)
     option(OPENRAR_SANITIZERS "Enable ASan/UBSan for fuzzer builds" OFF)
