@@ -823,6 +823,11 @@ void test_cpu_features() {
     if (cpu.arm_aes) std::cout << " AES";
     if (cpu.arm_sha2) std::cout << " SHA2";
     if (cpu.arm_pmull) std::cout << " PMULL";
+#elif defined(__arm__) || defined(_M_ARM)
+    // ARM32 detector populates no dispatch tags yet: every kernel runs
+    // scalar on ARMv7 (the SIMD kernels target AArch64/x86 only).
+    (void)cpu;
+    std::cout << " scalar";
 #endif
     std::cout << "\n";
 }
