@@ -1162,7 +1162,10 @@ void test_decompressor_bad_alloc_returns_nomem() {
     // REFUSES a 64 GiB window. Lazily-committing allocators (macOS) answer
     // the allocation with lazily-backed zero pages — there is nothing to
     // observe, and insisting would assert or get the process jetsammed.
+    // The probe is 64-bit-only: on ILP32 the 64 GiB count does not fit
+    // size_t (compile error) and the host trivially cannot materialize it.
     bool alloc_refuses = false;
+#if SIZE_MAX >= UINT64_MAX
     {
         try {
             std::vector<core::byte> probe;
@@ -1173,8 +1176,10 @@ void test_decompressor_bad_alloc_returns_nomem() {
             alloc_refuses = true;
         }
     }
+#endif
     ReaderHooks hooks;
-#if !defined(__EMSCRIPTEN__) && !defined(__wasm__) && !defined(_M_IX86) && !defined(__i386__)
+#if !defined(__EMSCRIPTEN__) && !defined(__wasm__) && !defined(_M_IX86) && !defined(__i386__) &&   \
+    !defined(__arm__) && !defined(_M_ARM)
     if (!alloc_refuses) {
         std::cout << "[SKIP] decompressor bad_alloc -> RAR_ERR_NOMEM"
                      " (host materializes 64 GiB windows)\n";

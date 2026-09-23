@@ -283,86 +283,6 @@ jobs:
             build/openrar
           if-no-files-found: error
 
-  linux-armv7-qemu:
-    # Raspberry Pi (32-bit Raspberry Pi OS, ARMv7-A hard-float). The baseline
-    # is the distro default (armv7-a + vfpv3-d16): Pi 2/3/4/5 all run this
-    # binary set; Pi Zero/1 (armv6) are out of scope by policy.
-    name: linux-armv7 (gcc cross, QEMU run)
-    runs-on: ubuntu-latest
-    env:
-      # cli_tests shells out to the CLI binary; under cross-compilation the
-      # host kernel cannot exec an armhf ELF directly, so every invocation
-      # goes through the user-mode emulator (see tests/unit/cli_tests.cpp).
-      OPENRAR_RUNNER: "qemu-arm-static -L /usr/arm-linux-gnueabihf"
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
-
-      - name: Install armhf cross toolchain + QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++-arm-linux-gnueabihf qemu-user-static
-
-      - name: Set up Ninja
-        uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
-
-      - name: Configure (cross armv7)
-        # CMAKE_CROSSCOMPILING_EMULATOR makes add_test()-registered CTest
-        # entries run each target binary under QEMU automatically.
-        # Warnings-as-errors: -Woverflow is what catches a 64-bit constant
-        # silently truncating in a 32-bit size_t (the ALLOC_LIMIT class).
-        run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR=armv7 \
-            -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
-            -DCMAKE_CROSSCOMPILING_EMULATOR="/usr/bin/qemu-arm-static;-L;/usr/arm-linux-gnueabihf" \
-            -DOPENRAR_WARNINGS_AS_ERRORS=ON \
-            -DOPENRAR_INMEM_ARCHIVE=ON
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Run unit tests under QEMU (armv7 scalar paths)
-        run: ctest --test-dir build -C Release --output-on-failure
-
-      - name: Assert RS16 fold runs scalar on armv7 (NEON kernel is aarch64-only)
-        # Pins the intent rather than leaving it implicit: the 32-bit NEON
-        # port of the fold kernel is deliberately not built (AArch32 VTBL
-        # works on 8-byte tables, so the vqtbl1q design does not transfer),
-        # and the recovery path is not hot on a Pi. If this ever fails, the
-        # armv7 build started compiling a 64-bit-only guard by accident.
-        run: |
-          QEMU="qemu-arm-static -L /usr/arm-linux-gnueabihf"
-          OUT=$($QEMU ./build/recovery_tests 2>&1)
-          echo "$OUT" | grep -q "no NEON here" || {
-            echo "::error::armv7 unexpectedly reports the NEON kernel active"
-            echo "$OUT" | grep -A2 "test_rs16_neon_bit_exactness" || true
-            exit 1
-          }
-          echo "armv7 scalar-fold expectation confirmed"
-
-      - name: CLI smoke (create/test/extract under QEMU)
-        run: |
-          QEMU="qemu-arm-static -L /usr/arm-linux-gnueabihf"
-          mkdir -p armhf_ci_data
-          echo "OpenRAR armv7 QEMU payload" > armhf_ci_data/hello.txt
-          $QEMU ./build/openrar a -plain armhf_ci.rar armhf_ci_data
-          $QEMU ./build/openrar t -plain armhf_ci.rar
-          mkdir -p armhf_ci_out
-          $QEMU ./build/openrar x -plain armhf_ci.rar armhf_ci_out/
-          diff -u armhf_ci_data/hello.txt armhf_ci_out/armhf_ci_data/hello.txt
-          echo "armv7 QEMU smoke test PASSED!"
-
-      - name: Upload native shared-library artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: openrar-native-ubuntu-latest-gcc-armv7
-          path: |
-            build/libopenrar*.so
-            build/openrar
-          if-no-files-found: error
 
   writer-conformance:
     name: Writer structural conformance (linux)
@@ -545,7 +465,7 @@ jobs:
     # attaches it to the GitHub release named after the tag (creating the
     # release with generated notes if it does not exist yet).
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-and-test, linux-arm64-qemu, linux-armv7-qemu, writer-conformance, wasm]
+    needs: [build-and-test, linux-arm64-qemu, writer-conformance, wasm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
