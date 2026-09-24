@@ -51,6 +51,7 @@ set(OPENRAR_CORE_SOURCES
     src/sfx/sfx_config.cpp
     src/sfx/sfx_consent.cpp
     src/sfx/prompt_console.cpp
+    src/sfx/process_exec.cpp
     src/archive/volume.cpp
     src/recovery/rs16.cpp
     src/recovery/rs16_gfni.cpp
