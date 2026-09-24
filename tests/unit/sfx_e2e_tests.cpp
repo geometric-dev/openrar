@@ -63,6 +63,27 @@ struct StubRun {
     std::string output;
 };
 
+// Cross-compiled legs: raw target ELFs cannot exec on the host kernel, so
+// both the stub launch and the directive command carry the emulator prefix.
+#ifdef OPENRAR_SFX_EMULATOR
+static const std::string g_emu = OPENRAR_SFX_EMULATOR " ";
+#else
+static const std::string g_emu;
+#endif
+
+static std::string stub_cmd(const fs::path& sfx, const std::string& args) {
+    return g_emu + sfx.string() + " " + args;
+}
+
+static std::string probe_cmd_for(const fs::path& sentinel) {
+    return g_emu + "\"" + g_self_exe.string() + "\" --sfx-probe-touch \"" + sentinel.string() +
+           "\"";
+}
+
+static std::string probe_exit_cmd() {
+    return g_emu + "\"" + g_self_exe.string() + "\" --sfx-probe-exit 0";
+}
+
 static StubRun run_stub(const fs::path& sfx, const std::string& args,
                         const std::string& stdin_data) {
     const fs::path in_file = g_work / "stdin.txt";
@@ -76,7 +97,7 @@ static StubRun run_stub(const fs::path& sfx, const std::string& args,
     assert(in_file.string().find(' ') == std::string::npos);
     assert(out_file.string().find(' ') == std::string::npos);
     std::string cmd =
-        sfx.string() + " " + args + " < " + in_file.string() + " > " + out_file.string() + " 2>&1";
+        stub_cmd(sfx, args) + " < " + in_file.string() + " > " + out_file.string() + " 2>&1";
     const int rc = std::system(cmd.c_str());
     return {rc, slurp(out_file)};
 }
@@ -112,9 +133,7 @@ static void test_e2e_consent_run_and_deny() {
     std::cout << "[+] test_e2e_consent_run_and_deny" << std::endl;
     const fs::path sentinel = g_work / "run_sentinel.txt";
     fs::remove(sentinel);
-    const std::string probe_cmd =
-        "\"" + g_self_exe.string() + "\" --sfx-probe-touch \"" + sentinel.string() + "\"";
-    const fs::path sfx = make_sfx("Setup=" + probe_cmd + "\n", "e2e_run");
+    const fs::path sfx = make_sfx("Setup=" + probe_cmd_for(sentinel) + "\n", "e2e_run");
 
     StubRun r = run_stub(sfx, "-ddest_run", "R\n");
     assert(r.exit_code == 0);
@@ -134,9 +153,7 @@ static void test_e2e_noexec_suppresses() {
     std::cout << "[+] test_e2e_noexec_suppresses" << std::endl;
     const fs::path sentinel = g_work / "noexec_sentinel.txt";
     fs::remove(sentinel);
-    const std::string probe_cmd =
-        "\"" + g_self_exe.string() + "\" --sfx-probe-touch \"" + sentinel.string() + "\"";
-    const fs::path sfx = make_sfx("Setup=" + probe_cmd + "\n", "e2e_noexec");
+    const fs::path sfx = make_sfx("Setup=" + probe_cmd_for(sentinel) + "\n", "e2e_noexec");
 
     StubRun r = run_stub(sfx, "-sfxnoexec -ddest_noexec", "R\n");
     assert(r.exit_code == 0);
@@ -148,10 +165,7 @@ static void test_e2e_noexec_suppresses() {
 static void test_e2e_prompt_cap_aborts() {
     std::cout << "[+] test_e2e_prompt_cap_aborts" << std::endl;
     std::string cmt;
-    for (int i = 0; i < 9; ++i) {
-        const std::string probe_cmd = "\"" + g_self_exe.string() + "\" --sfx-probe-exit 0";
-        cmt += "Setup=" + probe_cmd + "\n";
-    }
+    for (int i = 0; i < 9; ++i) cmt += "Setup=" + probe_exit_cmd() + "\n";
     const fs::path sfx = make_sfx(cmt, "e2e_cap");
 
     std::string stdin_data;
