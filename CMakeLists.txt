@@ -252,6 +252,15 @@ if(NOT EMSCRIPTEN)
     # Default.SFX module
     add_executable(Default.SFX src/cli/sfx_main.cpp)
     target_link_libraries(Default.SFX PRIVATE openrar_core)
+
+    # WinGUI.SFX: native-dialog SFX stub (v1.23.0). Windows-only; a windowed
+    # subsystem binary (no console) sharing the directive/consent/containment
+    # engine with Default.SFX.
+    if(WIN32)
+        add_executable(WinGUI.SFX src/cli/sfx_gui_main.cpp)
+        target_link_libraries(WinGUI.SFX PRIVATE openrar_core)
+        set_target_properties(WinGUI.SFX PROPERTIES WIN32_EXECUTABLE TRUE)
+    endif()
     if(OPENRAR_THREAD_LIB)
         target_link_libraries(Default.SFX PRIVATE ${OPENRAR_THREAD_LIB})
     endif()
@@ -395,6 +404,11 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(archive_tests tests/unit/archive_tests.cpp)
     add_openrar_test(sfx_tests tests/unit/sfx_tests.cpp)
     add_openrar_test(sfx_pipeline_tests tests/unit/sfx_pipeline_tests.cpp)
+    add_openrar_test(sfx_e2e_tests tests/unit/sfx_e2e_tests.cpp)
+    if(TARGET Default.SFX)
+        set_tests_properties(sfx_e2e_tests PROPERTIES
+            ENVIRONMENT "OPENRAR_SFX_STUB=$<TARGET_FILE:Default.SFX>")
+    endif()
     # Cross-compiled legs (QEMU): child spawns in the SFX tests must go
     # through the emulator or execv(ENOEXEC)s on the host kernel. Space-
     # joined so the test can tokenize it into an argv prefix.
