@@ -10,7 +10,14 @@
 > scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
 > v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
-## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0)
+## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 in progress)
+
+- **v1.24.0 (current arc):** extraction containment & integrity —
+  implementation plan at docs/v1.24-implementation-plan.md (pre-analysis
+  parsed critically: multi-volume "two-pass" framing rejected as already-
+  existing architecture, ICU dependency replaced with generated tables,
+  encrypted-header collision complexity rejected as moot, dirfd-stack
+  simplified to an LRU cache).
 
 - **v1.23.0 (current):** advanced SFX scripting shipped with its security
   architecture — directive engine, consent framework with prompt-fatigue
