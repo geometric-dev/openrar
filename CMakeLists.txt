@@ -418,6 +418,8 @@ if(NOT EMSCRIPTEN)
             OPENRAR_SFX_EMULATOR="${SFX_EMU}")
         target_compile_definitions(sfx_pipeline_tests PRIVATE
             OPENRAR_SFX_EMULATOR="${SFX_EMU}")
+        target_compile_definitions(sfx_e2e_tests PRIVATE
+            OPENRAR_SFX_EMULATOR="${SFX_EMU}")
     endif()
     # Golden fixtures: reader coverage against checked-in archives not
     # produced by this codebase (see tests/unit/golden_fixtures_tests.cpp).
