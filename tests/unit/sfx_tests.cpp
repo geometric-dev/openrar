@@ -404,17 +404,31 @@ static void test_process_exec_resolution() {
     std::cout << "[PASS] process exec: destination/PATH/absolute resolution" << std::endl;
 }
 
+// Builds the invocation for a self-probe child. Cross-compiled legs route
+// the child through the emulator (raw target ELFs cannot exec on the host
+// kernel); native legs exec directly.
+static void probe_invocation(const std::string& probe_args, std::string& command,
+                             std::string& resolved_exe) {
+#ifdef OPENRAR_SFX_EMULATOR
+    command = std::string(OPENRAR_SFX_EMULATOR) + " \"" + g_self_exe + "\" " + probe_args;
+    resolved_exe = command.substr(0, command.find(' ')); // the emulator binary
+#else
+    command = "\"" + g_self_exe + "\" " + probe_args;
+    resolved_exe = sfx::resolve_command_executable(command, "", false);
+#endif
+}
+
 static void test_process_exec_spawn_exit_code() {
     std::cout << "[+] test_process_exec_spawn_exit_code" << std::endl;
-    const std::string cmd = "\"" + g_self_exe + "\" --sfx-probe-exit 7";
-    const std::string exe = sfx::resolve_command_executable(cmd, "", false);
+    std::string cmd, exe;
+    probe_invocation("--sfx-probe-exit 7", cmd, exe);
     assert(!exe.empty());
     sfx::ExecResult r = sfx::spawn_contained(cmd, exe, "", {});
     assert(r.spawned && r.contained && !r.cancelled);
     assert(r.exit_code == 7);
 
-    const std::string cmd0 = "\"" + g_self_exe + "\" --sfx-probe-exit 0";
-    r = sfx::spawn_contained(cmd0, sfx::resolve_command_executable(cmd0, "", false), "", {});
+    probe_invocation("--sfx-probe-exit 0", cmd, exe);
+    r = sfx::spawn_contained(cmd, exe, "", {});
     assert(r.spawned && r.exit_code == 0);
 
     // AMSI: the contract is "functions and reports a verdict" — clean OR
@@ -429,8 +443,8 @@ static void test_process_exec_spawn_exit_code() {
 
 static void test_process_exec_cancellation() {
     std::cout << "[+] test_process_exec_cancellation" << std::endl;
-    const std::string cmd = "\"" + g_self_exe + "\" --sfx-probe-sleep 30";
-    const std::string exe = sfx::resolve_command_executable(cmd, "", false);
+    std::string cmd, exe;
+    probe_invocation("--sfx-probe-sleep 30", cmd, exe);
     assert(!exe.empty());
     const auto t0 = std::chrono::steady_clock::now();
     const auto start = t0;
