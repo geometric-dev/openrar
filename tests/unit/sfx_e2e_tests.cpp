@@ -136,6 +136,10 @@ static void test_e2e_consent_run_and_deny() {
     const fs::path sfx = make_sfx("Setup=" + probe_cmd_for(sentinel) + "\n", "e2e_run");
 
     StubRun r = run_stub(sfx, "-ddest_run", "R\n");
+    if (r.exit_code != 0) {
+        std::fprintf(stderr, "[e2e-diag] exit=%d output:\n%s\n", r.exit_code, r.output.c_str());
+        std::fflush(stderr);
+    }
     assert(r.exit_code == 0);
     assert(fs::exists(sentinel));
     assert(contains(r.output, "executed"));
