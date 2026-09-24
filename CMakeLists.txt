@@ -52,6 +52,7 @@ set(OPENRAR_CORE_SOURCES
     src/sfx/sfx_consent.cpp
     src/sfx/prompt_console.cpp
     src/sfx/process_exec.cpp
+    src/sfx/sfx_pipeline.cpp
     src/archive/volume.cpp
     src/recovery/rs16.cpp
     src/recovery/rs16_gfni.cpp
@@ -393,12 +394,15 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(recovery_tests tests/unit/recovery_tests.cpp)
     add_openrar_test(archive_tests tests/unit/archive_tests.cpp)
     add_openrar_test(sfx_tests tests/unit/sfx_tests.cpp)
+    add_openrar_test(sfx_pipeline_tests tests/unit/sfx_pipeline_tests.cpp)
     # Cross-compiled legs (QEMU): child spawns in the SFX tests must go
     # through the emulator or execv(ENOEXEC)s on the host kernel. Space-
     # joined so the test can tokenize it into an argv prefix.
     if(CMAKE_CROSSCOMPILING_EMULATOR)
         string(JOIN " " SFX_EMU ${CMAKE_CROSSCOMPILING_EMULATOR})
         target_compile_definitions(sfx_tests PRIVATE
+            OPENRAR_SFX_EMULATOR="${SFX_EMU}")
+        target_compile_definitions(sfx_pipeline_tests PRIVATE
             OPENRAR_SFX_EMULATOR="${SFX_EMU}")
     endif()
     # Golden fixtures: reader coverage against checked-in archives not
