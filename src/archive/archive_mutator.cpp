@@ -3669,6 +3669,17 @@ bool ArchiveMutator::convert_to_sfx(const std::filesystem::path& arc_path,
     }
     out.close();
 
+    // The SFX output must be executable (it is a program): on POSIX the new
+    // file carries the umask-derived mode (0644) and would not run. Add the
+    // owner-exec bit before the atomic commit; a no-op on Windows.
+    std::error_code perm_ec;
+    std::filesystem::permissions(tmp_path, std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::add, perm_ec);
+    if (perm_ec) {
+        err_detail = "cannot mark the SFX module executable: " + perm_ec.message();
+        return false;
+    }
+
     if (!atomic_replace(tmp_path, target_path)) {
         err_detail = "atomic replace failed";
         return false;
