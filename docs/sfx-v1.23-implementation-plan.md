@@ -126,7 +126,12 @@ surfaces never gain it.
 - AMSI: `AmsiScanString` on the resolved command line, post-consent,
   pre-spawn, per §6.2 as defense-in-depth. Failure to initialize or scan is
   the one documented fail-open: the spawn proceeds, the failure is recorded
-  in the report. Containment NEVER fails open (§2 invariant 2).
+  in the report. Containment NEVER fails open (§2 invariant 2). A POSITIVE
+  AMSI verdict (flagged command) triggers an additional warning prompt —
+  default focus Don't Run, counted against the prompt cap — and declining
+  skips the directive; an automatic refusal would lock out legitimate
+  installers at AMSI's false-positive rate (measured: a benign self-probe
+  command line was flagged on a stock Windows host).
 - **Residual risk documented:** the resolved executable can be swapped
   between resolution and spawn by a local racer (classic TOCTOU, present in
   every OS shell-execution design including WinRAR). Containment limits the

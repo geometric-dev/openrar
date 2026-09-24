@@ -10,6 +10,7 @@
 #include "../../src/sfx/sfx_consent.hpp"
 #include "../../src/sfx/prompt_console.hpp"
 #include "../../src/sfx/process_exec.hpp"
+#include "../../src/sfx/sfx_pipeline.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -468,6 +469,11 @@ int main(int argc, char* argv[]) {
     }
     if (argc >= 2 && std::strcmp(argv[1], "--sfx-probe-sleep") == 0) {
         std::this_thread::sleep_for(std::chrono::seconds(std::atoi(argv[2])));
+        return 0;
+    }
+    if (argc >= 3 && std::strcmp(argv[1], "--sfx-probe-touch") == 0) {
+        std::ofstream ofs(argv[2], std::ios::binary);
+        ofs << "touched";
         return 0;
     }
     if (argc > 0 && argv[0] != nullptr) g_self_exe = argv[0];
