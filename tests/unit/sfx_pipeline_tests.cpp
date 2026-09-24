@@ -27,8 +27,6 @@ using namespace openrar;
 namespace fs = std::filesystem;
 
 static std::string g_self_exe;
-static bool g_has_emulator = false;
-static std::string g_emulator;
 
 static std::vector<core::byte> bytes(const std::string& s) {
     return {s.begin(), s.end()};
