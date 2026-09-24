@@ -19,6 +19,9 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -98,7 +101,14 @@ static StubRun run_stub(const fs::path& sfx, const std::string& args,
     assert(out_file.string().find(' ') == std::string::npos);
     std::string cmd =
         stub_cmd(sfx, args) + " < " + in_file.string() + " > " + out_file.string() + " 2>&1";
-    const int rc = std::system(cmd.c_str());
+    int rc = std::system(cmd.c_str());
+#ifndef _WIN32
+    // POSIX std::system returns the raw waitstatus: extract the exit code.
+    if (WIFEXITED(rc))
+        rc = WEXITSTATUS(rc);
+    else if (WIFSIGNALED(rc))
+        rc = 128 + WTERMSIG(rc);
+#endif
     return {rc, slurp(out_file)};
 }
 
