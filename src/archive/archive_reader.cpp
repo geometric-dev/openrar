@@ -1404,6 +1404,27 @@ int ArchiveReader::test_entry_stream(size_t entry_index, const ReaderHooks& hook
 }
 
 
+bool ArchiveReader::read_archive_comment(std::vector<core::byte>& out) {
+    out.clear();
+    // Decode cap (plan §3): a decoded comment over 1 MiB disables directives,
+    // it never aborts extraction. extract_entry_to_memory enforces the same
+    // cap pre-work via max_bytes.
+    constexpr core::uint64 kMaxCommentBytes = 1ULL << 20;
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        const ArchiveEntry& e = entries_[i];
+        if (!e.header.is_service || e.header.service_type != "CMT") continue;
+        if (e.header.unp_size == 0 || e.header.unp_size > kMaxCommentBytes) return false;
+        std::vector<core::byte> decoded;
+        if (extract_entry_to_memory(i, decoded, kMaxCommentBytes, {}, nullptr, nullptr) != RAR_OK) {
+            return false;
+        }
+        if (decoded.empty()) return false;
+        out = std::move(decoded);
+        return true; // first CMT wins; later CMT headers in crafted archives ignored
+    }
+    return false;
+}
+
 bool ArchiveReader::read_packed_data(const ArchiveEntry& entry,
                                      std::vector<core::byte>& out) const {
     out.clear();
