@@ -9,13 +9,16 @@
 #include "../../src/sfx/sfx_config.hpp"
 #include "../../src/sfx/sfx_consent.hpp"
 #include "../../src/sfx/prompt_console.hpp"
+#include "../../src/sfx/process_exec.hpp"
 
 #include <cassert>
-#include <cstdio>
+#include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 #ifdef _MSC_VER
 #include <crtdbg.h>
@@ -360,7 +363,100 @@ void test_consent_engine_cap_and_noninteractive() {
     std::cout << "[PASS] consent engine: prompt cap aborts, non-interactive denies" << std::endl;
 }
 
-int main() {
+// ── M3: process-execution contract ──────────────────────────────────────────
+
+static std::string g_self_exe; // set in main; self-spawn probe target
+
+static void test_process_exec_resolution() {
+    std::cout << "[+] test_process_exec_resolution" << std::endl;
+    const fs::path dest = "build/sfx_exec_dest";
+    fs::create_directories(dest);
+    const std::string probe_name =
+#ifdef _WIN32
+        "probe.exe";
+#else
+        "probe";
+#endif
+    {
+        std::ofstream ofs(dest / probe_name, std::ios::binary);
+        ofs << "x";
+    }
+#ifndef _WIN32
+    std::string chmod_cmd = "chmod +x \"" + (dest / probe_name).string() + "\"";
+    assert(std::system(chmod_cmd.c_str()) == 0);
+#endif
+
+    // Destination-relative resolution (allow_dest=true).
+    const std::string found =
+        sfx::resolve_command_executable(probe_name, dest.string(), /*allow_dest=*/true);
+    assert(!found.empty() && found.find(probe_name) != std::string::npos);
+
+    // Disallowed destination + unknown name => not found.
+    assert(
+        sfx::resolve_command_executable(probe_name, dest.string(), /*allow_dest=*/false).empty());
+    assert(sfx::resolve_command_executable("definitely_missing_sfx_probe.exe", dest.string(), true)
+               .empty());
+
+    // Absolute path passes through.
+    const std::string abs = "\"" + g_self_exe + "\"";
+    assert(!sfx::resolve_command_executable(abs, dest.string(), /*allow_dest=*/false).empty());
+    fs::remove_all(dest);
+    std::cout << "[PASS] process exec: destination/PATH/absolute resolution" << std::endl;
+}
+
+static void test_process_exec_spawn_exit_code() {
+    std::cout << "[+] test_process_exec_spawn_exit_code" << std::endl;
+    const std::string cmd = "\"" + g_self_exe + "\" --sfx-probe-exit 7";
+    const std::string exe = sfx::resolve_command_executable(cmd, "", false);
+    assert(!exe.empty());
+    sfx::ExecResult r = sfx::spawn_contained(cmd, exe, "", {});
+    assert(r.spawned && r.contained && !r.cancelled);
+    assert(r.exit_code == 7);
+
+    const std::string cmd0 = "\"" + g_self_exe + "\" --sfx-probe-exit 0";
+    r = sfx::spawn_contained(cmd0, sfx::resolve_command_executable(cmd0, "", false), "", {});
+    assert(r.spawned && r.exit_code == 0);
+
+    // AMSI: the contract is "functions and reports a verdict" — clean OR
+    // flagged are both valid engine outcomes for a benign string; a fail-open
+    // (failed=true) is the documented behavior when AMSI is unavailable.
+    bool failed = false;
+    const bool clean = sfx::amsi_scan_command(cmd, failed);
+    std::cout << "  amsi verdict: " << (failed ? "fail-open" : (clean ? "clean" : "flagged"))
+              << std::endl;
+    std::cout << "[PASS] process exec: contained spawn + exit-code propagation" << std::endl;
+}
+
+static void test_process_exec_cancellation() {
+    std::cout << "[+] test_process_exec_cancellation" << std::endl;
+    const std::string cmd = "\"" + g_self_exe + "\" --sfx-probe-sleep 30";
+    const std::string exe = sfx::resolve_command_executable(cmd, "", false);
+    assert(!exe.empty());
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto start = t0;
+    sfx::ExecResult r = sfx::spawn_contained(cmd, exe, "", [&start]() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now() - start)
+                   .count() > 200;
+    });
+    const double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    assert(r.spawned && r.contained && r.cancelled);
+    assert(elapsed < 5.0 && "cancellation must kill the contained tree promptly");
+    std::cout << "[PASS] process exec: cancellation kills the contained tree" << std::endl;
+}
+
+int main(int argc, char* argv[]) {
+    // Self-probe mode: the M3 spawn tests use this executable as the child
+    // (no shell, no external fixture binaries).
+    if (argc >= 3 && std::strcmp(argv[1], "--sfx-probe-exit") == 0) {
+        return std::atoi(argv[2]);
+    }
+    if (argc >= 2 && std::strcmp(argv[1], "--sfx-probe-sleep") == 0) {
+        std::this_thread::sleep_for(std::chrono::seconds(std::atoi(argv[2])));
+        return 0;
+    }
+    if (argc > 0 && argv[0] != nullptr) g_self_exe = argv[0];
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
@@ -395,7 +491,13 @@ int main() {
         std::cout << std::flush;
         test_consent_engine_cap_and_noninteractive();
         std::cout << std::flush;
-        std::cout << "All SFX M1+M2 unit tests PASSED!\n";
+        test_process_exec_resolution();
+        std::cout << std::flush;
+        test_process_exec_spawn_exit_code();
+        std::cout << std::flush;
+        test_process_exec_cancellation();
+        std::cout << std::flush;
+        std::cout << "All SFX M1+M2+M3 unit tests PASSED!\n";
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "[sfx-tests] exception: %s\n", ex.what());
         std::fflush(stderr);
