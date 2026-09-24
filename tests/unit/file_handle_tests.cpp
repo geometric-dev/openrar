@@ -9,6 +9,7 @@
 #include "openrar/openrar_dll.h"
 
 #include "../../src/archive/archive_mutator.hpp"
+#include "../../src/io/extraction_journal.hpp"
 #include "../../src/io/file_stream.hpp"
 
 #include <cassert>
@@ -129,9 +130,16 @@ struct CancelPolicy {
 };
 
 static size_t count_temp_files(const fs::path& dir) {
+    // v1.24 M1 temps are `<dest>.<32hex>.tmp` (the old ".openrar-tmp." scheme
+    // is gone); a leftover journal file counts as a hygiene failure too.
     size_t n = 0;
-    for (const auto& e : fs::directory_iterator(dir))
-        if (e.path().u8string().find(".openrar-tmp.") != std::string::npos) ++n;
+    for (const auto& e : fs::directory_iterator(dir)) {
+        const std::string name = e.path().filename().string();
+        if (openrar::io::ExtractionSession::matches_temp_shape(name) ||
+            name.find(".openrar_journal_") != std::string::npos) {
+            ++n;
+        }
+    }
     return n;
 }
 
