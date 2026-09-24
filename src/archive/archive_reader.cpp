@@ -4,6 +4,7 @@
 #include "../format/header_reader.hpp"
 #include "../io/path_util.hpp"
 #include "../io/buffer_stream.hpp"
+#include "../io/extraction_journal.hpp"
 #include "../core/vint.hpp"
 #include "../crypto/crc32.hpp"
 #include "../crypto/blake2sp.hpp"
@@ -65,27 +66,12 @@ bool parse_part_number(const std::filesystem::path& p, long& num) {
 }
 
 constexpr size_t kStreamChunk = 64 * 1024; // stored/decrypt slice (multiple of 16)
-
-// RAII cleaner for failed/broken file extractions (B9).
-// Reverse-declaration order ensures FileStream closes the OS file handle before
-// FileUnlinker calls std::filesystem::remove, avoiding Windows sharing violations.
-// Armed only after successful open() to guarantee pre-existing files are never deleted on open failure.
-struct FileUnlinker {
-    const std::filesystem::path& path;
-    bool armed = false;
-    bool dismissed = false;
-
-    explicit FileUnlinker(const std::filesystem::path& p, bool keep_broken = false)
-        : path(p), dismissed(keep_broken) {}
-
-    ~FileUnlinker() {
-        if (armed && !dismissed) {
-            std::error_code ec;
-            std::filesystem::remove(path, ec);
-        }
-    }
-};
 } // namespace
+
+io::ExtractionSession& ArchiveReader::ensure_extraction_session() {
+    if (!extraction_session_) extraction_session_ = std::make_unique<io::ExtractionSession>();
+    return *extraction_session_;
+}
 
 size_t ArchiveReader::test_get_solid_window_size() const {
     if (solid_unpacker_) return solid_unpacker_->win_size();
@@ -2088,10 +2074,16 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         // policy — so a future producer cannot reintroduce the
         // verification asymmetry silently.
         if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
-        FileUnlinker unlinker(dest_path, keep_broken_);
-        io::FileStream out;
-        if (!out.open(dest_path, io::FileMode::CreateAlways)) return false;
-        unlinker.armed = true;
+        io::AtomicWriter writer;
+        if (!writer.open(ensure_extraction_session(), dest_path)) return false;
+        io::FileStream& out = writer.stream();
+        // keep_broken: a failed extraction leaves the partial output at the
+        // destination (best-effort atomic commit), matching the pre-atomic
+        // semantics; otherwise the writer destructor abandons the temp.
+        auto fail = [&]() -> bool {
+            if (keep_broken_) writer.commit(io::CommitMode::ReplaceExisting);
+            return false;
+        };
         const bool m_use_blake = entry.header.has_blake2sp;
         const bool m_use_crc = !m_use_blake && entry.header.has_crc32;
         crypto::Blake2sp m_b2;
@@ -2099,10 +2091,7 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         if (entry.header.method == 0) {
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > entry.memory_data.size()) write_len = entry.memory_data.size();
-            if (out.write(entry.memory_data.data(), write_len) != write_len) {
-                out.close();
-                return false;
-            }
+            if (out.write(entry.memory_data.data(), write_len) != write_len) return fail();
             if (m_use_blake) m_b2.update(entry.memory_data.data(), write_len);
             if (m_use_crc) m_crc.update(entry.memory_data.data(), write_len);
         } else {
@@ -2112,23 +2101,17 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
                 return out.write(data, size) == size;
             };
             if (!decode_compressed(entry, entry.memory_data.data(), entry.memory_data.size(), cb)) {
-                out.close();
-                return false;
+                return fail();
             }
         }
         if (m_use_blake) {
             core::byte digest[32];
             m_b2.finish(digest);
-            if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) {
-                out.close();
-                return false;
-            }
+            if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) return fail();
         } else if (m_use_crc && m_crc.get() != entry.header.data_crc32) {
-            out.close();
-            return false;
+            return fail();
         }
-        out.close();
-        unlinker.dismissed = true;
+        if (!writer.commit()) return fail();
         return true;
     }
 
@@ -2189,17 +2172,17 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         crypto::Crc32 v_crc;
 
         if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
-        FileUnlinker unlinker(dest_path, keep_broken_);
-        io::FileStream out;
-        if (!out.open(dest_path, io::FileMode::CreateAlways)) return false;
-        unlinker.armed = true;
+        io::AtomicWriter writer;
+        if (!writer.open(ensure_extraction_session(), dest_path)) return false;
+        io::FileStream& out = writer.stream();
+        auto fail = [&]() -> bool {
+            if (keep_broken_) writer.commit(io::CommitMode::ReplaceExisting);
+            return false;
+        };
         if (entry.header.method == 0) {
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > cipher.size()) write_len = cipher.size();
-            if (out.write(cipher.data(), write_len) != write_len) {
-                out.close();
-                return false;
-            }
+            if (out.write(cipher.data(), write_len) != write_len) return fail();
             if (v_use_blake) v_b2.update(cipher.data(), write_len);
             if (v_use_crc) v_crc.update(cipher.data(), write_len);
         } else {
@@ -2208,24 +2191,16 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
                 if (v_use_crc) v_crc.update(data, size);
                 return out.write(data, size) == size;
             };
-            if (!decode_compressed(entry, cipher.data(), cipher.size(), cb)) {
-                out.close();
-                return false;
-            }
+            if (!decode_compressed(entry, cipher.data(), cipher.size(), cb)) return fail();
         }
         if (v_use_blake) {
             core::byte digest[32];
             v_b2.finish(digest);
-            if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) {
-                out.close();
-                return false;
-            }
+            if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) return fail();
         } else if (v_use_crc && v_crc.get() != entry.header.data_crc32) {
-            out.close();
-            return false;
+            return fail();
         }
-        out.close();
-        unlinker.dismissed = true;
+        if (!writer.commit()) return fail();
         return true;
     }
 
@@ -2239,12 +2214,13 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         solid_chain_ok_ = false;
         return false;
     }
-    FileUnlinker unlinker(dest_path, keep_broken_);
-    io::FileStream out;
-    if (!out.open(dest_path, io::FileMode::CreateAlways)) {
+    io::AtomicWriter writer;
+    if (!writer.open(ensure_extraction_session(), dest_path)) return false;
+    io::FileStream& out = writer.stream();
+    auto fail = [&]() -> bool {
+        if (keep_broken_) writer.commit(io::CommitMode::ReplaceExisting);
         return false;
-    }
-    unlinker.armed = true;
+    };
 
     // Verify the decoded stream while writing (verification-asymmetry fix):
     // the stored path and the streaming path both refuse corrupt payload, so
@@ -2260,24 +2236,18 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         if (v_use_crc) v_crc.update(data, size);
         return out.write(data, size) == size;
     };
-    if (!decode_compressed(entry, packed.data(), packed.size(), cb)) {
-        out.close();
-        return false;
-    }
+    if (!decode_compressed(entry, packed.data(), packed.size(), cb)) return fail();
     if (v_use_blake) {
         core::byte digest[32];
         v_b2.finish(digest);
-        if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) {
-            out.close();
-            return false; // FileUnlinker removes the partial output
-        }
+        // The writer destructor removes the partial output (or commits it
+        // under keep_broken).
+        if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) return fail();
     } else if (v_use_crc && v_crc.get() != entry.header.data_crc32) {
-        out.close();
-        return false;
+        return fail();
     }
 
-    out.close();
-    unlinker.dismissed = true;
+    if (!writer.commit()) return fail();
     return true;
 }
 
@@ -2306,12 +2276,13 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
 
     if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
 
-    FileUnlinker unlinker(dest_path, keep_broken_);
-    io::FileStream out;
-    if (!out.open(dest_path, io::FileMode::CreateAlways)) {
+    io::AtomicWriter writer;
+    if (!writer.open(ensure_extraction_session(), dest_path)) return false;
+    io::FileStream& out = writer.stream();
+    auto fail = [&]() -> bool {
+        if (keep_broken_) writer.commit(io::CommitMode::ReplaceExisting);
         return false;
-    }
-    unlinker.armed = true;
+    };
 
     if (!entry.extents.empty()) {
         // Multivolume store: stitch extents. Same payload verification as the
@@ -2325,38 +2296,28 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
         const bool use_crc = !use_blake && entry.header.has_crc32;
         for (auto& e : entry.extents) {
             io::FileStream vs;
-            if (!vs.open(e.volume_path, io::FileMode::ReadOnly)) {
-                out.close();
-                return false;
-            }
+            if (!vs.open(e.volume_path, io::FileMode::ReadOnly)) return fail();
             vs.seek(static_cast<core::int64>(e.offset), io::SeekOrigin::Begin);
             core::byte buf[8192];
             core::uint64 remaining = e.size;
             while (remaining > 0) {
                 size_t take = static_cast<size_t>(
                     std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
-                if (vs.read(buf, take) != take) {
-                    out.close();
-                    return false;
-                }
-                if (out.write(buf, take) != take) {
-                    out.close();
-                    return false;
-                }
+                if (vs.read(buf, take) != take) return fail();
+                if (out.write(buf, take) != take) return fail();
                 if (use_blake) blake.update(buf, take);
                 if (use_crc) crc.update(buf, take);
                 remaining -= take;
             }
         }
-        out.close();
         if (use_blake) {
             core::byte digest[32];
             blake.finish(digest);
-            if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) return false;
+            if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) return fail();
         } else if (use_crc && crc.get() != entry.header.data_crc32) {
-            return false;
+            return fail();
         }
-        unlinker.dismissed = true;
+        if (!writer.commit()) return fail();
         return true;
     }
 
@@ -2371,32 +2332,25 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
     while (remaining > 0) {
         size_t take =
             static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
-        if (stream_.read(buf, take) != take) {
-            out.close();
-            return false;
-        }
-        if (out.write(buf, take) != take) {
-            out.close();
-            return false;
-        }
+        if (stream_.read(buf, take) != take) return fail();
+        if (out.write(buf, take) != take) return fail();
         if (use_blake) blake.update(buf, take);
         if (use_crc) crc.update(buf, take);
         remaining -= take;
     }
 
-    out.close();
     if (use_blake) {
         core::byte digest[32];
         blake.finish(digest);
-        if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) return false;
+        if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0) return fail();
     } else if (use_crc && crc.get() != entry.header.data_crc32) {
         // Same verdict as the streaming verify path (T5): corrupt payload is
         // an extraction failure, never a silent successful write of wrong
-        // bytes. The FileUnlinker destructor removes the partial output
-        // unless the caller opted into keep_broken.
-        return false;
+        // bytes. The writer destructor removes the partial temp unless
+        // keep_broken committed it.
+        return fail();
     }
-    unlinker.dismissed = true;
+    if (!writer.commit()) return fail();
     return true;
 }
 
