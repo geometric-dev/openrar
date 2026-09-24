@@ -17,6 +17,7 @@
 #include <iterator>
 #ifdef _MSC_VER
 #include <crtdbg.h>
+#include <cstdlib>
 #endif
 
 using namespace openrar;
@@ -698,8 +699,8 @@ void test_b9_b5_corrupt_payload_fails_cleanly() {
     // T5 + B9 regression: (a) same-length payload corruption must surface the
     // canonical RAR_ERR_CRC_MISMATCH code on the streaming verify path, not a
     // generic IO; (b) a failed extract_entry must not leave a partial
-    // destination file behind (FileUnlinker), and keep_broken=false is the
-    // default.
+    // destination file behind (the v1.24 atomic writer abandons its temp), and
+    // keep_broken=false is the default.
     namespace fs = std::filesystem;
     fs::path src = "build/crc_payload.bin";
     fs::path arc = "build/crc_payload.rar";
@@ -1291,6 +1292,12 @@ int main() {
     // test process forever while ctest moves on, leaving file locks behind.
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
+    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
+    // process still hangs after printing the assert.
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _CALL_REPORTFAULT);
 #endif
     std::cout << "Running Clean-Room Milestone 5 Archive Operations Verification...\n";
     test_move_command();
