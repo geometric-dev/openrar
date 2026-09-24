@@ -20,10 +20,16 @@
 namespace openrar::sfx {
 
 bool ConsolePromptBackend::interactive() const {
-    // Piped/closed stdin cannot answer a consent prompt: the engine denies
-    // every ask without calling ask(). This is the fail-closed counterpart of
-    // the CLI overwrite prompt's !isatty auto-Yes — extraction convenience
-    // must never become execution consent.
+    // Documented automation hook for the sandbox e2e suite and scripted
+    // acceptance runs: OPENRAR_SFX_FORCE_INTERACTIVE=1 makes a redirected
+    // stdin answer prompts (the e2e harness pipes scripted consent lines).
+    // It is NOT a security bypass — an attacker able to set this process's
+    // environment already owns it — and CI/CD must use -sfxnoexec instead.
+    // Without it: piped/closed stdin cannot answer a consent prompt, so the
+    // engine denies every ask without calling ask() (fail-closed counterpart
+    // of the CLI overwrite prompt's !isatty auto-Yes — extraction convenience
+    // must never become execution consent).
+    if (getenv("OPENRAR_SFX_FORCE_INTERACTIVE") != nullptr) return true;
 #ifdef _WIN32
     return _isatty(_fileno(stdin)) != 0;
 #else
