@@ -7,6 +7,8 @@
 #include "../../src/archive/archive_reader.hpp"
 #include "../../src/core/types.hpp"
 #include "../../src/sfx/sfx_config.hpp"
+#include "../../src/sfx/sfx_consent.hpp"
+#include "../../src/sfx/prompt_console.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -239,6 +241,125 @@ static void test_reader_comment_size_cap() {
     std::cout << "[PASS] reader comment: 1 MiB decode cap disables directives\n";
 }
 
+
+// ── M2: consent engine (the single decision function) ───────────────────────
+
+namespace {
+class FakeBackend final : public sfx::IPromptBackend {
+public:
+    explicit FakeBackend(bool interactive, std::vector<sfx::ConsentAnswer> script,
+                         sfx::ConsentAnswer default_answer = sfx::ConsentAnswer::Deny)
+        : interactive_(interactive), script_(std::move(script)), default_(default_answer) {}
+    bool interactive() const override { return interactive_; }
+    sfx::ConsentAnswer ask(const sfx::ConsentRequest& req) override {
+        asks_.push_back(req);
+        if (cursor_ >= script_.size()) return default_; // exhausted: scripted default
+        return script_[cursor_++];
+    }
+    size_t asks() const { return asks_.size(); }
+
+private:
+    bool interactive_;
+    std::vector<sfx::ConsentAnswer> script_;
+    std::vector<sfx::ConsentRequest> asks_;
+    sfx::ConsentAnswer default_;
+    size_t cursor_{0};
+};
+
+sfx::ConsentRequest make_req(sfx::DirectiveType type) {
+    sfx::ConsentRequest r;
+    r.type = type;
+    r.verb = "run a probe";
+    r.command = "probe.exe";
+    r.resolved_path = "C:/dest/probe.exe";
+    return r;
+}
+} // namespace
+
+void test_consent_engine_basic_and_batch() {
+    std::cout << "[+] test_consent_engine_basic_and_batch" << std::endl;
+
+    {
+        FakeBackend be(true, {sfx::ConsentAnswer::Run, sfx::ConsentAnswer::Deny});
+        sfx::SfxConsentEngine eng(be);
+        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        assert(eng.ask(make_req(sfx::DirectiveType::Delete)) == sfx::ConsentDecision::Deny);
+        assert(eng.prompts_used() == 2 && !eng.aborted());
+    }
+
+    // RunAll batch: same type runs without prompting; other types still prompt.
+    {
+        FakeBackend be(true, {sfx::ConsentAnswer::RunAll});
+        sfx::SfxConsentEngine eng(be);
+        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        assert(eng.prompts_used() == 1);
+        assert(eng.ask(make_req(sfx::DirectiveType::Delete)) == sfx::ConsentDecision::Deny);
+        assert(eng.prompts_used() == 2);
+    }
+
+    // DenyAll batch mirrors it.
+    {
+        FakeBackend be(true, {sfx::ConsentAnswer::DenyAll});
+        sfx::SfxConsentEngine eng(be);
+        assert(eng.ask(make_req(sfx::DirectiveType::Presetup)) == sfx::ConsentDecision::Deny);
+        assert(eng.ask(make_req(sfx::DirectiveType::Presetup)) == sfx::ConsentDecision::Deny);
+        assert(eng.prompts_used() == 1);
+    }
+
+    // Abort latches: every later ask denied, aborted() true, no new prompts.
+    {
+        FakeBackend be(true, {sfx::ConsentAnswer::Abort});
+        sfx::SfxConsentEngine eng(be);
+        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
+        assert(eng.aborted());
+        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
+        assert(eng.prompts_used() == 1);
+    }
+    std::cout << "[PASS] consent engine: run/deny, per-type batches, abort latch" << std::endl;
+}
+
+void test_consent_engine_cap_and_noninteractive() {
+    std::cout << "[+] test_consent_engine_cap_and_noninteractive" << std::endl;
+
+    // Prompt cap: the 9th ask (cap 8) is denied without prompting and latches
+    // aborted (plan §6 hard cap -> abort the run).
+    {
+        FakeBackend be(true, {}, sfx::ConsentAnswer::Run); // always willing
+        sfx::SfxConsentEngine eng(be, /*prompt_cap=*/8);
+        for (int i = 0; i < 8; ++i) {
+            assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        }
+        assert(eng.prompts_used() == 8);
+        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
+        assert(eng.aborted());
+        assert(eng.prompts_used() == 8);
+    }
+
+    // Cap latches the run even for previously batch-approved types.
+    {
+        FakeBackend be(true, {sfx::ConsentAnswer::RunAll});
+        sfx::SfxConsentEngine eng(be, /*prompt_cap=*/1);
+        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        assert(eng.ask(make_req(sfx::DirectiveType::Delete)) == sfx::ConsentDecision::Deny);
+        assert(eng.aborted());
+    }
+
+    // Non-interactive backend: every ask denied WITHOUT calling the backend.
+    {
+        FakeBackend be(false, {});
+        sfx::SfxConsentEngine eng(be);
+        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
+        assert(eng.prompts_used() == 0 && !eng.aborted() && be.asks() == 0);
+    }
+
+    // Console backend interactivity (isatty(stdin)) is covered by the
+    // sandbox e2e suite (plan §13 test 18: piped stdin => deny) — a unit
+    // test cannot assume its own stdin is or is not a TTY.
+    std::cout << "[PASS] consent engine: prompt cap aborts, non-interactive denies" << std::endl;
+}
+
 int main() {
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -270,7 +391,11 @@ int main() {
         std::cout << std::flush;
         test_reader_comment_size_cap();
         std::cout << std::flush;
-        std::cout << "All SFX M1 unit tests PASSED!\n";
+        test_consent_engine_basic_and_batch();
+        std::cout << std::flush;
+        test_consent_engine_cap_and_noninteractive();
+        std::cout << std::flush;
+        std::cout << "All SFX M1+M2 unit tests PASSED!\n";
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "[sfx-tests] exception: %s\n", ex.what());
         std::fflush(stderr);

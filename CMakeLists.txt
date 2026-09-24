@@ -49,6 +49,8 @@ set(OPENRAR_CORE_SOURCES
     src/archive/archive_reader.cpp
     src/archive/archive_mutator.cpp
     src/sfx/sfx_config.cpp
+    src/sfx/sfx_consent.cpp
+    src/sfx/prompt_console.cpp
     src/archive/volume.cpp
     src/recovery/rs16.cpp
     src/recovery/rs16_gfni.cpp
