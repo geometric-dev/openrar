@@ -5,10 +5,74 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v1.23.0 work in progress
+## [Unreleased] — v1.24.0 work in progress
 
-Nothing yet — see the v1.23.0 arc (advanced SFX scripting, security-first
-delivery) in docs/ROADMAP.md.
+Nothing yet — see the v1.24.0 arc (extraction containment & integrity) in
+docs/ROADMAP.md.
+
+## [1.23.0] - 2026-09-24
+
+Advanced SFX Scripting & Installer Directives, security-first per Security
+Architecture §6: the directive engine ships with its full consent framework,
+TempMode hardening, and runtime process policy in a single release.
+
+### Added
+
+- **SFX directive engine**: the Default.SFX stub parses the archive comment
+  (`src/sfx/sfx_config`) for `Setup=`, `Presetup=`, `Delete=`, `Shortcut=`,
+  `Silent=`, `Path`, `Overwrite`, `Title`, `Text`, `License`, `TempMode` and
+  executes them through the phase pipeline
+  (Presetup -> extraction -> Setup -> Delete -> TempMode cleanup). Unknown
+  keys are counted and ignored (forward compatibility); malformed or
+  oversized comments disable directives without aborting extraction.
+- **Consent framework** (§6.1): every side-effecting directive requires
+  explicit consent through one shared decision function
+  (`src/sfx/sfx_consent`) consumed by both SFX modules. Default focus is
+  always "Don't Run"; batch run-all/deny-all is per directive type; a hard
+  per-run prompt cap (8) aborts the run with exit 2; non-interactive stdin
+  denies without prompting. Prompts display the verbatim command line and
+  the resolved absolute executable path.
+- **TempMode hardening** (§6.1): extraction targets are
+  `OpenRAR-<128-bit-hex>` directories under the temp root with owner-only
+  permissions (0700 / owner DACL), created per run and cleaned up after
+  `Setup`. No pattern-matched sweeps (§3.3).
+- **Runtime process policy** (§6.2): directive programs spawn contained —
+  Windows: Job Object with kill-on-close, 2 GiB per-process memory cap, 64
+  active-process cap, ACG mitigation policy; POSIX: own process group with
+  CPU/address-space/process-count rlimits verified pre-exec and PDEATHSIG on
+  Linux. A containment-setup failure refuses execution (never spawn
+  uncontained). AMSI scans the command line as defense-in-depth; a flagged
+  verdict raises an additional warning prompt (default Don't Run), and AMSI
+  unavailability is the documented fail-open.
+- **Compiler mitigations**: both stubs build with CFG; the SFX process
+  applies dynamic-code protection at startup; POSIX builds get
+  `-fstack-protector-strong` (via the shared hardening flags).
+- **`-sfxnoexec` kill switch** (flag + `OPENRAR_SFX_NOEXEC=1` env):
+  extraction only — every directive is suppressed AND the suppression is
+  reported with a count.
+- **WinGUI.SFX**: native-dialog SFX stub (Windows, windowed subsystem)
+  sharing the parser/consent/containment engine; MessageBox consent chain
+  with the Don't-Run default focus.
+- **Sandbox e2e suite** (blocking gate 2): runs the real Default.SFX stub on
+  converted directive archives with scripted stdin — consented run, Don't-Run
+  default focus, -sfxnoexec suppression + reporting, prompt-cap abort (exit
+  2), and directive-free extraction. `OPENRAR_SFX_FORCE_INTERACTIVE` is the
+  documented automation hook for scripted consent; CI/CD uses -sfxnoexec.
+
+### Fixed
+
+- **convert_to_sfx did not mark the module executable on POSIX** (found by
+  the sandbox e2e suite on its first Linux run): the converted SFX carried
+  the umask-derived 0644 mode and could not run. The owner-exec bit is added
+  before the atomic commit. No-op on Windows.
+
+### Changed
+
+- **Silent directives suppress progress UI only** — consent prompts always
+  appear; `Silent=2` runs unattended only after consent.
+- **SFX overwrite policy** follows §3.2: archive directives may only
+  de-escalate (skip-existing); overwrite-all requires the escalation consent
+  prompt and otherwise falls back to per-file Ask behavior.
 
 ## [1.22.0] - 2026-09-23
 
