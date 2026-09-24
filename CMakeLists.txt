@@ -393,6 +393,14 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(recovery_tests tests/unit/recovery_tests.cpp)
     add_openrar_test(archive_tests tests/unit/archive_tests.cpp)
     add_openrar_test(sfx_tests tests/unit/sfx_tests.cpp)
+    # Cross-compiled legs (QEMU): child spawns in the SFX tests must go
+    # through the emulator or execv(ENOEXEC)s on the host kernel. Space-
+    # joined so the test can tokenize it into an argv prefix.
+    if(CMAKE_CROSSCOMPILING_EMULATOR)
+        string(JOIN " " SFX_EMU ${CMAKE_CROSSCOMPILING_EMULATOR})
+        target_compile_definitions(sfx_tests PRIVATE
+            OPENRAR_SFX_EMULATOR="${SFX_EMU}")
+    endif()
     # Golden fixtures: reader coverage against checked-in archives not
     # produced by this codebase (see tests/unit/golden_fixtures_tests.cpp).
     add_openrar_test(golden_fixtures_tests tests/unit/golden_fixtures_tests.cpp)
