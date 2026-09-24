@@ -11,6 +11,7 @@
 #include <vector>
 #ifdef _MSC_VER
 #include <crtdbg.h>
+#include <cstdlib>
 #endif
 
 using namespace openrar;
@@ -353,6 +354,12 @@ int main() {
     // test process forever while ctest moves on, leaving file locks behind.
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
+    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
+    // process still hangs after printing the assert.
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _CALL_REPORTFAULT);
 #endif
     setvbuf(stdout, NULL, _IONBF, 0);
     std::cout << "Running Clean-Room Milestone 3 Format Verification...\n";

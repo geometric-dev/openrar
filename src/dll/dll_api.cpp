@@ -5,6 +5,7 @@
 #include "../archive/archive_reader.hpp"
 #include "../archive/archive_mutator.hpp"
 #include "../io/path_util.hpp"
+#include "../io/extraction_journal.hpp"
 #include "../compress/compressor50.hpp"
 #include "../compress/decompressor50.hpp"
 #include "../compress/stream_encoder.hpp"
@@ -28,9 +29,9 @@
 #include <string>
 
 #ifdef _WIN32
-#include <process.h> // _getpid (temp-file naming)
+#include <process.h>
 #else
-#include <unistd.h> // getpid
+#include <unistd.h>
 #endif
 
 // ── Compile-time equivalence against the shared ABI contract ────────────────
@@ -240,14 +241,6 @@ openrar::archive::ReaderHooks make_reader_hooks(ListCallbackCtx& ctx) {
     return h;
 }
 
-unsigned long current_pid() {
-#ifdef _WIN32
-    return static_cast<unsigned long>(_getpid());
-#else
-    return static_cast<unsigned long>(getpid());
-#endif
-}
-
 // Destination guard (docs/invariants.md §5): true when a and b refer to the
 // same file. exact/strong equivalence when both exist, else a normalized
 // (case-insensitive on Windows) path comparison.
@@ -269,12 +262,15 @@ bool paths_same_file(const std::filesystem::path& a, const std::filesystem::path
     return norm(a) == norm(b);
 }
 
-// Durability wrapper (docs/invariants.md §5): opens dest +
-// ".openrar-tmp.<pid>.<seq>" CREATE_NEW (<= 10 collision retries), runs
-// `body` against the temp stream, and on RAR_OK flushes (FlushFileBuffers /
-// fsync) and atomically renames over dest. Any other rc — or a rename
-// failure — closes and deletes the temp, leaving dest untouched. The caller
-// owns the destination guard.
+// Durability wrapper (docs/invariants.md §5; v1.24 M1): opens a
+// crypto-random `.tmp` in the destination directory, records it in the
+// per-directory journal (fsynced BEFORE the temp exists), runs `body` against
+// the temp stream, and on RAR_OK flushes (FlushFileBuffers / fsync) and
+// commits with the no-follow atomic rename cascade (POSIX-semantics rename on
+// Windows, rename/link cascade on POSIX). Any other rc — or a commit
+// failure — closes and deletes the temp, leaving dest untouched; the journal
+// is closed+unlinked when the call ends. The caller owns the destination
+// guard.
 int durable_write_to(const std::filesystem::path& dest,
                      const std::function<int(openrar::io::FileStream&)>& body) {
     std::error_code ec;
@@ -282,33 +278,20 @@ int durable_write_to(const std::filesystem::path& dest,
         std::filesystem::create_directories(dest.parent_path(), ec);
         if (ec) return RAR_ERR_IO; // Fail fast if parent directory cannot be created
     }
-    const std::string suffix = ".openrar-tmp." + std::to_string(current_pid()) + ".";
-    for (unsigned seq = 0; seq < 10; ++seq) {
-        std::filesystem::path tmp = dest;
-        tmp += suffix + std::to_string(seq);
-        openrar::io::FileStream f;
-        if (!f.open(tmp, openrar::io::FileMode::CreateNew)) {
-            if (f.is_collision_error()) {
-                continue; // Collision on temp file name -> retry with next sequence number
-            }
-            return RAR_ERR_IO; // Fail fast on permission denied, disk full, or other non-collision errors
-        }
-        int rc = body(f);
-        if (rc != RAR_OK) {
-            f.close();
-            std::filesystem::remove(tmp, ec);
-            return rc;
-        }
-        f.flush(); // FlushFileBuffers (Windows) / fsync (POSIX)
-        f.close();
-        std::error_code ren_ec;
-        // MSVC: MoveFileExW(MOVEFILE_REPLACE_EXISTING); POSIX: atomic rename().
-        std::filesystem::rename(tmp, dest, ren_ec);
-        if (!ren_ec) return RAR_OK;
-        std::filesystem::remove(tmp, ec);
-        return RAR_ERR_IO;
+    // v1.24 M1: crypto-random temp in the destination directory, referenced
+    // in a per-directory journal before it is created (durable-first), and
+    // committed with the no-follow atomic rename cascade. Per-call session:
+    // each DLL extraction call is its own run (plan §6.3).
+    openrar::io::ExtractionSession session;
+    openrar::io::AtomicWriter writer;
+    if (!writer.open(session, dest)) return RAR_ERR_IO;
+    int rc = body(writer.stream());
+    if (rc != RAR_OK) {
+        writer.abandon();
+        return rc;
     }
-    return RAR_ERR_IO;
+    if (!writer.commit(openrar::io::CommitMode::ReplaceExisting)) return RAR_ERR_IO;
+    return RAR_OK;
 }
 
 // ── Buffer-backed handle: the frozen in-memory MVP behavior ─────────────────

@@ -203,6 +203,19 @@ static void test_e2e_no_directives_plain_extraction() {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef _MSC_VER
+    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
+    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
+    // test process forever while ctest moves on, leaving file locks behind.
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
+    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
+    // process still hangs after printing the assert.
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _CALL_REPORTFAULT);
+#endif
     if (argc >= 3 && std::strcmp(argv[1], "--sfx-probe-touch") == 0) {
         std::ofstream ofs(argv[2], std::ios::binary);
         ofs << "touched";

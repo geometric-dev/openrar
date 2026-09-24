@@ -7,6 +7,7 @@
 #include <filesystem>
 #ifdef _MSC_VER
 #include <crtdbg.h>
+#include <cstdlib>
 #endif
 
 #ifndef OPENRAR_SOURCE_DIR
@@ -666,20 +667,7 @@ static void test_b4_empty_archive_extract_all() {
     std::cout << "PASS test_b4_empty_archive_extract_all\n";
 }
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-static unsigned test_get_pid() {
-    return static_cast<unsigned>(GetCurrentProcessId());
-}
-#else
-#include <unistd.h>
-static unsigned test_get_pid() {
-    return static_cast<unsigned>(getpid());
-}
-#endif
-
-static void test_b1_durable_write_collision() {
+static void test_b1_durable_write() {
     std::error_code ec;
     std::filesystem::path temp_dir =
         std::filesystem::temp_directory_path() / "openrar_test_b1_durable";
@@ -696,14 +684,13 @@ static void test_b1_durable_write_collision() {
         std::fclose(f);
     }
 
-    // Pre-create collision files for seq 0, 1, 2
-    unsigned pid = test_get_pid();
-    std::string suffix = ".openrar-tmp." + std::to_string(pid) + ".";
-    for (int seq = 0; seq < 3; ++seq) {
-        std::filesystem::path coll = out_rar_str + suffix + std::to_string(seq);
-        FILE* f = std::fopen(coll.string().c_str(), "wb");
+    // Pre-existing unrelated files in the destination directory must be
+    // untouched by the durable write (no pattern-swept cleanup, v1.24 M1).
+    std::filesystem::path bystander = temp_dir / "bystander.txt";
+    {
+        FILE* f = std::fopen(bystander.string().c_str(), "wb");
         assert(f);
-        std::fwrite("collision", 1, 9, f);
+        std::fwrite("bystander", 1, 9, f);
         std::fclose(f);
     }
 
@@ -713,11 +700,16 @@ static void test_b1_durable_write_collision() {
     assert(rc == 0);
     assert(std::filesystem::exists(out_rar, ec));
 
-    // Verify seq 0, 1, 2 are still there (untouched by durable_write_to)
-    for (int seq = 0; seq < 3; ++seq) {
-        std::filesystem::path coll = out_rar_str + suffix + std::to_string(seq);
-        assert(std::filesystem::exists(coll, ec));
+    // Temp hygiene: no leftover temps and no journal files after the run —
+    // the crypto-random temp naming (v1.24 M1) removed the old
+    // ".openrar-tmp.<pid>.<seq>" collision-retry scheme, so the collision
+    // half of this test is obsolete by construction (128-bit random names).
+    for (const auto& e : std::filesystem::directory_iterator(temp_dir)) {
+        const std::string name = e.path().filename().string();
+        assert(name.find(".openrar-tmp.") == std::string::npos);
+        assert(name.find(".openrar_journal_") == std::string::npos);
     }
+    assert(std::filesystem::exists(bystander, ec));
 
     // Fail-fast test on non-collision error (target parent is an existing file, not directory)
     std::filesystem::path block_file = temp_dir / "block.txt";
@@ -734,7 +726,7 @@ static void test_b1_durable_write_collision() {
     assert(rc != 0);
 
     std::filesystem::remove_all(temp_dir, ec);
-    std::cout << "PASS test_b1_durable_write_collision\n";
+    std::cout << "PASS test_b1_durable_write\n";
 }
 
 static void test_archive_handle_set_limits() {
@@ -889,6 +881,12 @@ int main() {
     // test process forever while ctest moves on, leaving file locks behind.
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
+    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
+    // process still hangs after printing the assert.
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _CALL_REPORTFAULT);
 #endif
     test_version();
     test_block_codec_roundtrip();
@@ -908,7 +906,7 @@ int main() {
     test_open_ex();
     test_file_helpers();
     test_b4_empty_archive_extract_all();
-    test_b1_durable_write_collision();
+    test_b1_durable_write();
     test_archive_handle_set_limits();
     test_archive_repair();
     test_archive_recovery_volumes();

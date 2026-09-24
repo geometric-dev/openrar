@@ -17,6 +17,10 @@ class Decompressor50;
 enum class DecompressErrorCode;
 } // namespace openrar::compress
 
+namespace openrar::io {
+class ExtractionSession; // per-run journal anchor for atomic extraction (v1.24 M1)
+}
+
 namespace openrar::crypto {
 struct Rar5Keys; // POD key bundle (pbkdf2.hpp); streaming methods take it by pointer
 }
@@ -255,7 +259,13 @@ private:
     bool extract_symlinks_{true};
     void convert_self_links(const std::filesystem::path& dest_path);
     static bool ensure_parent_dir(const std::filesystem::path& dest_path,
-                                  const std::string& entry_name = "");
+                                  const std::string& entry_name);
+
+    // Atomic extraction (v1.24 M1): per-reader journal anchor, created lazily
+    // on the first file write. One journal per destination directory the
+    // reader touches; readers are thread-confined, so no internal locking.
+    std::unique_ptr<io::ExtractionSession> extraction_session_;
+    io::ExtractionSession& ensure_extraction_session();
 };
 
 } // namespace openrar::archive
