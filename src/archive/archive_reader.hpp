@@ -141,6 +141,13 @@ public:
                                 const ExtractionLimits* limits = nullptr,
                                 LimitState* state = nullptr);
 
+    // Decodes the archive's CMT service-header payload (the SFX directive
+    // carrier). First CMT wins; subsequent CMT headers in a crafted archive
+    // are ignored. Returns false — with out left empty — when the archive
+    // has no comment, the decoded size exceeds 1 MiB (directives disabled,
+    // never an archive error), or decoding fails. v1.23.0 SFX (plan §3).
+    bool read_archive_comment(std::vector<core::byte>& out);
+
     // Streaming integrity test: verifies BLAKE2sp / CRC32 without retaining
     // output. Directory and link entries verify trivially (RAR_OK, no
     // callbacks). Error mapping as extract_entry_stream.
