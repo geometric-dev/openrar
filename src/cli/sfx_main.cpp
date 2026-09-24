@@ -3,6 +3,11 @@
 #include "../io/path_util.hpp"
 #include "../format/headers.hpp"
 #include "../archive/archive_reader.hpp"
+#include "../sfx/sfx_config.hpp"
+#include "../sfx/sfx_consent.hpp"
+#include "../sfx/sfx_pipeline.hpp"
+#include "../sfx/process_exec.hpp"
+#include "../sfx/prompt_console.hpp"
 #include "progress.hpp" // shared ANSI progress; SFX extraction mirrors cli via CLIProgress reuse for creation
 
 #include <iostream>
@@ -279,11 +284,16 @@ static int sfx_main_impl(int argc, char* argv[]) {
     std::string password = "";
     bool test_mode = false;
     bool silent = false;
+    bool no_exec = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-t") {
             test_mode = true;
+        } else if (arg == "-sfxnoexec") {
+            // CI/CD kill switch: extraction only, every directive suppressed
+            // and REPORTED (plan §9 — suppressed never means silent).
+            no_exec = true;
         } else if (arg == "-s" || arg == "-silent" || arg == "--silent" || arg == "-q" ||
                    arg == "-quiet" || arg == "--quiet") {
             silent = true;
@@ -375,56 +385,114 @@ static int sfx_main_impl(int argc, char* argv[]) {
         if (!silent && !openrar::sfx::is_vt_supported()) {
             std::cout << "Extracting from SFX archive: " << sfx_filename << "\n\n";
         }
-        if (!silent) {
-            prog.init("DECOMPRESSING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
-            prog.set_totals(total_entries, total_bytes);
+
+        // ── v1.23.0 directive pipeline (plan §7) ────────────────────────────
+        // Comment directives drive Presetup/Setup/Delete/TempMode around the
+        // extraction loop; the consent engine gates every side effect. With
+        // no comment the pipeline degenerates to plain extraction.
+        std::vector<openrar::core::byte> comment;
+        const bool have_comment = reader.read_archive_comment(comment);
+        openrar::sfx::SfxConfig cfg;
+        if (have_comment) {
+            cfg = openrar::sfx::parse_sfx_config(comment);
+            if (cfg.invalid_utf8)
+                std::cout << "[sfx] directives disabled: comment is not valid UTF-8\n";
         }
 
-        std::filesystem::path out_root =
-            dest_dir.empty() ? std::filesystem::current_path() : std::filesystem::path(dest_dir);
+        openrar::sfx::PipelineOptions pipe_opts;
+        pipe_opts.no_exec = no_exec || getenv("OPENRAR_SFX_NOEXEC") != nullptr;
+        pipe_opts.argv_dest = dest_dir; // explicit user choice; overrides Path=
 
-        size_t idx = 0;
-        for (const auto& entry : reader.entries()) {
-            if (entry.header.is_service) continue;
-            idx++;
-            // Zip-Slip guard (same rationale as cli/main.cpp extract_archive)
-            std::string safe_name = openrar::io::sanitize_archive_path(entry.header.file_name);
-            if (safe_name.empty()) {
-                if (!silent)
-                    std::cout << "Skipping entry with unsafe empty path: "
-                              << openrar::cli::sanitize_for_display(entry.header.file_name) << "\n";
-                continue;
-            }
-            std::filesystem::path target = out_root / std::filesystem::path(safe_name);
-            if (!openrar::io::is_lexically_contained(target, out_root)) {
-                if (!silent)
-                    std::cout << "Skipping entry escaping extraction directory: "
-                              << openrar::cli::sanitize_for_display(entry.header.file_name) << "\n";
-                continue;
-            }
+        // Silent directives suppress progress UI only — consent prompts still
+        // appear (plan §2 invariant 1).
+        const bool extraction_silent = silent || cfg.silent != openrar::sfx::SilentMode::Off;
 
-            if (!silent) prog.start_file(entry.header.file_name, idx);
+        openrar::sfx::ConsolePromptBackend console_backend;
+        openrar::sfx::SfxConsentEngine consent(console_backend);
 
-            if (!silent && !openrar::sfx::is_vt_supported()) {
-                std::cout << "Extracting  " << openrar::cli::sanitize_for_display(target.string())
-                          << " ... ";
-            }
+        auto extract_loop = [&](const std::string& pipe_dest,
+                                openrar::sfx::OverwriteDirective overwrite) -> int {
+            if (extraction_silent) openrar::sfx::g_quiet_mode = true;
+            std::filesystem::path out_root = pipe_dest.empty() ? std::filesystem::current_path()
+                                                               : std::filesystem::path(pipe_dest);
+            std::error_code mk_ec;
+            std::filesystem::create_directories(out_root, mk_ec);
 
-            if (reader.extract_entry(entry, target, password)) {
-                if (!silent && !openrar::sfx::is_vt_supported()) std::cout << "OK\n";
-            } else {
-                if (!silent && !openrar::sfx::is_vt_supported()) {
-                    std::cout << "FAILED\n";
+            size_t idx = 0;
+            for (const auto& entry : reader.entries()) {
+                if (entry.header.is_service) continue;
+                idx++;
+                // Zip-Slip guard (same rationale as cli/main.cpp extract_archive)
+                std::string safe_name = openrar::io::sanitize_archive_path(entry.header.file_name);
+                if (safe_name.empty()) {
+                    if (!extraction_silent)
+                        std::cout << "Skipping entry with unsafe empty path: "
+                                  << openrar::cli::sanitize_for_display(entry.header.file_name)
+                                  << "\n";
+                    continue;
                 }
-                return 1;
-            }
-            if (!silent) prog.update_bytes(entry.header.unp_size);
-        }
+                std::filesystem::path target = out_root / std::filesystem::path(safe_name);
+                if (!openrar::io::is_lexically_contained(target, out_root)) {
+                    if (!extraction_silent)
+                        std::cout << "Skipping entry escaping extraction directory: "
+                                  << openrar::cli::sanitize_for_display(entry.header.file_name)
+                                  << "\n";
+                    continue;
+                }
 
-        if (!silent) {
-            prog.done(total_entries, "unpacked", sfx_filename);
+                // §3.2 overwrite policy: directives may only de-escalate.
+                // Ask (the default) and SkipExisting skip existing targets in
+                // the non-interactive stub and report them; OverwriteAll (only
+                // reachable with explicit escalation consent) keeps the
+                // historical overwrite behavior.
+                if (overwrite != openrar::sfx::OverwriteDirective::OverwriteAll &&
+                    std::filesystem::exists(target)) {
+                    if (!extraction_silent)
+                        std::cout << "Skipping existing: "
+                                  << openrar::cli::sanitize_for_display(target.string()) << "\n";
+                    continue;
+                }
+
+                if (!extraction_silent) prog.start_file(entry.header.file_name, idx);
+
+                if (!extraction_silent && !openrar::sfx::is_vt_supported()) {
+                    std::cout << "Extracting  "
+                              << openrar::cli::sanitize_for_display(target.string()) << " ... ";
+                }
+
+                if (reader.extract_entry(entry, target, password)) {
+                    if (!extraction_silent && !openrar::sfx::is_vt_supported()) std::cout << "OK\n";
+                } else {
+                    if (!extraction_silent && !openrar::sfx::is_vt_supported()) {
+                        std::cout << "FAILED\n";
+                    }
+                    return 1;
+                }
+                if (!extraction_silent) prog.update_bytes(entry.header.unp_size);
+            }
+
+            if (!extraction_silent) {
+                prog.done(total_entries, "unpacked", sfx_filename);
+            }
+            return 0;
+        };
+
+        openrar::sfx::PipelineResult result =
+            openrar::sfx::run_sfx_pipeline(cfg, consent, pipe_opts, extract_loop);
+
+        // Observable report (plan §2 invariant 6): every consent/containment/
+        // suppression outcome is user-visible. Details are post-sanitization.
+        for (const auto& line : result.report) {
+            std::cout << "[sfx] " << line.phase << ": " << line.status;
+            if (!line.detail.empty())
+                std::cout << " - " << openrar::cli::sanitize_for_display(line.detail);
+            std::cout << "\n";
         }
-        return 0;
+        if (result.suppressed_directives > 0)
+            std::cout << "[sfx] directives suppressed: " << result.suppressed_directives
+                      << " (-sfxnoexec)\n";
+        std::cout << std::flush;
+        return result.exit_code;
     }
 }
 
