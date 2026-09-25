@@ -83,6 +83,16 @@ public:
     LockedFile(const LockedFile&) = delete;
     LockedFile& operator=(const LockedFile&) = delete;
 
+    // Take ownership of an externally created exclusive handle (the anchored
+    // NtCreateFile journal create — its share mode already excludes other
+    // openers, which is the lock the sweep probes).
+    bool adopt(void* h) {
+        close();
+        if (h == nullptr) return false;
+        h_ = static_cast<HANDLE>(h);
+        return true;
+    }
+
     // Create-or-open exclusively. False when another process holds the file.
     bool open_create(const std::filesystem::path& p) { return open(p, OPEN_ALWAYS); }
     // Open an existing file exclusively (sweep probe). False when locked,
@@ -165,6 +175,22 @@ public:
 
     LockedFile(const LockedFile&) = delete;
     LockedFile& operator=(const LockedFile&) = delete;
+
+    // Take ownership of an externally created anchored fd and lock it — the
+    // flock is the probe the sweep uses to recognize a live run.
+    bool adopt(void* h) {
+        close();
+        if (h == nullptr) return false;
+        fd_ = static_cast<int>(reinterpret_cast<intptr_t>(h));
+        if (::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
+            int saved = errno;
+            ::close(fd_);
+            fd_ = -1;
+            errno = saved;
+            return false;
+        }
+        return true;
+    }
 
     bool open_create(const std::filesystem::path& p) {
         return open(p, O_RDWR | O_CREAT | O_CLOEXEC, true);
@@ -334,6 +360,93 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
     if (!append_record(*static_cast<LockedFile*>(it->second.file), temp_abs)) return false;
     ++it->second.in_flight;
     return true;
+}
+
+bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& dir_anchor,
+                                                const std::filesystem::path& journal_dir_key,
+                                                const std::filesystem::path& temp_abs) {
+    auto it = journals_.find(journal_dir_key);
+    if (it == journals_.end()) {
+        // Startup sweep for this directory (path-based; fail-safe direction:
+        // an unanchored iteration can only MISS journals, never delete
+        // outside the validated record namespace).
+        sweep_directory(journal_dir_key);
+
+        std::filesystem::path name;
+        journal_name(name);
+        if (name.empty()) return false; // no strong entropy: fail closed
+
+        void* jh = nullptr;
+        if (!containment_.anchored_create_journal(dir_anchor, u8_str(name), jh)) return false;
+        LockedFile* lf = new LockedFile();
+        if (!lf->adopt(jh)) {
+            delete lf;
+            return false;
+        }
+        if (!lf->append(kJournalHeader) || !lf->sync()) {
+            lf->close();
+            delete lf;
+            return false;
+        }
+        it = journals_.emplace(journal_dir_key, DirJournal{lf, 0}).first;
+        journal_paths_[journal_dir_key] = journal_dir_key / name;
+    }
+    if (!append_record(*static_cast<LockedFile*>(it->second.file), temp_abs)) return false;
+    ++it->second.in_flight;
+    return true;
+}
+
+bool ExtractionSession::attach_root(const std::filesystem::path& root) {
+    if (containment_.attached()) return true;
+    return containment_.attach(root);
+}
+
+bool ExtractionSession::ensure_root_for(const std::filesystem::path& dest_full,
+                                        const std::string& rel_dir) {
+    if (containment_.attached()) return true;
+    std::error_code ec;
+    std::filesystem::path base = dest_full.parent_path();
+    if (base.empty()) base = ".";
+    base = std::filesystem::absolute(base, ec);
+    if (ec) return false;
+    base = base.lexically_normal();
+    if (!base.empty() && base.filename().empty() && base.parent_path() != base) {
+        base = base.parent_path();
+    }
+    // Pop the entry's own sanitized directory components off the end — the
+    // caller joined them onto the extraction root. Comparison is exact (and
+    // ASCII-case-insensitive on Windows, where only Win32 case rules can
+    // differ between the two spellings of the same component).
+    std::vector<std::string> comps;
+    std::string cur;
+    for (const char c : rel_dir) {
+        if (c == '/') {
+            comps.push_back(cur);
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty()) comps.push_back(cur);
+    const auto eq = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+#ifdef _WIN32
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(a[i])) !=
+                std::tolower(static_cast<unsigned char>(b[i]))) {
+                return false;
+            }
+        }
+        return true;
+#else
+        return a == b;
+#endif
+    };
+    for (auto it = comps.rbegin(); it != comps.rend(); ++it) {
+        if (!eq(u8_str(base.filename()), *it)) break;
+        base = base.parent_path();
+    }
+    return containment_.attach(base);
 }
 
 void ExtractionSession::release_temp(const std::filesystem::path& temp_abs) {
@@ -519,8 +632,138 @@ bool AtomicWriter::open(ExtractionSession& session, const std::filesystem::path&
     return false;
 }
 
+bool AtomicWriter::open_contained(ExtractionSession& session, const std::string& rel_dir,
+                                  const std::string& dest_leaf) {
+    if (!session.root_attached() || dest_leaf.empty()) return false;
+
+    // Containment walk: every archive-controlled component is opened (or
+    // created no-follow, with the mkdir reopen-verify race protocol) from
+    // the pinned root; a planted symlink/junction anywhere along it rejects
+    // the whole path (plan §1.1.1, §1.2.2).
+    if (!session.containment().resolve_dir(rel_dir, /*create=*/true, dir_)) return false;
+    rel_dir_ = rel_dir;
+    leaf_ = dest_leaf;
+
+    const std::filesystem::path& root = session.canonical_root();
+    const std::filesystem::path stem =
+        rel_dir.empty() ? (root / dest_leaf) : (root / rel_dir / dest_leaf);
+    dest_path_ = stem;
+    const std::filesystem::path journal_dir_key =
+        normalize_dir(rel_dir.empty() ? root : (root / rel_dir));
+
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        const std::string hex = temp_suffix_hex();
+        if (hex.empty()) return false; // no strong entropy: fail closed
+        std::filesystem::path temp = stem;
+        temp += "." + hex + ".tmp";
+        temp_leaf_ = u8_str(temp.filename());
+
+        // Durable-first: the journal record is fsynced before the temp
+        // exists; the journal itself was created ANCHORED in the verified
+        // directory.
+        if (!session.register_temp_contained(dir_, journal_dir_key, temp)) return false;
+        journaled_ = true;
+
+        void* h = nullptr;
+        if (session.containment().anchored_create(dir_, temp_leaf_, h)) {
+            if (stream_.attach_os_handle(h, temp)) {
+                temp_path_ = std::move(temp);
+                session_ = &session;
+                return true; // write-through-handle: no path is re-resolved
+            }
+            std::error_code ec;
+            std::filesystem::remove(temp, ec);
+            session.release_temp(temp);
+            journaled_ = false;
+            return false;
+        }
+        // Collision or IO error: retry with a fresh name — collisions are
+        // astronomically unlikely (128-bit random), so the bound only guards
+        // against deterministic failures.
+        session.release_temp(temp);
+        journaled_ = false;
+    }
+    return false;
+}
+
 bool AtomicWriter::commit(CommitMode mode) {
     if (!session_ || !stream_.is_open()) return false;
+    if (dir_.valid()) {
+        // Containment commit (plan §1.1.3/§1.2.3). The final containment
+        // assertion runs here regardless of whether the walk was a cache
+        // hit: the kernel-resolved path of the handle we are about to
+        // commit must sit inside the canonical root.
+        if (!session_->containment().final_path_inside(stream_.os_handle(), rel_dir_, temp_leaf_)) {
+            abandon();
+            return false;
+        }
+        // NTFS quirk (gate-1 finding): the POSIX-semantics rename reports
+        // SUCCESS without replacing when the target leaf is a reparse point
+        // whose target exists — the source temp is consumed and nothing
+        // changes. Replace the link object ourselves (no-follow) before the
+        // rename; NoClobber treats an existing link as a clean collision.
+        bool leaf_is_link = false;
+        const bool known = session_->containment().leaf_is_reparse(dir_, leaf_, leaf_is_link);
+        if (known && leaf_is_link) {
+            if (mode == CommitMode::NoClobber) {
+                abandon();
+                return false; // clean collision: name exists
+            }
+            if (!session_->containment().anchored_unlink_leaf(dir_, leaf_)) {
+                abandon();
+                return false;
+            }
+        }
+#if defined(_WIN32)
+        const bool rename_ok = stream_.commit_rename_in(dir_.raw(), leaf_, mode);
+        if (rename_ok) {
+            stream_.close();
+            session_->release_temp(temp_path_);
+            journaled_ = false;
+            finished_ = true;
+            return true;
+        }
+        const bool unsupported = commit_error_is_unsupported(stream_.last_error());
+        stream_.close();
+        if (!unsupported) {
+            abandon();
+            return false;
+        }
+        // Legacy filesystem without POSIX-semantics rename support
+        // (FAT/exFAT/SMB/pre-1709): the documented path-based fallback
+        // (plan §2.2) on the same normalized absolute paths. The temp still
+        // exists (a failed rename never consumed it), so it must NOT be
+        // abandoned before the fallback reopens it.
+        io::FileStream reopen;
+        if (!reopen.open(temp_path_, FileMode::OpenExisting)) {
+            abandon();
+            return false;
+        }
+        if (reopen.commit_rename(dest_path_, mode)) {
+            session_->release_temp(temp_path_);
+            journaled_ = false;
+            finished_ = true;
+            return true;
+        }
+        abandon();
+        return false;
+#else
+        if (!stream_.flush()) {
+            abandon();
+            return false;
+        }
+        int err = 0;
+        if (!session_->containment().anchored_rename(dir_, temp_leaf_, leaf_, mode, err)) {
+            abandon();
+            return false;
+        }
+        stream_.close();
+        session_->release_temp(temp_path_);
+        journaled_ = false;
+        finished_ = true;
+        return true;
+#endif
+    }
     if (!stream_.commit_rename(dest_path_, mode)) {
         // Failed commit is terminal: dispose of the temp (and the journal
         // slot) now so the caller cannot observe a half-open writer state.
