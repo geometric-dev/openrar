@@ -876,6 +876,13 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                         out_block.has_owner_gid = true;
                     }
                 }
+            } else {
+                // v1.24 plan §7.3: unknown extra records are captured
+                // VERBATIM (type vint + size vint + payload) and re-encoded
+                // byte-identically during mutations — a roundtrip through
+                // OpenRAR never destroys data a newer producer wrote.
+                out_block.unknown_extras.push_back(
+                    {rec_type, std::vector<core::byte>(body + old_offset, body + rec_end)});
             }
             offset = rec_end;
             if (offset <= old_offset) return false;
