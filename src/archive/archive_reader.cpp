@@ -1,5 +1,6 @@
 #include "archive_reader.hpp"
 #include "rar_errors.hpp"
+#include "collision_detector.hpp"
 #include "volume.hpp"
 #include "../format/header_reader.hpp"
 #include "../io/path_util.hpp"
@@ -146,6 +147,21 @@ bool ArchiveReader::create_contained_dir(const ArchiveEntry& entry,
     }
     io::ContainmentRoot::VerifiedDir anchor;
     return sess.containment().resolve_dir(generic_rel(rel_dir_p), /*create=*/true, anchor);
+}
+
+bool ArchiveReader::detect_collisions(std::vector<CollisionPair>& out) const {
+    // Detector input (plan §3.1): the final merged entry list with service
+    // headers filtered — CMT/QO/RR/ACL/STM never collide with user-visible
+    // entries. Directory records carry their flag so the file-vs-dir class
+    // can distinguish the tree shape the archive promises.
+    std::vector<CollisionEntry> names;
+    names.reserve(entries_.size());
+    for (const auto& e : entries_) {
+        if (e.header.is_service) continue;
+        names.push_back(CollisionEntry{e.header.file_name,
+                                       (e.header.file_flags & format::FHFL_DIRECTORY) != 0});
+    }
+    return CollisionDetector::detect(names, out);
 }
 
 size_t ArchiveReader::test_get_solid_window_size() const {
