@@ -13,6 +13,7 @@
 #include "../../src/io/path_util.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -52,10 +53,15 @@ std::string read_text(const fs::path& p) {
 }
 
 std::string cli_path() {
+    // Cross-arch runs (CI's QEMU leg) cannot exec the target binary directly
+    // from the host kernel; OPENRAR_RUNNER prefixes every invocation (same
+    // contract as cli_tests).
+    const char* runner = std::getenv("OPENRAR_RUNNER");
+    const std::string prefix = (runner && *runner) ? std::string(runner) + " " : "";
 #ifdef OPENRAR_CLI_EXE
-    if (fs::exists(OPENRAR_CLI_EXE)) return fs::canonical(OPENRAR_CLI_EXE).string();
+    if (fs::exists(OPENRAR_CLI_EXE)) return prefix + fs::canonical(OPENRAR_CLI_EXE).string();
 #endif
-    return "openrar.exe";
+    return prefix + "openrar.exe";
 }
 
 // Raw-writes a stored archive with the given entry names (bypasses the

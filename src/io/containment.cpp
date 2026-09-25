@@ -16,6 +16,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #if defined(__APPLE__)
+#include <sys/param.h> // MAXPATHLEN (sys/syslimits.h only defines it after param.h)
 #include <sys/syslimits.h>
 #endif
 #endif
