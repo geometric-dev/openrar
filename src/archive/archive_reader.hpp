@@ -140,6 +140,13 @@ public:
     bool use_mapped_scan() const { return use_mapped_scan_; }
     bool use_mapped_scan_{true};
 
+    // v1.25 M3: random-read region of a STORED entry's payload (mapped view
+    // per region when available, buffered otherwise — §5.2: never the
+    // extraction input). Encrypted/compressed entries are refused. Verifies
+    // the entry checksum when the region covers the whole payload.
+    int read_payload_region(size_t entry_index, core::uint64 offset, core::uint32 length,
+                            void* out_buf, size_t out_len, size_t* out_written);
+
     // v1.24 M2: explicit containment root — the extraction destination,
     // canonicalized and pinned for the whole session (plan §1.3). When unset,
     // the root is inferred per-entry from dest_path by popping the entry's

@@ -162,6 +162,67 @@ static void test_cpp_wrapper_file_handle() {
     std::cout << "PASS test_cpp_wrapper_file_handle" << std::endl;
 }
 
+// v1.25 (OPENRAR_ABI_FEATURE_MMAP): random-read region export over a
+// file-mode handle — stored entry, range checks, checksum contract.
+static void test_cpp_wrapper_read_entry_region() {
+    using namespace openrar;
+    // Feature bit 16 advertised by the native library.
+    assert((openrar_abi_features() & OPENRAR_ABI_FEATURE_MMAP) != 0);
+
+    const std::filesystem::path fixtures = std::filesystem::path(OPENRAR_SOURCE_DIR) / "tests";
+    auto scratch = fixtures / "wrapper_mmap_scratch";
+    std::filesystem::create_directories(scratch);
+
+    // Stored fixture with a known payload.
+    std::vector<uint8_t> payload = {'h', 'i', '.', 'b', 'y', 'e', '!', 0x00, 0x01, 0x02};
+    const char* names[] = {"stored.bin"};
+    const uint8_t* datas[] = {payload.data()};
+    size_t sizes[] = {payload.size()};
+    uint8_t* rar = nullptr;
+    size_t rar_len = 0;
+    assert(openrar_archive_create(reinterpret_cast<const uint8_t* const*>(names),
+                                  reinterpret_cast<const uint8_t* const*>(datas), sizes, 1, 0, 4,
+                                  &rar, &rar_len) == 0);
+    std::vector<uint8_t> rar_bytes(rar, rar + rar_len);
+    openrar_free(rar);
+    const std::filesystem::path arc = scratch / "stored.rar";
+    {
+        std::ofstream f(arc, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(rar_bytes.data()),
+                static_cast<std::streamsize>(rar_bytes.size()));
+    }
+
+    uint32_t h =
+        openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
+    assert(h != 0);
+
+    // Full-range read: CRC-verified, byte-identical.
+    std::vector<uint8_t> full(payload.size());
+    size_t written = 0;
+    int rc = openrar_archive_handle_read_entry_region(
+        h, 0, 0, static_cast<uint32_t>(payload.size()), full.data(), full.size(), &written);
+    assert(rc == RAR_OK);
+    assert(written == payload.size());
+    assert(full == payload);
+
+    // Partial range: first 3 bytes at offset 2.
+    std::vector<uint8_t> part(3);
+    rc = openrar_archive_handle_read_entry_region(h, 0, 2, 3, part.data(), part.size(), &written);
+    assert(rc == RAR_OK && written == 3);
+    assert(part[0] == payload[2] && part[1] == payload[3] && part[2] == payload[4]);
+
+    // Out-of-range: offset beyond payload / range exceeding payload.
+    assert(openrar_archive_handle_read_entry_region(h, 0, payload.size(), 1, full.data(),
+                                                    full.size(), &written) == RAR_ERR_INVALID_ARG);
+    assert(openrar_archive_handle_read_entry_region(h, 0, 0, 0, full.data(), full.size(),
+                                                    &written) == RAR_ERR_INVALID_ARG);
+
+    openrar_archive_close(h);
+    std::error_code rm_ec;
+    std::filesystem::remove_all(scratch, rm_ec);
+    std::cout << "PASS test_cpp_wrapper_read_entry_region" << std::endl;
+}
+
 static void test_cpp_wrapper_create() {
     auto temp_dir = std::filesystem::temp_directory_path() / "openrar_cpp_create_test";
     std::error_code ec;
@@ -213,6 +274,7 @@ int main() {
     test_cpp_wrapper_password_and_open();
     test_cpp_wrapper_file_handle();
     test_cpp_wrapper_create();
+    test_cpp_wrapper_read_entry_region();
     std::cout << "ALL CPP WRAPPER TESTS PASSED\n";
     return 0;
 }
