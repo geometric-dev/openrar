@@ -72,6 +72,25 @@ struct LimitState {
     uint64_t header_bytes{0}; // cumulative header bytes parsed across volumes
 };
 
+// ── Timestamp clamping (v1.24 plan §4.4) ────────────────────────────────────
+// Absurd archive mtimes clamp to parameterized bounds; a clamped value feeds
+// the skip-with-report path (timestamp_clamped security flag in the JSON
+// summary). Defaults: 1970-01-01 .. 3000-01-01 (unix seconds).
+struct MtimeBounds {
+    int64_t min{0};
+    int64_t max{32503680000};
+};
+
+inline int64_t clamp_mtime(int64_t t, const MtimeBounds& bounds = MtimeBounds{}) {
+    if (t < bounds.min) return bounds.min;
+    if (t > bounds.max) return bounds.max;
+    return t;
+}
+
+inline bool mtime_out_of_bounds(int64_t t, const MtimeBounds& bounds = MtimeBounds{}) {
+    return t < bounds.min || t > bounds.max;
+}
+
 } // namespace openrar::archive
 
 #endif // OPENRAR_ARCHIVE_EXTRACTION_LIMITS_HPP
