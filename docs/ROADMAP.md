@@ -10,16 +10,18 @@
 > scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
 > v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
-## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 in progress)
+## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0)
 
-- **v1.24.0 (current arc):** extraction containment & integrity —
-  implementation plan at docs/v1.24-implementation-plan.md (pre-analysis
-  parsed critically: multi-volume "two-pass" framing rejected as already-
-  existing architecture, ICU dependency replaced with generated tables,
-  encrypted-header collision complexity rejected as moot, dirfd-stack
-  simplified to an LRU cache).
+- **v1.24.0 (current):** extraction containment & integrity shipped —
+  syscall-level containment with write-through-handle atomic extraction
+  (per-directory journals with a validated sweep), archive-internal
+  collision detection (gate 2), --json-summary with stdout purity,
+  links default-deny + session-scoped hardlinks + deferred dir metadata,
+  unknown-extra preservation, generated Unicode 15.1.0 tables. Plan:
+  docs/v1.24-implementation-plan.md (pre-analysis parsed critically —
+  §0 verdicts; gaps found during the arc recorded in §0/§12).
 
-- **v1.23.0 (current):** advanced SFX scripting shipped with its security
+- **v1.23.0:** advanced SFX scripting shipped with its security
   architecture — directive engine, consent framework with prompt-fatigue
   controls, TempMode hardening, Job Object runtime policy, WinGUI.SFX,
   -sfxnoexec kill switch, sandbox e2e suite (gate 2). convert_to_sfx
@@ -156,44 +158,53 @@ spec, not a follow-up:
 
 ---
 
-## v1.24.0 — Extraction Containment & Integrity (Security Release)
+## v1.24.0 — Extraction Containment & Integrity (Security Release) ✅ SHIPPED
 
-The largest security work item, and the natural home for the remaining
-mutation-fidelity debt — all of it is "make extraction provably correct":
+All six milestones landed with their gates green (TOCTOU fault injection +
+collision matrix, 28/28 on MSVC and gcc-WSL). Full detail:
+docs/v1.24-implementation-plan.md §12 (milestones) and §0 (pre-analysis
+verdicts + the ten gaps found and closed during the arc). Highlights:
 
-**Syscall-level containment (§4.1):**
-- Windows: open-once traversal rejecting reparse points per component,
-  `GetFinalPathNameByHandle` containment assertion, **write through the same
-  handle** (closes assert-then-write TOCTOU).
-- POSIX: `openat2` `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` with `openat` +
-  `O_NOFOLLOW` dirfd walk fallback (exercised by the WSL test leg).
-- Namespace traps: 8.3 alias-shaped names (`NAME~X.ext`) added to the
-  existing DOS-device/colon rejections.
+**Syscall-level containment (§4.1) ✅:**
+- Windows: open-once NtCreateFile traversal rejecting reparse points per
+  component, `GetFinalPathNameByHandle` containment assertion, **write
+  through the same handle** (closes assert-then-write TOCTOU).
+- POSIX: `openat2` `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` (direct syscall,
+  cached probe) with `openat` + `O_NOFOLLOW` dirfd walk fallback and a
+  kernel-path prefix assertion on the final anchor (exercised for real by
+  the WSL test leg).
+- Namespace traps: 8.3 alias-shaped names (`NAME~X.ext`) rejected
+  fail-closed in the walk and skipped-with-report in the CLI.
 
-**Atomic extraction (§3.3):** temp-in-destination random-suffix writes,
-atomic rename (`FileRenameInformationEx` on Windows), per-run journal
-manifest for abandoned-temp cleanup (no pattern sweeps), FD-limit
-accounting.
+**Atomic extraction (§3.3) ✅:** crypto-random temp-in-destination writes,
+journal-fsynced before each temp exists, atomic no-follow rename cascade
+(NTFS POSIX-semantics rename anchored to the verified parent; renameat2 /
+renamex_np / link-cascade on POSIX), per-directory journal manifests with a
+forging-resistant validated sweep, FD use bounded by parallelism. This
+landed as a deliberate drift alignment: the CLI's direct-to-destination
+writes and the DLL's predictable-named temps were converged onto one
+io-layer mechanism (ExtractionSession + AtomicWriter, two thin entry
+points) — see Risk Register item 2 for the full record.
 
-**Collision & overwrite policy (§3.2):** in-archive duplicate-identical,
-case-insensitive, NFC/NFD, and file-vs-directory collisions rejected as
-integrity failures; default no-clobber audited end-to-end;
-`FILE_ATTRIBUTE_READONLY` respected.
+**Collision & overwrite policy (§3.2) ✅:** duplicate-identical, case-fold,
+NFC/NFD, and file-vs-directory collisions abort with the structural exit
+code before anything is written (gate 2); READONLY destinations fail the
+commit everywhere.
 
-**Encoding, trimming, UI invariant (§4.4):** trailing-space/dot trimming
-before UI *and* path evaluation; displayed-name ≡ extracted-name invariant
-tested; lossless escaping of undecodable names → skip-with-report;
-timestamp clamping bounds parameterized.
+**Encoding, trimming, UI invariant (§4.4) ✅:** displayed-name ≡
+extracted-name pinned end-to-end; undecodable names percent-encoded
+losslessly (the escaped name IS the filename); timestamp clamp bounds
+parameterized (MtimeBounds).
 
-**Exit policy + JSON summary (§3.1):** security events mapped into the
-WinRAR/unrar exit taxonomy (no new codes — interop stage 15 stays
-authoritative); per-entry JSON summary (`extracted/modified/skipped/failed/
-unprocessed`).
+**Exit policy + JSON summary (§3.1) ✅:** `--json-summary[=path]` with
+strict stdout purity; statuses extracted/modified/skipped/failed/
+unprocessed; security flags machine-readable; no new exit codes.
 
-**Metadata fidelity (absorbed from the previous v1.24 slot):** hardlink
-fallback verification + link-count oracle; unknown-extra-record
-preservation policy; mutation-level test debt (versioning, multi-volume
-lock, metadata preservation).
+**Metadata fidelity (§6/§7) ✅:** links default-deny with decoupled opt-in;
+session-scoped hardlinks with link-count/inode oracles; cross-device
+hardlink fallback debiting the byte caps; SUID/SGID/sticky masked unless
+`--preserve-suid`, modes umask-bounded; deferred directory metadata applied
+bottom-up; unknown extra records preserved verbatim across mutations.
 
 ---
 
@@ -304,7 +315,7 @@ C# NuGet (`OpenRAR.NET`).
 | :--- | :--- | :--- | :--- |
 | **v1.22.0** | SIMD + security baseline sweep | Safe-math audit, sanitization audit, KDF caps | ~~OPEN P1 roundtrip divergence~~ FIXED; bit-exactness gates |
 | **v1.23.0** | SFX scripting | Full §6 consent/runtime policy | Security design review; sandbox e2e |
-| **v1.24.0** | Extraction containment & integrity | §3/§4 syscall containment, atomic extraction, collisions, JSON summary | TOCTOU fault injection; collision matrix |
+| **v1.24.0** | Extraction containment & integrity ✅ | §3/§4 syscall containment, atomic extraction, collisions, JSON summary | TOCTOU fault injection ✅; collision matrix ✅ |
 | **v1.25.0** | mmap read engine (listing/random-read) | §5.2 normative no-mmap-for-extraction | Limits-not-bypassable; fault injection |
 | **v1.26.0** | CDC deduplication | Cumulative caps on dedup streams | **Format-legality gate 0** |
 | **v1.27.0** | xattr / quarantine / MotW | §4.3 MotW local-generation; ownership policy | Legality gate; multi-OS matrix |
@@ -321,8 +332,28 @@ C# NuGet (`OpenRAR.NET`).
    non-default-window streams still pass the recorded dictionary size
    explicitly (archive/dll layers do). The P1 roundtrip divergence this item
    used to track is fixed (see CLOSED P1 above).
-2. **v1.24 containment depth** — write-through-handle extraction touches
-   every write path; the largest refactor of the arc. Budget accordingly.
+2. **v1.24 containment depth** — RESOLVED. The arc's premise was real
+   drift, both directions: the CLI wrote directly at the destination
+   (CreateAlways, no temp, destination truncated before content verified)
+   while the DLL's `durable_write_to` did temp+rename with predictable
+   `.openrar-tmp.<pid>.<seq>` names, no journal, and no no-clobber mode —
+   and write-through-handle containment (M2) means whoever opens the write
+   handle must run the containment walk, so two openers would have meant
+   two drifting containment implementations. Converged on ONE mechanism in
+   the io layer — ExtractionSession + AtomicWriter (crypto-random temps,
+   per-directory journals, no-follow atomic rename cascade) — with two
+   thin entry points (the reader's write paths for the CLI;
+   `durable_write_to` for the DLL) and per-surface policy kept at the
+   surface (CLI overwrite consent, DLL caller-chosen destination). The
+   alternative — converting the CLI to stream through
+   `extract_entry_stream` plus a DLL-style wrapper — was rejected: bigger
+   refactor, less security gain, and the reader must own the handle
+   anyway. WASM is in-memory (no drift by construction). Design
+   refinement over the pre-analysis: per-directory journals instead of one
+   root journal (plan §2.3, gap 6) — exact sweep coverage regardless of
+   who knew the root, FD use bounded by parallelism, and the
+   forged-journal attack closed by same-directory + exact-temp-shape
+   record validation.
 3. **v1.23 SFX auto-execution** — security-sensitive by construction;
    guardrails are scope, not polish.
 4. **v1.26 CDC format legality** — the flagship reduction claim may not
