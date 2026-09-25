@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <set>
 #include <vector>
 
 namespace openrar::compress {
@@ -95,18 +96,43 @@ public:
     // self-contradictory — the caller must abort BEFORE writing anything.
     bool detect_collisions(std::vector<CollisionPair>& out) const;
 
-    // Extract entry (stored or compressed) directly to disk
+    // Extract entry (stored or compressed) directly to disk. `limits`/
+    // `state`, when provided, are debited by hardlink fallback copies
+    // (v1.24 plan §7.2 — excess aborts the entry).
     bool extract_entry(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
-                       const std::string& password = "");
+                       const std::string& password = "", const ExtractionLimits* limits = nullptr,
+                       LimitState* state = nullptr);
 
     // Extract stored (method 0) entry directly to disk
     bool extract_store_entry(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
-                             const std::string& password = "");
+                             const std::string& password = "",
+                             const ExtractionLimits* limits = nullptr, LimitState* state = nullptr);
 
     void set_keep_broken(bool kb) { keep_broken_ = kb; }
     bool keep_broken() const { return keep_broken_; }
     void set_extract_symlinks(bool es) { extract_symlinks_ = es; }
     bool extract_symlinks() const { return extract_symlinks_; }
+
+    // v1.24 plan §7.1: --preserve-suid admin opt-in — when false (default),
+    // archived POSIX modes lose their SUID/SGID/sticky bits.
+    void set_preserve_suid(bool ps) { preserve_suid_ = ps; }
+
+    // Mode policy shared by file chmod and deferred dir restoration:
+    // umask-bounded, SUID/SGID/sticky masked unless preserve_suid.
+    static core::uint32 sanitize_extract_mode(core::uint32 raw_mode, bool preserve_suid,
+                                              core::uint32 umask_bits);
+
+    // v1.24 plan §6.3: DLL/WASM extraction calls are separate hardlink
+    // sessions — clears the session-scoped link registry (and deferred
+    // metadata) so per-call surfaces never link against a previous call's
+    // outputs. The CLI's whole x|e run is naturally one session (fresh
+    // readers), so it never needs to call this.
+    void begin_extraction_session();
+
+    // v1.24 plan §7.4: applies deferred directory metadata bottom-up
+    // (deepest first) — directory mtimes and modes, after all writes
+    // complete. Best-effort: failures are skipped, never fatal.
+    void apply_deferred_dir_metadata();
 
     // v1.24 M2: explicit containment root — the extraction destination,
     // canonicalized and pinned for the whole session (plan §1.3). When unset,
@@ -279,10 +305,48 @@ private:
     // touched (safe links-to-directories conversion semantics).
     std::vector<std::filesystem::path> links_created_;
     bool keep_broken_{false};
-    bool extract_symlinks_{true};
+    // v1.24 plan §6.1: links are DEFAULT DENY — symlinks, hardlinks and
+    // junctions extract only with the explicit opt-in (-ol / set_extract_
+    // symlinks(true)). Opt-in is decoupled from path resolution: even with
+    // links enabled, absolute/escaping links are rejected and every regular
+    // file write still goes through the containment walk.
+    bool extract_symlinks_{false};
+
+    // Session-scoped link registry (v1.24 plan §6.3): absolute normalized
+    // paths of files created by THIS extraction session. Hardlink entries
+    // may only target files in the registry — a hardlink to any pre-existing
+    // user file is skipped. One extract_all / one CLI x|e invocation is one
+    // session; DLL/WASM calls begin a fresh session per call
+    // (begin_extraction_session).
+    std::set<std::string> session_created_paths_;
+
+    // Deferred directory metadata (v1.24 plan §7.4): directories are created
+    // permissive with default timestamps; (path, mode, mtime) stack here and
+    // are applied BOTTOM-UP (deepest first) by apply_deferred_dir_metadata()
+    // after all writes complete — preserving directory mtimes that children
+    // would clobber and letting read-only directories receive children.
+    struct PendingDirMeta {
+        std::filesystem::path path;
+        bool has_mode = false;
+        core::uint32 mode = 0; // POSIX mode bits (host_os == 1 archives)
+        bool has_mtime = false;
+        core::uint64 mtime_unix = 0;
+    };
+    std::vector<PendingDirMeta> pending_dir_meta_;
+
     void convert_self_links(const std::filesystem::path& dest_path);
     static bool ensure_parent_dir(const std::filesystem::path& dest_path,
                                   const std::string& entry_name);
+    bool preserve_suid_{false};
+
+    // v1.24 M5: impl bodies of the public extract wrappers — the wrappers
+    // record successful destinations into session_created_paths_ (plan §6.3).
+    bool extract_entry_impl(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
+                            const std::string& password, const ExtractionLimits* limits,
+                            LimitState* state);
+    bool extract_store_entry_impl(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
+                                  const std::string& password, const ExtractionLimits* limits,
+                                  LimitState* state);
 
     // Atomic extraction (v1.24 M1): per-reader journal anchor, created lazily
     // on the first file write. One journal per destination directory the

@@ -357,8 +357,14 @@ static void test_directory_entry() {
     assert(log.calls.size() == 1 && log.calls[0].first == 0 && log.calls[0].second == 0);
     // The file inside still extracts to the same tree.
     const fs::path fdest = dir / "out" / "nested" / "f.txt";
-    assert(openrar_archive_handle_extract_to_path(h, 1, fdest.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr) == RAR_OK);
+    const int frc = openrar_archive_handle_extract_to_path(h, 1, fdest.u8string().c_str(), nullptr,
+                                                           nullptr, nullptr);
+    if (frc != RAR_OK) {
+        char errbuf[512] = {};
+        openrar_archive_get_error(errbuf, sizeof(errbuf));
+        std::cerr << "  dir-entry file extract failed rc=" << frc << " err=" << errbuf << "\n";
+    }
+    assert(frc == RAR_OK);
     const auto got = read_bytes(fdest);
     assert(got.size() == 2 && got[0] == 'h' && got[1] == 'i');
     openrar_archive_close(h);

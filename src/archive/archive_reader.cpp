@@ -16,8 +16,8 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstring>
 #include <iostream>
+#include <cstring>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -25,6 +25,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 #include "../io/win32_meta.hpp"
@@ -147,6 +150,117 @@ bool ArchiveReader::create_contained_dir(const ArchiveEntry& entry,
     }
     io::ContainmentRoot::VerifiedDir anchor;
     return sess.containment().resolve_dir(generic_rel(rel_dir_p), /*create=*/true, anchor);
+}
+
+void ArchiveReader::begin_extraction_session() {
+    // v1.24 plan §6.3: fresh hardlink session per DLL/WASM call. Deferred
+    // directory metadata deliberately SPANS calls — children arrive in later
+    // calls, so their directories' modes/mtimes must stay pending until
+    // those children exist (apply at the next call start / handle close).
+    session_created_paths_.clear();
+    links_created_.clear();
+}
+
+namespace {
+// Normalized absolute generic-string form used as the session-registry key.
+std::string session_key(const std::filesystem::path& p) {
+    std::error_code ec;
+    std::filesystem::path abs = std::filesystem::absolute(p, ec);
+    if (ec) return io::u8_str(p);
+    return io::u8_str(abs.lexically_normal());
+}
+
+// Process umask cached once (thread-safely): chmod bounding must not call
+// umask(0) transiently — worker threads create files concurrently and a
+// zeroed umask window would widen their creation modes.
+#ifdef _WIN32
+unsigned cached_umask() {
+    return 0; // no POSIX umask on Windows
+}
+#else
+mode_t cached_umask() {
+    static const mode_t m = [] {
+        const mode_t old = ::umask(0);
+        ::umask(old);
+        return old;
+    }();
+    return m;
+}
+#endif
+
+// Byte-cap debit for hardlink fallback copies (plan §7.2): every copied
+// byte accumulates into state->total_out; a configured cap aborts.
+bool debit_bytes(uint64_t n, const ExtractionLimits* limits, LimitState* state) {
+    if (state == nullptr) return limits == nullptr; // nothing tracked: allow
+    if (n > UINT64_MAX - state->total_out) return false;
+    state->total_out += n;
+    if (limits != nullptr && state->total_out > limits->max_total_output_bytes) {
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+core::uint32 ArchiveReader::sanitize_extract_mode(core::uint32 raw_mode, bool preserve_suid,
+                                                  core::uint32 umask_bits) {
+    // v1.24 plan §7.1: archived POSIX modes are bounded by the process umask;
+    // SUID/SGID/sticky (07000) are masked unless the explicit --preserve-suid
+    // admin opt-in is given.
+    core::uint32 mode = raw_mode & 07777u;
+    if (!preserve_suid) mode &= ~07000u;
+    // The umask only ever clears rwx bits (umask(2) semantics); masking with
+    // ~umask alone preserves the 07000 bits under --preserve-suid.
+    return mode & static_cast<core::uint32>(~umask_bits);
+}
+
+void ArchiveReader::apply_deferred_dir_metadata() {
+    // Bottom-up: deepest first, so restrictive modes and final mtimes land
+    // after every child write (plan §7.4). Best-effort throughout.
+    std::sort(pending_dir_meta_.begin(), pending_dir_meta_.end(),
+              [](const PendingDirMeta& a, const PendingDirMeta& b) {
+                  const auto depth = [](const std::filesystem::path& p) {
+                      return static_cast<size_t>(std::distance(p.begin(), p.end()));
+                  };
+                  return depth(a.path) > depth(b.path);
+              });
+    for (const auto& meta : pending_dir_meta_) {
+#ifdef _WIN32
+        // Directory times via a backup-semantics handle (no traverse of the
+        // final component's reparse point — the walk verified it at create).
+        HANDLE h = CreateFileW(meta.path.wstring().c_str(), FILE_WRITE_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                               OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            if (meta.has_mtime) {
+                // unix epoch → FILETIME (100ns since 1601-01-01)
+                const long long ft100 =
+                    (static_cast<long long>(meta.mtime_unix) + 11644473600LL) * 10000000LL;
+                LARGE_INTEGER li;
+                li.QuadPart = ft100;
+                FILETIME ft;
+                ft.dwLowDateTime = static_cast<DWORD>(li.LowPart);
+                ft.dwHighDateTime = static_cast<DWORD>(li.HighPart);
+                SetFileTime(h, nullptr, nullptr, &ft);
+            }
+            CloseHandle(h);
+        }
+#else
+        if (meta.has_mtime) {
+            struct timespec times[2];
+            times[0].tv_sec = 0;
+            times[0].tv_nsec = UTIME_OMIT; // atime untouched
+            times[1].tv_sec = static_cast<time_t>(meta.mtime_unix);
+            times[1].tv_nsec = 0;
+            ::utimensat(AT_FDCWD, meta.path.c_str(), times, AT_SYMLINK_NOFOLLOW);
+        }
+        if (meta.has_mode) {
+            ::chmod(meta.path.c_str(),
+                    static_cast<mode_t>(sanitize_extract_mode(
+                        meta.mode, preserve_suid_, static_cast<core::uint32>(cached_umask()))));
+        }
+#endif
+    }
+    pending_dir_meta_.clear();
 }
 
 bool ArchiveReader::detect_collisions(std::vector<CollisionPair>& out) const {
@@ -1994,7 +2108,36 @@ bool ArchiveReader::ensure_parent_dir(const std::filesystem::path& dest_path,
 }
 
 bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
-                                  const std::string& password) {
+                                  const std::string& password, const ExtractionLimits* limits,
+                                  LimitState* state) {
+    // v1.24 plan §6.3: successful destinations join the session-scoped
+    // registry — hardlink entries may only target files created in this
+    // session.
+    const bool ok = extract_entry_impl(entry, dest_path, password, limits, state);
+    if (ok) {
+        session_created_paths_.insert(session_key(dest_path));
+#ifndef _WIN32
+        // v1.24 plan §7.1: restore archived POSIX modes for regular files —
+        // umask-bounded, SUID/SGID/sticky masked unless --preserve-suid.
+        // (Directories defer to apply_deferred_dir_metadata; links carry no
+        // own mode.) Applied only for real st_mode producers (file-type
+        // bits present).
+        if (entry.header.host_os == 1 && entry.header.redir_type == 0 &&
+            (entry.header.file_flags & format::FHFL_DIRECTORY) == 0 &&
+            (entry.header.attributes & 0170000u) != 0 && (entry.header.attributes & 07777u) != 0) {
+            ::chmod(dest_path.c_str(),
+                    static_cast<mode_t>(sanitize_extract_mode(entry.header.attributes,
+                                                              preserve_suid_, cached_umask())));
+        }
+#endif
+    }
+    return ok;
+}
+
+bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
+                                       const std::filesystem::path& dest_path,
+                                       const std::string& password, const ExtractionLimits* limits,
+                                       LimitState* state) {
     std::string pass = password.empty() ? password_ : password;
 
     // Same rationale as test_entry(): don't let a wrong-password failure
@@ -2009,7 +2152,37 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
     // (anchored mkdir + reopen-verify), never via unanchored
     // create_directories.
     if (entry.header.file_flags & format::FHFL_DIRECTORY) {
-        return create_contained_dir(entry, dest_path);
+        const bool ok = create_contained_dir(entry, dest_path);
+        if (ok) {
+            // v1.24 plan §7.4: stack (path, mode, mtime) for bottom-up
+            // restoration after all writes complete.
+            PendingDirMeta meta;
+            meta.path = dest_path;
+            // POSIX modes are honored only when the producer stored a real
+            // st_mode (file-type bits present); DOS-style attribute blobs
+            // (e.g. 0x10 from Windows-foo producers) would otherwise become
+            // garbage restrictive modes.
+            if (entry.header.host_os == 1 && (entry.header.attributes & 0170000u) != 0 &&
+                (entry.header.attributes & 07777u) != 0) {
+                meta.has_mode = true;
+                meta.mode = entry.header.attributes;
+            }
+            // Times: FHEXTRA_HTIME (what the mutator writes) first, then
+            // the plain unix field; a Windows FILETIME converts over.
+            if (entry.header.htime_is_unix && entry.header.htime_mtime_unix != 0) {
+                meta.has_mtime = true;
+                meta.mtime_unix = entry.header.htime_mtime_unix;
+            } else if (entry.header.utime_unix != 0) {
+                meta.has_mtime = true;
+                meta.mtime_unix = entry.header.utime_unix;
+            } else if (entry.header.mtime_win != 0) {
+                meta.has_mtime = true;
+                meta.mtime_unix =
+                    static_cast<core::uint64>(entry.header.mtime_win / 10000000LL - 11644473600LL);
+            }
+            if (meta.has_mode || meta.has_mtime) pending_dir_meta_.push_back(std::move(meta));
+        }
+        return ok;
     }
 
     // 07-services.md: Redirection – symlinks/junctions/hardlinks/filecopy
@@ -2117,15 +2290,51 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
             // climbs above DestRoot is skipped (report H3).
             std::filesystem::path hard_src;
             if (!resolve_under_root(dest_root, tgt_generic, hard_src)) return true;
+            // v1.24 plan §6.3: session-scoped hardlinks — the target must be
+            // a file THIS extraction session created. A hardlink to any
+            // pre-existing user file is skipped (the old fs::exists check
+            // accepted those).
+            if (session_created_paths_.count(session_key(hard_src)) == 0) {
+                return true; // skip: target not created in this session
+            }
             std::error_code ec2;
-            // RefList avoidance: if already extracted hardlink target exists, link to it; if src missing, skip
             if (!std::filesystem::exists(hard_src, ec2)) {
-                return true; // skip, target not yet available (avoid double extraction)
+                return true; // skip, target vanished since creation
             }
             // Also deny if hard_src parent chain contains symlink (LinksToDirs)
             if (has_symlink_parent(hard_src)) return true;
             std::filesystem::create_hard_link(hard_src, dest_path, ec2);
-            if (ec2) return false;
+            if (ec2) {
+                // v1.24 plan §7.2: cross-device hardlinks fall back to a full
+                // copy that debits every byte against the extraction caps;
+                // excess aborts the entry.
+                const bool cross_device =
+#ifdef _WIN32
+                    ec2.value() == ERROR_NOT_SAME_DEVICE;
+#else
+                    ec2.value() == EXDEV;
+#endif
+                if (!cross_device) return false;
+                io::FileStream src;
+                if (!src.open(hard_src, io::FileMode::ReadOnly)) return false;
+                io::AtomicWriter writer;
+                if (!writer.open(ensure_extraction_session(), dest_path)) return false;
+                core::byte buf[8192];
+                for (;;) {
+                    const size_t got = src.read(buf, sizeof(buf));
+                    if (got == 0) break;
+                    if (!debit_bytes(got, limits, state)) {
+                        writer.abandon();
+                        return false; // byte cap exceeded (plan §7.2)
+                    }
+                    if (writer.stream().write(buf, got) != got) {
+                        writer.abandon();
+                        return false;
+                    }
+                }
+                if (!writer.commit()) return false;
+                return true;
+            }
             return true;
         } else if (rtype == 5) { // FILECOPY
             std::filesystem::path dest_root = get_dest_root(dest_path, entry.header.file_name);
@@ -2294,7 +2503,7 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
     }
 
     if (entry.header.method == 0) {
-        return extract_store_entry(entry, dest_path, pass);
+        return extract_store_entry(entry, dest_path, pass, limits, state);
     }
 
     std::vector<core::byte> packed;
@@ -2341,13 +2550,31 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
 
 bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
                                         const std::filesystem::path& dest_path,
-                                        const std::string& password) {
+                                        const std::string& password, const ExtractionLimits* limits,
+                                        LimitState* state) {
     if (entry.header.method != 0) {
         return false;
     }
     if (entry.header.is_encrypted) {
-        return extract_entry(entry, dest_path, password);
+        return extract_entry(entry, dest_path, password, limits, state);
     }
+
+    // v1.24 plan §6.3: recorded destinations join the session registry.
+    const bool ok = extract_store_entry_impl(entry, dest_path, password, limits, state);
+    if (ok) session_created_paths_.insert(session_key(dest_path));
+    return ok;
+}
+
+bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
+                                             const std::filesystem::path& dest_path,
+                                             const std::string& password,
+                                             const ExtractionLimits* limits, LimitState* state) {
+    (void)password; // stored plaintext entries take no password here
+    if (entry.header.method != 0) {
+        return false;
+    }
+    (void)limits;
+    (void)state; // no hardlink fallback on the store path itself
 
     // Same containment rationale as the compressed path above; has_symlink_parent
     // keeps the shipped B3/M9 destination policy (see extract_entry).

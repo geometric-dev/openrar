@@ -52,6 +52,18 @@
 
 namespace openrar::cli {
 
+#ifndef _WIN32
+// Process umask cached once (thread-safely) for mode bounding (v1.24 §7.1).
+static mode_t cached_umask_bits() {
+    static const mode_t m = [] {
+        const mode_t old = ::umask(0);
+        ::umask(old);
+        return old;
+    }();
+    return m;
+}
+#endif
+
 bool g_plain_mode = false;
 bool g_quiet_mode = false;
 bool g_assume_yes = false;
@@ -1669,10 +1681,10 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
 int extract_archive(const std::string& arc_path, const std::string& dest_dir, bool full_paths,
                     const std::string& password = "", unsigned threads = 1,
                     bool keep_broken = false, OverwriteMode overwrite_mode = OverwriteMode::Prompt,
-                    bool extract_symlinks = true,
+                    bool extract_symlinks = false,
                     const std::vector<std::string>& exclude_patterns = {}, int extract_version = -1,
                     const std::vector<std::string>& file_patterns = {},
-                    [[maybe_unused]] bool restore_owner = false) {
+                    [[maybe_unused]] bool restore_owner = false, bool preserve_suid = false) {
     // --json-summary (v1.24 M4, plan §5): stdout purity + machine report.
     if (g_json_stdout_only) set_prog_out(std::cerr);
     archive::ExtractionReport report;
@@ -2032,7 +2044,8 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     bool any_failed = false;
     std::atomic<int> badpw_flag{0};
 
-    auto restore_children = [restore_owner](archive::ArchiveReader& r, const ExtractJob& j) {
+    auto restore_children = [restore_owner, preserve_suid](archive::ArchiveReader& r,
+                                                           const ExtractJob& j) {
         for (const auto* child : j.children) {
             if (child->header.service_type == "STM") {
                 std::vector<core::byte> payload;
@@ -2095,8 +2108,13 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                 }
             }
         }
-        if (j.entry && j.entry->header.host_os == 1 && j.entry->header.redir_type == 0) {
-            mode_t mode = static_cast<mode_t>(j.entry->header.attributes & 07777);
+        bool posix_mode_stored =
+            j.entry && j.entry->header.host_os == 1 && (j.entry->header.attributes & 0170000u) != 0;
+        if (posix_mode_stored && j.entry->header.redir_type == 0) {
+            // v1.24 plan §7.1: umask-bounded, SUID/SGID/sticky masked unless
+            // the explicit --preserve-suid admin opt-in was given.
+            const mode_t mode = static_cast<mode_t>(archive::ArchiveReader::sanitize_extract_mode(
+                j.entry->header.attributes, preserve_suid, cached_umask_bits()));
             if (mode != 0) {
                 if (::chmod(j.target.c_str(), mode) != 0) {
                     // Ignored: non-fatal permission update
@@ -2325,6 +2343,13 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             if (!okv) any_failed = true;
         }
     }
+
+    // v1.24 plan §7.4: deferred directory metadata lands after every write —
+    // dir mtimes survive child writes and read-only dirs were permissive
+    // while receiving children. Applies to the main reader (sequential runs)
+    // and slot readers[0] (parallel phase 2/3), whichever did the work.
+    reader.apply_deferred_dir_metadata();
+    for (auto& r : slots.readers) r->apply_deferred_dir_metadata();
 
     if (any_failed) {
         Prog.done(extract_jobs.size(), "unpacked", arc_path, total_bytes, 0);
@@ -2588,9 +2613,10 @@ static int cli_main(int argc, char* argv[]) {
     openrar::core::uint32 rr_percent = 3;
     openrar::io::ExcludePathMode ep_mode = openrar::io::ExcludePathMode::None;
     bool recurse_subdirs = true;
-    bool want_symlinks = false;   // -ol
-    bool extract_symlinks = true; // -ol-
-    bool keep_broken = false;     // -kb
+    bool want_symlinks = false;    // -ol
+    bool extract_symlinks = false; // v1.24 §6.1: links DEFAULT DENY; -ol opts in
+    bool keep_broken = false;      // -kb
+    bool preserve_suid = false;    // --preserve-suid (v1.24 §7.1)
     openrar::cli::OverwriteMode overwrite_mode = openrar::cli::OverwriteMode::Prompt;
     bool want_qo = true;   // -qo, -qo+, -qo- (default: enabled)
     bool want_ams = false; // -ams, -am
@@ -2642,6 +2668,9 @@ static int cli_main(int argc, char* argv[]) {
             g_json_stdout_only = true;
         } else if (sw_starts(s, "--json-summary=")) {
             g_json_summary_path = s.substr(std::string("--json-summary=").size());
+        } else if (sw_eq(s, "--preserve-suid")) {
+            // v1.24 plan §7.1: admin opt-in to restore SUID/SGID/sticky bits.
+            preserve_suid = true;
         } else if (sw_eq(s, "-o+")) {
             overwrite_mode = openrar::cli::OverwriteMode::Overwrite;
         } else if (sw_eq(s, "-o-")) {
@@ -3099,7 +3128,7 @@ static int cli_main(int argc, char* argv[]) {
         return openrar::cli::extract_archive(arc_path, dest, cmd == "x", password, threads,
                                              keep_broken, overwrite_mode, extract_symlinks,
                                              exclude_patterns, extract_version, file_patterns,
-                                             (want_acl || want_og));
+                                             (want_acl || want_og), preserve_suid);
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
     } else if (cmd == "rr" || (cmd.rfind("rr", 0) == 0 && cmd.size() > 2 &&
