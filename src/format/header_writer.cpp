@@ -386,6 +386,14 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
         extra.insert(extra.end(), block.sub_data.begin(), block.sub_data.end());
     }
 
+    // Unknown extra records (v1.24 plan §7.3): captured verbatim on parse
+    // and re-encoded byte-identically here, appended after the known
+    // records (extra-area record order is not significant per spec — each
+    // record is self-describing).
+    for (const auto& unk : block.unknown_extras) {
+        extra.insert(extra.end(), unk.raw.begin(), unk.raw.end());
+    }
+
     core::uint64 head_flags =
         (block.pack_size >= 0 ? HFL_DATA : 0) | (extra.empty() ? 0 : HFL_EXTRA) |
         (extra_head_flags & (HFL_SPLITBEFORE | HFL_SPLITAFTER | HFL_CHILD | HFL_INHERITED));
