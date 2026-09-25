@@ -253,6 +253,16 @@ struct FileBlock {
 
     // Service SubData (e.g. CMT)
     std::vector<core::byte> sub_data;
+
+    // Unknown extra records (v1.24 plan §7.3): records whose type this
+    // build does not implement are captured VERBATIM (type vint + size vint
+    // + payload) and re-serialized byte-identically during mutations, so a
+    // roundtrip through OpenRAR never destroys data a newer producer wrote.
+    struct UnknownExtra {
+        core::uint64 type{0};
+        std::vector<core::byte> raw; // full record bytes
+    };
+    std::vector<UnknownExtra> unknown_extras;
 };
 
 // Encryption Header Model (HEAD_CRYPT)
