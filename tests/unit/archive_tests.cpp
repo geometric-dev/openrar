@@ -559,6 +559,9 @@ void test_filecopy_source_confined_to_root() {
     ArchiveReader reader;
     assert(reader.open(arc));
     assert(reader.entries().size() == 2);
+    // v1.24 §6.1: links are default-deny; this test exercises the FILECOPY
+    // confinement policy, so it opts in explicitly.
+    reader.set_extract_symlinks(true);
 
     // Attack entry: extraction "succeeds" (unsafe target skipped), but the
     // secret must not appear anywhere under out_root.
