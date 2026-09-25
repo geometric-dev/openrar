@@ -19,7 +19,8 @@ enum class DecompressErrorCode;
 
 namespace openrar::io {
 class ExtractionSession; // per-run journal anchor for atomic extraction (v1.24 M1)
-}
+class AtomicWriter;      // temp-in-destination atomic writer (v1.24 M1)
+} // namespace openrar::io
 
 namespace openrar::crypto {
 struct Rar5Keys; // POD key bundle (pbkdf2.hpp); streaming methods take it by pointer
@@ -96,6 +97,18 @@ public:
     bool keep_broken() const { return keep_broken_; }
     void set_extract_symlinks(bool es) { extract_symlinks_ = es; }
     bool extract_symlinks() const { return extract_symlinks_; }
+
+    // v1.24 M2: explicit containment root — the extraction destination,
+    // canonicalized and pinned for the whole session (plan §1.3). When unset,
+    // the root is inferred per-entry from dest_path by popping the entry's
+    // own sanitized directory components (works for full-path and flat
+    // layouts). Every regular-file write then goes through the no-follow
+    // containment walk and is committed through the verified handle.
+    void set_extraction_root(const std::filesystem::path& root) { extraction_root_ = root; }
+
+    // Test hook (gate-1 suite): force the POSIX openat walk fallback even
+    // where openat2 exists. No-op on Windows.
+    void force_containment_fallback_for_test();
 
     io::FileStream& stream() { return stream_; }
     bool read_packed_data(const ArchiveEntry& entry, std::vector<core::byte>& out) const;
@@ -266,6 +279,15 @@ private:
     // reader touches; readers are thread-confined, so no internal locking.
     std::unique_ptr<io::ExtractionSession> extraction_session_;
     io::ExtractionSession& ensure_extraction_session();
+    std::filesystem::path extraction_root_;
+
+    // v1.24 M2: containment wiring for the regular-file write paths —
+    // attaches the root (explicit or inferred), derives the caller-layout
+    // relative directory, and opens the writer through the verified anchor.
+    bool open_contained_writer(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
+                               io::AtomicWriter& writer);
+    // Contained directory materialization (dir records).
+    bool create_contained_dir(const ArchiveEntry& entry, const std::filesystem::path& dest_path);
 };
 
 } // namespace openrar::archive
