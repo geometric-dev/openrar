@@ -125,6 +125,13 @@ inline bool is_vt_supported() {
 #endif
 }
 
+// Output stream for all progress rendering. --json-summary (stdout-purity
+// mode, v1.24 plan §5.2) points this at stderr so stdout carries only JSON.
+inline std::ostream* g_prog_out = &std::cout;
+inline void set_prog_out(std::ostream& os) {
+    g_prog_out = &os;
+}
+
 class CLIProgress {
 private:
     static const int BAR_WIDTH = 28;
@@ -194,14 +201,14 @@ public:
         if (g_quiet_mode || !is_vt_supported()) return;
         std::lock_guard<std::mutex> lk(mu_);
         if (lines_drawn_ > 0) {
-            std::cout << "\x1b[" << lines_drawn_ << "A";
+            (*g_prog_out) << "\x1b[" << lines_drawn_ << "A";
         }
-        std::cout << "\x1b[2K\r  \x1b[38;2;95;184;176m" << SPIN_FRAMES[spin_frame_]
-                  << "\x1b[0m  \x1b[38;2;109;114;128m" << message << "\x1b[0m";
+        (*g_prog_out) << "\x1b[2K\r  \x1b[38;2;95;184;176m" << SPIN_FRAMES[spin_frame_]
+                      << "\x1b[0m  \x1b[38;2;109;114;128m" << message << "\x1b[0m";
         if (count >= 0) {
-            std::cout << "  \x1b[38;2;69;73;85m" << count << " found\x1b[0m";
+            (*g_prog_out) << "  \x1b[38;2;69;73;85m" << count << " found\x1b[0m";
         }
-        std::cout << "\n" << std::flush;
+        (*g_prog_out) << "\n" << std::flush;
         lines_drawn_ = 1;
         spin_frame_ = (spin_frame_ + 1) % 10;
     }
@@ -299,14 +306,14 @@ private:
         std::string file_line = "\x1b[38;2;69;73;85m" + current_file_ + "\x1b[0m";
 
         if (lines_drawn_ > 0) {
-            std::cout << "\x1b[" << lines_drawn_ << "A";
+            (*g_prog_out) << "\x1b[" << lines_drawn_ << "A";
         }
 
-        std::cout << "\x1b[2K\r  " << badge_line << "\n"
-                  << "\x1b[2K\r  " << bar_line << "\n"
-                  << "\x1b[2K\r  " << meta_line << "\n"
-                  << "\x1b[2K\r  " << file_line << "\n"
-                  << std::flush;
+        (*g_prog_out) << "\x1b[2K\r  " << badge_line << "\n"
+                      << "\x1b[2K\r  " << bar_line << "\n"
+                      << "\x1b[2K\r  " << meta_line << "\n"
+                      << "\x1b[2K\r  " << file_line << "\n"
+                      << std::flush;
         lines_drawn_ = 4;
     }
 
@@ -340,22 +347,24 @@ public:
         if (is_vt_supported()) {
             std::ostringstream oss;
             oss << std::fixed << std::setprecision(1) << elapsed;
-            std::cout << "\x1b[38;2;123;193;127m✓\x1b[0m  \x1b[1;38;2;123;193;127;48;2;25;39;26m "
-                         "DONE \x1b[0m\n"
-                      << "\x1b[1;38;2;231;229;223m" << total_files
-                      << "\x1b[0m \x1b[38;2;109;114;128mfiles " << verb
-                      << " in\x1b[0m \x1b[1;38;2;231;229;223m" << oss.str() << "s\x1b[0m";
+            (*g_prog_out)
+                << "\x1b[38;2;123;193;127m✓\x1b[0m  \x1b[1;38;2;123;193;127;48;2;25;39;26m "
+                   "DONE \x1b[0m\n"
+                << "\x1b[1;38;2;231;229;223m" << total_files
+                << "\x1b[0m \x1b[38;2;109;114;128mfiles " << verb
+                << " in\x1b[0m \x1b[1;38;2;231;229;223m" << oss.str() << "s\x1b[0m";
             if (!arc_name.empty()) {
-                std::cout << " \x1b[38;2;109;114;128m→\x1b[0m \x1b[1;38;2;231;229;223m" << arc_name
-                          << "\x1b[0m";
+                (*g_prog_out) << " \x1b[38;2;109;114;128m→\x1b[0m \x1b[1;38;2;231;229;223m"
+                              << arc_name << "\x1b[0m";
             }
-            std::cout << ratio_str << "\n\n" << std::flush;
+            (*g_prog_out) << ratio_str << "\n\n" << std::flush;
         } else {
             std::ostringstream oss;
             oss << std::fixed << std::setprecision(1) << elapsed;
-            std::cout << "Done. " << total_files << " files " << verb << " in " << oss.str() << "s";
-            if (!arc_name.empty()) std::cout << " -> " << arc_name;
-            std::cout << "\n" << std::flush;
+            (*g_prog_out) << "Done. " << total_files << " files " << verb << " in " << oss.str()
+                          << "s";
+            if (!arc_name.empty()) (*g_prog_out) << " -> " << arc_name;
+            (*g_prog_out) << "\n" << std::flush;
         }
     }
 
@@ -368,11 +377,11 @@ private:
     // Caller must hold mu_.
     void clear_locked() {
         if (lines_drawn_ > 0 && is_vt_supported()) {
-            std::cout << "\x1b[" << lines_drawn_ << "A";
+            (*g_prog_out) << "\x1b[" << lines_drawn_ << "A";
             for (int i = 0; i < lines_drawn_; ++i) {
-                std::cout << "\x1b[2K\r\n";
+                (*g_prog_out) << "\x1b[2K\r\n";
             }
-            std::cout << "\x1b[" << lines_drawn_ << "A" << std::flush;
+            (*g_prog_out) << "\x1b[" << lines_drawn_ << "A" << std::flush;
             lines_drawn_ = 0;
         }
     }
