@@ -1,4 +1,5 @@
 #include "path_util.hpp"
+#include "../core/types.hpp"
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -81,6 +82,90 @@ std::string make_safe_component(std::string item) {
 
 } // namespace
 
+bool is_valid_utf8(const std::string& s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        const auto lead = static_cast<unsigned char>(s[i]);
+        size_t len = 0;
+        if (lead < 0x80) {
+            ++i;
+            continue;
+        }
+        if ((lead & 0xE0) == 0xC0)
+            len = 2;
+        else if ((lead & 0xF0) == 0xE0)
+            len = 3;
+        else if ((lead & 0xF8) == 0xF0)
+            len = 4;
+        else
+            return false; // stray continuation byte or 0xF8+ lead
+        if (i + len > s.size()) return false;
+        unsigned v = lead & (len == 2 ? 0x1F : (len == 3 ? 0x0F : 0x07));
+        for (size_t k = 1; k < len; ++k) {
+            const auto cont = static_cast<unsigned char>(s[i + k]);
+            if ((cont & 0xC0) != 0x80) return false;
+            v = (v << 6) | (cont & 0x3F);
+        }
+        // overlong and surrogate rejection
+        static const unsigned kMin[5] = {0, 0, 0x80, 0x800, 0x10000};
+        if (v < kMin[len] || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return false;
+        i += len;
+    }
+    return true;
+}
+
+std::string percent_encode_invalid_utf8(const std::string& s) {
+    static const char* kHex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(s.size() + 8);
+    size_t i = 0;
+    while (i < s.size()) {
+        const auto lead = static_cast<unsigned char>(s[i]);
+        size_t len = 0;
+        bool ok = false;
+        if (lead < 0x80) {
+            len = 1;
+            ok = true;
+        } else if ((lead & 0xE0) == 0xC0) {
+            len = 2;
+        } else if ((lead & 0xF0) == 0xE0) {
+            len = 3;
+        } else if ((lead & 0xF8) == 0xF0) {
+            len = 4;
+        }
+        if (len > 1 && i + len <= s.size()) {
+            ok = true;
+            unsigned v = lead & (len == 2 ? 0x1F : (len == 3 ? 0x0F : 0x07));
+            for (size_t k = 1; k < len; ++k) {
+                const auto cont = static_cast<unsigned char>(s[i + k]);
+                if ((cont & 0xC0) != 0x80) {
+                    ok = false;
+                    break;
+                }
+                v = (v << 6) | (cont & 0x3F);
+            }
+            if (ok) {
+                static const unsigned kMin[5] = {0, 0, 0x80, 0x800, 0x10000};
+                if (v < kMin[len] || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) ok = false;
+            }
+        }
+        if (len == 0) len = 1; // invalid lead byte: escape it and move on
+        if (ok) {
+            out.append(s, i, len);
+        } else {
+            // each byte of the broken sequence becomes %XX
+            for (size_t k = 0; k < len; ++k) {
+                const auto b = static_cast<unsigned char>(s[i + k]);
+                out += '%';
+                out += kHex[(b >> 4) & 0xF];
+                out += kHex[b & 0xF];
+            }
+        }
+        i += len;
+    }
+    return out;
+}
+
 std::string sanitize_archive_path(const std::string& path) {
     std::string norm = normalize_separators(path, '/');
 
@@ -108,7 +193,10 @@ std::string sanitize_archive_path(const std::string& path) {
                 parts.pop_back();
             }
         } else {
-            parts.push_back(make_safe_component(item));
+            // v1.24 plan §4.3: undecodable (invalid UTF-8) names are
+            // percent-encoded losslessly BEFORE component hardening — the
+            // escaped name is the on-disk name and displayed name alike.
+            parts.push_back(make_safe_component(percent_encode_invalid_utf8(item)));
         }
     }
 

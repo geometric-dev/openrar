@@ -1190,10 +1190,15 @@ void test_invalid_utf8_filename_rejected() {
     int status = 0;
     std::string detail;
     bool opened = reader.open_ex(arc, "", status, detail);
-    // Archive opens (signature and main header valid), but invalid UTF-8 filename
-    // causes the entry's header parsing to fail, so it is rejected and not admitted.
+    // v1.24 (plan §4.3) policy revision: names that are not well-formed
+    // UTF-8 are admitted byte-losslessly — the header no longer fails
+    // parse; the extraction pipeline percent-encodes the invalid sequences
+    // so the escaped name IS the on-disk name (previously such entries —
+    // and with them whole archives — were unreadable). Escaping itself is
+    // pinned by extraction_report_tests (percent_encoded_undecodable).
     assert(opened);
-    assert(reader.entries().empty());
+    assert(reader.entries().size() == 1);
+    assert(reader.entries()[0].header.file_name == "bad_\xFF_name.txt");
 
     fs::remove_all(dir, ec);
     std::cout << "[PASS] test_invalid_utf8_filename_rejected\n";
