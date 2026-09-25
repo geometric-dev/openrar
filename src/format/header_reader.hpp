@@ -38,7 +38,9 @@ public:
     // non-null and active, the block is decrypted first (see
     // HeaderCryptReader); HEAD_CRYPT itself is stored in clear and is read
     // with an inactive crypt.
-    static HeaderResult read_block_raw(io::FileStream& src, core::uint64& out_type,
+    // v1.25: accepts any ReadSource (FileStream buffered, MappedFile
+    // mapped) — one scan code path for both engines.
+    static HeaderResult read_block_raw(io::ReadSource& src, core::uint64& out_type,
                                        core::uint64& out_flags, std::vector<core::byte>& out_body,
                                        core::uint64& out_data_size,
                                        HeaderCryptReader* crypt = nullptr);
