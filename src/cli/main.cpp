@@ -2,6 +2,7 @@
 #include "../io/file_stream.hpp"
 #include "../io/path_util.hpp"
 #include "../io/containment.hpp"
+#include "../archive/collision_detector.hpp"
 #include "../format/headers.hpp"
 #include "../archive/archive_reader.hpp"
 #include "../archive/archive_mutator.hpp"
@@ -1687,6 +1688,21 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         }
         std::cerr << "Cannot open " << arc_path << "\n";
         return EXIT_OPEN;
+    }
+
+    // v1.24 M3 (plan §3): archive-internal collisions are integrity
+    // failures — detect over the merged entry list BEFORE writing anything
+    // and abort with the structural exit code.
+    {
+        std::vector<archive::CollisionPair> collisions;
+        if (reader.detect_collisions(collisions)) {
+            std::cerr << "ERROR: archive-internal collision detected; extraction aborted\n";
+            for (const auto& c : collisions) {
+                std::cerr << "  " << c.cls << ": '" << sanitize_for_display(c.first) << "' vs '"
+                          << sanitize_for_display(c.second) << "'\n";
+            }
+            return EXIT_FATAL;
+        }
     }
 
     if (!g_quiet_mode && !is_vt_supported()) {

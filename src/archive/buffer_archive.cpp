@@ -1,4 +1,6 @@
 #include "buffer_archive.hpp"
+#include "collision_detector.hpp"
+#include "rar_errors.hpp"
 
 #include <ctime>
 #include "../compress/compressor50.hpp"
@@ -743,6 +745,22 @@ int BufferArchive::extract_all(const uint8_t* data, size_t size,
     std::vector<BufferArchiveEntry> entries;
     int rc = list(data, size, entries);
     if (rc != RAR_OK) return rc;
+
+    // v1.24 M3 (plan §3.4): the detector runs identically on the in-memory
+    // surface — archive-internal collisions are structural failures and
+    // nothing is extracted.
+    {
+        std::vector<CollisionEntry> names;
+        names.reserve(entries.size());
+        for (const auto& e : entries) names.push_back(CollisionEntry{e.path, e.is_dir});
+        std::vector<CollisionPair> collisions;
+        if (CollisionDetector::detect(names, collisions)) {
+            // Bad-archive family (structural integrity failure, plan §3); the
+            // internal error enum has no dedicated value and the ABI contract
+            // is frozen, so the collision abort maps to RAR_ERR_NOT_RAR.
+            return RAR_ERR_NOT_RAR;
+        }
+    }
 
     out_files.reserve(entries.size());
 
