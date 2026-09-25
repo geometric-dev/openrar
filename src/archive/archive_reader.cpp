@@ -281,6 +281,85 @@ void ArchiveReader::apply_deferred_dir_metadata() {
     pending_dir_meta_.clear();
 }
 
+int ArchiveReader::read_payload_region(size_t entry_index, core::uint64 offset, core::uint32 length,
+                                       void* out_buf, size_t out_len, size_t* out_written) {
+    // v1.25 plan §1/§3: random-read region of a STORED entry's payload.
+    // Backing engine: mapped view per region (map → guarded copy → unmap),
+    // buffered pread fallback when mapping is unavailable — identical
+    // results (§5.2: the view is never the extraction input).
+    if (out_written != nullptr) *out_written = 0;
+    if (entry_index >= entries_.size()) return RAR_ERR_INVALID_ARG;
+    if (out_buf == nullptr || length == 0) return RAR_ERR_INVALID_ARG;
+    if (out_len < length) return RAR_ERR_INVALID_ARG;
+    const ArchiveEntry& entry = entries_[entry_index];
+    if (entry.header.is_service) return RAR_ERR_INVALID_ARG;
+    if ((entry.header.file_flags & format::FHFL_DIRECTORY) != 0 || entry.header.redir_type != 0)
+        return RAR_ERR_INVALID_ARG;
+    if (entry.header.method != 0) return RAR_ERR_UNSUPPORTED_FEATURE; // compressed: no ranges
+    if (entry.header.is_encrypted) return RAR_ERR_ENCRYPTED;          // no CBC random-access here
+
+    if (offset >= entry.data_size) return RAR_ERR_INVALID_ARG;
+    if (length > entry.data_size - offset) return RAR_ERR_INVALID_ARG; // range must fit
+
+    // Gather the byte range across extents (single-volume: one extent).
+    core::uint64 payload_pos = 0; // position within the logical payload
+    size_t written = 0;
+    auto* dst = static_cast<core::byte*>(out_buf);
+    const core::uint64 want_start = offset;
+    const core::uint64 want_end = offset + length;
+    for (const auto& ext : entry.extents) {
+        if (payload_pos >= want_end) break;
+        const core::uint64 ext_end = payload_pos + ext.size;
+        if (ext_end <= want_start) {
+            payload_pos = ext_end;
+            continue;
+        }
+        const core::uint64 from = std::max(want_start, payload_pos);
+        const core::uint64 to = std::min(want_end, ext_end);
+        const core::uint64 in_extent_off = ext.offset + (from - payload_pos);
+        const size_t take = static_cast<size_t>(to - from);
+
+        io::MappedFile mf;
+        size_t got = 0;
+        if (mf.open(ext.volume_path)) {
+            // Mapped engine: bounds-checked, fault-guarded copy.
+            got = mf.read_at(in_extent_off, dst + written, take);
+            mf.close();
+        } else {
+            // Buffered fallback: pread semantics via a separate handle.
+            io::FileStream fs;
+            if (!fs.open(ext.volume_path, io::FileMode::ReadOnly)) return RAR_ERR_IO;
+            fs.seek(static_cast<core::int64>(in_extent_off), io::SeekOrigin::Begin);
+            got = fs.read(dst + written, take);
+        }
+        if (got != take) return RAR_ERR_TRUNCATED; // source shrank mid-read
+        written += take;
+        dst += take;
+        payload_pos = ext_end;
+    }
+
+    // Checksum contract: when the region covers the whole payload and a
+    // checksum exists, verify it (partial ranges are unverified by contract).
+    if (want_start == 0 && length == entry.data_size &&
+        (entry.header.has_crc32 || entry.header.has_blake2sp)) {
+        if (entry.header.has_crc32) {
+            crypto::Crc32 crc;
+            crc.update(static_cast<const core::byte*>(out_buf), length);
+            if (crc.get() != entry.header.data_crc32) return RAR_ERR_CRC_MISMATCH;
+        } else if (entry.header.has_blake2sp) {
+            crypto::Blake2sp blake;
+            blake.update(static_cast<const core::byte*>(out_buf), length);
+            core::byte digest[32];
+            blake.finish(digest);
+            if (std::memcmp(digest, entry.header.blake2sp.data(), 32) != 0)
+                return RAR_ERR_CRC_MISMATCH;
+        }
+    }
+
+    if (out_written != nullptr) *out_written = written;
+    return RAR_OK;
+}
+
 bool ArchiveReader::detect_collisions(std::vector<CollisionPair>& out) const {
     // Detector input (plan §3.1): the final merged entry list with service
     // headers filtered — CMT/QO/RR/ACL/STM never collide with user-visible
