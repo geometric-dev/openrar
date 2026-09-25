@@ -549,7 +549,11 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
     if (name_len > body_size - offset) return false;
     out_block.file_name.assign(reinterpret_cast<const char*>(body + offset),
                                static_cast<size_t>(name_len));
-    if (!core::is_valid_utf8(out_block.file_name)) return false;
+    // v1.24 plan §4.3: names that are not well-formed UTF-8 are accepted
+    // byte-losslessly here; the extraction pipeline percent-encodes the
+    // invalid sequences (%XX) so the escaped name IS the on-disk name
+    // (previously the whole header parse failed, making such archives
+    // unreadable). UI paths sanitize for display independently.
     offset += static_cast<size_t>(name_len);
 
     if (out_block.is_service) {

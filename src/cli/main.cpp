@@ -3,6 +3,7 @@
 #include "../io/path_util.hpp"
 #include "../io/containment.hpp"
 #include "../archive/collision_detector.hpp"
+#include "../archive/extraction_report.hpp"
 #include "../format/headers.hpp"
 #include "../archive/archive_reader.hpp"
 #include "../archive/archive_mutator.hpp"
@@ -23,6 +24,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <iostream>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -53,6 +55,10 @@ namespace openrar::cli {
 bool g_plain_mode = false;
 bool g_quiet_mode = false;
 bool g_assume_yes = false;
+// --json-summary (v1.24 plan §5): when set without a path, ALL human-readable
+// output routes to stderr and stdout carries only the JSON summary.
+bool g_json_stdout_only = false;
+std::string g_json_summary_path;
 
 // WinRAR/unrar exit-code taxonomy (unrar errhnd.hpp RAR_EXIT; v1.21.2).
 // Previously every failure collapsed to 1 — which in WinRAR semantics means
@@ -90,9 +96,11 @@ OverwriteAnswer ask_overwrite(const std::string& display_name) {
     if (g_assume_yes || !::isatty(STDIN_FILENO)) return OverwriteAnswer::Yes;
 #endif
     for (;;) {
-        std::cout << "\n"
-                  << display_name << " already exists. Overwrite?\n"
-                  << "[Y]es, [N]o, [A]lways, n[E]ver, [Q]uit: " << std::flush;
+        // --json-summary stdout purity: prompts are human output → stderr.
+        (g_json_stdout_only ? std::cerr : std::cout)
+            << "\n"
+            << display_name << " already exists. Overwrite?\n"
+            << "[Y]es, [N]o, [A]lways, n[E]ver, [Q]uit: " << std::flush;
         std::string line;
         if (!std::getline(std::cin, line)) return OverwriteAnswer::Yes; // EOF
         if (line.empty()) return OverwriteAnswer::Yes;
@@ -1665,6 +1673,33 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     const std::vector<std::string>& exclude_patterns = {}, int extract_version = -1,
                     const std::vector<std::string>& file_patterns = {},
                     [[maybe_unused]] bool restore_owner = false) {
+    // --json-summary (v1.24 M4, plan §5): stdout purity + machine report.
+    if (g_json_stdout_only) set_prog_out(std::cerr);
+    archive::ExtractionReport report;
+    report.archive = arc_path;
+    // Every return path funnels through emit_json so the report always lands
+    // (open failures included) with exit_code set and pending entries
+    // finalized as unprocessed.
+    auto emit_json = [&](int exit_code) -> int {
+        report.exit_code = exit_code;
+        report.finalize_pending();
+        const std::string json = archive::to_json(report);
+        if (!g_json_summary_path.empty()) {
+            std::ofstream f(g_json_summary_path, std::ios::binary | std::ios::trunc);
+            if (f.good()) {
+                f << json << "\n";
+            } else {
+                std::cerr << "Cannot write --json-summary file: " << g_json_summary_path << "\n";
+                // fallback: the JSON itself ALWAYS goes to stdout
+                std::cout << json << "\n";
+            }
+        } else {
+            // stdout-purity: the JSON itself ALWAYS goes to stdout.
+            std::cout << json << "\n";
+        }
+        return exit_code;
+    };
+
     archive::ArchiveReader reader;
     reader.set_keep_broken(keep_broken);
     reader.set_extract_symlinks(extract_symlinks);
@@ -1673,40 +1708,31 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
         // Oracle-mapped taxonomy (unrar errhnd.hpp): missing archive =
         // 10 (NO_FILES), unrecognized = 13 (BADARC), password = 11.
+        report.aborted = true;
         if (!std::filesystem::exists(arc_path)) {
             std::cerr << "Cannot open " << arc_path << "\n";
-            return EXIT_NO_FILES;
+            report.abort_reason = "cannot open archive (missing)";
+            return emit_json(EXIT_NO_FILES);
         }
         if (open_status == archive::RAR_ERR_ENCRYPTED ||
             open_status == archive::RAR_ERR_BAD_PASSWORD) {
             std::cerr << "Cannot decrypt: BADPSW (bad password)\n";
-            return EXIT_BAD_PASSWORD;
+            report.abort_reason = "bad password for encrypted archive";
+            return emit_json(EXIT_BAD_PASSWORD);
         }
         if (open_status == archive::RAR_ERR_NOT_RAR) {
             std::cerr << "Not a RAR archive: " << arc_path << "\n";
-            return EXIT_BAD_ARCHIVE;
+            report.abort_reason = "not a RAR archive";
+            return emit_json(EXIT_BAD_ARCHIVE);
         }
         std::cerr << "Cannot open " << arc_path << "\n";
-        return EXIT_OPEN;
-    }
-
-    // v1.24 M3 (plan §3): archive-internal collisions are integrity
-    // failures — detect over the merged entry list BEFORE writing anything
-    // and abort with the structural exit code.
-    {
-        std::vector<archive::CollisionPair> collisions;
-        if (reader.detect_collisions(collisions)) {
-            std::cerr << "ERROR: archive-internal collision detected; extraction aborted\n";
-            for (const auto& c : collisions) {
-                std::cerr << "  " << c.cls << ": '" << sanitize_for_display(c.first) << "' vs '"
-                          << sanitize_for_display(c.second) << "'\n";
-            }
-            return EXIT_FATAL;
-        }
+        report.abort_reason = "cannot open archive";
+        return emit_json(EXIT_OPEN);
     }
 
     if (!g_quiet_mode && !is_vt_supported()) {
-        std::cout << "Extracting from " << arc_path << "\n\n";
+        // --json-summary stdout purity: banner goes to stderr in JSON mode.
+        (g_json_stdout_only ? std::cerr : std::cout) << "Extracting from " << arc_path << "\n\n";
     }
 
     size_t total_entries = 0;
@@ -1782,6 +1808,9 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         std::vector<const archive::ArchiveEntry*> children;
     };
     std::vector<ExtractJob> extract_jobs;
+    // report.entries index of each job (M4): one pending entry per job,
+    // updated by whichever loop processes the job.
+    std::vector<size_t> job_rep_idx;
     bool duplicate_targets = false;
     {
         std::set<std::string> seen_targets;
@@ -1842,6 +1871,10 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             if (safe_name.empty()) {
                 std::cerr << "Skipping entry with unsafe empty path: "
                           << sanitize_for_display(entry.header.file_name) << "\n";
+                report.entries.push_back({entry.header.file_name,
+                                          "skipped",
+                                          "unsafe empty path after sanitization",
+                                          {"traversal_attempt"}});
                 continue;
             }
             // v1.24 M2 (plan §1.1.5): 8.3-alias-shaped components are
@@ -1849,6 +1882,8 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             if (io::path_has_83_component(safe_name)) {
                 std::cerr << "Skipping entry with 8.3-alias-shaped path: "
                           << sanitize_for_display(entry.header.file_name) << "\n";
+                report.entries.push_back(
+                    {entry.header.file_name, "skipped", "8.3-alias-shaped path component", {}});
                 continue;
             }
             std::string disk_name = safe_name;
@@ -1862,6 +1897,10 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             if (!io::is_lexically_contained(target, out_root)) {
                 std::cerr << "Skipping entry escaping extraction directory: "
                           << sanitize_for_display(entry.header.file_name) << "\n";
+                report.entries.push_back({target.generic_string(),
+                                          "skipped",
+                                          "path escapes extraction directory",
+                                          {"traversal_attempt"}});
                 continue;
             }
             if (!seen_targets.insert(target_key(target)).second) duplicate_targets = true;
@@ -1875,6 +1914,20 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             }
             extract_jobs.push_back(
                 {&entry, target, sanitize_for_display(target.string()), std::move(children)});
+            // v1.24 M4: report entry per job, pending until an extraction
+            // loop fills it. displayed ≡ extracted: the report name is the
+            // sanitized on-disk name; invalid-UTF-8 names were percent-
+            // encoded during sanitization and the escaped name IS the file
+            // name (plan §4.3).
+            archive::ExtractionReportEntry rep;
+            // report name relative to the extraction root (plan §5 example);
+            // still the exact on-disk name — displayed ≡ extracted.
+            rep.name = target.lexically_relative(out_root).generic_string();
+            if (safe_name != entry.header.file_name && !io::is_valid_utf8(entry.header.file_name)) {
+                rep.security_flags.push_back("name_escaped");
+            }
+            report.entries.push_back(std::move(rep));
+            job_rep_idx.push_back(report.entries.size() - 1);
         }
         // Component-prefix overlap (sweep finding L11): a file entry "a"
         // alongside a directory entry "a/b" makes create_directories race the
@@ -1899,23 +1952,58 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         }
     }
 
+    if (extract_jobs.empty()) {
+        // Oracle semantics: a command that MATCHED NO FILES exits 10. This
+        // must run BEFORE the -o- pre-filter — a run whose every target was
+        // skipped (-o-) exits 0 with each entry reported as skipped.
+        // (v1.24 M4: this return was accidentally commented out by a mangled
+        // edit in v1.21.2 — no-match extractions exited 0 instead of 10.)
+        report.abort_reason = "no files matched";
+        return emit_json(EXIT_NO_FILES);
+    }
+
+    // v1.24 M3 (plan §3): archive-internal collisions are integrity failures
+    // — detect over the merged entry list BEFORE writing anything and abort
+    // with the structural exit code. Runs after job construction so the
+    // report can enumerate every entry as unprocessed.
+    {
+        std::vector<archive::CollisionPair> collisions;
+        if (reader.detect_collisions(collisions)) {
+            std::cerr << "ERROR: archive-internal collision detected; extraction aborted\n";
+            for (const auto& c : collisions) {
+                std::cerr << "  " << c.cls << ": '" << sanitize_for_display(c.first) << "' vs '"
+                          << sanitize_for_display(c.second) << "'\n";
+            }
+            report.aborted = true;
+            report.abort_reason = "archive-internal collision";
+            return emit_json(EXIT_FATAL);
+        }
+    }
+
     // -o- pre-filter: drop existing targets up front so BOTH the sequential
     // and the parallel path skip them. The parallel path has no per-file
     // decision point; without the filter `-o- -mt4` would still overwrite.
     if (overwrite_mode == OverwriteMode::SkipExisting) {
         std::vector<ExtractJob> kept;
+        std::vector<size_t> kept_rep;
         kept.reserve(extract_jobs.size());
-        for (auto& job : extract_jobs) {
+        for (size_t j = 0; j < extract_jobs.size(); ++j) {
+            auto& job = extract_jobs[j];
             std::error_code exists_ec;
             if (std::filesystem::exists(job.target, exists_ec)) {
                 if (!g_quiet_mode && !is_vt_supported())
-                    std::cout << "Extracting  " << job.display_name
-                              << " ... SKIPPED (already exists)\n";
+                    (g_json_stdout_only ? std::cerr : std::cout)
+                        << "Extracting  " << job.display_name << " ... SKIPPED (already exists)\n";
+                auto& rep = report.entries[job_rep_idx[j]];
+                rep.status = "skipped";
+                rep.reason = "target already exists (-o-)";
                 continue;
             }
             kept.push_back(std::move(job));
+            kept_rep.push_back(job_rep_idx[j]);
         }
         extract_jobs.swap(kept);
+        job_rep_idx.swap(kept_rep);
     }
 
     // Prompt mode cannot ask inside the thread pool: if any target exists and
@@ -1939,10 +2027,6 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         // A slot failed to open what the main reader already opened
         // successfully (transient IO). Stay sequential rather than fail.
         slots.readers.clear();
-    }
-
-    if (extract_jobs.empty()) {
-        // Oracle semantics: a command that matched no files exits 10.@N        return EXIT_NO_FILES;
     }
 
     bool any_failed = false;
@@ -2024,12 +2108,15 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
 
     if (slots.readers.empty()) {
         size_t idx = 0;
-        for (const auto& job : extract_jobs) {
+        for (size_t job_i = 0; job_i < extract_jobs.size(); ++job_i) {
+            const auto& job = extract_jobs[job_i];
+            auto& rep = report.entries[job_rep_idx[job_i]];
             idx++;
             Prog.start_file(job.entry->header.file_name, idx);
 
             if (!g_quiet_mode && !is_vt_supported()) {
-                std::cout << "Extracting  " << job.display_name << " ... ";
+                (g_json_stdout_only ? std::cerr : std::cout)
+                    << "Extracting  " << job.display_name << " ... ";
             }
 
             // -o- targets were pre-filtered above; this check still fires for
@@ -2037,7 +2124,10 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             std::error_code ow_ec;
             if (overwrite_mode == OverwriteMode::SkipExisting &&
                 std::filesystem::exists(job.target, ow_ec)) {
-                if (!g_quiet_mode && !is_vt_supported()) std::cout << "SKIPPED (already exists)\n";
+                if (!g_quiet_mode && !is_vt_supported())
+                    (g_json_stdout_only ? std::cerr : std::cout) << "SKIPPED (already exists)\n";
+                rep.status = "skipped";
+                rep.reason = "target already exists";
                 continue;
             }
 
@@ -2054,26 +2144,37 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     [[fallthrough]];
                 case OverwriteAnswer::No:
                     if (!g_quiet_mode && !is_vt_supported())
-                        std::cout << "SKIPPED (already exists)\n";
+                        (g_json_stdout_only ? std::cerr : std::cout)
+                            << "SKIPPED (already exists)\n";
+                    rep.status = "skipped";
+                    rep.reason = "user declined overwrite";
                     continue;
                 case OverwriteAnswer::Quit:
                     std::cerr << "User break\n";
-                    return EXIT_USER_BREAK;
+                    report.aborted = true;
+                    report.abort_reason = "user break";
+                    return emit_json(EXIT_USER_BREAK);
                 }
             }
 
             if (reader.extract_entry(*job.entry, job.target, password)) {
-                if (!g_quiet_mode && !is_vt_supported()) std::cout << "OK\n";
+                if (!g_quiet_mode && !is_vt_supported())
+                    (g_json_stdout_only ? std::cerr : std::cout) << "OK\n";
                 restore_children(reader, job);
+                rep.status = "extracted";
             } else {
                 if (!g_quiet_mode && !is_vt_supported()) {
                     if (reader.has_bad_password()) {
-                        std::cout << "FAILED (incorrect password / BADPSW)\n";
+                        (g_json_stdout_only ? std::cerr : std::cout)
+                            << "FAILED (incorrect password / BADPSW)\n";
                     } else {
-                        std::cout << "FAILED\n";
+                        (g_json_stdout_only ? std::cerr : std::cout) << "FAILED\n";
                     }
                 }
-                return EXIT_FATAL;
+                rep.status = "failed";
+                rep.reason =
+                    reader.has_bad_password() ? "incorrect password / BADPSW" : "extraction failed";
+                return emit_json(EXIT_FATAL);
             }
             Prog.update_bytes(job.entry->header.unp_size);
         }
@@ -2206,11 +2307,20 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         for (size_t i = 0; i < extract_jobs.size(); ++i) {
             const bool okv = flags.wait(i);
             if (!g_quiet_mode && !is_vt_supported()) {
-                std::cout << "Extracting  " << extract_jobs[i].display_name << " ... "
-                          << (okv ? "OK"
-                                  : (badpw_flag.load() ? "FAILED (incorrect password / BADPSW)"
-                                                       : "FAILED"))
-                          << "\n";
+                (g_json_stdout_only ? std::cerr : std::cout)
+                    << "Extracting  " << extract_jobs[i].display_name << " ... "
+                    << (okv ? "OK"
+                            : (badpw_flag.load() ? "FAILED (incorrect password / BADPSW)"
+                                                 : "FAILED"))
+                    << "\n";
+            }
+            auto& rep = report.entries[job_rep_idx[i]];
+            if (okv) {
+                rep.status = extract_jobs[i].children.empty() ? "extracted" : "modified";
+            } else {
+                rep.status = "failed";
+                rep.reason =
+                    badpw_flag.load() ? "incorrect password / BADPSW" : "extraction failed";
             }
             if (!okv) any_failed = true;
         }
@@ -2218,10 +2328,10 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
 
     if (any_failed) {
         Prog.done(extract_jobs.size(), "unpacked", arc_path, total_bytes, 0);
-        return badpw_flag.load() ? EXIT_BAD_PASSWORD : EXIT_FATAL;
+        return emit_json(badpw_flag.load() ? EXIT_BAD_PASSWORD : EXIT_FATAL);
     }
     Prog.done(total_entries, "unpacked", arc_path, total_bytes, 0);
-    return 0;
+    return emit_json(0);
 }
 
 int repair_archive(const std::string& arc_path) {
@@ -2420,6 +2530,13 @@ static int cli_main(int argc, char* argv[]) {
     std::vector<std::string> switches;
     std::vector<std::string> exclude_patterns;
 
+    // --json-summary is an extraction-run flag (v1.24 plan §5.2); elsewhere
+    // it is a usage error so scripts never get silent no-op output.
+    if ((g_json_stdout_only || !g_json_summary_path.empty()) && cmd != "x" && cmd != "e") {
+        std::cerr << "Error: --json-summary is only valid with the x/e commands\n";
+        return EXIT_USAGE;
+    }
+
     bool stop_switches = false;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -2521,6 +2638,10 @@ static int cli_main(int argc, char* argv[]) {
             ep_mode = openrar::io::ExcludePathMode::AbsPath;
         } else if (sw_eq(s, "-kb")) {
             keep_broken = true;
+        } else if (sw_eq(s, "--json-summary")) {
+            g_json_stdout_only = true;
+        } else if (sw_starts(s, "--json-summary=")) {
+            g_json_summary_path = s.substr(std::string("--json-summary=").size());
         } else if (sw_eq(s, "-o+")) {
             overwrite_mode = openrar::cli::OverwriteMode::Overwrite;
         } else if (sw_eq(s, "-o-")) {
