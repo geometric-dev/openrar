@@ -124,6 +124,14 @@ struct ArchiveHandleBase {
     virtual int extract_to_path(uint32_t entry_index, const char* dest_path,
                                 openrar_progress_cb progress, openrar_cancel_cb cancel,
                                 void* user) = 0;
+    // v1.25 (OPENRAR_ABI_FEATURE_MMAP): random-read region of a stored
+    // entry's payload. Default refuses — file-mode handles implement it.
+    virtual int read_entry_region(uint32_t /*entry_index*/, uint64_t /*offset*/,
+                                  uint32_t /*length*/, void* /*out_buf*/, size_t /*out_len*/,
+                                  size_t* /*out_len_written*/) {
+        set_error("read_entry_region is not supported on this handle type");
+        return RAR_ERR_UNSUPPORTED_FEATURE;
+    }
     virtual int test(uint32_t entry_index, openrar_progress_cb progress, openrar_cancel_cb cancel,
                      void* user) = 0;
     // Extended metadata (v1.5.0): file-mode handles only — the buffer MVP
@@ -593,6 +601,38 @@ struct FileArchiveHandle : ArchiveHandleBase {
                   "openrar_archive_handle_extract_to_path");
         return RAR_ERR_UNSUPPORTED_FEATURE;
     }
+    // v1.25 M3 (OPENRAR_ABI_FEATURE_MMAP): random-read region of a stored
+    // entry's payload — mapped view per region when available, buffered
+    // otherwise (identical results; §5.2: never the extraction input).
+    int read_entry_region(uint32_t entry_index, uint64_t offset, uint32_t length, void* out_buf,
+                          size_t out_len, size_t* out_len_written) override {
+        if (entry_index >= entries.size()) {
+            set_error("entry_index OOR");
+            return RAR_ERR_INVALID_ARG;
+        }
+        if (out_buf == nullptr || length == 0) {
+            set_error("read_entry_region: null buffer / zero length");
+            return RAR_ERR_INVALID_ARG;
+        }
+        BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
+        int rc = reader->read_payload_region(reader_index[entry_index], offset, length, out_buf,
+                                             out_len, out_len_written);
+        if (rc == RAR_ERR_INVALID_ARG)
+            set_error("read_entry_region: range beyond payload or unsupported entry type");
+        else if (rc == RAR_ERR_UNSUPPORTED_FEATURE)
+            set_error("read_entry_region requires a stored (method 0) plain entry");
+        else if (rc == RAR_ERR_ENCRYPTED)
+            set_error("read_entry_region: encrypted entries are not range-readable");
+        else if (rc == RAR_ERR_CRC_MISMATCH)
+            set_error("read_entry_region: checksum mismatch");
+        else if (rc == RAR_ERR_TRUNCATED)
+            set_error("read_entry_region: packed stream ended early");
+        return rc;
+    }
     int extract_to_path(uint32_t entry_index, const char* dest_path, openrar_progress_cb progress,
                         openrar_cancel_cb cancel, void* user) override {
         if (entry_index >= entries.size()) {
@@ -924,7 +964,7 @@ uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
            OPENRAR_ABI_FEATURE_REPAIR | OPENRAR_ABI_FEATURE_CREATE | OPENRAR_ABI_FEATURE_FILTERS |
            OPENRAR_ABI_FEATURE_OWNER | OPENRAR_ABI_FEATURE_DICT_EX |
            OPENRAR_ABI_FEATURE_VOL_ENCRYPT | OPENRAR_ABI_FEATURE_REC_VOL |
-           OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS;
+           OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS | OPENRAR_ABI_FEATURE_MMAP;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1413,6 +1453,30 @@ uint32_t OPENRAR_DLL_CALL openrar_archive_open_file(const char* arc_path, const 
         return 0;
     }
 }
+int OPENRAR_DLL_CALL openrar_archive_handle_read_entry_region(uint32_t handle, uint32_t entry_index,
+                                                              uint64_t offset, uint32_t length,
+                                                              void* out_buf, size_t out_len,
+                                                              size_t* out_len_written) {
+    try {
+        if (!out_buf || length == 0 || !out_len_written) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        auto h = g_handles.pin(handle);
+        if (!h) {
+            set_error("invalid handle");
+            return RAR_ERR_INVALID_ARG;
+        }
+        return h->read_entry_region(entry_index, offset, length, out_buf, out_len, out_len_written);
+    } catch (const std::bad_alloc&) {
+        set_error("oom");
+        return RAR_ERR_NOMEM;
+    } catch (...) {
+        set_error("internal error");
+        return RAR_ERR_IO;
+    }
+}
+
 int OPENRAR_DLL_CALL openrar_archive_handle_extract_to_path(uint32_t handle, uint32_t entry_index,
                                                             const char* dest_path,
                                                             openrar_progress_cb progress,

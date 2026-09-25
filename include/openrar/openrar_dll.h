@@ -107,6 +107,8 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
     (1ull << 14) // recovery volume (.rev) & recovery record creation
 #define OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS                                                      \
     (1ull << 15) // High-throughput parallel compression (-mt)
+#define OPENRAR_ABI_FEATURE_MMAP                                                                   \
+    (1ull << 16) // mapped read engine: openrar_archive_handle_read_entry_region
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -460,6 +462,25 @@ OPENRAR_DLL_API uint32_t OPENRAR_DLL_CALL openrar_archive_open_file(const char* 
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_extract_to_path(
     uint32_t handle, uint32_t entry_index, const char* dest_path, openrar_progress_cb progress,
     openrar_cancel_cb cancel, void* user);
+
+// ── Random-read region export (v1.25.0, OPENRAR_ABI_FEATURE_MMAP) ───────────
+// Reads `length` bytes of an entry's STORED payload starting at `offset`
+// into `out_buf` (caller-allocated, `out_len` capacity). Decompressed
+// entries are served through the decompressor for the requested range.
+// `out_len` receives the bytes actually read; a value < `length` signals
+// truncation or EOF. When the requested range covers the whole payload and
+// the entry carries a checksum, it is verified (RAR_ERR_CRC_MISMATCH on
+// mismatch); partial ranges are unverified by contract. The backing engine
+// is the mapped read view when available, buffered reads otherwise —
+// identical results either way (SECURITY_ARCHITECTURE §5.2: the view is
+// never the extraction input).
+// Returns RAR_OK, RAR_ERR_INVALID_ARG (handle/index/offset/length/buffer),
+// RAR_ERR_UNSUPPORTED_FEATURE (compressed entries cannot be range-read —
+// use extract_to_path), RAR_ERR_IO, RAR_ERR_BAD_PASSWORD / RAR_ERR_ENCRYPTED
+// (encrypted entries are not range-readable), or RAR_ERR_TRUNCATED.
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_handle_read_entry_region(
+    uint32_t handle, uint32_t entry_index, uint64_t offset, uint32_t length, void* out_buf,
+    size_t out_len, size_t* out_len_written);
 
 // Streaming integrity test: verifies CRC32 (or BLAKE2sp when present)
 // without retaining decompressed output — fixed, small memory footprint
