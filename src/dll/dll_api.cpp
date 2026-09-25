@@ -286,13 +286,20 @@ int durable_write_to(const std::filesystem::path& dest,
     // each DLL extraction call is its own run (plan §6.3).
     openrar::io::ExtractionSession session;
     openrar::io::AtomicWriter writer;
-    if (!writer.open(session, dest)) return RAR_ERR_IO;
+    if (!writer.open(session, dest)) {
+        set_error("cannot create temporary file in destination directory");
+        return RAR_ERR_IO;
+    }
     int rc = body(writer.stream());
     if (rc != RAR_OK) {
         writer.abandon();
         return rc;
     }
-    if (!writer.commit(openrar::io::CommitMode::ReplaceExisting)) return RAR_ERR_IO;
+    if (!writer.commit(openrar::io::CommitMode::ReplaceExisting)) {
+        set_error(
+            "atomic commit failed (destination may be read-only or on an unsupported volume)");
+        return RAR_ERR_IO;
+    }
     return RAR_OK;
 }
 
@@ -462,6 +469,12 @@ struct BufferArchiveHandle : ArchiveHandleBase {
 // ── File-backed handle: streaming reader, encrypted/solid/volume capable ────
 struct FileArchiveHandle : ArchiveHandleBase {
     std::unique_ptr<openrar::archive::ArchiveReader> reader;
+
+    ~FileArchiveHandle() override {
+        // v1.24 §7.4: flush deferred directory metadata that arrived in the
+        // final calls (their children have been extracted by now).
+        if (reader) reader->apply_deferred_dir_metadata();
+    }
     // DLL-visible entries: file entries only (service headers are internal
     // blocks), mapped to the 64-byte contract shape.
     std::vector<openrar::archive::BufferArchiveEntry> entries;
@@ -591,6 +604,9 @@ struct FileArchiveHandle : ArchiveHandleBase {
             set_error("handle is busy with active operation");
             return RAR_ERR_BUSY;
         }
+        // v1.24 plan §6.3: each DLL extraction call is its own hardlink
+        // session — never link against a previous call's outputs.
+        reader->begin_extraction_session();
         ListCallbackCtx ctx{progress, cancel, user};
         openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
         const auto& re = reader->entries()[reader_index[entry_index]];
@@ -602,18 +618,29 @@ struct FileArchiveHandle : ArchiveHandleBase {
             return RAR_ERR_NOT_RAR; // bad-archive family: structural integrity failure
         }
 
+        // v1.24 §7.4: apply dir metadata deferred from PREVIOUS calls —
+        // their children have had the chance to arrive in between. The
+        // current entry's own metadata stays pending (flushed at the next
+        // call start or handle close) so a restrictive dir mode never locks
+        // out its children.
+        reader->apply_deferred_dir_metadata();
+
         // Directory: materialize through the reader's contained directory
-        // walk (v1.24 M2) — no unanchored create_directories. Single (0, 0)
-        // progress callback.
+        // walk (v1.24 M2) — no unanchored create_directories. Its (mode,
+        // mtime) metadata stacks in the reader's deferred list. Single
+        // (0, 0) progress callback.
         if (re.header.file_flags & openrar::format::FHFL_DIRECTORY) {
-            reader->extract_entry(re, std::filesystem::u8path(dest_path), "");
+            reader->extract_entry(re, std::filesystem::u8path(dest_path), "",
+                                  has_limits ? &limits : nullptr, &limit_state);
             if (ctx.progress) ctx.progress(ctx.user, 0, 0);
             return RAR_OK;
         }
         // Links: delegate to the reader's safe-link rules (no bulk payload).
         if (re.header.redir_type != 0) {
-            int rc = reader->extract_entry(re, std::filesystem::u8path(dest_path), "") ? RAR_OK
-                                                                                       : RAR_ERR_IO;
+            int rc = reader->extract_entry(re, std::filesystem::u8path(dest_path), "",
+                                           has_limits ? &limits : nullptr, &limit_state)
+                         ? RAR_OK
+                         : RAR_ERR_IO;
             if (rc == RAR_OK && ctx.progress) ctx.progress(ctx.user, 0, 0);
             return rc;
         }
