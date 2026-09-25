@@ -39,6 +39,7 @@ set(OPENRAR_CORE_SOURCES
     src/io/win32_meta.cpp
     src/io/containment.cpp
     src/io/extraction_journal.cpp
+    src/io/mapped_file.cpp
     src/format/header_reader.cpp
     src/format/header_writer.cpp
     src/compress/filters50.cpp
@@ -411,6 +412,7 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(extraction_report_tests tests/unit/extraction_report_tests.cpp)
     add_openrar_test(extraction_fidelity_tests tests/unit/extraction_fidelity_tests.cpp)
     add_openrar_test(unknown_extras_tests tests/unit/unknown_extras_tests.cpp)
+    add_openrar_test(mapped_file_tests tests/unit/mapped_file_tests.cpp)
     add_openrar_test(volume_tests tests/unit/volume_tests.cpp)
     add_openrar_test(recovery_tests tests/unit/recovery_tests.cpp)
     add_openrar_test(archive_tests tests/unit/archive_tests.cpp)
