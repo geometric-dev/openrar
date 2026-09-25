@@ -6,6 +6,7 @@
 #include "../io/path_util.hpp"
 #include "../io/buffer_stream.hpp"
 #include "../io/extraction_journal.hpp"
+#include "../io/mapped_file.hpp"
 #include "../io/containment.hpp"
 #include "../core/vint.hpp"
 #include "../crypto/crc32.hpp"
@@ -162,6 +163,23 @@ void ArchiveReader::begin_extraction_session() {
 }
 
 namespace {
+// v1.25: OPENRAR_NO_MMAP=1 forces the buffered scan engine (kill switch,
+// plan §0); OPENRAR_DEBUG_MMAP=1 makes buffered-fallback events visible.
+bool mmap_disabled_by_env() {
+    static const bool disabled = [] {
+        const char* e = std::getenv("OPENRAR_NO_MMAP");
+        return e != nullptr && *e != 0 && std::strcmp(e, "0") != 0;
+    }();
+    return disabled;
+}
+bool mmap_fallback_debug() {
+    static const bool dbg = [] {
+        const char* e = std::getenv("OPENRAR_DEBUG_MMAP");
+        return e != nullptr && *e != 0;
+    }();
+    return dbg;
+}
+
 // Normalized absolute generic-string form used as the session-registry key.
 std::string session_key(const std::filesystem::path& p) {
     std::error_code ec;
@@ -474,7 +492,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
     core::uint64 vol_total_base = 0;
 
     // Helper to process a single volume file
-    auto process_volume = [&](const std::filesystem::path& vpath, bool is_first, io::FileStream& vs,
+    auto process_volume = [&](const std::filesystem::path& vpath, bool is_first, io::ReadSource& vs,
                               std::vector<ArchiveEntry>& raw_out, format::MainBlock& vol_main,
                               bool& vol_saw_end) -> bool {
         core::uint64 vsz = vs.size();
@@ -870,6 +888,23 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
         return true;
     };
 
+    // v1.25 plan §1 (architect review directive 5): ONE decision function
+    // selects the per-volume source — mapped when enabled and mappable,
+    // buffered otherwise (fail-open, diagnosable). No other mapped/buffered
+    // branches exist in the scanner.
+    auto select_volume_source = [&](const std::filesystem::path& vol_path, io::FileStream& buffered,
+                                    io::MappedFile& mapped) -> io::ReadSource* {
+        if (use_mapped_scan_ && !mmap_disabled_by_env()) {
+            if (mapped.open(vol_path)) return &mapped;
+            if (mmap_fallback_debug()) {
+                std::cerr << "[openrar] mmap unavailable for " << io::u8_str(vol_path)
+                          << "; using buffered scan\n";
+            }
+        }
+        if (buffered.open(vol_path, io::FileMode::ReadOnly)) return &buffered;
+        return nullptr;
+    };
+
     // Scan volumes sequentially, merging split files. Cap the walk at the
     // RAR5 spec ceiling (65535 combined data+recovery volumes) so a corrupt
     // or self-referencing chain can't loop indefinitely, while still
@@ -884,14 +919,16 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
             break;
         }
         std::filesystem::path vpath = vol_chain[vol_idx];
-        io::FileStream vs;
-        if (!vs.open(vpath, io::FileMode::ReadOnly)) {
+        io::FileStream vs; // buffered source (also the extraction input path)
+        io::MappedFile mv; // mapped source (scan-only; released after the volume)
+        io::ReadSource* vs_source = select_volume_source(vpath, vs, mv);
+        if (vs_source == nullptr) {
             // try old numbering fallback once
             if (vol_idx > 0) {
                 auto alt = derive_next_volume_name(vol_chain[vol_idx - 1], true);
                 std::error_code alt_ec;
-                if (alt != vpath && std::filesystem::exists(alt, alt_ec) &&
-                    vs.open(alt, io::FileMode::ReadOnly)) {
+                vs_source = select_volume_source(alt, vs, mv);
+                if (vs_source != nullptr) {
                     vpath = alt;
                     vol_chain[vol_idx] = vpath;
                 } else {
@@ -906,7 +943,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
         bool vol_saw_end = false;
         format::MainBlock vol_main;
         std::vector<ArchiveEntry> vol_raw;
-        if (!process_volume(vpath, vol_idx == 0, vs, vol_raw, vol_main, vol_saw_end)) {
+        if (!process_volume(vpath, vol_idx == 0, *vs_source, vol_raw, vol_main, vol_saw_end)) {
             if (hooks.cancelled()) scan_aborted = true;
             break;
         }

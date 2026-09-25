@@ -134,6 +134,12 @@ public:
     // complete. Best-effort: failures are skipped, never fatal.
     void apply_deferred_dir_metadata();
 
+    // v1.25 M2: mapped scan engine (default on; fail-open to buffered).
+    // --no-mmap / OPENRAR_NO_MMAP=1 force the buffered engine.
+    void set_use_mapped_scan(bool v) { use_mapped_scan_ = v; }
+    bool use_mapped_scan() const { return use_mapped_scan_; }
+    bool use_mapped_scan_{true};
+
     // v1.24 M2: explicit containment root — the extraction destination,
     // canonicalized and pinned for the whole session (plan §1.3). When unset,
     // the root is inferred per-entry from dest_path by popping the entry's
