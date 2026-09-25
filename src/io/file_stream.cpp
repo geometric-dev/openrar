@@ -182,6 +182,19 @@ bool FileStream::is_collision_error() const {
 #endif
 }
 
+bool FileStream::attach_os_handle(void* os_handle, const std::filesystem::path& display_path) {
+    close();
+    if (os_handle == nullptr) {
+        last_error_ = EBADF;
+        return false;
+    }
+    handle_ = os_handle;
+    path_ = display_path;
+    mode_ = FileMode::WriteOnly;
+    last_error_ = 0;
+    return true;
+}
+
 void FileStream::close() {
     if (handle_ != nullptr) {
 #ifdef _WIN32
@@ -473,6 +486,87 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
     return false;
 }
 
+bool FileStream::commit_rename_in(void* parent_dir_handle, const std::string& utf8_leaf,
+                                  CommitMode mode) {
+    if (!is_open() || parent_dir_handle == nullptr) {
+        last_error_ = static_cast<int>(ERROR_INVALID_HANDLE);
+        return false;
+    }
+    if (!flush()) {
+        last_error_ = static_cast<int>(GetLastError());
+        return false;
+    }
+    const auto to_wide = [](const std::string& u8) {
+        if (u8.empty()) return std::wstring();
+        const int n =
+            MultiByteToWideChar(CP_UTF8, 0, u8.c_str(), static_cast<int>(u8.size()), nullptr, 0);
+        std::wstring w(static_cast<size_t>(n), L'\0');
+        if (n > 0) {
+            MultiByteToWideChar(CP_UTF8, 0, u8.c_str(), static_cast<int>(u8.size()), w.data(), n);
+        }
+        return w;
+    };
+    const std::wstring leaf = to_wide(utf8_leaf);
+    std::vector<BYTE> buf(sizeof(OpenrarRenameInfo) + leaf.size() * sizeof(WCHAR));
+    auto* ri = reinterpret_cast<OpenrarRenameInfo*>(buf.data());
+    ri->Flags = kFileRenameFlagPosixSemantics |
+                (mode == CommitMode::ReplaceExisting ? kFileRenameFlagReplaceIfExists : 0);
+    // The parent handle comes from the verified containment walk — no path
+    // resolution of any archive-controlled component happens after it.
+    ri->RootDirectory = static_cast<HANDLE>(parent_dir_handle);
+    ri->FileNameLength = static_cast<DWORD>(leaf.size() * sizeof(WCHAR));
+    std::memcpy(ri->FileName, leaf.c_str(), (leaf.size() + 1) * sizeof(WCHAR));
+    // NtSetInformationFile directly: SetFileInformationByHandle rejects
+    // handles it did not create itself (ERROR_INVALID_PARAMETER for
+    // NtCreateFile-produced handles — found by the gate-1 suite), and the
+    // containment writer's handle is always NtCreateFile-produced.
+    using NtSetInfoFn = LONG(NTAPI*)(HANDLE, PVOID, PVOID, ULONG, ULONG);
+    static NtSetInfoFn set_info = []() -> NtSetInfoFn {
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        return ntdll ? reinterpret_cast<NtSetInfoFn>(
+                           static_cast<void*>(GetProcAddress(ntdll, "NtSetInformationFile")))
+                     : nullptr;
+    }();
+    if (set_info == nullptr) {
+        last_error_ = static_cast<int>(ERROR_NOT_SUPPORTED);
+        return false;
+    }
+    struct {
+        LONG Status;
+        ULONG_PTR Information;
+    } iosb{0, 0};
+    // NT FILE_INFORMATION_CLASS values differ from kernel32's
+    // FILE_INFO_BY_HANDLE_CLASS: FileRenameInformationEx = 65 on the NT
+    // side (13 there is FileDispositionInformation — passing it deletes the
+    // file! — found by the gate-1 suite).
+    constexpr ULONG kNtFileRenameInformationEx = 65;
+    const LONG st = set_info(static_cast<HANDLE>(handle_), &iosb, ri,
+                             static_cast<ULONG>(buf.size()), kNtFileRenameInformationEx);
+    if (st == 0) {
+        last_error_ = 0;
+        return true;
+    }
+    // Capability failures (pre-1709 / FAT / SMB) are reported to the caller —
+    // the containment layer decides whether a path-based fallback is
+    // acceptable (it never silently re-resolves archive-controlled paths).
+    static constexpr LONG kStatusInvalidParameter = static_cast<LONG>(0xC000000Du);
+    static constexpr LONG kStatusNotSupported = static_cast<LONG>(0xC00000BBu);
+    static constexpr LONG kStatusInvalidDeviceRequest = static_cast<LONG>(0xC0000010u);
+    if (st == kStatusInvalidParameter || st == kStatusNotSupported ||
+        st == kStatusInvalidDeviceRequest) {
+        last_error_ = static_cast<int>(ERROR_NOT_SUPPORTED);
+    } else {
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (ntdll) {
+            using RtlFn = ULONG(NTAPI*)(LONG);
+            auto to_dos = reinterpret_cast<RtlFn>(
+                static_cast<void*>(GetProcAddress(ntdll, "RtlNtStatusToDosError")));
+            if (to_dos) last_error_ = static_cast<int>(to_dos(st));
+        }
+    }
+    return false;
+}
+
 bool atomic_rename_commit(const std::filesystem::path& from, const std::filesystem::path& to,
                           CommitMode mode, int& last_error) {
     // Path-based form: MoveFileExW cascade (no open handle to rename through).
@@ -487,6 +581,11 @@ bool atomic_rename_commit(const std::filesystem::path& from, const std::filesyst
 
 bool commit_is_collision_error(int last_error) {
     return last_error == ERROR_FILE_EXISTS || last_error == ERROR_ALREADY_EXISTS;
+}
+
+bool commit_error_is_unsupported(int last_error) {
+    return last_error == ERROR_NOT_SUPPORTED || last_error == ERROR_INVALID_PARAMETER ||
+           last_error == ERROR_CALL_NOT_IMPLEMENTED || last_error == ERROR_INVALID_FUNCTION;
 }
 
 #else // POSIX
@@ -585,6 +684,10 @@ bool atomic_rename_commit(const std::filesystem::path& from, const std::filesyst
 
 bool commit_is_collision_error(int last_error) {
     return last_error == EEXIST;
+}
+
+bool commit_error_is_unsupported(int) {
+    return false; // POSIX commits degrade to the link cascade, never "unsupported"
 }
 
 #endif // _WIN32
