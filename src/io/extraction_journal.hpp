@@ -1,6 +1,7 @@
 #ifndef OPENRAR_IO_EXTRACTION_JOURNAL_HPP
 #define OPENRAR_IO_EXTRACTION_JOURNAL_HPP
 
+#include "containment.hpp"
 #include "file_stream.hpp"
 
 #include <filesystem>
@@ -60,6 +61,15 @@ public:
     // caller must not create the temp then (unreferenced-orphan rule).
     bool register_temp(const std::filesystem::path& dir, const std::filesystem::path& temp_abs);
 
+    // Containment variant (v1.24 M2): the journal itself is created ANCHORED
+    // inside the verified directory anchor — no path resolution of any
+    // archive-controlled component. `journal_dir_key` is the normalized
+    // absolute directory path (sweep/record namespace), `temp_abs` the
+    // normalized absolute temp path recorded in the journal.
+    bool register_temp_contained(ContainmentRoot::VerifiedDir& dir_anchor,
+                                 const std::filesystem::path& journal_dir_key,
+                                 const std::filesystem::path& temp_abs);
+
     // The temp's lifecycle ended (committed or deleted). Closes and unlinks
     // the directory's journal when nothing is in flight. No-op for unknown
     // temps.
@@ -69,6 +79,26 @@ public:
     // session holds none). Reads through the owning handle — the exclusive
     // lock deliberately makes the file unopenable by anything else.
     std::string journal_content(const std::filesystem::path& dir);
+
+    // ── Containment root (v1.24 M2, plan §1) ────────────────────────────────
+    // Attach the extraction root explicitly (CLI passes the destination;
+    // canonicalized + pinned once for the whole session, plan §1.3).
+    bool attach_root(const std::filesystem::path& root);
+    bool root_attached() const { return containment_.attached(); }
+    const std::filesystem::path& canonical_root() const { return containment_.canonical_root(); }
+    ContainmentRoot& containment() { return containment_; }
+
+    // Infer + attach the root when none was set explicitly: pops the entry's
+    // own sanitized directory components (rel_dir) off the end of the
+    // destination's parent chain — this reproduces the caller's extraction
+    // root for both full-path and filename-only layouts. Windows comparison
+    // is ASCII-case-insensitive. Returns false on attach failure (fail
+    // closed).
+    bool ensure_root_for(const std::filesystem::path& dest_full, const std::string& rel_dir);
+
+    // Test hook: force the POSIX openat walk fallback even where openat2
+    // exists (gate-1 suite runs the containment tests through both paths).
+    void force_containment_fallback_for_test() { containment_.force_walk_fallback_for_test(); }
 
 private:
     struct DirJournal {
@@ -80,6 +110,7 @@ private:
 
     std::map<std::filesystem::path, DirJournal> journals_;
     std::map<std::filesystem::path, std::filesystem::path> journal_paths_;
+    ContainmentRoot containment_;
 };
 
 // RAII temp writer: creates a crypto-random temp next to the destination,
@@ -97,6 +128,15 @@ public:
     // a fresh random name on the astronomically-unlikely collision). The
     // destination's parent directory must already exist.
     bool open(ExtractionSession& session, const std::filesystem::path& dest);
+
+    // Containment variant (v1.24 M2): `rel_dir` is the entry's sanitized
+    // relative directory ("" = root), `dest_leaf` the final file name. The
+    // directory anchor is produced by the containment walk (creating missing
+    // components no-follow), the temp is created anchored inside it, and the
+    // commit is an anchored rename — the handle the walk produced IS the
+    // write handle (write-through-handle, plan §1.1.3).
+    bool open_contained(ExtractionSession& session, const std::string& rel_dir,
+                        const std::string& dest_leaf);
 
     FileStream& stream() { return stream_; }
     bool is_open() const { return stream_.is_open(); }
@@ -126,6 +166,11 @@ private:
     std::filesystem::path temp_path_; // absolute
     bool journaled_ = false;
     bool finished_ = false;
+    // Containment mode state:
+    ContainmentRoot::VerifiedDir dir_;
+    std::string rel_dir_;
+    std::string leaf_;
+    std::string temp_leaf_;
 };
 
 } // namespace openrar::io

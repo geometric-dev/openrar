@@ -1,6 +1,7 @@
 #include "../core/types.hpp"
 #include "../io/file_stream.hpp"
 #include "../io/path_util.hpp"
+#include "../io/containment.hpp"
 #include "../format/headers.hpp"
 #include "../archive/archive_reader.hpp"
 #include "../archive/archive_mutator.hpp"
@@ -1751,6 +1752,10 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     std::filesystem::path out_root =
         dest_dir.empty() ? std::filesystem::current_path() : std::filesystem::path(dest_dir);
 
+    // v1.24 M2: the extraction destination is the pinned containment root —
+    // every write is verified against it at syscall level (plan §1.3).
+    reader.set_extraction_root(out_root);
+
     // Precompute every sanitized target up front: the parallel path must not
     // build paths per job, and duplicate targets (two entries landing on the
     // same file) would race their writers — those fall back to sequential.
@@ -1820,6 +1825,13 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             std::string safe_name = io::sanitize_archive_path(entry.header.file_name);
             if (safe_name.empty()) {
                 std::cerr << "Skipping entry with unsafe empty path: "
+                          << sanitize_for_display(entry.header.file_name) << "\n";
+                continue;
+            }
+            // v1.24 M2 (plan §1.1.5): 8.3-alias-shaped components are
+            // rejected, never mangled — skip with a report.
+            if (io::path_has_83_component(safe_name)) {
+                std::cerr << "Skipping entry with 8.3-alias-shaped path: "
                           << sanitize_for_display(entry.header.file_name) << "\n";
                 continue;
             }
@@ -2056,6 +2068,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         for (auto& r : slots.readers) {
             r->set_keep_broken(keep_broken);
             r->set_extract_symlinks(extract_symlinks);
+            r->set_extraction_root(out_root); // same pinned containment root
         }
 
         // Categorize jobs into three phases:
