@@ -317,7 +317,7 @@ void test_dir_metadata_deferred() {
     // the read-only directory received its child during the permissive phase.
     struct stat st;
     assert(::stat((out / "d").c_str(), &st) == 0);
-    assert(static_cast<core::uint64>(st.st_mtim.tv_sec) == dir_mtime);
+    assert(static_cast<core::uint64>(st.st_mtime) == dir_mtime);
     const mode_t umask_bits = [] {
         const mode_t old = ::umask(0);
         ::umask(old);
