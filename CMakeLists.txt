@@ -50,6 +50,9 @@ set(OPENRAR_CORE_SOURCES
     src/compress/arch/match_avx512.cpp
     src/archive/archive_reader.cpp
     src/archive/archive_mutator.cpp
+    src/archive/collision_detector.cpp
+    src/unicode/unicode_nfc.cpp
+    src/unicode/unicode_tables.cpp
     src/sfx/sfx_config.cpp
     src/sfx/sfx_consent.cpp
     src/sfx/prompt_console.cpp
@@ -403,6 +406,7 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(io_tests tests/unit/io_tests.cpp)
     add_openrar_test(extraction_atomic_tests tests/unit/extraction_atomic_tests.cpp)
     add_openrar_test(extraction_containment_tests tests/unit/extraction_containment_tests.cpp)
+    add_openrar_test(collision_matrix_tests tests/unit/collision_matrix_tests.cpp)
     add_openrar_test(volume_tests tests/unit/volume_tests.cpp)
     add_openrar_test(recovery_tests tests/unit/recovery_tests.cpp)
     add_openrar_test(archive_tests tests/unit/archive_tests.cpp)
@@ -451,6 +455,12 @@ if(NOT EMSCRIPTEN)
     target_compile_definitions(cli_tests PRIVATE
         OPENRAR_CLI_EXE="$<TARGET_FILE:openrar>")
     add_dependencies(cli_tests openrar)
+
+    # collision_matrix_tests (gate 2) also shells out to the built CLI for
+    # the end-to-end abort assertions (plan §10 tests 7-10).
+    target_compile_definitions(collision_matrix_tests PRIVATE
+        OPENRAR_CLI_EXE="$<TARGET_FILE:openrar>")
+    add_dependencies(collision_matrix_tests openrar)
 
     # buffer_archive_tests only registers when the source is built into the
     # native library (gated by OPENRAR_INMEM_ARCHIVE above). Keeps the default
