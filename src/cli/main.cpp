@@ -1684,7 +1684,8 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     bool extract_symlinks = false,
                     const std::vector<std::string>& exclude_patterns = {}, int extract_version = -1,
                     const std::vector<std::string>& file_patterns = {},
-                    [[maybe_unused]] bool restore_owner = false, bool preserve_suid = false) {
+                    [[maybe_unused]] bool restore_owner = false, bool preserve_suid = false,
+                    bool use_mmap = true) {
     // --json-summary (v1.24 M4, plan §5): stdout purity + machine report.
     if (g_json_stdout_only) set_prog_out(std::cerr);
     archive::ExtractionReport report;
@@ -1809,6 +1810,8 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     // v1.24 M2: the extraction destination is the pinned containment root —
     // every write is verified against it at syscall level (plan §1.3).
     reader.set_extraction_root(out_root);
+    // v1.25 M2: mapped scan engine (--no-mmap forces the buffered engine).
+    reader.set_use_mapped_scan(use_mmap);
 
     // Precompute every sanitized target up front: the parallel path must not
     // build paths per job, and duplicate targets (two entries landing on the
@@ -2617,6 +2620,7 @@ static int cli_main(int argc, char* argv[]) {
     bool extract_symlinks = false; // v1.24 §6.1: links DEFAULT DENY; -ol opts in
     bool keep_broken = false;      // -kb
     bool preserve_suid = false;    // --preserve-suid (v1.24 §7.1)
+    bool use_mmap = true;          // --no-mmap (v1.25 §0 kill switch)
     openrar::cli::OverwriteMode overwrite_mode = openrar::cli::OverwriteMode::Prompt;
     bool want_qo = true;   // -qo, -qo+, -qo- (default: enabled)
     bool want_ams = false; // -ams, -am
@@ -2671,6 +2675,9 @@ static int cli_main(int argc, char* argv[]) {
         } else if (sw_eq(s, "--preserve-suid")) {
             // v1.24 plan §7.1: admin opt-in to restore SUID/SGID/sticky bits.
             preserve_suid = true;
+        } else if (sw_eq(s, "--no-mmap")) {
+            // v1.25 plan §0 (kill switch): force the buffered scan engine.
+            use_mmap = false;
         } else if (sw_eq(s, "-o+")) {
             overwrite_mode = openrar::cli::OverwriteMode::Overwrite;
         } else if (sw_eq(s, "-o-")) {
