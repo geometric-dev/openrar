@@ -39,6 +39,21 @@ public:
     bool open(const std::filesystem::path& path, FileMode mode);
     void close();
 
+    // Adopt an externally created OS handle (Windows HANDLE / POSIX fd).
+    // Ownership transfers to this stream; the path is display-only. Used by
+    // the v1.24 containment writer: the handle produced by the anchored
+    // containment walk IS the write handle (write-through-handle, plan
+    // §1.1.3 / §4.1).
+    bool attach_os_handle(void* os_handle, const std::filesystem::path& display_path);
+    void* os_handle() { return handle_; }
+
+    // v1.24 containment commit (Windows): rename THIS open file to `leaf`
+    // inside the already-verified parent directory handle — no path
+    // resolution of any archive-controlled component happens after the walk.
+    // POSIX callers use ContainmentRoot::anchored_rename (name-anchored
+    // renameat) instead.
+    bool commit_rename_in(void* parent_dir_handle, const std::string& utf8_leaf, CommitMode mode);
+
     bool is_open() const;
     core::uint64 size() const;
 
@@ -82,6 +97,12 @@ private:
 bool atomic_rename_commit(const std::filesystem::path& from, const std::filesystem::path& to,
                           CommitMode mode, int& last_error);
 bool commit_is_collision_error(int last_error);
+
+// True when the commit failed because the filesystem/OS lacks the
+// POSIX-semantics rename capability (pre-1709 Windows, FAT, SMB) — the
+// documented MoveFileExW-fallback case — as opposed to a real error
+// (read-only destination, sharing violation, missing path).
+bool commit_error_is_unsupported(int last_error);
 
 } // namespace openrar::io
 

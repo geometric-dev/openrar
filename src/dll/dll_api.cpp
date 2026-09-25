@@ -580,10 +580,11 @@ struct FileArchiveHandle : ArchiveHandleBase {
         openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
         const auto& re = reader->entries()[reader_index[entry_index]];
 
-        // Directory: materialize it, single (0, 0) progress callback.
+        // Directory: materialize through the reader's contained directory
+        // walk (v1.24 M2) — no unanchored create_directories. Single (0, 0)
+        // progress callback.
         if (re.header.file_flags & openrar::format::FHFL_DIRECTORY) {
-            std::error_code ec;
-            std::filesystem::create_directories(std::filesystem::u8path(dest_path), ec);
+            reader->extract_entry(re, std::filesystem::u8path(dest_path), "");
             if (ctx.progress) ctx.progress(ctx.user, 0, 0);
             return RAR_OK;
         }
