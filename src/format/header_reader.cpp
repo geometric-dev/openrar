@@ -80,7 +80,7 @@ bool HeaderReader::read_signature(io::FileStream& src) {
     return std::memcmp(buf, rar5_signature(), RAR5_SIGNATURE_SIZE) == 0;
 }
 
-HeaderResult HeaderReader::read_block_raw(io::FileStream& src, core::uint64& out_type,
+HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out_type,
                                           core::uint64& out_flags,
                                           std::vector<core::byte>& out_body,
                                           core::uint64& out_data_size, HeaderCryptReader* crypt) {
