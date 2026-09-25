@@ -33,6 +33,16 @@ std::string normalize_separators(const std::string& path, char sep = '/');
 // Sanitizes path to prevent directory traversal vulnerabilities (strips leading '/', resolves '..')
 std::string sanitize_archive_path(const std::string& path);
 
+// True when `s` is entirely well-formed UTF-8 (no overlongs, surrogates, or
+// truncated sequences).
+bool is_valid_utf8(const std::string& s);
+
+// Lossless escaping of undecodable names (v1.24 plan §4.3): every byte of an
+// invalid UTF-8 sequence becomes %XX (uppercase hex). The escaped name IS
+// the filename — reversible by hex-decoding the escapes — and feeds the
+// name_escaped security flag in the JSON summary.
+std::string percent_encode_invalid_utf8(const std::string& s);
+
 // Validates that target is strictly contained within base_dir using purely lexical resolution
 // (zero filesystem roundtrips or disk syscalls). Returns false if target escapes base_dir.
 bool is_lexically_contained(const std::filesystem::path& target,
