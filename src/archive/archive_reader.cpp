@@ -5,6 +5,7 @@
 #include "../io/path_util.hpp"
 #include "../io/buffer_stream.hpp"
 #include "../io/extraction_journal.hpp"
+#include "../io/containment.hpp"
 #include "../core/vint.hpp"
 #include "../crypto/crc32.hpp"
 #include "../crypto/blake2sp.hpp"
@@ -69,8 +70,82 @@ constexpr size_t kStreamChunk = 64 * 1024; // stored/decrypt slice (multiple of 
 } // namespace
 
 io::ExtractionSession& ArchiveReader::ensure_extraction_session() {
-    if (!extraction_session_) extraction_session_ = std::make_unique<io::ExtractionSession>();
+    if (!extraction_session_) {
+        extraction_session_ = std::make_unique<io::ExtractionSession>();
+        if (!extraction_root_.empty()) extraction_session_->attach_root(extraction_root_);
+    }
     return *extraction_session_;
+}
+
+void ArchiveReader::force_containment_fallback_for_test() {
+    ensure_extraction_session().force_containment_fallback_for_test();
+}
+
+// Joins a path's components with '/' (generic form for the walk input).
+static std::string generic_rel(const std::filesystem::path& p) {
+    std::string out;
+    for (const auto& comp : p) {
+        const std::string c = io::u8_str(comp);
+        if (c == "/" || c == "\\" || c.empty()) continue; // root separators
+        if (!out.empty()) out += '/';
+        out += c;
+    }
+    return out;
+}
+
+bool ArchiveReader::open_contained_writer(const ArchiveEntry& entry,
+                                          const std::filesystem::path& dest_path,
+                                          io::AtomicWriter& writer) {
+    io::ExtractionSession& sess = ensure_extraction_session();
+    if (!sess.containment().attached()) {
+        // Root inference (plan §1.3): pop the entry's own sanitized directory
+        // components off the destination's parent chain.
+        std::string rel = io::sanitize_archive_path(entry.header.file_name);
+        if (rel.empty()) return false;
+        std::string rel_dir, rel_leaf;
+        io::split_archive_relpath(rel, rel_dir, rel_leaf);
+        if (!sess.ensure_root_for(dest_path, rel_dir)) return false;
+    }
+    // The walk's relative directory is the CALLER'S layout: dest's parent
+    // relative to the canonical root, purely lexically (no disk resolution —
+    // that is the walk's job). A dest outside the root rejects here.
+    std::error_code ec;
+    std::filesystem::path dest_abs = std::filesystem::absolute(dest_path, ec);
+    if (ec) return false;
+    dest_abs = dest_abs.lexically_normal();
+    std::filesystem::path rel_dir_p =
+        dest_abs.parent_path().lexically_relative(sess.canonical_root());
+    if (rel_dir_p.empty()) return false;
+    if (rel_dir_p == ".") rel_dir_p.clear();
+    for (const auto& comp : rel_dir_p) {
+        const std::string c = io::u8_str(comp);
+        if (c == "." || c == ".." || c.empty()) return false; // outside the root
+    }
+    return writer.open_contained(sess, generic_rel(rel_dir_p), io::u8_str(dest_abs.filename()));
+}
+
+bool ArchiveReader::create_contained_dir(const ArchiveEntry& entry,
+                                         const std::filesystem::path& dest_path) {
+    io::ExtractionSession& sess = ensure_extraction_session();
+    if (!sess.containment().attached()) {
+        std::string rel = io::sanitize_archive_path(entry.header.file_name);
+        if (rel.empty()) return true; // best-effort skip, matching dir semantics
+        std::string rel_dir, rel_leaf;
+        io::split_archive_relpath(rel, rel_dir, rel_leaf);
+        if (!sess.ensure_root_for(dest_path, rel_dir)) return true;
+    }
+    std::error_code ec;
+    std::filesystem::path dest_abs = std::filesystem::absolute(dest_path, ec);
+    if (ec) return true;
+    dest_abs = dest_abs.lexically_normal();
+    std::filesystem::path rel_dir_p = dest_abs.lexically_relative(sess.canonical_root());
+    if (rel_dir_p.empty() || rel_dir_p == ".") return true; // nothing to create
+    for (const auto& comp : rel_dir_p) {
+        const std::string c = io::u8_str(comp);
+        if (c == "." || c == ".." || c.empty()) return true; // outside the root: skip
+    }
+    io::ContainmentRoot::VerifiedDir anchor;
+    return sess.containment().resolve_dir(generic_rel(rel_dir_p), /*create=*/true, anchor);
 }
 
 size_t ArchiveReader::test_get_solid_window_size() const {
@@ -1914,11 +1989,11 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
     // Directory record (FHFL_DIRECTORY, no data area): materialize the
     // directory itself so empty directories survive extraction. Best-effort —
     // failure to create (existing file in the way, permissions) is a skip,
-    // not an extraction error.
+    // not an extraction error. v1.24 M2: created through the contained walk
+    // (anchored mkdir + reopen-verify), never via unanchored
+    // create_directories.
     if (entry.header.file_flags & format::FHFL_DIRECTORY) {
-        std::error_code mk_ec;
-        std::filesystem::create_directories(dest_path, mk_ec);
-        return true;
+        return create_contained_dir(entry, dest_path);
     }
 
     // 07-services.md: Redirection – symlinks/junctions/hardlinks/filecopy
@@ -2054,18 +2129,18 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         return true;
     }
 
-    // Regular file extraction:
-    // Sanitize -> symlink checks on the sanitized path (B3).
-    // TOCTOU notice: Check-then-open has an inherent residual race window against external
-    // concurrent processes modifying symlinks on the filesystem between symlink_status() and open().
+    // Regular file extraction. v1.24 M2: the lexical check-then-open TOCTOU
+    // of the old symlink scans is closed by construction — the containment
+    // walk opens/creates every parent component no-follow from the pinned
+    // root and the write goes through the verified handle; a symlink planted
+    // at the destination leaf is replaced (never followed) by the anchored
+    // commit rename. convert_self_links is retained: it only ever touches
+    // links this reader created itself (M9 semantics). has_symlink_parent
+    // stays as the shipped B3/M9 POLICY: a destination inside a pre-existing
+    // user symlink is rejected outright, regardless of containment.
     convert_self_links(dest_path);
     if (has_symlink_parent(dest_path)) {
         return false;
-    }
-    std::error_code ec_sym;
-    auto st_dest = std::filesystem::symlink_status(dest_path, ec_sym);
-    if (!ec_sym && std::filesystem::is_symlink(st_dest)) {
-        std::filesystem::remove(dest_path, ec_sym);
     }
 
     if (entry.in_memory) {
@@ -2073,9 +2148,8 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         // consistent with the file paths: same write checks, same hash
         // policy — so a future producer cannot reintroduce the
         // verification asymmetry silently.
-        if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
         io::AtomicWriter writer;
-        if (!writer.open(ensure_extraction_session(), dest_path)) return false;
+        if (!open_contained_writer(entry, dest_path, writer)) return false;
         io::FileStream& out = writer.stream();
         // keep_broken: a failed extraction leaves the partial output at the
         // destination (best-effort atomic commit), matching the pre-atomic
@@ -2171,9 +2245,8 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         crypto::Blake2sp v_b2;
         crypto::Crc32 v_crc;
 
-        if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
         io::AtomicWriter writer;
-        if (!writer.open(ensure_extraction_session(), dest_path)) return false;
+        if (!open_contained_writer(entry, dest_path, writer)) return false;
         io::FileStream& out = writer.stream();
         auto fail = [&]() -> bool {
             if (keep_broken_) writer.commit(io::CommitMode::ReplaceExisting);
@@ -2208,14 +2281,13 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
         return extract_store_entry(entry, dest_path, pass);
     }
 
-    if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
     std::vector<core::byte> packed;
     if (!read_packed_data(entry, packed)) {
         solid_chain_ok_ = false;
         return false;
     }
     io::AtomicWriter writer;
-    if (!writer.open(ensure_extraction_session(), dest_path)) return false;
+    if (!open_contained_writer(entry, dest_path, writer)) return false;
     io::FileStream& out = writer.stream();
     auto fail = [&]() -> bool {
         if (keep_broken_) writer.commit(io::CommitMode::ReplaceExisting);
@@ -2261,23 +2333,15 @@ bool ArchiveReader::extract_store_entry(const ArchiveEntry& entry,
         return extract_entry(entry, dest_path, password);
     }
 
-    // Sanitize -> symlink checks on the sanitized path (B3).
-    // TOCTOU notice: Check-then-open has an inherent residual race window against external
-    // concurrent processes modifying symlinks on the filesystem between symlink_status() and open().
+    // Same containment rationale as the compressed path above; has_symlink_parent
+    // keeps the shipped B3/M9 destination policy (see extract_entry).
     convert_self_links(dest_path);
     if (has_symlink_parent(dest_path)) {
         return false;
     }
-    std::error_code ec_sym;
-    auto st_dest = std::filesystem::symlink_status(dest_path, ec_sym);
-    if (!ec_sym && std::filesystem::is_symlink(st_dest)) {
-        std::filesystem::remove(dest_path, ec_sym);
-    }
-
-    if (!ensure_parent_dir(dest_path, entry.header.file_name)) return false;
 
     io::AtomicWriter writer;
-    if (!writer.open(ensure_extraction_session(), dest_path)) return false;
+    if (!open_contained_writer(entry, dest_path, writer)) return false;
     io::FileStream& out = writer.stream();
     auto fail = [&]() -> bool {
         if (keep_broken_) writer.commit(io::CommitMode::ReplaceExisting);
