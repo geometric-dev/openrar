@@ -22,6 +22,10 @@ class ExtractionSession; // per-run journal anchor for atomic extraction (v1.24 
 class AtomicWriter;      // temp-in-destination atomic writer (v1.24 M1)
 } // namespace openrar::io
 
+namespace openrar::archive {
+struct CollisionPair; // collision_detector.hpp (v1.24 M3)
+}
+
 namespace openrar::crypto {
 struct Rar5Keys; // POD key bundle (pbkdf2.hpp); streaming methods take it by pointer
 }
@@ -84,6 +88,12 @@ public:
 
     // Test CRC32 of stored uncompressed or compressed payload
     bool test_entry(const ArchiveEntry& entry);
+
+    // Archive-internal collision detection (v1.24 M3, plan §3): runs the
+    // four-class detector over the final merged entry list with service
+    // headers filtered. Returns true and fills `out` when the archive is
+    // self-contradictory — the caller must abort BEFORE writing anything.
+    bool detect_collisions(std::vector<CollisionPair>& out) const;
 
     // Extract entry (stored or compressed) directly to disk
     bool extract_entry(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
