@@ -3,6 +3,7 @@
 #include "../api/abi_contract.hpp"
 #include "../archive/buffer_archive.hpp"
 #include "../archive/archive_reader.hpp"
+#include "../archive/collision_detector.hpp"
 #include "../archive/archive_mutator.hpp"
 #include "../io/path_util.hpp"
 #include "../io/extraction_journal.hpp"
@@ -23,6 +24,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -465,6 +467,8 @@ struct FileArchiveHandle : ArchiveHandleBase {
     std::vector<openrar::archive::BufferArchiveEntry> entries;
     // DLL entry index → reader entries() index.
     std::vector<size_t> reader_index;
+    // Names implicated in an archive-internal collision (v1.24 M3).
+    std::set<std::string> collision_names;
     openrar::archive::ExtractionLimits limits;
     openrar::archive::LimitState limit_state;
     bool has_limits{false};
@@ -506,6 +510,17 @@ struct FileArchiveHandle : ArchiveHandleBase {
     void build_entry_map() {
         entries.clear();
         reader_index.clear();
+        // v1.24 M3: collision detection over the merged entry list; entries
+        // implicated in an archive-internal collision are refused by
+        // extract_to_path (structural integrity — plan §3).
+        std::vector<openrar::archive::CollisionPair> collisions;
+        collision_names.clear();
+        if (reader->detect_collisions(collisions)) {
+            for (const auto& c : collisions) {
+                collision_names.insert(c.first);
+                collision_names.insert(c.second);
+            }
+        }
         for (size_t i = 0; i < reader->entries().size(); ++i) {
             const auto& re = reader->entries()[i];
             if (re.header.is_service) continue;
@@ -579,6 +594,13 @@ struct FileArchiveHandle : ArchiveHandleBase {
         ListCallbackCtx ctx{progress, cancel, user};
         openrar::archive::ReaderHooks hooks = make_reader_hooks(ctx);
         const auto& re = reader->entries()[reader_index[entry_index]];
+
+        // v1.24 M3: refuse entries implicated in an archive-internal
+        // collision (structural integrity failure — plan §3.4).
+        if (collision_names.count(re.header.file_name) != 0) {
+            set_error("archive-internal collision: entry refused");
+            return RAR_ERR_NOT_RAR; // bad-archive family: structural integrity failure
+        }
 
         // Directory: materialize through the reader's contained directory
         // walk (v1.24 M2) — no unanchored create_directories. Single (0, 0)
