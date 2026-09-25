@@ -24,7 +24,21 @@ enum class CommitMode {
 
 enum class SeekOrigin { Begin, Current, End };
 
-class FileStream {
+// Minimal random-access read interface (v1.25 plan §1). Implemented by
+// FileStream (buffered syscall reads) and io::MappedFile (fault-guarded
+// mapped reads) so consumers — the header scanner — run unchanged on
+// either engine.
+class ReadSource {
+public:
+    virtual ~ReadSource() = default;
+    virtual bool is_open() const = 0;
+    virtual core::uint64 size() const = 0;
+    virtual bool seek(core::int64 offset, SeekOrigin origin) = 0;
+    virtual core::uint64 tell() const = 0;
+    virtual size_t read(void* dest, size_t bytes) = 0;
+};
+
+class FileStream : public ReadSource {
 public:
     FileStream();
     ~FileStream();
@@ -54,14 +68,14 @@ public:
     // renameat) instead.
     bool commit_rename_in(void* parent_dir_handle, const std::string& utf8_leaf, CommitMode mode);
 
-    bool is_open() const;
-    core::uint64 size() const;
+    bool is_open() const override;
+    core::uint64 size() const override;
 
-    size_t read(void* dest, size_t bytes);
+    size_t read(void* dest, size_t bytes) override;
     size_t write(const void* src, size_t bytes);
 
-    bool seek(core::int64 offset, SeekOrigin origin);
-    core::uint64 tell() const;
+    bool seek(core::int64 offset, SeekOrigin origin) override;
+    core::uint64 tell() const override;
 
     bool truncate(core::uint64 new_size);
     bool flush();
