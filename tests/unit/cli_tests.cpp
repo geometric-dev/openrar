@@ -2,6 +2,9 @@
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/archive/archive_reader.hpp"
 #include "../../src/archive/rar_errors.hpp"
+#include "../../src/crypto/crc32.hpp"
+#include "../../src/io/motw.hpp"
+#include "../../src/io/win32_meta.hpp"
 #include "openrar/version.h"
 #include <algorithm>
 #include <cassert>
@@ -1709,6 +1712,223 @@ static void test_cdc_packed_rr_repair() {
     std::cout << "[PASS] cdc_packed_rr_repair (plan test 7)\n";
 }
 
+// ── v1.27 M4: MotW propagation + zone-stream policy (plan tests 7-11) ───────
+
+#ifdef _WIN32
+// Reads the Zone.Identifier ADS content of a file; false when absent.
+static bool read_zone_ads_content(const std::filesystem::path& f, std::string& out) {
+    std::vector<openrar::io::StreamEntry> streams;
+    if (!openrar::io::read_alternate_streams(f, streams)) return false;
+    for (const auto& s : streams) {
+        if (openrar::io::is_zone_stream_name(s.name)) {
+            out.assign(s.data.begin(), s.data.end());
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
+// plan tests 9/10/11: a marked archive propagates freshly generated marks;
+// the archive's HostUrl/ReferrerUrl NEVER travel; -oz- disables; an
+// unmarked archive writes nothing.
+static void test_motw_propagation_cli() {
+#ifdef _WIN32
+    namespace fsx = std::filesystem;
+    std::error_code ec;
+    fsx::path temp_dir = "test_motw_cli";
+    fsx::remove_all(temp_dir, ec);
+    fsx::create_directories(temp_dir, ec);
+
+    fsx::path src = temp_dir / "a.txt";
+    {
+        std::ofstream f(src, std::ios::binary);
+        f << "motw-body";
+    }
+
+    fsx::path arc = temp_dir / "marked.rar";
+    std::string cmd =
+        get_cli_path() + " a -q " + arc.string() + " " + src.string() + " > " DEVNULL " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+
+    // Mark the ARCHIVE file itself (the only provenance surface).
+    const auto gen3_bytes = openrar::io::generate_zone_identifier_content(3);
+    const std::string gen3(gen3_bytes.begin(), gen3_bytes.end());
+    assert(openrar::io::write_alternate_stream(arc, ":Zone.Identifier", gen3.data(), gen3.size()));
+
+    // Default (-oz implied ON): extracted file carries a fresh mark.
+    fsx::path out1 = temp_dir / "out1";
+    cmd = get_cli_path() + " x -q " + arc.string() + " " + out1.string() + " > " DEVNULL " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+    std::string got;
+    assert(read_zone_ads_content(out1 / "a.txt", got));
+    assert(got == gen3); // generated locally, byte-exact
+    std::cout << "[PASS] motw_propagated_from_archive_ads (plan test 9)\n";
+
+    // plan test 10: the archive's HostUrl/ReferrerUrl never travel — the
+    // extracted mark is exactly the generated content.
+    const char* tainted = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=http://evil.example\r\n"
+                          "ReferrerUrl=http://referrer.example\r\n";
+    assert(openrar::io::write_alternate_stream(arc, ":Zone.Identifier", tainted, strlen(tainted)));
+    fsx::path out2 = temp_dir / "out2";
+    cmd = get_cli_path() + " x -q " + arc.string() + " " + out2.string() + " > " DEVNULL " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+    assert(read_zone_ads_content(out2 / "a.txt", got));
+    assert(got == gen3);
+    assert(got.find("evil") == std::string::npos);
+    std::cout << "[PASS] motw_hosturl_never_copied (plan test 10)\n";
+
+    // plan test 11: -oz- disables propagation entirely.
+    fsx::path out3 = temp_dir / "out3";
+    cmd =
+        get_cli_path() + " x -oz- -q " + arc.string() + " " + out3.string() + " > " DEVNULL " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+    assert(!read_zone_ads_content(out3 / "a.txt", got));
+
+    // Unmarked archive: zero writes.
+    fsx::path arc2 = temp_dir / "clean.rar";
+    cmd = get_cli_path() + " a -q " + arc2.string() + " " + src.string() + " > " DEVNULL " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+    fsx::path out4 = temp_dir / "out4";
+    cmd = get_cli_path() + " x -q " + arc2.string() + " " + out4.string() + " > " DEVNULL " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+    assert(!read_zone_ads_content(out4 / "a.txt", got));
+    std::cout << "[PASS] motw_disabled_by_flag + unmarked-no-writes (plan test 11)\n";
+
+    fsx::remove_all(temp_dir, ec);
+#endif
+}
+
+// plan test 7: archive-provided zone content is never written to disk. The
+// archive carries a real Zone.Identifier STM child (the WinRAR -os shape,
+// also the hostile-crafter shape); extraction skips it before even reading
+// the payload and reports it.
+static void test_zone_stream_never_restored() {
+#ifdef _WIN32
+    namespace fsx = std::filesystem;
+    std::error_code ec;
+    fsx::path temp_dir = "test_zone_skip";
+    fsx::remove_all(temp_dir, ec);
+    fsx::create_directories(temp_dir, ec);
+
+    fsx::path src = temp_dir / "a.txt";
+    {
+        std::ofstream f(src, std::ios::binary);
+        f << "zone-skip-body";
+    }
+
+    // Craft an archive with an STM child named :Zone.Identifier — exactly
+    // what WinRAR's -os stores and what a hostile archive would craft.
+    fsx::path arc = temp_dir / "zonestream.rar";
+    const char* zone_payload = "[ZoneTransfer]\r\nZoneId=1\r\n"; // downgrade attempt
+    openrar::archive::ArchiveMutator::PreparedAdd p;
+    p.entry_name = "a.txt";
+    p.src_path = src;
+    assert(openrar::archive::ArchiveMutator::prepare_add_file(src, "a.txt", 0, "", p));
+    openrar::archive::ArchiveMutator::PreparedAdd zone_child;
+    zone_child.fb.is_service = true;
+    zone_child.fb.service_type = "STM";
+    zone_child.fb.file_name = "STM";
+    const std::string zname = ":Zone.Identifier";
+    zone_child.fb.sub_data.assign(zname.begin(), zname.end());
+    zone_child.fb.unp_size = strlen(zone_payload);
+    zone_child.fb.pack_size = static_cast<openrar::core::int64>(strlen(zone_payload));
+    zone_child.fb.method = 0;
+    zone_child.fb.has_crc32 = true;
+    openrar::crypto::Crc32 c;
+    c.update(zone_payload, strlen(zone_payload));
+    zone_child.fb.data_crc32 = c.get();
+    zone_child.payload.assign(zone_payload, zone_payload + strlen(zone_payload));
+    p.child_services.push_back(std::move(zone_child));
+
+    std::vector<openrar::archive::ArchiveMutator::PreparedAdd> batch;
+    batch.push_back(std::move(p));
+    std::string detail;
+    assert(openrar::archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {},
+                                                                false, {}, detail) == 0);
+
+    // The archive really contains the zone stream (the skip happens at
+    // restore, not because the data vanished).
+    {
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc));
+        bool saw_zone_child = false;
+        for (const auto& e : r.entries()) {
+            if (e.header.is_service && e.header.service_type == "STM" &&
+                openrar::io::is_zone_stream_name(
+                    std::string(e.header.sub_data.begin(), e.header.sub_data.end()))) {
+                saw_zone_child = true;
+            }
+        }
+        assert(saw_zone_child);
+    }
+
+    // Extract: the file lands, the zone stream does not, and the skip is
+    // reported on stderr.
+    fsx::path out = temp_dir / "out";
+    fsx::path err_log = temp_dir / "err.txt";
+    // NOTE: no -q here — quiet mode suppresses the W: line this test asserts.
+    std::string cmd = get_cli_path() + " x " + arc.string() + " " + out.string() + " 2> " +
+                      err_log.string() + " > " DEVNULL "";
+    assert(std::system(cmd.c_str()) == 0);
+    std::ifstream ef(err_log, std::ios::binary);
+    std::string err((std::istreambuf_iterator<char>(ef)), std::istreambuf_iterator<char>());
+    assert(err.find("zone stream") != std::string::npos);
+    std::string got;
+    assert(!read_zone_ads_content(out / "a.txt", got)); // never restored
+    assert(file_bytes_equal(src, out / "a.txt"));
+
+    fsx::remove_all(temp_dir, ec);
+    std::cout << "[PASS] zone_stream_never_restored (plan test 7, WinRAR-shaped)\n";
+#endif
+}
+
+// plan test 8: -os capture excludes the Zone.Identifier ADS (provenance is
+// not content); ordinary streams still store.
+static void test_os_excludes_zone_capture() {
+#ifdef _WIN32
+    namespace fsx = std::filesystem;
+    std::error_code ec;
+    fsx::path temp_dir = "test_os_zone";
+    fsx::remove_all(temp_dir, ec);
+    fsx::create_directories(temp_dir, ec);
+
+    fsx::path src = temp_dir / "a.txt";
+    {
+        std::ofstream f(src, std::ios::binary);
+        f << "os-zone-body";
+    }
+    const char* zone = "[ZoneTransfer]\r\nZoneId=3\r\n";
+    assert(openrar::io::write_alternate_stream(src, ":Zone.Identifier", zone, strlen(zone)));
+    const char* note = "hello-note";
+    assert(openrar::io::write_alternate_stream(src, ":note.txt", note, strlen(note)));
+
+    fsx::path arc = temp_dir / "os.rar";
+    std::string cmd =
+        get_cli_path() + " a -os -q " + arc.string() + " " + src.string() + " > " DEVNULL " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+
+    openrar::archive::ArchiveReader r;
+    assert(r.open(arc));
+    bool saw_note = false;
+    bool saw_zone = false;
+    for (const auto& e : r.entries()) {
+        if (!e.header.is_service || e.header.service_type != "STM") continue;
+        const std::string name(e.header.sub_data.begin(), e.header.sub_data.end());
+        if (openrar::io::is_zone_stream_name(name)) {
+            saw_zone = true;
+        } else if (name == ":note.txt") {
+            saw_note = true;
+        }
+    }
+    assert(saw_note);
+    assert(!saw_zone);
+
+    fsx::remove_all(temp_dir, ec);
+    std::cout << "[PASS] os_excludes_zone_at_capture (plan test 8)\n";
+#endif
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -1746,6 +1966,9 @@ int main() {
     test_timestamp_clamped_flag();
     test_cdc_packed_caps_enforced();
     test_cdc_packed_rr_repair();
+    test_motw_propagation_cli();
+    test_zone_stream_never_restored();
+    test_os_excludes_zone_capture();
     test_sanitize_for_display();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
