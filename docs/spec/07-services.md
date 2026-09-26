@@ -158,6 +158,27 @@ Streams are created only after the host file exists; `READONLY` is cleared befor
 
 A decoder that does not support ADS may skip all `STM` blocks — the host file remains correct and `rar t` validates their CRCs; `rar l -vta` annotates `Type: NTFS alternate data stream`.
 
+### OpenRAR v1.27 zone-stream policy (SECURITY_ARCHITECTURE §4.3)
+
+`Zone.Identifier` is transport provenance, not file content. OpenRAR therefore
+departs from WinRAR here, deliberately:
+
+* **Capture:** OpenRAR's `-os` excludes `:Zone.Identifier` entirely (any legal
+  spelling, case-insensitive, with or without the `:$DATA` suffix). WinRAR
+  `-os` archives may still carry zone streams — OpenRAR re-emits them
+  verbatim on mutation but never restores them.
+* **Restore:** extraction skips any zone-named STM child *before* reading its
+  payload, regardless of producer, and reports the skip (`W:` line +
+  `zone_stream_skipped` JSON flag).
+* **Propagation:** the `-oz` policy instead keys on the ARCHIVE FILE's own
+  Zone.Identifier ADS / `com.apple.quarantine` xattr (transport context) and
+  writes freshly generated mark content — `[ZoneTransfer]
+ZoneId=N
+`,
+  nothing else — per extracted file. WinRAR's "restore archive-provided zone
+  if more secure than host" algorithm is not implemented: attacker-chosen
+  zone content never reaches disk in either direction.
+
 ---
 
 ## 4. Redirection — Symlinks, Junctions, Hard Links, File Copy (`-ol`, `-oi`, `-oh`)
