@@ -10,9 +10,25 @@
 > scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
 > v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
-## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 / v1.25.0 / v1.26.0)
+## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 / v1.25.0 / v1.26.0 / v1.27.0)
 
-- **v1.26.0 (current):** CDC-driven solid-chain packing shipped — the
+- **v1.27.0 (current):** Extended Attributes, Quarantine & MotW shipped —
+  Gate 0 cleared (docs/v1.27-pre-analysis.md §7, conditional approval +
+  ten directives): the `FHEXTRA_XATTR` (0x08) record type was verified
+  free against unrar headers5.hpp and bitplane rar-research, and the
+  unknown-record skip contract is spec-verbatim (interop Track 10:
+  spec-crafted archive vs the UnRAR oracle). `-ox` capture
+  (user./security./trusted./com.apple.metadata.* namespaces, capped,
+  sorted, malformed → verbatim unknown-extra fallback) and allow-listed
+  restore with `--xattr-security` (the --preserve-suid model).
+  `-oz` MotW propagation (default ON, `-oz-` disables) keyed on the
+  archive file's own Zone.Identifier ADS / com.apple.quarantine with
+  locally generated marks; the shipped Zone.Identifier-via-`-os` residue
+  closed (documented WinRAR divergence — 07-services.md). Rolled-in
+  fixes: POSIX `-ow` owner-capture moved-from bug, FILECOPY caps debit
+  (§5.4), `-oi3`/`-oi4` dispatch hygiene, the dir_metadata_deferred
+  read-only-leftover flake. Plan: docs/v1.27-implementation-plan.md.
+- **v1.26.0:** CDC-driven solid-chain packing shipped — the
   Gate-0-cleared Design A (docs/v1.26-pre-analysis.md §5): `-cdc`
   affinity ordering over ordinary RAR5 solid compression, `-oi` creation
   side (the round-2 critical finding — the README row is now true), and
