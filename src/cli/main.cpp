@@ -17,6 +17,7 @@
 #include "../io/win32_meta.hpp"
 #include "../io/motw.hpp"
 #include "progress.hpp"
+#include "tui.hpp"
 #include "thread_pool.hpp"
 #include "../core/cpu.hpp"
 #include "../crypto/crc32.hpp"
@@ -556,7 +557,67 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
     return 0;
 }
 
-static CLIProgress Prog;
+static DualProgress Prog;
+
+// ── v1.28 M2: disk-hook plumbing ──
+// Feeds the TUI's current-file bar from the reader's per-chunk hook and
+// carries the cooperative-cancel predicate. OPENRAR_TEST_CANCEL_AFTER_BYTES /
+// _FILES give deterministic cancel coverage without a TTY (plan §6 tests
+// 12/13); zero effect when unset.
+
+struct TuiHookCtx {
+    DualProgress* prog;
+    std::atomic<uint64_t>* cur_done; // within-file progress mirror
+    std::atomic<size_t>* files_done; // completed-file counter
+};
+
+static long long tui_cancel_after_bytes = -1; // < 0 disables
+static long long tui_cancel_after_files = -1;
+
+static void tui_disk_progress(uint64_t done, uint64_t total, void* user) {
+    auto* ctx = static_cast<TuiHookCtx*>(user);
+    ctx->cur_done->store(done, std::memory_order_relaxed);
+    ctx->prog->update_current(done, total);
+}
+
+static int tui_disk_cancel(void* user) {
+    auto* ctx = static_cast<TuiHookCtx*>(user);
+    if (g_tui_cancel.load(std::memory_order_relaxed) != 0) return 1;
+    if (tui_cancel_after_bytes >= 0) {
+        const long long total_done =
+            static_cast<long long>(ctx->prog->processed_bytes()) +
+            static_cast<long long>(ctx->cur_done->load(std::memory_order_relaxed));
+        if (total_done >= tui_cancel_after_bytes) return 1;
+    }
+    if (tui_cancel_after_files >= 0 && static_cast<long long>(ctx->files_done->load(
+                                           std::memory_order_relaxed)) >= tui_cancel_after_files) {
+        return 1;
+    }
+    return 0;
+}
+
+static void tui_parse_cancel_env() {
+    // An empty value means unset (tests clear the hooks with VAR=).
+    if (const char* s = std::getenv("OPENRAR_TEST_CANCEL_AFTER_BYTES")) {
+        if (*s) tui_cancel_after_bytes = std::atoll(s);
+    }
+    if (const char* s = std::getenv("OPENRAR_TEST_CANCEL_AFTER_FILES")) {
+        if (*s) tui_cancel_after_files = std::atoll(s);
+    }
+}
+
+// PROMPT state (challenge directive 2): the region is wiped, cooked stdin is
+// restored for the prompt, and the keyboard thread is parked — ESC during an
+// overwrite query must not cancel the run.
+static void pause_tui_for_prompt() {
+    Prog.pause_for_prompt();
+    KeyboardCancel::instance().pause();
+}
+
+static void resume_tui_after_prompt() {
+    KeyboardCancel::instance().resume();
+    Prog.resume();
+}
 
 // — parallel entry processing for x/e/t —
 //
@@ -696,6 +757,17 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
     Prog.init("TESTING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
     Prog.set_totals(total_entries, total_bytes);
 
+    // v1.28 M2: cancel scope for the test operation (between-entries for the
+    // plain test path; the encrypted stream path also gets the hook).
+    KeyboardCancel::instance().arm(is_vt_supported());
+    struct TuiDisarmGuard {
+        ~TuiDisarmGuard() { KeyboardCancel::instance().disarm(); }
+    } tui_disarm_guard;
+    tui_parse_cancel_env();
+    std::atomic<uint64_t> hook_cur_done{0};
+    std::atomic<size_t> hook_files_done{0};
+    TuiHookCtx hook_ctx{&Prog, &hook_cur_done, &hook_files_done};
+
     size_t error_count = 0;
     size_t idx = 0;
 
@@ -759,10 +831,13 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         if (job.entry->header.is_encrypted && password.empty()) {
             return TestResult::SkippedNoPassword;
         }
+        if (g_tui_cancel.load(std::memory_order_relaxed) != 0) {
+            return TestResult::Failed; // cancelled: never report a skipped run as OK
+        }
         if (!job.entry->header.is_encrypted) {
             return r.test_entry(*job.entry) ? TestResult::Ok : TestResult::Failed;
         }
-        archive::ReaderHooks hooks{};
+        archive::ReaderHooks hooks{tui_disk_progress, &hook_ctx, tui_disk_cancel, &hook_ctx};
         return r.test_entry_stream(job.index, hooks) == archive::RAR_OK ? TestResult::Ok
                                                                         : TestResult::Failed;
     };
@@ -786,6 +861,11 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
     if (slots.readers.empty()) {
         for (const auto& job : jobs) {
             idx++;
+            // v1.28 M2: between-entries cancel observation.
+            if (g_tui_cancel.load(std::memory_order_relaxed) != 0) {
+                std::cerr << "User break\n";
+                return EXIT_USER_BREAK;
+            }
             Prog.start_file(job.entry->header.file_name, idx);
 
             if (!g_quiet_mode && !is_vt_supported()) {
@@ -839,6 +919,12 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
                           << "... " << test_verdict_str(verdicts[i]) << "\n";
             }
             if (!okv) error_count++;
+        }
+        // v1.28 M2: a cancelled test run exits user-break, never as a plain
+        // verification failure (the taxonomy stays intact for scripts).
+        if (g_tui_cancel.load(std::memory_order_relaxed) != 0) {
+            std::cerr << "User break\n";
+            return EXIT_USER_BREAK;
         }
     }
 
@@ -2095,6 +2181,19 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     Prog.init("DECOMPRESSING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
     Prog.set_totals(total_entries, total_bytes);
 
+    // v1.28 M2: interactive-cancel scope — armed only here (long TUI
+    // operation); the RAII guard disarms on EVERY exit path (directive 3:
+    // ^C handler lives only inside the TUI scope). Non-TTY arms to a no-op.
+    KeyboardCancel::instance().arm(is_vt_supported());
+    struct TuiDisarmGuard {
+        ~TuiDisarmGuard() { KeyboardCancel::instance().disarm(); }
+    } tui_disarm_guard;
+    tui_parse_cancel_env();
+    std::atomic<uint64_t> hook_cur_done{0};
+    std::atomic<size_t> hook_files_done{0};
+    TuiHookCtx hook_ctx{&Prog, &hook_cur_done, &hook_files_done};
+    archive::ReaderHooks disk_hooks{tui_disk_progress, &hook_ctx, tui_disk_cancel, &hook_ctx};
+
     std::filesystem::path out_root =
         dest_dir.empty() ? std::filesystem::current_path() : std::filesystem::path(dest_dir);
 
@@ -2103,6 +2202,8 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     reader.set_extraction_root(out_root);
     // v1.25 M2: mapped scan engine (--no-mmap forces the buffered engine).
     reader.set_use_mapped_scan(use_mmap);
+    // v1.28 M2: within-file progress + cooperative cancel for the disk path.
+    reader.set_disk_hooks(disk_hooks);
 
     // Precompute every sanitized target up front: the parallel path must not
     // build paths per job, and duplicate targets (two entries landing on the
@@ -2489,7 +2590,19 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             const auto& job = extract_jobs[job_i];
             auto& rep = report.entries[job_rep_idx[job_i]];
             idx++;
+            // v1.28 M2: between-entries cancel observation (directive: the
+            // cooperative cancel is checked before each job).
+            if (g_tui_cancel.load(std::memory_order_relaxed) != 0 ||
+                tui_disk_cancel(&hook_ctx) != 0) {
+                rep.status = "unprocessed";
+                rep.reason = "extraction aborted";
+                std::cerr << "User break\n";
+                report.aborted = true;
+                report.abort_reason = "user break";
+                return emit_json(EXIT_USER_BREAK);
+            }
             Prog.start_file(job.entry->header.file_name, idx);
+            hook_cur_done.store(0, std::memory_order_relaxed);
 
             if (!g_quiet_mode && !is_vt_supported()) {
                 (g_json_stdout_only ? std::cerr : std::cout)
@@ -2510,7 +2623,12 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
 
             if (overwrite_mode == OverwriteMode::Prompt &&
                 std::filesystem::exists(job.target, ow_ec)) {
-                switch (ask_overwrite(job.display_name)) {
+                // PROMPT state: region cleared, cooked stdin, keyboard thread
+                // parked — the prompt owns the terminal (directive 2).
+                pause_tui_for_prompt();
+                const OverwriteAnswer answer = ask_overwrite(job.display_name);
+                resume_tui_after_prompt();
+                switch (answer) {
                 case OverwriteAnswer::Yes:
                     break;
                 case OverwriteAnswer::Always:
@@ -2543,6 +2661,16 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                 rep.status = "extracted";
                 if (reader.last_mtime_clamped()) job_ts_clamped[job_i] = 1;
                 note_ts_clamp(job_i, rep);
+                hook_files_done.fetch_add(1, std::memory_order_relaxed);
+            } else if (reader.last_cancel_requested()) {
+                // v1.28 M2: mid-file cooperative cancel — the temp was
+                // abandoned by the AtomicWriter; the run exits user-break.
+                rep.status = "unprocessed";
+                rep.reason = "extraction aborted";
+                std::cerr << "User break\n";
+                report.aborted = true;
+                report.abort_reason = "user break";
+                return emit_json(EXIT_USER_BREAK);
             } else {
                 if (!g_quiet_mode && !is_vt_supported()) {
                     if (reader.has_bad_password()) {
@@ -2568,6 +2696,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             r->set_extract_symlinks(extract_symlinks);
             r->set_restore_xattr_security(xattr_security);
             r->set_extraction_root(out_root); // same pinned containment root
+            r->set_disk_hooks(disk_hooks);    // v1.28 M2: per-slot hooks (slots exclusive per job)
         }
 
         // Categorize jobs into three phases:
@@ -2602,27 +2731,41 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         for (size_t idx : phase1_indices) {
             pool.submit([&slots, &flags, &extract_jobs, &badpw_flag, &restore_children,
                          &phase1_remaining, &phase1_cv, &phase1_mu, &job_ts_clamped, &job_motw_flag,
-                         &job_zone_skip_flag, idx] {
+                         &job_zone_skip_flag, &hook_files_done, &hook_cur_done, &hook_ctx, idx] {
                 bool okv = false;
                 size_t s = 0;
                 bool acquired = false;
-                try {
-                    s = slots.acquire();
-                    acquired = true;
-                    okv = slots.readers[s]->extract_entry(*extract_jobs[idx].entry,
-                                                          extract_jobs[idx].target,
-                                                          slots.readers[s]->password());
-                    if (okv) {
-                        const auto kids = restore_children(*slots.readers[s], extract_jobs[idx]);
-                        if (kids.motw_written) job_motw_flag[idx] = 1;
-                        if (kids.zone_streams_skipped) job_zone_skip_flag[idx] = 1;
-                        if (slots.readers[s]->last_mtime_clamped()) job_ts_clamped[idx] = 1;
+                // v1.28 M2: workers observe the cooperative cancel before each
+                // job — a cancelled run fast-fails the remaining queue (the
+                // env test hooks live in the same predicate).
+                const bool cancelled = tui_disk_cancel(&hook_ctx) != 0;
+                if (cancelled) g_tui_cancel.store(1, std::memory_order_relaxed);
+                if (!cancelled) {
+                    try {
+                        s = slots.acquire();
+                        acquired = true;
+                        Prog.flash_current(extract_jobs[idx].display_name);
+                        hook_cur_done.store(0, std::memory_order_relaxed);
+                        okv = slots.readers[s]->extract_entry(*extract_jobs[idx].entry,
+                                                              extract_jobs[idx].target,
+                                                              slots.readers[s]->password());
+                        if (okv) {
+                            const auto kids =
+                                restore_children(*slots.readers[s], extract_jobs[idx]);
+                            if (kids.motw_written) job_motw_flag[idx] = 1;
+                            if (kids.zone_streams_skipped) job_zone_skip_flag[idx] = 1;
+                            if (slots.readers[s]->last_mtime_clamped()) job_ts_clamped[idx] = 1;
+                        }
+                        if (!okv && slots.readers[s]->has_bad_password()) badpw_flag.store(1);
+                        if (!okv && slots.readers[s]->last_cancel_requested()) {
+                            g_tui_cancel.store(1, std::memory_order_relaxed);
+                        }
+                    } catch (...) {
+                        okv = false;
                     }
-                    if (!okv && slots.readers[s]->has_bad_password()) badpw_flag.store(1);
-                } catch (...) {
-                    okv = false;
                 }
                 if (acquired) slots.release(s);
+                if (okv) hook_files_done.fetch_add(1, std::memory_order_relaxed);
                 flags.finish(idx, okv);
                 try {
                     Prog.note_file_done(extract_jobs[idx].entry->header.file_name,
@@ -2696,19 +2839,27 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         // Report in archive order so console output matches the sequential run.
         // Unlike the old first-failure abort, every entry is attempted —
         // whatever is decodable gets extracted before the non-zero exit.
+        // v1.28 M2: a cooperative cancel turns every not-completed entry into
+        // `unprocessed` and the run exits user-break (255).
+        const bool user_break = g_tui_cancel.load(std::memory_order_relaxed) != 0;
         for (size_t i = 0; i < extract_jobs.size(); ++i) {
             const bool okv = flags.wait(i);
             if (!g_quiet_mode && !is_vt_supported()) {
                 (g_json_stdout_only ? std::cerr : std::cout)
                     << "Extracting  " << extract_jobs[i].display_name << " ... "
                     << (okv ? "OK"
-                            : (badpw_flag.load() ? "FAILED (incorrect password / BADPSW)"
-                                                 : "FAILED"))
+                            : (user_break
+                                   ? "UNPROCESSED (user break)"
+                                   : (badpw_flag.load() ? "FAILED (incorrect password / BADPSW)"
+                                                        : "FAILED")))
                     << "\n";
             }
             auto& rep = report.entries[job_rep_idx[i]];
             if (okv) {
                 rep.status = extract_jobs[i].children.empty() ? "extracted" : "modified";
+            } else if (user_break) {
+                rep.status = "unprocessed";
+                rep.reason = "extraction aborted";
             } else {
                 rep.status = "failed";
                 rep.reason =
@@ -2720,6 +2871,12 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                 if (job_zone_skip_flag[i]) rep.security_flags.push_back("zone_stream_skipped");
             }
             if (!okv) any_failed = true;
+        }
+        if (user_break) {
+            std::cerr << "User break\n";
+            report.aborted = true;
+            report.abort_reason = "user break";
+            return emit_json(EXIT_USER_BREAK);
         }
     }
 
