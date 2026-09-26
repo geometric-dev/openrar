@@ -1682,6 +1682,32 @@ bool ArchiveMutator::prepare_add_hardlink(const std::filesystem::path& src_file,
     return true;
 }
 
+bool ArchiveMutator::prepare_add_filecopy(const std::filesystem::path& src_file,
+                                          const std::string& arc_entry_name,
+                                          const std::string& target_entry_name, PreparedAdd& out,
+                                          core::uint32 times_mask, const std::string& default_group,
+                                          const std::string& default_user) {
+    format::FileBlock fb;
+    fb.file_name = arc_entry_name;
+    fb.unp_size = 0;
+    fb.pack_size = -1; // FILECOPY carries no data area — the content lives in the target entry
+    fb.attributes = 0x20;
+    fb.method = 0;
+    fb.win_size = 0;
+    fb.unp_ver = 0;
+    fb.redir_type = 5; // FILECOPY
+    fb.redir_dir_target = false;
+    fb.redir_target = target_entry_name;
+    FileTimes times;
+    if (get_file_times(src_file, times)) {
+        apply_file_times(fb, times, times_mask);
+    }
+    apply_owner_overrides(fb, default_group, default_user);
+    out.fb = std::move(fb);
+    out.payload.clear();
+    return true;
+}
+
 bool ArchiveMutator::get_file_mtime(const std::filesystem::path& path, core::uint64& mtime_out) {
     FileTimes ft;
     if (!get_file_times(path, ft)) return false;
@@ -2213,6 +2239,9 @@ int ArchiveMutator::write_batch_add_ex(
             req.method = static_cast<uint32_t>(pf.fb.method);
             req.dict_size = pf.fb.win_size;
             req.raw_size = pf.fb.unp_size;
+            // FILECOPY references (-oi) carry no data area: the solid run
+            // breaks around them (v1.26 plan §2.2, test cdc_filecopy_precedence).
+            req.breaks_solid_chain = (pf.fb.redir_type == 5);
             compress::EntryPlan ep = plan.plan_next_entry(req);
 
             pf.fb.is_solid = ep.is_solid_chain;
