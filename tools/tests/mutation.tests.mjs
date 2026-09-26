@@ -216,14 +216,22 @@ describe('RAR 5.0 Archive Mutation (d, u, f, m, k)', () => {
     assert.equal(existsSync(join(extDir, 'secret1.txt')), false);
   });
 
-  it('supports deletion from solid archives and passes dual-oracle test', () => {
+  it('supports deletion from solid archives (suffix-only) and passes dual-oracle test', () => {
     const tree = freshDir('mut-sld-tree');
     makeFixtureTree(tree);
     const out = freshDir('mut-sld-out');
     const arc = buildOurArchive({ tree, out, switches: ['-s', '-m3'] });
 
-    // Delete a file in the middle of solid chain
-    const resDel = runTool(OUR_EXE, ['d', '-y', arc, 'text.txt'], out);
+    // v1.26: window-solid packing keeps every incompressible member a chain
+    // member (no store fallback inside the chain), so the shipped
+    // suffix-only delete contract (docs/invariants.md §1) applies to the
+    // whole batch: the LAST chain member deletes, a mid-chain member is
+    // refused fail-closed.
+    const resMid = runTool(OUR_EXE, ['d', '-y', arc, 'text.txt'], out);
+    assert.notEqual(resMid.code, 0, 'mid-chain solid delete must be refused');
+
+    // Delete the run's last chain member
+    const resDel = runTool(OUR_EXE, ['d', '-y', arc, 'uni/unicode/cyr.txt'], out);
     assert.equal(resDel.code, 0, `Solid delete failed: ${resDel.output}`);
 
     // Verify dual-oracle test pass on mutated solid archive
