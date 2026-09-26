@@ -8,6 +8,8 @@
 #include "../archive/archive_reader.hpp"
 #include "../archive/archive_mutator.hpp"
 #include "../compress/filters50.hpp"
+#include "../compress/cdc_chunker.hpp"
+#include "../compress/cdc_planner.hpp"
 #include "../archive/rar_errors.hpp"
 #include "../archive/volume.hpp"
 #include "../recovery/recovery_record.hpp"
@@ -24,6 +26,7 @@
 #include <cctype>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <fstream>
@@ -923,6 +926,59 @@ static bool files_byte_identical(const std::filesystem::path& a, const std::file
     }
 }
 
+// Dictionary resolution shared by run_batch_add (workspace/thread math) and
+// the -cdc report (the window the planner packed for).
+static core::uint64 resolve_effective_dict_size(core::uint64 dict_size, int method) {
+    if (dict_size >= 1 && dict_size <= 15) return 0x20000ULL << (dict_size - 1);
+    if (dict_size == 0)
+        return compress::default_dict_size_for_method(static_cast<uint32_t>(method));
+    return dict_size;
+}
+
+// One streaming CDC pass over a file (v1.26 M2b): 1 MiB buffered reads
+// through CdcStreamChunker — bounded memory, byte-identical chunk sequence
+// to whole-buffer chunking (pinned by cdc_chunker_tests streaming gate).
+// Returns CDC_FP_OK, CDC_FP_UNREADABLE (open failure — caller reports W and
+// packs without affinity), or CDC_FP_OVER_CAP (the file's fingerprints would
+// push the index past max_chunks; hashes_out emptied — the caller packs that
+// file and the index tail in original order, reported per directive 5).
+enum CdcFingerprintResult {
+    CDC_FP_OK = 0,
+    CDC_FP_UNREADABLE = 1,
+    CDC_FP_OVER_CAP = 2,
+};
+static int fingerprint_file_cdc(const std::filesystem::path& p, compress::CdcChunker& chunker,
+                                std::vector<core::uint64>& hashes_out, size_t max_chunks,
+                                core::uint64& chunk_count) {
+    hashes_out.clear();
+    chunk_count = 0;
+    io::FileStream f;
+    if (!f.open(p, io::FileMode::ReadOnly)) return CDC_FP_UNREADABLE;
+    compress::CdcStreamChunker stream(chunker);
+    std::vector<core::byte> buf(1024 * 1024);
+    std::vector<compress::CdcChunk> chunks;
+    for (;;) {
+        const size_t got = f.read(buf.data(), buf.size());
+        if (got == 0) break;
+        chunks.clear();
+        stream.feed(buf.data(), got, chunks);
+        for (const auto& c : chunks) hashes_out.push_back(c.hash);
+        if (hashes_out.size() > max_chunks) {
+            hashes_out.clear();
+            return CDC_FP_OVER_CAP;
+        }
+    }
+    chunks.clear();
+    stream.finish(chunks);
+    for (const auto& c : chunks) hashes_out.push_back(c.hash);
+    if (hashes_out.size() > max_chunks) {
+        hashes_out.clear();
+        return CDC_FP_OVER_CAP;
+    }
+    chunk_count = hashes_out.size();
+    return CDC_FP_OK;
+}
+
 static core::uint64 get_total_physical_memory() {
 #if defined(_WIN32)
     MEMORYSTATUSEX mem_status;
@@ -970,14 +1026,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     // Dynamic concurrency throttling for large dictionaries:
     // If dictionary size W > 32 MiB, Compressor50's ~5W footprint requires clamping
     // max worker threads to prevent exceeding prepare_budget and exhausting RAM.
-    core::uint64 eff_dict = 0;
-    if (dict_size >= 1 && dict_size <= 15) {
-        eff_dict = 0x20000ULL << (dict_size - 1);
-    } else if (dict_size == 0) {
-        eff_dict = compress::default_dict_size_for_method(static_cast<uint32_t>(method));
-    } else {
-        eff_dict = dict_size;
-    }
+    const core::uint64 eff_dict = resolve_effective_dict_size(dict_size, method);
     if (eff_dict > 32ULL * 1024ULL * 1024ULL) {
         core::uint64 per_thread_mem = (eff_dict * 5) + (6ULL * 1024ULL * 1024ULL);
         unsigned max_safe_threads =
@@ -1073,12 +1122,34 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         // FILECOPY references carry no data area: estimate them like dirs so
         // no compression workspace is budgeted for the reference.
         ep.is_dir = q.is_dir || q.is_symlink || q.is_hardlink || q.is_filecopy;
+        // Same break semantics the writer will re-plan from fb.redir_type:
+        // the prepare-side chain membership (which drives the solid packer's
+        // window carry) must agree with the header bits the writer emits.
+        ep.breaks_solid_chain = q.is_filecopy;
         ep.method = ep.is_dir ? 0 : static_cast<uint32_t>(method);
         ep.raw_size = q.file_size;
         plan_reqs.push_back(ep);
     }
     auto comp_plan = compress::CompressPlan::plan_entries(plan_reqs, solid, method, eff_dict);
     auto exec_plan = compress::ExecutionPlan::from_compress_plan(comp_plan);
+
+    // Solid-window session (v1.26 M2b): multi-file solid batches pack
+    // through ONE shared packer so each entry's stream may reference the
+    // previous members' bytes — the write side finally mirrors the decoder's
+    // solid carry. Sequential by construction: solid forces threads = 1 and
+    // the pipeline admits jobs strictly in queue order. The window is the
+    // snapped FCI-grid value prepare_add_file records in the headers, so
+    // packer and headers agree exactly. Single-file adds keep the
+    // direct-stream path (nothing to carry from).
+    std::unique_ptr<compress::SolidPacker> solid_packer;
+    std::vector<char> solid_chain_member(queue.size(), 0);
+    if (solid && queue.size() > 1 && method > 0) {
+        solid_packer = std::make_unique<compress::SolidPacker>(
+            method, static_cast<size_t>(compress::snap_window_to_fci_grid(eff_dict)));
+        for (size_t i = 0; i < queue.size(); ++i) {
+            solid_chain_member[i] = comp_plan.entries[i].is_solid_chain ? 1 : 0;
+        }
+    }
 
     ThreadPool pool(threads);
 
@@ -1088,7 +1159,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                                         : queue[i].file_size;
         pool.submit([&pl, &queue, &prepared, i, method, &password, delete_source, times_mask,
                      want_stm, want_acl, est_ws, budget_bytes = prepare_budget, dict_size, solid,
-                     &filter_cfg, &default_group, &default_user] {
+                     &filter_cfg, &default_group, &default_user, &solid_packer,
+                     &solid_chain_member] {
             std::unique_lock<std::mutex> lk(pl.mu);
             pl.cv.wait(lk, [&] { return pl.aborting || pl.admit_head == i; });
             if (pl.aborting) {
@@ -1134,7 +1206,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                                 queue[i].src_path, queue[i].entry_name, method, password,
                                 prepared[i], times_mask, dict_size, want_stm, want_acl, solid,
                                 /*direct_stream=*/false, filter_cfg, default_group, default_user,
-                                /*threads=*/1);
+                                /*threads=*/1, solid_packer.get(), solid_chain_member[i] != 0);
                     } catch (...) {
                         // std::filesystem throws on sources that vanish or
                         // become unreadable after the scan; same handling as
@@ -1233,19 +1305,22 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     return 0;
 }
 
-int add_to_archive(
-    const std::string& arc_path, const std::vector<std::string>& files, int method = 3,
-    const std::filesystem::path& sfx_stub = {}, ::openrar::core::uint64 vol_size = 0,
-    const std::string& password = "", bool encrypt_headers = false, unsigned threads = 1,
-    bool solid = false, const std::vector<core::byte>& comment = {},
-    core::uint32 times_mask = archive::time_flags::MTIME, bool no_dir_records = false,
-    io::ExcludePathMode ep_mode = io::ExcludePathMode::None, bool recurse_subdirs = true,
-    bool want_symlinks = false, bool freshen = false, bool want_stm = false, bool want_acl = false,
-    bool want_hardlinks = false, bool want_qo = true, bool want_ams = false,
-    const std::vector<std::string>& exclude_patterns = {}, core::uint64 dict_size = 0,
-    const compress::FilterConfig& filter_cfg = {}, int max_versions = -1,
-    const std::string& default_group = "", const std::string& default_user = "",
-    bool want_lock = false, int oi_mode = 0, core::uint64 oi_min_size = 65536) {
+int add_to_archive(const std::string& arc_path, const std::vector<std::string>& files,
+                   int method = 3, const std::filesystem::path& sfx_stub = {},
+                   ::openrar::core::uint64 vol_size = 0, const std::string& password = "",
+                   bool encrypt_headers = false, unsigned threads = 1, bool solid = false,
+                   const std::vector<core::byte>& comment = {},
+                   core::uint32 times_mask = archive::time_flags::MTIME,
+                   bool no_dir_records = false,
+                   io::ExcludePathMode ep_mode = io::ExcludePathMode::None,
+                   bool recurse_subdirs = true, bool want_symlinks = false, bool freshen = false,
+                   bool want_stm = false, bool want_acl = false, bool want_hardlinks = false,
+                   bool want_qo = true, bool want_ams = false,
+                   const std::vector<std::string>& exclude_patterns = {},
+                   core::uint64 dict_size = 0, const compress::FilterConfig& filter_cfg = {},
+                   int max_versions = -1, const std::string& default_group = "",
+                   const std::string& default_user = "", bool want_lock = false, int oi_mode = 0,
+                   core::uint64 oi_min_size = 65536, bool cdc_enabled = false) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return EXIT_FATAL;
@@ -1253,7 +1328,7 @@ int add_to_archive(
     if (oi_mode > 0 && vol_size != 0) {
         // Fail-closed rather than silently dropping the requested references:
         // the multi-volume write path has no no-data-area entry support yet.
-        std::cerr << "Error: -oi is not supported for multi-volume archives (-v)\n";
+        std::cerr << "Error: -oi/-cdc is not supported for multi-volume archives (-v)\n";
         return EXIT_USAGE;
     }
 
@@ -1728,6 +1803,82 @@ int add_to_archive(
         return 0;
     }
 
+    // -cdc: fingerprint + affinity ordering (v1.26 plan §1). One sequential
+    // streaming pass in queue order; when the fingerprint index cap is hit,
+    // the remaining files keep their original order and the fallback is
+    // reported (directive 5 — no silent degradation). Sequential is what
+    // makes the cap's "remaining files" semantics deterministic; parallel
+    // per-file fingerprinting with the same guarantee is future work.
+    size_t cdc_cap_fallback_files = 0;
+    bool cdc_cap_hit = false;
+    const char* cdc_flag = "original-order";
+    if (cdc_enabled) {
+        compress::CdcChunker chunker;
+        const size_t fp_cap = compress::cdc_fingerprint_cap();
+        std::vector<std::vector<core::uint64>> hashes(queue.size());
+        std::vector<size_t> reference_of(queue.size(), SIZE_MAX);
+        {
+            std::unordered_map<std::string, size_t> index_by_name;
+            for (size_t i = 0; i < queue.size(); ++i) index_by_name.emplace(queue[i].entry_name, i);
+            for (size_t i = 0; i < queue.size(); ++i) {
+                // References attach to their master's group in the planner
+                // so they can never land before the entry they point at.
+                if (queue[i].is_filecopy)
+                    reference_of[i] = index_by_name.count(queue[i].filecopy_target)
+                                          ? index_by_name[queue[i].filecopy_target]
+                                          : SIZE_MAX;
+                else if (queue[i].is_hardlink)
+                    reference_of[i] = index_by_name.count(queue[i].hardlink_target)
+                                          ? index_by_name[queue[i].hardlink_target]
+                                          : SIZE_MAX;
+            }
+        }
+        size_t total_chunks = 0;
+        size_t first_unfingerprinted = queue.size();
+        for (size_t i = 0; i < queue.size(); ++i) {
+            const PendingFile& item = queue[i];
+            if (item.is_dir || item.is_symlink || item.is_hardlink || item.is_filecopy) continue;
+            if (total_chunks >= fp_cap) {
+                cdc_cap_hit = true;
+                first_unfingerprinted = i;
+                break;
+            }
+            core::uint64 file_chunks = 0;
+            const int fp_result = fingerprint_file_cdc(item.src_path, chunker, hashes[i],
+                                                       fp_cap - total_chunks, file_chunks);
+            if (fp_result == CDC_FP_OVER_CAP) {
+                // Index full: this file and the tail keep original order.
+                cdc_cap_hit = true;
+                first_unfingerprinted = i;
+                break;
+            }
+            if (fp_result == CDC_FP_UNREADABLE) {
+                std::cerr << "W: cannot read " << item.src_path.string()
+                          << " for CDC fingerprinting; packing it without affinity\n";
+                continue;
+            }
+            total_chunks += file_chunks;
+        }
+        if (cdc_cap_hit) {
+            for (size_t i = first_unfingerprinted; i < queue.size(); ++i) {
+                const PendingFile& item = queue[i];
+                if (!item.is_dir && !item.is_symlink && !item.is_hardlink && !item.is_filecopy)
+                    ++cdc_cap_fallback_files;
+            }
+            std::cout << "cdc: fingerprint index cap reached (" << fp_cap << " chunks); "
+                      << cdc_cap_fallback_files << " files packed in original order\n";
+        }
+
+        compress::CdcPlanResult plan = compress::plan_cdc_order(hashes, reference_of);
+        if (plan.reordered) {
+            std::vector<PendingFile> reordered;
+            reordered.reserve(queue.size());
+            for (size_t idx : plan.order) reordered.push_back(std::move(queue[idx]));
+            queue = std::move(reordered);
+        }
+        cdc_flag = plan.reordered ? "reordered" : "original-order";
+    }
+
     Prog.set_totals(queue.size(), total_unp);
 
     if (!g_quiet_mode && !is_vt_supported()) {
@@ -1788,6 +1939,23 @@ int add_to_archive(
     }
 
     Prog.done(queue.size(), "packed", arc_path, total_unp, final_arc_size);
+
+    // -cdc pack-time report (plan §1b directive 3): logical/packed/window +
+    // the planner flag. The three-number plain-solid baseline gate lives in
+    // the bench and the reduction-report test, not at pack time.
+    if (cdc_enabled) {
+        if (!g_quiet_mode) {
+            std::cout << "cdc: logical=" << total_unp << " packed=" << final_arc_size
+                      << " window=" << resolve_effective_dict_size(dict_size, method)
+                      << " flag=" << cdc_flag << "\n";
+        }
+        if (cdc_cap_hit) {
+            // Directive 5: no silent degradation — this line is policy
+            // output, so quiet mode does not suppress it.
+            std::cout << "cdc: fingerprint index cap reached; " << cdc_cap_fallback_files
+                      << " files packed in original order\n";
+        }
+    }
     return 0;
 }
 
@@ -2722,6 +2890,8 @@ static int cli_main(int argc, char* argv[]) {
     bool want_hardlinks = false;               // -oh
     int oi_mode = 0;                           // -oi[0-4]: identical files as references (0 = off)
     openrar::core::uint64 oi_min_size = 65536; // -oi[:<size>]: comparison threshold (README row)
+    bool oi_given = false;                     // -cdc implies -oi1 only when -oi was not given
+    bool cdc_enabled = false;                  // -cdc: CDC-driven solid-chain packing (v1.26 M2b)
     bool want_solid = false;                   // -s
     bool no_dir_records = false;               // -ed
     bool want_lock = false;                    // -k
@@ -2771,6 +2941,7 @@ static int cli_main(int argc, char* argv[]) {
             // -oi[0-4][:<size>] — identical files as references (README row).
             // The numeric scale is report verbosity; bare -oi behaves as
             // -oi1. (CDC packing is the separate -cdc switch, M2b.)
+            oi_given = true;
             std::string body = s.substr(3);
             int mode = 1;
             if (!body.empty() && body[0] >= '0' && body[0] <= '4') {
@@ -2803,6 +2974,11 @@ static int cli_main(int argc, char* argv[]) {
             }
             oi_mode = mode;
             oi_min_size = min_size;
+        } else if (sw_eq(s, "-cdc")) {
+            // CDC-driven solid-chain packing (v1.26 plan §1): implies solid
+            // mode and identical-file references unless -oi was given
+            // explicitly; -oi5 is deliberately not a mode on the -oi scale.
+            cdc_enabled = true;
         } else if (sw_eq(s, "-ol")) {
             want_symlinks = true;
             extract_symlinks = true;
@@ -3194,12 +3370,24 @@ static int cli_main(int argc, char* argv[]) {
                 return EXIT_FATAL;
             }
         } else {
+            // -cdc implications (v1.26 plan §1b directive 2): CDC packing IS
+            // solid-chain packing, and it implies identical-file references
+            // unless -oi was given explicitly (-oi0 then wins).
+            if (cdc_enabled) {
+                if (max_versions >= 0) {
+                    std::cerr << "Error: -cdc is not supported with -ver (versioned adds "
+                                 "cannot be reordered)\n";
+                    return EXIT_USAGE;
+                }
+                want_solid = true;
+                if (!oi_given) oi_mode = 1;
+            }
             rc = openrar::cli::add_to_archive(
                 target_arc, files, method, sfx_stub_path, vol_size, password,
                 want_header_encryption, threads, want_solid, comment, times_mask, no_dir_records,
                 ep_mode, recurse_subdirs, want_symlinks, (cmd == "f"), want_stm, want_acl,
                 want_hardlinks, want_qo, want_ams, exclude_patterns, opt_dict_size, opt_filter_cfg,
-                max_versions, opt_group, opt_user, want_lock, oi_mode, oi_min_size);
+                max_versions, opt_group, opt_user, want_lock, oi_mode, oi_min_size, cdc_enabled);
         }
         if (rc == 0 && want_rr) {
             bool rr_ok;
@@ -3403,6 +3591,7 @@ static int cli_main(int argc, char* argv[]) {
                 std::cerr << "W: -ts is not applied by m (times stored with the default mask)\n";
             if (oi_mode > 0)
                 std::cerr << "W: -oi is not applied by m (no identical-file references)\n";
+            if (cdc_enabled) std::cerr << "W: -cdc is not applied by m (no CDC packing)\n";
         }
         std::string move_arc = sfx_stub_path.empty() ? arc_path : sfx_arc_path_str;
         int rc = openrar::cli::move_to_archive(move_arc, files, method, sfx_stub_path, vol_size,

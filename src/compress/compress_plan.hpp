@@ -27,6 +27,25 @@ inline uint64_t default_dict_size_for_method(uint32_t method) {
     }
 }
 
+// Quantize a requested window to the FCI grid the header can represent
+// (power-of-two base + base/32 fractions, 128 KiB floor). Single copy shared
+// by the mutator's header bookkeeping and the CLI's solid-session
+// construction — the packer's window and the recorded win_size must match
+// exactly for every entry of a solid run.
+inline uint64_t snap_window_to_fci_grid(uint64_t win) {
+    if (win < 0x20000ULL) return win; // store/small windows are not FCI-encoded
+    uint64_t pow2 = 0x20000ULL;
+    uint32_t bits = 0;
+    while (2 * pow2 <= win && bits < 23) {
+        pow2 *= 2;
+        bits++;
+    }
+    if (win <= pow2) return pow2;
+    if (bits == 23) return pow2 + (pow2 / 32) * 31; // clamp to max representable
+    uint64_t fraction = (win - pow2) * 32 / pow2;
+    return pow2 + (pow2 / 32) * fraction;
+}
+
 // Decision on how a single entry payload is encoded into the archive.
 enum class EntryDecision {
     Stored,      // Method 0 (uncompressed copy)
