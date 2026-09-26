@@ -17,6 +17,7 @@ Checks:
  12. Multivolume roundtrip (store + compressed)
  13. SFX read + create
  14. Unit & compression tests via ctest
+ 16. Track 9: CDC solid-chain packing (-cdc) + -oi FILECOPY references
 
 CI: rar.exe is not available in GitHub Actions, so this gate is LOCAL ONLY
 for src/compress/* changes. In CI we fall back to self-roundtrip + ctest.
@@ -889,6 +890,92 @@ def test_exit_code_parity(openrar, unrar):
         return True
 
 
+def test_track9_cdc_oi(openrar, unrar, rar):
+    """Track 9 (v1.26): CDC-driven solid-chain packing (-cdc) + identical-file
+    references (-oi FILECOPY). OpenRAR creates; the oracles must read both:
+    -cdc archives are ordinary carried-window RAR5 solid streams, and -oi
+    references are ordinary FHEXTRA_REDIR type-5 entries the oracle
+    materializes natively."""
+    print("[15/16] Track 9: CDC solid-chain packing (-cdc) + -oi FILECOPY...", flush=True)
+    ref_decompress = unrar or rar
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+
+        # Corpus: shared base half + per-file noise halves (CDC affinity),
+        # plus an exact duplicate (FILECOPY) and an incompressible file.
+        shared = os.urandom(192 * 1024)  # noise: similarity must be byte-sharing
+        f_base = td / "base.bin"
+        f_dup = td / "dup.bin"
+        f_var = td / "var.bin"
+        f_noise = td / "noise.bin"
+        var = bytearray(shared)
+        var[: len(var) // 4] = os.urandom(len(var) // 4)
+        f_base.write_bytes(shared)
+        f_dup.write_bytes(shared)  # exact duplicate of base
+        f_var.write_bytes(bytes(var))
+        f_noise.write_bytes(os.urandom(128 * 1024))
+        files = [f_base, f_dup, f_var, f_noise]
+        hashes = {f.name: sha256(f) for f in files}
+
+        def verify(out_dir, what, expected):
+            for name in expected:
+                h = hashes[name]
+                dec = find_extracted(out_dir, name)
+                if not dec or sha256(dec) != h:
+                    print(f"  FAIL: {what} hash mismatch on {name}")
+                    return False
+            return True
+
+        # ── -cdc: packed solid chain ──────────────────────────────────────
+        arc_cdc = td / "cdc.rar"
+        rc, out, err = run([openrar, "a", "-cdc", "-md1m", str(arc_cdc), str(f_base),
+                            str(f_var), str(f_noise)], cwd=str(td))
+        if rc != 0:
+            print(f"  FAIL: openrar a -cdc rc={rc}\n{out}\n{err}"); return False
+        out_self = td / "out_cdc_self"
+        out_self.mkdir()
+        rc, out, err = run([openrar, "x", "-y", str(arc_cdc), str(out_self) + os.sep])
+        if rc != 0:
+            print(f"  FAIL: openrar x cdc self rc={rc}\n{out}\n{err}"); return False
+        if not verify(out_self, "cdc self", ["base.bin", "var.bin", "noise.bin"]):
+            return False
+        if ref_decompress:
+            out_ref = td / "out_cdc_ref"
+            out_ref.mkdir()
+            rc, out, err = run([ref_decompress, "x", "-y", str(arc_cdc), str(out_ref) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: {ref_decompress} x cdc rc={rc}\n{out}\n{err}"); return False
+            if not verify(out_ref, f"{ref_decompress} cdc", ["base.bin", "var.bin", "noise.bin"]):
+                return False
+
+        # ── -oi: identical files as references ────────────────────────────
+        arc_oi = td / "oi.rar"
+        rc, out, err = run([openrar, "a", "-oi1", str(arc_oi), str(f_base), str(f_dup),
+                            str(f_noise)], cwd=str(td))
+        if rc != 0:
+            print(f"  FAIL: openrar a -oi rc={rc}\n{out}\n{err}"); return False
+        out_oi_self = td / "out_oi_self"
+        out_oi_self.mkdir()
+        # OpenRAR's own extraction: references are redirs — links opt-in (-ol)
+        # materializes them (v1.24 §6.1 default-deny).
+        rc, out, err = run([openrar, "x", "-ol", "-y", str(arc_oi), str(out_oi_self) + os.sep])
+        if rc != 0:
+            print(f"  FAIL: openrar x -ol oi self rc={rc}\n{out}\n{err}"); return False
+        if not verify(out_oi_self, "oi self", ["base.bin", "dup.bin", "noise.bin"]):
+            return False
+        if ref_decompress:
+            out_oi_ref = td / "out_oi_ref"
+            out_oi_ref.mkdir()
+            rc, out, err = run([ref_decompress, "x", "-y", str(arc_oi),
+                                str(out_oi_ref) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: {ref_decompress} x oi rc={rc}\n{out}\n{err}"); return False
+            if not verify(out_oi_ref, f"{ref_decompress} oi", ["base.bin", "dup.bin", "noise.bin"]):
+                return False
+
+    print("  OK Track 9 CDC solid-chain packing + -oi FILECOPY")
+    return True
+
 def main():
     import time
     t0 = time.time()
@@ -917,6 +1004,7 @@ def main():
         (test_sfx, (openrar,)),
         (test_ctest, ()),
         (test_exit_code_parity, (openrar, unrar)),
+        (test_track9_cdc_oi, (openrar, unrar, rar)),
     ]
 
     for fn, args in stages:
@@ -926,7 +1014,7 @@ def main():
 
     elapsed = time.time() - t0
     print(f"\n=======================================================")
-    print(f" ALL 15 INTEROP GATE STAGES PASSED in {elapsed:.2f}s")
+    print(f" ALL {len(stages)} INTEROP GATE STAGES PASSED in {elapsed:.2f}s")
     print(f"=======================================================")
 
 if __name__ == "__main__":
