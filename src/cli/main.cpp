@@ -313,15 +313,17 @@ int print_archive_to_stdout(const std::string& arc_path, const std::vector<std::
 
         if (rc != archive::RAR_OK) {
             std::fflush(stdout);
+            // v1.28 §7.1: the name in the error lines is archive-controlled.
+            const std::string safe_name = sanitize_for_display(name);
             if (reader.has_bad_password() || rc == archive::RAR_ERR_BAD_PASSWORD) {
-                std::cerr << "Cannot decrypt: BADPSW (bad password) for " << name << "\n";
+                std::cerr << "Cannot decrypt: BADPSW (bad password) for " << safe_name << "\n";
                 return EXIT_BAD_PASSWORD;
             }
             if (rc == archive::RAR_ERR_CRC_MISMATCH) {
-                std::cerr << "Checksum error in " << name << "\n";
+                std::cerr << "Checksum error in " << safe_name << "\n";
                 return EXIT_CRC;
             }
-            std::cerr << "Extraction failed for " << name << "\n";
+            std::cerr << "Extraction failed for " << safe_name << "\n";
             return EXIT_FATAL;
         }
     }

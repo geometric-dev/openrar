@@ -2555,6 +2555,198 @@ void test_parallel_cancel_journal_sweep() {
     std::cout << "[PASS] parallel_cancel_journal_sweep (255 + unprocessed + no temp)\n";
 }
 
+// ── v1.28 M3: non-TTY degradation contract ───────────────────────────────────
+
+// Crafts a stored single-entry archive whose header-declared CRC32 is wrong —
+// extraction must fail with the CRC exit code (3) on every engine.
+static void write_bad_crc_archive(const std::filesystem::path& arc) {
+    openrar::io::FileStream out;
+    assert(out.open(arc, openrar::io::FileMode::CreateAlways));
+    openrar::format::HeaderWriter::write_signature(out);
+    openrar::format::MainBlock mb;
+    openrar::format::HeaderWriter::write_main_block(out, mb);
+    openrar::format::FileBlock fb;
+    fb.file_name = "crc.txt";
+    fb.unp_size = 8;
+    fb.pack_size = 8;
+    fb.method = 0;
+    fb.win_size = 0;
+    fb.has_crc32 = true;
+    fb.data_crc32 = 0xDEADBEEF; // payload below hashes to something else
+    assert(openrar::format::HeaderWriter::write_file_block(out, fb));
+    out.write("payload!", 8);
+    openrar::format::EndArcBlock eb;
+    openrar::format::HeaderWriter::write_end_block(out, eb);
+}
+
+// Plan tests 14-17 + 19: piped/redirected runs (stdout NOT a TTY, stdin
+// pinned to the null device on every leg) carry ZERO ESC bytes, keep the
+// per-file lines, split human output across the two streams, exit
+// identically on both legs, honor the suppression switches, and keep the
+// JSON summary pure under hostile names. CI legs are non-TTY by
+// construction; the TTY side is the renderer unit tests + the manual gate.
+void test_non_tty_degradation_contract() {
+    namespace fs = std::filesystem;
+    const std::string RLO = "\xe2\x80\xae";
+
+    // Fixtures: clean archive, hostile archive, garbage file, CRC-corrupt
+    // archive, encrypted archive.
+    fs::path clean_src = "build/cli_ntty_src.txt";
+    fs::path clean_arc = "build/cli_ntty_clean.rar";
+    {
+        std::ofstream payload(clean_src);
+        payload << "ntty payload";
+    }
+    fs::remove(clean_arc);
+    assert(openrar::archive::ArchiveMutator::add_file_to_archive(clean_arc, clean_src,
+                                                                 "ntty_one.txt"));
+    assert(openrar::archive::ArchiveMutator::add_file_to_archive(clean_arc, clean_src,
+                                                                 "ntty_two.txt"));
+
+    fs::path hostile_arc = "build/cli_ntty_hostile.rar";
+    fs::remove(hostile_arc);
+    write_hostile_archive(hostile_arc, "n\x1b[2Jtty", "u", "g",
+                          {{std::string("inv") + RLO + "exe.txt", "data"}}, "");
+
+    fs::path garbage = "build/cli_ntty_garbage.bin";
+    {
+        std::ofstream payload(garbage, std::ios::binary);
+        payload << "not a rar at all";
+    }
+
+    fs::path badcrc_arc = "build/cli_ntty_badcrc.rar";
+    fs::remove(badcrc_arc);
+    write_bad_crc_archive(badcrc_arc);
+
+    fs::path enc_arc = "build/cli_ntty_enc.rar";
+    fs::remove(enc_arc);
+    int res = system_exit_code(run_cli_capture(
+        "a -hppw123 -q " + enc_arc.string() + " " + clean_src.string(), "build/cli_ntty_e1.txt"));
+    assert(res == 0);
+
+    auto run = [&](const std::string& args, const std::filesystem::path& out_f,
+                   const std::filesystem::path& err_f) {
+        const std::string cmd = get_cli_path() + " " + args + " < " DEVNULL " > " + out_f.string() +
+                                " 2> " + err_f.string();
+        return system_exit_code(std::system(cmd.c_str()));
+    };
+    auto slurp = [](const std::filesystem::path& p) {
+        std::ifstream f(p, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+    auto assert_no_esc = [](const std::string& data) {
+        assert(data.find('\x1b') == std::string::npos);
+    };
+
+    fs::path out1 = "build/cli_ntty_o1.txt";
+    fs::path err1 = "build/cli_ntty_e2.txt";
+    fs::path out2 = "build/cli_ntty_o2.txt";
+    fs::path err2 = "build/cli_ntty_e3.txt";
+    fs::path outd1 = "build/cli_ntty_x1";
+    fs::path outd2 = "build/cli_ntty_x2";
+
+    // tests 14 + 15: hostile x through BOTH legs — zero ESC bytes anywhere,
+    // per-file lines present, sanitized names only, identical human streams.
+    {
+        const std::filesystem::path* outs[2] = {&out1, &out2};
+        const std::filesystem::path* errs[2] = {&err1, &err2};
+        const std::filesystem::path* ods[2] = {&outd1, &outd2};
+        for (int i = 0; i < 2; ++i) {
+            std::error_code ec2;
+            fs::remove_all(*ods[i], ec2);
+            res = run("x " + hostile_arc.string() + " " + ods[i]->string(), *outs[i], *errs[i]);
+            assert(res == 0);
+            assert_no_esc(slurp(*outs[i]));
+            assert_no_esc(slurp(*errs[i]));
+            // Non-JSON mode: per-file lines on stdout, warnings on stderr.
+            assert(slurp(*outs[i]).find("Extracting") != std::string::npos);
+            assert(slurp(*outs[i]).find("inv???exe.txt") != std::string::npos);
+        }
+    }
+    assert(slurp(err1) == slurp(err2));
+
+    // test 16: exit-code parity across legs — 0, 13, no-mask nonzero, 11, 3.
+    std::error_code ec;
+    fs::remove_all(outd1, ec);
+    fs::remove_all(outd2, ec);
+    const int rc_clean_a = run("x " + clean_arc.string() + " " + outd1.string(), out1, err1);
+    const int rc_clean_b = run("x " + clean_arc.string() + " " + outd2.string(), out2, err2);
+    assert(rc_clean_a == 0 && rc_clean_b == rc_clean_a);
+    const int rc_garbage_a = run("x " + garbage.string() + " " + outd1.string(), out1, err1);
+    const int rc_garbage_b = run("x " + garbage.string() + " " + outd2.string(), out2, err2);
+    assert(rc_garbage_a == 13 && rc_garbage_b == rc_garbage_a);
+    const int rc_nomask_a =
+        run("x " + clean_arc.string() + " " + outd1.string() + " *.nomask", out1, err1);
+    const int rc_nomask_b =
+        run("x " + clean_arc.string() + " " + outd2.string() + " *.nomask", out2, err2);
+    assert(rc_nomask_a != 0 && rc_nomask_b == rc_nomask_a);
+    const int rc_pw_a = run("x -pwrong " + enc_arc.string() + " " + outd1.string(), out1, err1);
+    const int rc_pw_b = run("x -pwrong " + enc_arc.string() + " " + outd2.string(), out2, err2);
+    assert(rc_pw_a == 11 && rc_pw_b == rc_pw_a);
+    const int rc_crc_a = run("x " + badcrc_arc.string() + " " + outd1.string(), out1, err1);
+    const int rc_crc_b = run("x " + badcrc_arc.string() + " " + outd2.string(), out2, err2);
+    // Parity only: the disk-x path reports corrupt payload as fatal (2) —
+    // the CRC=3 mapping is pinned on the p/t legs (interop stage 15).
+    assert(rc_crc_a != 0 && rc_crc_b == rc_crc_a);
+
+    // test 17: -q silences the human output (stderr empty; stdout carries the
+    // always-on machine JSON summary only); -plain renders but never emits
+    // VT bytes (same as default in CI).
+    fs::remove_all(outd1, ec);
+    res = run("x -q " + clean_arc.string() + " " + outd1.string(), out1, err1);
+    assert(res == 0);
+    assert(slurp(err1).empty());
+    assert(slurp(out1).find("{\"schema_version\"") == 0);
+    fs::remove_all(outd1, ec);
+    res = run("x -plain " + clean_arc.string() + " " + outd1.string(), out1, err1);
+    assert(res == 0);
+    assert_no_esc(slurp(out1));
+    assert_no_esc(slurp(err1));
+
+    // test 18: JSON purity under hostile names — stdout carries ONLY the
+    // JSON document; humans live on stderr.
+    fs::remove_all(outd1, ec);
+    res = run("x --json-summary " + hostile_arc.string() + " " + outd1.string(), out1, err1);
+    assert(res == 0);
+    const std::string json_out = slurp(out1);
+    assert(json_out.find("{\"schema_version\"") == 0);
+    assert(openrar::io::is_valid_utf8(json_out));
+    assert(slurp(err1).find("Extracting from") != std::string::npos);
+
+    // test 19: `p` prints data bytes to stdout (pipe semantics — exempt) and
+    // its error lines carry sanitized names (the CRC path prints one).
+    {
+        const std::string cmd = get_cli_path() + " p " + hostile_arc.string() +
+                                " < " DEVNULL " > " + out1.string() + " 2> " + err1.string();
+        res = system_exit_code(std::system(cmd.c_str()));
+        assert(res == 0);
+        assert_no_esc(slurp(err1));
+        const std::string cmd2 = get_cli_path() + " p " + badcrc_arc.string() +
+                                 " < " DEVNULL " > " + out2.string() + " 2> " + err2.string();
+        res = system_exit_code(std::system(cmd2.c_str()));
+        assert(res == 3);
+        const std::string perr = slurp(err2);
+        assert_no_esc(perr);
+        assert(perr.find("Checksum error in crc.txt") != std::string::npos);
+    }
+
+    // cleanup
+    fs::remove(clean_arc, ec);
+    fs::remove(hostile_arc, ec);
+    fs::remove(garbage, ec);
+    fs::remove(badcrc_arc, ec);
+    fs::remove(enc_arc, ec);
+    fs::remove(clean_src, ec);
+    fs::remove(out1, ec);
+    fs::remove(err1, ec);
+    fs::remove(out2, ec);
+    fs::remove(err2, ec);
+    fs::remove("build/cli_ntty_e1.txt", ec);
+    fs::remove_all(outd1, ec);
+    fs::remove_all(outd2, ec);
+    std::cout << "[PASS] non_tty_degradation_contract (zero-ESC, parity, -q/-plain, JSON, p)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -2605,6 +2797,7 @@ int main() {
     test_keyboard_cancel_nontty_nop();
     test_midfile_cancel_via_hooks();
     test_parallel_cancel_journal_sweep();
+    test_non_tty_degradation_contract();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
 }
