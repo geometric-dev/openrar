@@ -5,6 +5,123 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.26.0] - 2026-09-26
+
+CDC-Driven Solid-Chain Packing — the arc the Gate 0 format-legality review
+cleared as Design A (docs/v1.26-pre-analysis.md §5): ordinary RAR5 solid
+compression with packer-side ordering only. Reduction is window-bounded and
+measured against a plain-solid same-window baseline (three-number gate);
+every decoder — OpenRAR, WinRAR, UnRAR — reads the emitted archives natively
+(interop gate Track 9).
+
+### Added
+
+- **`-cdc` — CDC-driven solid-chain packing** (`src/cli/main.cpp` switch
+  dispatch; `src/compress/cdc_planner.{hpp,cpp}`): content-defined chunking
+  fingerprints the batch inputs and orders high-affinity files adjacent
+  within the solid chain. Implies solid mode and identical-file references
+  (explicit `-oi0` wins); `-ver` is refused (versioned adds cannot be
+  reordered); `-oi`/`-cdc` with `-v` refused fail-closed. Pack-time report
+  `cdc: logical=X packed=Y window=W flag=[reordered|original-order]`
+  (plan §1b directive 3); the three-number baseline gate lives in
+  tests/bench, not at pack time.
+- **CDC fingerprinting engine** (`src/compress/cdc_chunker.{hpp,cpp}`):
+  FastCDC-style Gear-hash chunker with two-level normalization (min
+  16 KiB, avg 64 KiB, max 256 KiB), fixed splitmix64 table — the same
+  bytes always produce the same chunk list. `CdcStreamChunker` is the
+  single implementation of the cut rules and `chunk()` delegates through
+  it: block-wise feeds yield byte-identical chunk sequences (the CLOSED-P1
+  no-drift-copies lesson), pinned by a 13-partition × 3-seed equivalence
+  gate plus the `cdc_chunk_boundary_fuzz` locality gate.
+- **Affinity planner** (`src/compress/cdc_planner.cpp`): greedy grouping
+  over chunk-hash overlap — a file joins its best earlier partner when
+  they share ≥ 30% of the smaller file's chunks (integer-permille math,
+  smallest-index tie-break, deterministic at any `-mt`). Groups emit
+  members in original order; 0-byte and sub-min-chunk inputs never match
+  and keep original order (plan directive 7). Fingerprint index capped at
+  2,000,000 entries (32 MiB, plan §1.2); cap hit → the tail keeps original
+  order and the fallback is reported on stdout (directive 5 — no silent
+  degradation). `OPENRAR_CDC_INDEX_CAP` may lower the cap for tests, never
+  raise it.
+- **Encoder-side solid window carry** (`src/compress/compressor50.cpp`
+  `begin_stream(continue_window)`, `src/compress/stream_encoder.cpp`
+  `pack_solid_*`, `src/compress/solid_packer.{hpp,cpp}`): the write side
+  now mirrors the reader's carried-window decode (which has always
+  honored FCI_SOLID) — fresh tables/tokens/CRC per file with the LZ
+  window, hash chains, and rep distances carried across chain members.
+  Until this release every encoder started from an empty window, so
+  OpenRAR's solid archives were header-solid but never window-solid
+  (self-contained encodes are carry-neutral, which is why round-trips
+  still passed). Solid batches pack through one `SolidPacker` session
+  (threads already forced to 1); the store fallback is FORBIDDEN for
+  session members — a stored member's bytes never enter the decoder's
+  window, so storing one would desynchronize the chain (block-codec
+  overhead for incompressible members is a few per-mille). Fresh
+  sessions, appends onto an existing chain, and entries after FILECOPY
+  gaps pack self-contained — always safe by the suffix-aligned-window
+  argument. `snap_window_to_fci_grid` moved to `compress_plan.hpp` so the
+  packer's window and the recorded `win_size` share one copy.
+- **`-oi` creation side — identical files as references**
+  (`src/cli/main.cpp` switch parse + detection pass,
+  `src/archive/archive_mutator.cpp` `prepare_add_filecopy`): the README
+  `-oi[0-4][:<size>]` row is now true (plan §1b critical finding /
+  Pillar 7.6 drift fix). Modes: 0 off, 1 silent, 2 list, 3 list+exit
+  (no archive), 4 exit only when duplicates were found; default 64 KiB
+  comparison threshold, `-oi:<size>` overrides. Detection: size buckets +
+  streaming SHA-256 prefilter, then a full byte-compare confirmation —
+  the archive never claims an identity a hash collision could fake. The
+  first occurrence in the entry-name-sorted batch becomes the stored
+  master; later identical files become `FHEXTRA_REDIR` type-5 entries
+  with no data area.
+- **Interop gate Track 9** (`tools/interop_gate.py`): `-cdc` and `-oi1`
+  archives cross-decoded by the local WinRAR/UnRAR oracles
+  byte-identically — carried-window solid streams and FILECOPY references
+  are ordinary RAR5 to the reference decoder (CI falls back to
+  self-roundtrip per the gate's oracle-availability contract).
+
+### Changed
+
+- **Solid-run breaking around FILECOPY references** (`src/compress/compress_plan.hpp`
+  `breaks_solid_chain`): reference entries carry no data area, are never
+  chain members, and the run BREAKS around them — the next data-bearing
+  entry starts a fresh chain (plan §2.2). The prepare-side plan and the
+  writer's re-plan share the semantics (a divergence would desynchronize
+  the packer window from the header bits).
+- **File mtimes are restored on extraction** (`src/archive/archive_reader.cpp`
+  M3 wiring): files never received the archived mtime before (only
+  deferred directory metadata did) — a parity gap found while wiring the
+  timestamp clamp. Regular-file paths now apply the archived mtime to the
+  extraction temp before the commit rename, with the shipped
+  FHEXTRA_HTIME > utime > FILETIME precedence.
+
+### Security
+
+- **Timestamp clamping wired** (`MtimeBounds`/`clamp_mtime`, shipped v1.24
+  with zero call sites until now): absurd archive mtimes clamp to the
+  parameterized bounds (default 1970-01-01 .. 3000-01-01) at file commit
+  AND in the deferred dir-meta build; clamps surface as the
+  `timestamp_clamped` security flag in `--json-summary` plus a report
+  line on stderr (security-arch §4.4 reconciliation, plan test 8).
+- **Caps cross-check (§5.4)**: a CDC-packed carried-window solid stream is
+  an ordinary solid stream at extraction — the cumulative
+  `max_total_output_bytes` cap fires mid-stream exactly as for any other
+  solid archive (plan test 6).
+- **RR on CDC-packed sets (pre-analysis R3)**: recovery record + repair
+  verified on a reordered carried-window solid archive — damaged packed
+  data fails the integrity check, single-erasure repair reconstructs it
+  from parity, members recover byte-exactly (plan test 7).
+
+### Measured
+
+- Three-number gate on the engineered similarity corpus of
+  `tests/unit/cli_tests.cpp` (`cdc_reduction_report_three_numbers`, plan
+  test 4; 5 × 1 MiB members sharing 75%-of-bytes base content, 1 MiB
+  window): store 5,243,438 / plain-solid original order 4,226,802 /
+  CDC-packed 3,672,842 bytes — the packer's ordering buys a further 13.1%
+  below the same-window plain-solid baseline, on top of the solid gain
+  over store. Reduction is window-bounded by construction (Gate 0 §3):
+  results are corpus-dependent and claimed per corpus only.
+
 ## [1.25.0] - 2026-09-26
 
 Memory-Mapped Read Engine (Re-scoped): listing, header-scanning and
