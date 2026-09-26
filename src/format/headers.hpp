@@ -119,6 +119,15 @@ inline constexpr core::uint8 FHEXTRA_XATTR = static_cast<core::uint8>(ExtraType:
 inline constexpr core::uint8 MHEXTRA_LOCATOR = static_cast<core::uint8>(ExtraType::Locator);
 inline constexpr core::uint8 MHEXTRA_METADATA = static_cast<core::uint8>(ExtraType::Metadata);
 
+// FHEXTRA_XATTR bounds (v1.27 plan §1.1/§1.3) — reader validation, writer
+// emission and -ox capture share these numbers. The value cap equals Linux
+// XATTR_SIZE_MAX; the per-file total keeps the record well inside the
+// 2 MiB header budget.
+inline constexpr size_t FHEXTRA_XATTR_NAME_MAX = 255;
+inline constexpr size_t FHEXTRA_XATTR_VALUE_MAX = 65536;
+inline constexpr size_t FHEXTRA_XATTR_COUNT_MAX = 4096;
+inline constexpr size_t FHEXTRA_XATTR_TOTAL_MAX = 1024 * 1024;
+
 // Main Header Model
 struct MainBlock {
     core::uint64 arc_flags{0};
