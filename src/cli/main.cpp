@@ -3135,7 +3135,7 @@ static int cli_main(int argc, char* argv[]) {
         return openrar::cli::extract_archive(arc_path, dest, cmd == "x", password, threads,
                                              keep_broken, overwrite_mode, extract_symlinks,
                                              exclude_patterns, extract_version, file_patterns,
-                                             (want_acl || want_og), preserve_suid);
+                                             (want_acl || want_og), preserve_suid, use_mmap);
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
     } else if (cmd == "rr" || (cmd.rfind("rr", 0) == 0 && cmd.size() > 2 &&
