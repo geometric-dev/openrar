@@ -436,8 +436,15 @@ public:
     // method/win_size (enforced by tests/unit/stream_encoder_tests.cpp).
     // Intermediate blocks carry last_block=false; exactly one
     // last_block=true block is written, by finish_stream().
-    bool begin_stream(int method, size_t win_size);
-    // Returns 0 on success, -1 on error (invalid state, OOM, encode failure).
+    bool begin_stream(int method, size_t win_size, bool continue_window = false);
+    // Solid-chain variant: continue_window=true starts a NEW stream (fresh
+    // tables/tokens/CRC, per-file filter scope) while KEEPING the LZ window,
+    // hash chains, and rep-distance state — the encoder-side mirror of the
+    // decoder's solid carry (Decompressor50::decompress_internal solid=true).
+    // Only legal immediately after finish_stream() on a session with the
+    // SAME win_size; every distance emitted into the carried window resolves
+    // identically in the decoder's carried window. Returns 0 on success,
+    // -1 on error (invalid state, OOM, encode failure).
     int feed(const core::byte* data, size_t n);
     int finish_stream();
     bool streaming() const { return streaming_; }

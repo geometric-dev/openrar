@@ -4,6 +4,7 @@
 #include "archive_reader.hpp"
 #include "../compress/compress_plan.hpp"
 #include "../compress/filters50.hpp"
+#include "../compress/solid_packer.hpp"
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -168,7 +169,8 @@ public:
                      bool want_streams = false, bool want_acl = false, bool is_solid = false,
                      bool direct_stream = false, const compress::FilterConfig& filter_cfg = {},
                      const std::string& default_group = "", const std::string& default_user = "",
-                     unsigned threads = 1);
+                     unsigned threads = 1, compress::SolidPacker* solid_packer = nullptr,
+                     bool solid_chain_member = false);
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,
     // no data area) carrying the directory's timestamps. Encryption does not

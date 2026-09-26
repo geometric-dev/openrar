@@ -47,50 +47,46 @@ core::uint64 CdcChunker::hash_range(const core::byte* data, size_t n) const {
 
 void CdcChunker::chunk(const core::byte* data, size_t size, std::vector<CdcChunk>& out) const {
     out.clear();
-    if (size == 0) return;
+    CdcStreamChunker stream(*this);
+    stream.feed(data, size, out);
+    stream.finish(out);
+}
 
-    size_t off = 0;
-    while (off < size) {
-        const size_t remaining = size - off;
-        const size_t max_here = remaining < kMaxChunk ? remaining : kMaxChunk;
-        if (max_here <= kMinChunk) {
-            // Tail chunk (or tiny remainder): one chunk to the end.
-            CdcChunk c;
-            c.offset = off;
-            c.length = static_cast<core::uint32>(max_here);
-            c.hash = hash_range(data + off, c.length);
-            out.push_back(c);
-            break;
+void CdcStreamChunker::feed(const core::byte* data, size_t n, std::vector<CdcChunk>& out) {
+    for (size_t i = 0; i < n; ++i) {
+        h_ = (h_ << 1) + owner_.table_[static_cast<unsigned char>(data[i])];
+        pending_[pending_size_++] = data[i];
+        ++fed_;
+        const size_t pos = pending_size_;
+        if (pos < CdcChunker::kMinChunk) continue;
+        // FastCDC two-level normalization: the strict mask below the avg
+        // point, the lighter one above it. (At a buffer end within kAvgChunk
+        // of the chunk start, chunk() applied the strict mask to every
+        // scanned position and the light mask at most at the final byte,
+        // where "cut" and "tail to EOF" coincide — the streaming decisions
+        // are byte-identical without knowing where EOF is.)
+        const core::uint64 active_mask =
+            pos < CdcChunker::kAvgChunk ? owner_.mask_ : (owner_.mask_ >> 1);
+        if ((h_ & active_mask) == 0) {
+            emit(out); // natural boundary
+        } else if (pos == CdcChunker::kMaxChunk) {
+            emit(out); // no boundary within the max window: cut at the cap
         }
-
-        // Gear rolling hash with FastCDC normalization: below the avg-size
-        // point use the stricter mask (fewer cut points), above it the
-        // lighter mask — the two-level scheme reduces chunk variance.
-        core::uint64 h = 0;
-        size_t cut = max_here;
-        const size_t avg_point = off + kAvgChunk < off + max_here ? off + kAvgChunk : max_here;
-        for (size_t i = 0; i < max_here; ++i) {
-            h = (h << 1) + table_[static_cast<unsigned char>(data[off + i])];
-            const size_t pos = i + 1;
-            if (pos < kMinChunk) continue;
-            const core::uint64 active_mask = (off + pos) < avg_point ? mask_ : (mask_ >> 1);
-            if ((h & active_mask) == 0) {
-                cut = pos;
-                break;
-            }
-        }
-        // No natural boundary within the max window: cut at the cap.
-        if (cut == max_here && max_here == kMaxChunk) cut = kMaxChunk;
-        // Degenerate guard: never emit below the min unless the input ended.
-        if (cut < kMinChunk && max_here > kMinChunk) cut = kMinChunk;
-
-        CdcChunk c;
-        c.offset = off;
-        c.length = static_cast<core::uint32>(cut);
-        c.hash = hash_range(data + off, c.length);
-        out.push_back(c);
-        off += cut;
     }
+}
+
+void CdcStreamChunker::finish(std::vector<CdcChunk>& out) {
+    if (pending_size_ > 0) emit(out); // tail chunk to the end of input
+}
+
+void CdcStreamChunker::emit(std::vector<CdcChunk>& out) {
+    CdcChunk c;
+    c.offset = fed_ - pending_size_; // offset within the whole fed stream
+    c.length = static_cast<core::uint32>(pending_size_);
+    c.hash = h_; // h_ is exactly hash_range() over the pending bytes
+    out.push_back(c);
+    h_ = 0;
+    pending_size_ = 0;
 }
 
 } // namespace openrar::compress

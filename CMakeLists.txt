@@ -44,6 +44,8 @@ set(OPENRAR_CORE_SOURCES
     src/format/header_writer.cpp
     src/compress/filters50.cpp
     src/compress/cdc_chunker.cpp
+    src/compress/cdc_planner.cpp
+    src/compress/solid_packer.cpp
     src/compress/compressor50.cpp
     src/compress/decompressor50.cpp
     src/compress/stream_encoder.cpp
@@ -416,6 +418,8 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(mapped_file_tests tests/unit/mapped_file_tests.cpp)
     add_openrar_test(mapped_scan_tests tests/unit/mapped_scan_tests.cpp)
     add_openrar_test(cdc_chunker_tests tests/unit/cdc_chunker_tests.cpp)
+    add_openrar_test(cdc_planner_tests tests/unit/cdc_planner_tests.cpp)
+    add_openrar_test(solid_packer_tests tests/unit/solid_packer_tests.cpp)
     add_openrar_test(volume_tests tests/unit/volume_tests.cpp)
     add_openrar_test(recovery_tests tests/unit/recovery_tests.cpp)
     add_openrar_test(archive_tests tests/unit/archive_tests.cpp)

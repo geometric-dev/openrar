@@ -1074,28 +1074,17 @@ static void apply_owner_overrides(format::FileBlock& fb, const std::string& defa
 // are undeclarable. Quantizing at window finalization makes encoder and
 // emitted header agree by construction (v1.21.2). CLI -md values are already
 // grid-exact, so this is a no-op for them.
-static core::uint64 snap_window_to_fci_grid(core::uint64 win) {
-    if (win < 0x20000ULL) return win; // store/small windows are not FCI-encoded
-    core::uint64 pow2 = 0x20000ULL;
-    core::uint32 bits = 0;
-    while (2 * pow2 <= win && bits < 23) {
-        pow2 *= 2;
-        bits++;
-    }
-    if (win <= pow2) return pow2;
-    if (bits == 23) return pow2 + (pow2 / 32) * 31; // clamp to max representable
-    core::uint64 fraction = (win - pow2) * 32 / pow2;
-    return pow2 + (pow2 / 32) * fraction;
-}
+// snap_window_to_fci_grid lives in compress_plan.hpp — one copy shared with
+// the CLI's solid-session construction (the packer's window and the recorded
+// win_size must match exactly for every entry of a solid run).
 
-bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
-                                      const std::string& arc_entry_name, int method,
-                                      const std::string& password, PreparedAdd& out,
-                                      core::uint32 times_mask, core::uint64 dict_size,
-                                      bool want_streams, bool want_acl, bool is_solid,
-                                      bool direct_stream, const compress::FilterConfig& filter_cfg,
-                                      const std::string& default_group,
-                                      const std::string& default_user, unsigned threads) {
+bool ArchiveMutator::prepare_add_file(
+    const std::filesystem::path& src_file, const std::string& arc_entry_name, int method,
+    const std::string& password, PreparedAdd& out, core::uint32 times_mask, core::uint64 dict_size,
+    bool want_streams, bool want_acl, bool is_solid, bool direct_stream,
+    const compress::FilterConfig& filter_cfg, const std::string& default_group,
+    const std::string& default_user, unsigned threads, compress::SolidPacker* solid_packer,
+    bool solid_chain_member) {
     if (!std::filesystem::exists(src_file)) {
         return false;
     }
@@ -1141,7 +1130,7 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
     } else {
         win_size = dict_size;
     }
-    win_size = snap_window_to_fci_grid(win_size);
+    win_size = compress::snap_window_to_fci_grid(win_size);
 
     core::uint64 file_sz = 0;
     core::uint32 crc = 0;
@@ -1200,7 +1189,21 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
             std::vector<core::byte> compressed_payload;
             if (method > 0) {
                 bool comp_ok = false;
-                if (eff_threads > 1 && uncompressed.size() >= 1024 * 1024) {
+                if (solid_packer) {
+                    // Solid session: the packed stream may reference earlier
+                    // entries in the shared window, so the store fallback is
+                    // FORBIDDEN here — a stored entry's bytes never enter the
+                    // decoder's window and would desynchronize the chain.
+                    // The block codec's overhead for incompressible members
+                    // is a few per-mille; correctness wins.
+                    comp_ok = solid_packer->pack_begin(solid_chain_member);
+                    if (comp_ok) {
+                        comp_ok = solid_packer->pack_feed(uncompressed.data(), uncompressed.size());
+                    }
+                    if (comp_ok) {
+                        comp_ok = solid_packer->pack_end(&compressed_payload);
+                    }
+                } else if (eff_threads > 1 && uncompressed.size() >= 1024 * 1024) {
                     comp_ok = compress::Compressor50::compress_buffer_parallel(
                         uncompressed.data(), uncompressed.size(), compressed_payload, method,
                         static_cast<size_t>(win_size), filter_cfg, eff_threads);
@@ -1210,10 +1213,15 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                         static_cast<size_t>(win_size), filter_cfg);
                 }
                 if (comp_ok) {
-                    if (compressed_payload.size() >= uncompressed.size()) {
+                    if (!solid_packer && compressed_payload.size() >= uncompressed.size()) {
                         compressed_payload.clear();
                         method = 0;
                     }
+                } else if (solid_packer) {
+                    // A failed session pack leaves the shared window in a
+                    // partially advanced state: abort the batch rather than
+                    // degrade to store (which would desynchronize the chain).
+                    return false;
                 } else {
                     method = 0;
                 }
@@ -1280,10 +1288,11 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                 fb.method = 0;
                 fb.win_size = 0;
                 out.needs_deferred_crc = true;
-            } else if (method > 0 && !do_encrypt && direct_stream && eff_threads <= 1) {
+            } else if (method > 0 && !do_encrypt && direct_stream && eff_threads <= 1 &&
+                       !solid_packer) {
                 // Direct-to-archive streaming compression via fixed-width vint back-patching (single-threaded):
-                // No temp spool needed! write_batch_add_ex will stream-compress directly into
-                // the archive in 1 MiB chunks, compute CRC32 on-the-fly, and back-patch the
+                // No temp spool needed! write_batch_add_ex will stream-compress directly into the
+                // archive in 1 MiB chunks, compute CRC32 on-the-fly, and back-patch the
                 // 10-byte fixed-width vint header. Eliminates intermediate disk spooling.
                 src.close();
                 fb.pack_size = 0;  // 10-byte fixed vint placeholder
@@ -1346,7 +1355,7 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                     // if a filter would trigger, take the sequential path so
                     // -mc is honored and -mt1/-mt>1 make the same decision for
                     // the same data.
-                    bool use_parallel = eff_threads > 1;
+                    bool use_parallel = eff_threads > 1 && !solid_packer;
                     if (use_parallel && filter_cfg.mode != compress::FilterMode::DisableAll) {
                         std::vector<core::byte> sample(
                             static_cast<size_t>(std::min<core::uint64>(file_sz, 65536)));
@@ -1359,7 +1368,48 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                         }
                         src.seek(0, io::SeekOrigin::Begin);
                     }
-                    if (use_parallel) {
+                    if (solid_packer) {
+                        // Solid session streaming path: the packed stream goes
+                        // straight to the spool through the shared window
+                        // session. No store fallback for session members (see
+                        // the in-memory path note): the raw bytes entered the
+                        // shared window, so the entry must stay method>0.
+                        struct SpoolSinkCtx {
+                            decltype(write_spool_chunk)* writer;
+                            bool ok;
+                        } sctx{&write_spool_chunk, true};
+                        solid_packer->set_sink(
+                            [](void* user, const core::byte* data, size_t size) -> int {
+                                auto* ctx = static_cast<SpoolSinkCtx*>(user);
+                                if (!(*ctx->writer)(data, size)) {
+                                    ctx->ok = false;
+                                    return -1;
+                                }
+                                return 0;
+                            },
+                            &sctx);
+                        comp_ok = solid_packer->pack_begin(solid_chain_member);
+                        remaining = file_sz;
+                        while (comp_ok && remaining > 0) {
+                            size_t to_read = static_cast<size_t>(
+                                std::min<core::uint64>(remaining, read_buf.size()));
+                            if (src.read(read_buf.data(), to_read) != to_read) return false;
+                            crc_calc.update(read_buf.data(), to_read);
+                            if (!solid_packer->pack_feed(read_buf.data(), to_read) || !sctx.ok)
+                                comp_ok = false;
+                            remaining -= to_read;
+                        }
+                        if (comp_ok) {
+                            std::vector<core::byte> sink_residual;
+                            comp_ok = solid_packer->pack_end(&sink_residual);
+                            if (comp_ok && !sink_residual.empty()) {
+                                if (!write_spool_chunk(sink_residual.data(), sink_residual.size()))
+                                    comp_ok = false;
+                            }
+                        }
+                        if (!comp_ok) return false; // shared window state: abort, never store
+                        crc = crc_calc.get();
+                    } else if (use_parallel) {
                         compress::ParallelCompressConfig pcfg;
                         pcfg.method = method;
                         pcfg.win_size = static_cast<size_t>(win_size);
@@ -1418,8 +1468,10 @@ bool ArchiveMutator::prepare_add_file(const std::filesystem::path& src_file,
                         enc_residual.clear();
                     }
 
-                    // Store fallback check
-                    if (spooled_pack_bytes >= file_sz) {
+                    // Store fallback check (never for solid-session members:
+                    // their raw bytes entered the shared window — storing
+                    // them would desynchronize the decoder's chain state)
+                    if (!solid_packer && spooled_pack_bytes >= file_sz) {
                         method = 0;
                         spool_out.close();
                         spool_guard.cleanup(); // removes the compressed spool
@@ -2852,7 +2904,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     }
 
     core::uint64 win_size = (dict_size > 0) ? dict_size : 0x200000ULL; // 2 MiB default
-    win_size = snap_window_to_fci_grid(win_size);
+    win_size = compress::snap_window_to_fci_grid(win_size);
     if (dict_size == 0 && !solid && method > 0 && file_sz > 0) {
         core::uint64 file_pow2 = 0x20000ULL; // 128 KiB floor
         while (file_pow2 < file_sz && file_pow2 < win_size) {

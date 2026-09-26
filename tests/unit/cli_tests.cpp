@@ -4,6 +4,7 @@
 #include "openrar/version.h"
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -777,6 +778,27 @@ static void write_pattern_file(const std::filesystem::path& p, size_t n, unsigne
     assert(f);
 }
 
+// Incompressible pseudo-noise (LCG): for corpora whose similarity must come
+// from shared bytes, not from self-compression — the reduction gate needs
+// unmatched content to actually be stored.
+static std::vector<char> make_noise_bytes(size_t n, unsigned seed) {
+    std::vector<char> v(n);
+    unsigned x = seed * 2654435761u + 1u;
+    for (size_t i = 0; i < n; ++i) {
+        x = x * 1103515245u + 12345u;
+        v[i] = static_cast<char>((x >> 16) & 0xFF);
+    }
+    return v;
+}
+
+static void write_noise_file(const std::filesystem::path& p, size_t n, unsigned seed) {
+    std::vector<char> data = make_noise_bytes(n, seed);
+    std::ofstream f(p, std::ios::binary);
+    assert(f);
+    f.write(data.data(), static_cast<std::streamsize>(data.size()));
+    assert(f);
+}
+
 static bool file_bytes_equal(const std::filesystem::path& a, const std::filesystem::path& b) {
     std::ifstream fa(a, std::ios::binary);
     std::ifstream fb(b, std::ios::binary);
@@ -1069,6 +1091,324 @@ static void test_oi_switch_modes() {
     std::cout << "[PASS] oi_switch_modes (README -oi row semantics)\n";
 }
 
+static std::vector<char> read_whole_file(const std::filesystem::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    assert(f);
+    return std::vector<char>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+static void set_cap_env(const char* value) {
+#ifdef _WIN32
+    _putenv_s("OPENRAR_CDC_INDEX_CAP", value);
+#else
+    setenv("OPENRAR_CDC_INDEX_CAP", value, 1);
+#endif
+}
+
+// Plan test 3 (v1.26 §6) + the M2b FILECOPY/redir interaction: -cdc reorders
+// by affinity, and the SAME run emits FILECOPY references for exact
+// duplicates. Same input at -mt1 and -mt8 must produce byte-identical
+// archives (ordering stability, directive 4), and extraction reproduces
+// every byte.
+static void test_cdc_packing_order_stable() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_cdc_stable";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    const size_t sz = 256 * 1024;
+    fs::path base = temp_dir / "base.bin";
+    fs::path dup = temp_dir / "dup.bin";
+    fs::path u1 = temp_dir / "u1.bin";
+    fs::path v1 = temp_dir / "v1.bin";
+    write_noise_file(base, sz, 30);
+    write_noise_file(dup, sz, 30); // exact duplicate of base.bin
+    write_noise_file(u1, sz, 31);
+    {
+        // v1: base with its middle quarter replaced (75% chunk affinity).
+        std::vector<char> data = make_noise_bytes(sz, 30);
+        std::vector<char> mid = make_noise_bytes(sz / 4, 32);
+        std::copy(mid.begin(), mid.end(), data.begin() + static_cast<std::ptrdiff_t>(sz / 3));
+        std::ofstream f(v1, std::ios::binary);
+        assert(f);
+        f.write(data.data(), static_cast<std::streamsize>(data.size()));
+        assert(f);
+    }
+
+    std::string exe = get_cli_path();
+    auto create = [&](const char* arc_name, const char* mt) {
+        fs::path arc = temp_dir / arc_name;
+        std::string cmd = exe + " a -cdc -q " + mt + " " + arc.string() + " " + base.string() +
+                          " " + dup.string() + " " + u1.string() + " " + v1.string() +
+                          " > " DEVNULL " 2>&1";
+        int res = std::system(cmd.c_str());
+        assert(res == 0);
+        return arc;
+    };
+    fs::path arc1 = create("cdc_mt1.rar", "-mt1");
+    fs::path arc2 = create("cdc_mt8.rar", "-mt8");
+
+    // Ordering stability: byte-identical archives at any -mt.
+    assert(read_whole_file(arc1) == read_whole_file(arc2));
+
+    // Redir interaction: the exact duplicate became a FILECOPY to its master,
+    // carries no data, and the master precedes it in the packed order.
+    {
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc1));
+        size_t base_pos = SIZE_MAX, dup_pos = SIZE_MAX;
+        size_t file_idx = 0;
+        for (const auto& e : r.entries()) {
+            if (e.header.is_service) continue;
+            if (e.header.file_name == "base.bin") base_pos = file_idx;
+            if (e.header.file_name == "dup.bin") {
+                dup_pos = file_idx;
+                assert(e.header.redir_type == 5);
+                assert(e.header.redir_target == "base.bin");
+                assert(e.data_size == 0);
+            }
+            ++file_idx;
+        }
+        assert(base_pos != SIZE_MAX && dup_pos != SIZE_MAX);
+        assert(base_pos < dup_pos);
+    }
+
+    // `t` + extraction identity (references materialize under -ol).
+    std::string cmd = exe + " t " + arc1.string() + " > " DEVNULL " 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+    fs::path out_dir = temp_dir / "out";
+    cmd = exe + " x -ol -q " + arc1.string() + " " + out_dir.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+    assert(file_bytes_equal(base, out_dir / "base.bin"));
+    assert(file_bytes_equal(base, out_dir / "dup.bin"));
+    assert(file_bytes_equal(u1, out_dir / "u1.bin"));
+    assert(file_bytes_equal(v1, out_dir / "v1.bin"));
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] cdc_packing_order_stable (plan test 3 + redir interaction)\n";
+}
+
+// Plan test 2 (v1.26 §6): fingerprint index cap hit -> the tail keeps its
+// original order and the fallback is REPORTED (directive 5, no silent
+// degradation). OPENRAR_CDC_INDEX_CAP lowers the cap for the run; the
+// archive stays valid, deterministic, and byte-faithful.
+static void test_cdc_index_cap_falls_back_reported() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_cdc_cap";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    std::vector<fs::path> files;
+    for (unsigned i = 0; i < 6; ++i) {
+        fs::path p = temp_dir / ("f" + std::to_string(i) + ".bin");
+        write_noise_file(p, 64 * 1024, 40 + i); // distinct content, no affinity
+        files.push_back(p);
+    }
+
+    std::string exe = get_cli_path();
+    set_cap_env("5"); // force the cap to trigger after a few files
+    fs::path arc = temp_dir / "cap.rar";
+    fs::path list_out = temp_dir / "cap.out";
+    std::string cmd = exe + " a -cdc -q " + arc.string();
+    for (const auto& f : files) cmd += " " + f.string();
+    cmd += " > " + list_out.string() + " 2>&1";
+    int res = std::system(cmd.c_str());
+    set_cap_env("");
+    assert(res == 0);
+
+    std::ifstream in(list_out, std::ios::binary);
+    assert(in);
+    std::string out_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    assert(out_text.find("fingerprint index cap reached") != std::string::npos);
+    assert(out_text.find("original order") != std::string::npos);
+
+    // The fallback archive is valid, deterministic, and byte-faithful.
+    {
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc));
+        size_t file_entries = 0;
+        for (const auto& e : r.entries()) {
+            if (!e.header.is_service) ++file_entries;
+        }
+        assert(file_entries == 6);
+    }
+    fs::path arc2 = temp_dir / "cap2.rar";
+    set_cap_env("5");
+    std::string cmd2 = exe + " a -cdc -q " + arc2.string();
+    for (const auto& f : files) cmd2 += " " + f.string();
+    cmd2 += " > " DEVNULL " 2>&1";
+    res = std::system(cmd2.c_str());
+    set_cap_env("");
+    assert(res == 0);
+    assert(read_whole_file(arc) == read_whole_file(arc2));
+
+    fs::path out_dir = temp_dir / "out";
+    cmd = exe + " x -ol -q " + arc.string() + " " + out_dir.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+    for (const auto& f : files) {
+        assert(file_bytes_equal(f, out_dir / f.filename()));
+    }
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] cdc_index_cap_falls_back_reported (plan test 2)\n";
+}
+
+// Plan test 4 (v1.26 §6) — the three-number reduction gate (directive 1,
+// living in tests per directive 3): for a corpus with cross-file similarity
+// the report carries store / plain-solid / CDC-packed at the SAME window,
+// and CDC-packed strictly beats plain-solid. The corpus is engineered so
+// similarity is byte-sharing, not self-compression: noise base + two
+// variants (middle quarter replaced) + two unrelated noise files, original
+// order spreading the variants one window apart.
+static void test_cdc_reduction_report_three_numbers() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_cdc_reduction";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    const size_t sz = 1024 * 1024;
+    const size_t mid_off = sz / 4, mid_len = sz / 4;
+    fs::path base = temp_dir / "base.bin";
+    fs::path u1 = temp_dir / "u1.bin";
+    fs::path v1 = temp_dir / "v1.bin";
+    fs::path u2 = temp_dir / "u2.bin";
+    fs::path v2 = temp_dir / "v2.bin";
+    write_noise_file(base, sz, 50);
+    write_noise_file(u1, sz, 51);
+    write_noise_file(u2, sz, 52);
+    auto write_variant = [&](const fs::path& p, unsigned mid_seed) {
+        std::vector<char> data = make_noise_bytes(sz, 50); // copy of base
+        std::vector<char> mid = make_noise_bytes(mid_len, mid_seed);
+        std::copy(mid.begin(), mid.end(), data.begin() + static_cast<std::ptrdiff_t>(mid_off));
+        std::ofstream f(p, std::ios::binary);
+        assert(f);
+        f.write(data.data(), static_cast<std::streamsize>(data.size()));
+        assert(f);
+    };
+    write_variant(v1, 53);
+    write_variant(v2, 54);
+
+    // Original order interleaves the variants so plain-solid cannot keep the
+    // shared regions inside a 1 MiB window; CDC packing pulls them adjacent.
+    const std::string files = base.string() + " " + u1.string() + " " + v1.string() + " " +
+                              u2.string() + " " + v2.string();
+    std::string exe = get_cli_path();
+
+    fs::path store_arc = temp_dir / "store.rar";
+    std::string cmd = exe + " a -m0 -q " + store_arc.string() + " " + files + " > " DEVNULL " 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    fs::path plain_arc = temp_dir / "plain.rar";
+    cmd = exe + " a -s -md1m -q " + plain_arc.string() + " " + files + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    fs::path cdc_arc = temp_dir / "cdc.rar";
+    fs::path list_out = temp_dir / "cdc.out";
+    cmd = exe + " a -cdc -md1m " + cdc_arc.string() + " " + files + " > " + list_out.string() +
+          " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    const uint64_t store_size = std::filesystem::file_size(store_arc, ec);
+    const uint64_t plain_size = std::filesystem::file_size(plain_arc, ec);
+    const uint64_t cdc_size = std::filesystem::file_size(cdc_arc, ec);
+    std::cout << "  [INFO] reduction: store=" << store_size << " plain-solid=" << plain_size
+              << " cdc-packed=" << cdc_size << "\n";
+
+    // The pack-time report carries logical/packed/window/flag.
+    std::ifstream in(list_out, std::ios::binary);
+    assert(in);
+    std::string out_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    assert(out_text.find("cdc: logical=") != std::string::npos);
+    assert(out_text.find("flag=reordered") != std::string::npos);
+
+    // The gate: CDC-packed must beat plain-solid at the same window.
+    assert(cdc_size < plain_size);
+
+    // Extraction identity for the packed archive.
+    fs::path out_dir = temp_dir / "out";
+    cmd = exe + " x -ol -q " + cdc_arc.string() + " " + out_dir.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+    assert(file_bytes_equal(base, out_dir / "base.bin"));
+    assert(file_bytes_equal(v1, out_dir / "v1.bin"));
+    assert(file_bytes_equal(v2, out_dir / "v2.bin"));
+    assert(file_bytes_equal(u1, out_dir / "u1.bin"));
+    assert(file_bytes_equal(u2, out_dir / "u2.bin"));
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] cdc_reduction_report_three_numbers (plan test 4)\n";
+}
+
+// Plan test 9 (v1.26 §6): 0-byte and sub-min-chunk files pack in original
+// order, no crash, no affinity edges; empty files extract as empty.
+static void test_cdc_degenerate_inputs() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_cdc_degenerate";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    fs::path big = temp_dir / "big.bin";
+    fs::path e1 = temp_dir / "e1.bin";
+    fs::path e2 = temp_dir / "e2.bin";
+    fs::path t1 = temp_dir / "t1.bin";
+    fs::path t2 = temp_dir / "t2.bin";
+    write_noise_file(big, 100 * 1024, 60);
+    write_noise_file(t1, 1024, 61); // distinct 1 KiB files (no edges)
+    write_noise_file(t2, 1024, 62);
+    { std::ofstream(e1, std::ios::binary); }
+    { std::ofstream(e2, std::ios::binary); }
+
+    fs::path arc = temp_dir / "degenerate.rar";
+    std::string exe = get_cli_path();
+    std::string cmd = exe + " a -cdc -q " + arc.string() + " " + big.string() + " " + e1.string() +
+                      " " + e2.string() + " " + t1.string() + " " + t2.string() +
+                      " > " DEVNULL " 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    // Original order preserved end-to-end (no affinity edges anywhere).
+    {
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc));
+        std::vector<std::string> names;
+        for (const auto& e : r.entries()) {
+            if (!e.header.is_service) {
+                names.push_back(e.header.file_name);
+                assert(e.header.redir_type == 0); // no affinity edges materialized
+            }
+        }
+        assert(
+            (names == std::vector<std::string>{"big.bin", "e1.bin", "e2.bin", "t1.bin", "t2.bin"}));
+    }
+
+    cmd = exe + " t " + arc.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    fs::path out_dir = temp_dir / "out";
+    cmd = exe + " x -ol -q " + arc.string() + " " + out_dir.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+    assert(fs::file_size(out_dir / "e1.bin", ec) == 0);
+    assert(fs::file_size(out_dir / "e2.bin", ec) == 0);
+    assert(file_bytes_equal(t1, out_dir / "t1.bin"));
+    assert(file_bytes_equal(t2, out_dir / "t2.bin"));
+    assert(file_bytes_equal(big, out_dir / "big.bin"));
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] cdc_degenerate_inputs (plan test 9)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -1099,6 +1439,10 @@ int main() {
     test_oi_creation_side_emitted();
     test_cdc_filecopy_precedence();
     test_oi_switch_modes();
+    test_cdc_packing_order_stable();
+    test_cdc_index_cap_falls_back_reported();
+    test_cdc_reduction_report_three_numbers();
+    test_cdc_degenerate_inputs();
     test_sanitize_for_display();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
