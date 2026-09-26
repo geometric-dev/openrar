@@ -1966,7 +1966,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     const std::vector<std::string>& exclude_patterns = {}, int extract_version = -1,
                     const std::vector<std::string>& file_patterns = {},
                     [[maybe_unused]] bool restore_owner = false, bool preserve_suid = false,
-                    bool use_mmap = true) {
+                    bool use_mmap = true, bool xattr_security = false) {
     // --json-summary (v1.24 M4, plan §5): stdout purity + machine report.
     if (g_json_stdout_only) set_prog_out(std::cerr);
     archive::ExtractionReport report;
@@ -1997,6 +1997,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     archive::ArchiveReader reader;
     reader.set_keep_broken(keep_broken);
     reader.set_extract_symlinks(extract_symlinks);
+    reader.set_restore_xattr_security(xattr_security);
     int open_status = archive::RAR_OK;
     std::string open_detail;
     if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
@@ -2506,6 +2507,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         for (auto& r : slots.readers) {
             r->set_keep_broken(keep_broken);
             r->set_extract_symlinks(extract_symlinks);
+            r->set_restore_xattr_security(xattr_security);
             r->set_extraction_root(out_root); // same pinned containment root
         }
 
@@ -2925,11 +2927,12 @@ static int cli_main(int argc, char* argv[]) {
     openrar::core::uint32 rr_percent = 3;
     openrar::io::ExcludePathMode ep_mode = openrar::io::ExcludePathMode::None;
     bool recurse_subdirs = true;
-    bool want_symlinks = false;    // -ol
-    bool extract_symlinks = false; // v1.24 §6.1: links DEFAULT DENY; -ol opts in
-    bool keep_broken = false;      // -kb
-    bool preserve_suid = false;    // --preserve-suid (v1.24 §7.1)
-    bool use_mmap = true;          // --no-mmap (v1.25 §0 kill switch)
+    bool want_symlinks = false;          // -ol
+    bool extract_symlinks = false;       // v1.24 §6.1: links DEFAULT DENY; -ol opts in
+    bool keep_broken = false;            // -kb
+    bool preserve_suid = false;          // --preserve-suid (v1.24 §7.1)
+    bool restore_xattr_security = false; // --xattr-security (v1.27 §1.4)
+    bool use_mmap = true;                // --no-mmap (v1.25 §0 kill switch)
     openrar::cli::OverwriteMode overwrite_mode = openrar::cli::OverwriteMode::Prompt;
     bool want_qo = true;   // -qo, -qo+, -qo- (default: enabled)
     bool want_ams = false; // -ams, -am
@@ -3026,6 +3029,10 @@ static int cli_main(int argc, char* argv[]) {
         } else if (sw_eq(s, "--preserve-suid")) {
             // v1.24 plan §7.1: admin opt-in to restore SUID/SGID/sticky bits.
             preserve_suid = true;
+        } else if (sw_eq(s, "--xattr-security")) {
+            // v1.27 plan §1.4: admin opt-in to restore security.*/trusted.*
+            // extended attributes (the --preserve-suid trust-decision model).
+            restore_xattr_security = true;
         } else if (sw_eq(s, "--no-mmap")) {
             // v1.25 plan §0 (kill switch): force the buffered scan engine.
             use_mmap = false;
@@ -3500,10 +3507,10 @@ static int cli_main(int argc, char* argv[]) {
                 }
             }
         }
-        return openrar::cli::extract_archive(arc_path, dest, cmd == "x", password, threads,
-                                             keep_broken, overwrite_mode, extract_symlinks,
-                                             exclude_patterns, extract_version, file_patterns,
-                                             (want_acl || want_og), preserve_suid, use_mmap);
+        return openrar::cli::extract_archive(
+            arc_path, dest, cmd == "x", password, threads, keep_broken, overwrite_mode,
+            extract_symlinks, exclude_patterns, extract_version, file_patterns,
+            (want_acl || want_og), preserve_suid, use_mmap, restore_xattr_security);
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
     } else if (cmd == "rr" || (cmd.rfind("rr", 0) == 0 && cmd.size() > 2 &&

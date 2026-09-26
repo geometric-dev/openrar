@@ -26,6 +26,7 @@
 #include <windows.h>
 #else
 #include <sys/stat.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 #endif
 
@@ -329,6 +330,13 @@ void test_dir_metadata_deferred() {
     std::ifstream f(out / "d" / "f.txt", std::ios::binary);
     std::string got((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     assert(got == "child");
+    // Cleanup hygiene (v1.27): the deferred metadata legitimately left "d"
+    // read-only (that is the feature under test). Re-open it before the
+    // sweep — unlink inside a write-protected directory fails for the
+    // owner, so the leftover tree would poison every later run that shares
+    // this temp path (observed as an abort-on-second-run flake on
+    // persistent /tmp mounts).
+    ::chmod((out / "d").c_str(), 0700);
 #else
     // Windows: directory metadata restoration is best-effort SetFileTime;
     // the POSIX policy pieces are pinned by the sanitize_extract_mode asserts
@@ -392,6 +400,122 @@ void test_links_default_deny() {
     rm(dir);
 }
 
+// ── v1.27 M3: xattr restore policy + roundtrip ──────────────────────────────
+
+// Restore allow-list (plan §1.4): user.* + com.apple.metadata.* by default;
+// security.*/trusted.* only with the opt-in; everything else never.
+void test_xattr_restore_policy() {
+    using archive::ArchiveReader;
+    // Default-restore namespaces.
+    assert(ArchiveReader::xattr_restorable("user.greeting", false));
+    assert(ArchiveReader::xattr_restorable("com.apple.metadata:_kMDItemUserTags", false));
+    assert(ArchiveReader::xattr_restorable("com.apple.metadata.tag", false));
+    // Privileged namespaces: default-deny, opt-in restores.
+    assert(!ArchiveReader::xattr_restorable("security.selinux", false));
+    assert(!ArchiveReader::xattr_restorable("trusted.backup", false));
+    assert(ArchiveReader::xattr_restorable("security.selinux", true));
+    assert(ArchiveReader::xattr_restorable("trusted.backup", true));
+    // Never restored from archive content.
+    assert(!ArchiveReader::xattr_restorable("system.posix_acl_access", false));
+    assert(!ArchiveReader::xattr_restorable("system.posix_acl_access", true));
+    assert(!ArchiveReader::xattr_restorable("com.apple.quarantine", true));
+    assert(!ArchiveReader::xattr_restorable("com.apple.provenance", true));
+    assert(!ArchiveReader::xattr_restorable("com.apple.ResourceFork", true));
+    assert(!ArchiveReader::xattr_restorable("btrfs.compression", true));
+    std::cout << "[PASS] xattr_restore_policy: user.*/metadata.* default, security.* opt-in\n";
+}
+
+#ifndef _WIN32
+// Reads back an attribute; returns false when absent (or unsupported).
+static bool get_xattr_posix(const fs::path& p, const char* name, std::string& out) {
+    char buf[256];
+#if defined(__APPLE__)
+    const ssize_t got = getxattr(p.c_str(), name, buf, sizeof(buf), 0, 0);
+#else
+    const ssize_t got = getxattr(p.c_str(), name, buf, sizeof(buf));
+#endif
+    if (got < 0) return false;
+    out.assign(buf, static_cast<size_t>(got));
+    return true;
+}
+#endif
+
+// Plan test 1 (restore half): allow-listed attributes land on the extracted
+// file; crafted security.* records stay absent by default (and fail-soft
+// under the opt-in while unprivileged); dir xattrs ride the deferred path.
+void test_xattr_restore_roundtrip() {
+    const fs::path dir = make_dir("xattr_restore");
+#ifndef _WIN32
+    const fs::path out = dir / "out";
+    const fs::path arc = dir / "g5.rar";
+    {
+        io::FileStream s;
+        assert(s.open(arc, io::FileMode::CreateAlways));
+        format::HeaderWriter::write_signature(s);
+        format::MainBlock mb;
+        format::HeaderWriter::write_main_block(s, mb);
+        format::FileBlock d;
+        d.file_name = "d";
+        d.host_os = 1;
+        d.file_flags = format::FHFL_DIRECTORY;
+        d.unp_size = 0;
+        d.pack_size = -1;
+        d.method = 0;
+        d.xattrs.push_back({"user.dirattr", {'d', 'v', 'a', 'l'}});
+        assert(format::HeaderWriter::write_file_block(s, d));
+        format::FileBlock f;
+        f.file_name = "d/f.txt";
+        f.host_os = 1;
+        f.attributes = 0100644u;
+        f.unp_size = 5;
+        f.pack_size = 5;
+        f.method = 0;
+        f.xattrs.push_back({"user.greeting", {'h', 'e', 'l', 'l', 'o'}});
+        f.xattrs.push_back({"user.empty", {}});
+        // Crafted hostile-ish record: security.* may never restore by default.
+        f.xattrs.push_back({"security.selinux", {'e', 'v', 'i', 'l'}});
+        assert(format::HeaderWriter::write_file_block(s, f));
+        s.write("child", 5);
+        format::EndArcBlock eb;
+        format::HeaderWriter::write_end_block(s, eb);
+    }
+    archive::ArchiveReader reader;
+    reader.set_extraction_root(out);
+    assert(reader.open(arc));
+    assert(reader.entries().size() == 2);
+    assert(reader.extract_entry(reader.entries()[1], out / "d" / "f.txt"));
+    assert(reader.extract_entry(reader.entries()[0], out / "d"));
+    reader.apply_deferred_dir_metadata();
+
+    // File: allow-listed attributes restored (incl. the empty value).
+    std::string got;
+    assert(get_xattr_posix(out / "d" / "f.txt", "user.greeting", got) && got == "hello");
+    assert(get_xattr_posix(out / "d" / "f.txt", "user.empty", got) && got.empty());
+    // security.* never restored by default.
+    assert(!get_xattr_posix(out / "d" / "f.txt", "security.selinux", got));
+    // Dir: deferred-path restore.
+    assert(get_xattr_posix(out / "d", "user.dirattr", got) && got == "dval");
+
+    // Opt-in: extraction still succeeds; the privileged setxattr fails
+    // EPERM while unprivileged and is skipped fail-soft (attribute absent).
+    fs::path out2 = dir / "out2";
+    archive::ArchiveReader reader2;
+    reader2.set_extraction_root(out2);
+    reader2.set_restore_xattr_security(true);
+    assert(reader2.open(arc));
+    assert(reader2.extract_entry(reader2.entries()[1], out2 / "d" / "f.txt"));
+    assert(reader2.extract_entry(reader2.entries()[0], out2 / "d"));
+    reader2.apply_deferred_dir_metadata();
+    assert(get_xattr_posix(out2 / "d" / "f.txt", "user.greeting", got) && got == "hello");
+    assert(get_xattr_posix(out2 / "d" / "f.txt", "user.empty", got) && got.empty());
+#else
+    // Windows: restore is platform-gated; the policy predicate is pinned
+    // by test_xattr_restore_policy on every leg.
+#endif
+    std::cout << "[PASS] xattr_restore_roundtrip: files + dirs, security.* default-deny\n";
+    rm(dir);
+}
+
 } // namespace
 
 int main() {
@@ -407,6 +531,8 @@ int main() {
     test_byte_cap_debit();
     test_dir_metadata_deferred();
     test_links_default_deny();
+    test_xattr_restore_policy();
+    test_xattr_restore_roundtrip();
     std::cout << "All extraction_fidelity_tests passed.\n";
     return 0;
 }
