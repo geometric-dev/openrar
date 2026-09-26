@@ -29,7 +29,8 @@
 | **Mapped read engine** | v1.25: memory-mapped listing/header-scan (`--no-mmap` forces buffered; extraction always buffered) |
 | **Archive mutation** (`d`/`u`/`f`/`m`/`k`) | delete, update, freshen, move, lock — QO/locator stripped on mutation |
 | **Filter switches** (`-mc`) | `-mcE`/`-mcD`/`-mcL`/`-mcX` parsed and forwarded; DELTA/E8 applied by decoder |
-| **Not yet** | file versioning (`-ver`), fractional dictionary sizes (v1 / non-power-of-2) |
+| **File versioning** (`-ver[n]`) | Versioned adds keep N versions of the same name (`FHEXTRA_VERSION`); extraction filter `-ver<idx>` |
+| **Not yet** | RAR 7.0-style recovery-record vintage (0x11D), POSIX extended attributes & MotW (`-oz` — roadmap v1.27), RAR 5.0 compression v1 streams (write-side) |
 
 ---
 
@@ -79,7 +80,8 @@ openrar a -m5 -r best.rar ./src
 | Switch | Effect |
 |---|---|
 | `-m0` … `-m5` | 0 store, 1 fast … 5 best (`-m3` default). Persisted as `method` bits in every file header. |
-| `-md<n>` | Dictionary hint (e.g. `-md1m`, `-md4m`, `-md1g`). Quantized to 128 KB–4 GB, informs `WinSize` in `FCI` bits. |
+| `-md<n>` | Dictionary hint (e.g. `-md1m`, `-md4m`, `-md1g`). Quantized to 128 KB–4 GB, informs `WinSize` in `FCI` bits. RAR 7.0 fractional/non-power-of-two sizes accepted (nearest discrete step). |
+| `-ver[n]` | File version control: versioned adds keep `n` versions per name; `-ver<idx>` extracts that version. |
 | `-s` | Solid archive (`MHFL_SOLID` + `FCI_SOLID`). Shares one `Compressor50` window across files; stored/empty files don't break the chain. |
 | `-r` | Recurse subdirectories. Default for `a` is already recursive; `-r0` limits to wildcards. |
 | `-ed` | Omit directory records — files still archived with their paths; empty-dir info is lost (rar.exe semantics). |
