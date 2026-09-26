@@ -5,6 +5,46 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] - 2026-09-26
+
+Memory-Mapped Read Engine (Re-scoped): listing, header-scanning and
+random-read gain a memory-mapped engine (SECURITY_ARCHITECTURE §5.2
+normative scope — extraction inputs stay buffered), behind the same
+fail-open contract as the rest of the engine.
+
+### Added
+
+- **Mapped read engine** (`src/io/mapped_file`): read-only mapping with an
+  open-time size pin (truncation-aware pre-flight) and fault-guarded
+  bounded reads — Windows SEH leaf converts access violations/in-page
+  errors into clean short reads; POSIX bounds every access against the
+  mapped length with a fresh `fstat` (no signal handlers, per §5.2).
+  `io::ReadSource` — a minimal random-access read interface implemented
+  by both `FileStream` (buffered) and `MappedFile` — lets the header
+  scanner run unchanged on either engine (zero scanner duplication).
+- **Mapped scanner wiring** (`select_volume_source`): the single
+  mapped/buffered decision function picks a mapped view per volume when
+  enabled and mappable, buffered fail-open otherwise; the view is
+  scan-scoped and released before payload/extraction reads. `--no-mmap`
+  / `OPENRAR_NO_MMAP=1` force the buffered engine; `OPENRAR_DEBUG_MMAP=1`
+  makes fallbacks visible.
+- **Random-read region export** (`OPENRAR_ABI_FEATURE_MMAP` bit 16 +
+  `openrar_archive_handle_read_entry_region`): random-read region of a
+  stored entry's payload, mapped view per region when available, buffered
+  pread otherwise; encrypted/compressed entries refused; whole-payload
+  ranges CRC/BLAKE2sp-verified, partial ranges unverified by contract.
+- **Listing benchmark** (`openrar_bench`): sparse ~50 GB corpus (100k
+  stored entries × 500 KiB holes, FSCTL sparse-marked on Windows) listed
+  with the mapped engine vs the buffered engine; volumes refusing the
+  FSCTL (ReFS: ERROR_INVALID_FUNCTION) skip the full-scale corpus, and
+  the full-scale run happens on the CI ubuntu leg (ext4 sparse native).
+
+### Changed
+
+- **Scanner source abstraction**: `HeaderReader::read_block_raw` now takes
+  `io::ReadSource&` instead of `io::FileStream&` — existing `FileStream`
+  call sites compile unchanged; the mapped engine is a drop-in source.
+
 ## [1.24.0] - 2026-09-25
 
 Extraction Containment & Integrity — the extraction pipeline itself, the
