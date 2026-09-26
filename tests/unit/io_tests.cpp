@@ -1,9 +1,11 @@
 #include "../../src/core/types.hpp"
 #include "../../src/io/file_stream.hpp"
+#include "../../src/io/motw.hpp"
 #include "../../src/io/path_util.hpp"
 #include "../../src/io/win32_meta.hpp"
 
 #include <cassert>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <vector>
@@ -212,6 +214,111 @@ void test_ntfs_metadata() {
 #endif
 }
 
+// v1.27 M4 (plan tests 9/10/12): the MotW value functions — parse/generate
+// contracts and the zone-name normalizer. Platform-independent surface of
+// the local-generation policy (SECURITY_ARCHITECTURE 4.3).
+void test_motw_values() {
+    // Zone-name normalization: any legal spelling of the zone stream.
+    assert(io::is_zone_stream_name(":Zone.Identifier"));
+    assert(io::is_zone_stream_name(":zone.identifier"));
+    assert(io::is_zone_stream_name(":ZoNe.IdEnTiFiEr"));
+    assert(io::is_zone_stream_name(":Zone.Identifier:$DATA"));
+    assert(!io::is_zone_stream_name(":Zone.Identifier:$DATA:$DATA"));
+    assert(!io::is_zone_stream_name(":logo.png"));
+    assert(!io::is_zone_stream_name("Zone.Identifier")); // no leading colon
+    assert(!io::is_zone_stream_name(""));
+
+    // parse_zone_id: canonical content, case-insensitive key, no header.
+    int zone = -1;
+    const char* canon = "[ZoneTransfer]\r\nZoneId=3\r\n";
+    assert(io::parse_zone_id(std::vector<core::byte>(canon, canon + strlen(canon)), zone));
+    assert(zone == 3);
+    const char* lower = "zoneid=2";
+    assert(io::parse_zone_id(std::vector<core::byte>(lower, lower + strlen(lower)), zone));
+    assert(zone == 2);
+    const char* four = "[ZoneTransfer]\nZoneId=4\nHostUrl=http://x";
+    assert(io::parse_zone_id(std::vector<core::byte>(four, four + strlen(four)), zone));
+    assert(zone == 4);
+    // Malformed / hostile: no digits, out of range, garbage, oversized.
+    const char* empty_val = "ZoneId=";
+    assert(!io::parse_zone_id(std::vector<core::byte>(empty_val, empty_val + 7), zone));
+    const char* out_of_range = "ZoneId=9";
+    assert(!io::parse_zone_id(std::vector<core::byte>(out_of_range, out_of_range + 8), zone));
+    const char* overflow = "ZoneId=555555555555555555555";
+    assert(
+        !io::parse_zone_id(std::vector<core::byte>(overflow, overflow + strlen(overflow)), zone));
+    const char* garbage = "hello world";
+    assert(!io::parse_zone_id(std::vector<core::byte>(garbage, garbage + 11), zone));
+    std::vector<core::byte> huge((1u << 16) + 1, 'x');
+    assert(!io::parse_zone_id(huge, zone));
+
+    // Generated content: the EXACT bytes we write — nothing else ever
+    // travels (no HostUrl/ReferrerUrl; plan test motw_hosturl_never_copied).
+    const auto gen = io::generate_zone_identifier_content(3);
+    const char* want3 = "[ZoneTransfer]\r\nZoneId=3\r\n";
+    assert(gen.size() == strlen(want3));
+    assert(std::memcmp(gen.data(), want3, strlen(want3)) == 0);
+
+    // macOS quarantine value: flag preserved, local fields present, fresh
+    // UUID per call.
+    const std::string q1 = io::generate_quarantine_value("0083");
+    assert(!q1.empty());
+    assert(q1.rfind("0083;", 0) == 0);
+    assert(q1.find(";OpenRAR;") != std::string::npos);
+    const std::string q2 = io::generate_quarantine_value("0083");
+    assert(q1 != q2); // locally generated UUID differs
+
+    // Unmarked file probes as unmarked.
+    const std::filesystem::path probe = "build/test_motw_unmarked.tmp";
+    {
+        io::FileStream f;
+        assert(f.open(probe, io::FileMode::CreateAlways));
+        f.write("x", 1);
+    }
+    const io::MotwProvenance p = io::probe_archive_motw(probe);
+    assert(!p.marked);
+    std::filesystem::remove(probe);
+
+    std::cout << "[PASS] motw_values: parse/generate contract + zone-name normalization\n";
+}
+
+#ifdef _WIN32
+// v1.27 M4: the never-remove/never-downgrade rule on the real write path.
+void test_motw_zone_write_rules() {
+    const std::filesystem::path f = "build/test_motw_zone.tmp";
+    std::filesystem::remove(f);
+    {
+        io::FileStream s;
+        assert(s.open(f, io::FileMode::CreateAlways));
+        s.write("body", 4);
+    }
+    // Fresh mark: written.
+    assert(io::write_file_zone_id(f, 4));
+    const auto gen4 = io::generate_zone_identifier_content(4);
+    std::vector<io::StreamEntry> streams;
+    assert(io::read_alternate_streams(f, streams));
+    bool found = false;
+    for (const auto& s : streams) {
+        if (io::is_zone_stream_name(s.name)) {
+            found = true;
+            assert(s.data == gen4);
+        }
+    }
+    assert(found);
+    // Downgrade suppression: 4 -> 3 refused, content untouched.
+    assert(!io::write_file_zone_id(f, 3));
+    streams.clear();
+    assert(io::read_alternate_streams(f, streams));
+    for (const auto& s : streams) {
+        if (io::is_zone_stream_name(s.name)) assert(s.data == gen4);
+    }
+    // Same zone: no rewrite needed.
+    assert(!io::write_file_zone_id(f, 4));
+    std::filesystem::remove(f);
+    std::cout << "[PASS] motw_zone_write_rules: never removes or downgrades\n";
+}
+#endif
+
 void test_reparse_point_hardening() {
 #ifdef _WIN32
     // 1. Buffer too small (< 8 bytes)
@@ -338,6 +445,10 @@ int main() {
     test_path_utils();
     test_ntfs_metadata();
     test_reparse_point_hardening();
+    test_motw_values();
+#ifdef _WIN32
+    test_motw_zone_write_rules();
+#endif
     std::cout << "All Milestone 2 I/O & Platform Primitives PASSED!\n";
     return 0;
 }
