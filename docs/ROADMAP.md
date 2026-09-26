@@ -10,9 +10,18 @@
 > scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
 > v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
-## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0)
+## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 / v1.25.0)
 
-- **v1.24.0 (current):** extraction containment & integrity shipped —
+- **v1.25.0 (current):** memory-mapped read engine (re-scoped) shipped —
+  io::MappedFile with truncation-aware pre-flight and fault-guarded reads
+  (Windows SEH leaf; POSIX no-signal-handler posture), io::ReadSource seam
+  (one scan code path for both engines), select_volume_source decision
+  function with --no-mmap/OPENRAR_NO_MMAP kill switch, random-read region
+  export (OPENRAR_ABI_FEATURE_MMAP bit 16), 50 GB-class listing benchmark.
+  Plan: docs/v1.25-implementation-plan.md (architect review:
+  docs/mmap-v1.25-design-review.md — conditional approval, directives
+  applied).
+- **v1.24.0:** extraction containment & integrity shipped —
   syscall-level containment with write-through-handle atomic extraction
   (per-directory journals with a validated sweep), archive-internal
   collision detection (gate 2), --json-summary with stdout purity,
@@ -208,18 +217,20 @@ bottom-up; unknown extra records preserved verbatim across mutations.
 
 ---
 
-## v1.25.0 — Memory-Mapped Read Engine (Re-scoped)
+## v1.25.0 — Memory-Mapped Read Engine (Re-scoped) ✅ SHIPPED
 
-Unchanged from the previous revision, now normatively backed by
-SECURITY_ARCHITECTURE §5.2: **mmap for listing/header-scanning/random-read
-only — never for extraction inputs** (POSIX files cannot be locked against
-truncation; SIGBUS recovery is hostile to multithreaded engines). Buffered
-`pread`/`ReadFile` remains the extraction path. Windows SEH → `RAR_ERR_IO`;
-POSIX uses truncation-aware pre-flight + read fallback instead of signal
-handlers. Limits (`max_header_bytes`/`max_total_bytes`) enforced on the
-mapped path. New C ABI behind `OPENRAR_ABI_FEATURE_MMAP (1ull << 16)`.
-Gates: 50 GB listing benchmark, truncation fault injection, limits-not-
-bypassable.
+Normatively backed by SECURITY_ARCHITECTURE §5.2: **mmap for
+listing/header-scanning/random-read only — never for extraction inputs**
+(buffered `pread`/`ReadFile` remains the extraction path). Windows SEH →
+clean short reads; POSIX uses truncation-aware pre-flight + read fallback
+instead of signal handlers. Limits enforced on the mapped path (same scan
+code). C ABI: `OPENRAR_ABI_FEATURE_MMAP (1ull << 16)` +
+`openrar_archive_handle_read_entry_region`. Gates all green: truncation
+fault injection (mapped_file_tests), limits-not-bypassable + extraction
+byte identity (mapped_scan_tests), 50 GB listing benchmark
+(openrar_bench — full-scale on the CI ubuntu leg; ReFS dev volumes skip
+via the FSCTL verdict). Plan: docs/v1.25-implementation-plan.md;
+architect review: docs/mmap-v1.25-design-review.md.
 
 ---
 
@@ -316,7 +327,7 @@ C# NuGet (`OpenRAR.NET`).
 | **v1.22.0** | SIMD + security baseline sweep | Safe-math audit, sanitization audit, KDF caps | ~~OPEN P1 roundtrip divergence~~ FIXED; bit-exactness gates |
 | **v1.23.0** | SFX scripting | Full §6 consent/runtime policy | Security design review; sandbox e2e |
 | **v1.24.0** | Extraction containment & integrity ✅ | §3/§4 syscall containment, atomic extraction, collisions, JSON summary | TOCTOU fault injection ✅; collision matrix ✅ |
-| **v1.25.0** | mmap read engine (listing/random-read) | §5.2 normative no-mmap-for-extraction | Limits-not-bypassable; fault injection |
+| **v1.25.0** | mmap read engine (listing/random-read) ✅ | §5.2 normative no-mmap-for-extraction | Limits-not-bypassable ✅; fault injection ✅ |
 | **v1.26.0** | CDC deduplication | Cumulative caps on dedup streams | **Format-legality gate 0** |
 | **v1.27.0** | xattr / quarantine / MotW | §4.3 MotW local-generation; ownership policy | Legality gate; multi-OS matrix |
 | **v1.28.0** | TUI + benchmark | §7.1 terminal-injection gate | Non-TTY degradation; reproducibility |
