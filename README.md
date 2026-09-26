@@ -31,7 +31,9 @@
 | **CDC packing** (`-cdc`) | v1.26: content-defined chunking drives solid-chain ordering (window-bounded reduction, measured against a plain-solid baseline) — ordinary RAR5 solid streams, WinRAR/UnRAR-verified |
 | **Filter switches** (`-mc`) | `-mcE`/`-mcD`/`-mcL`/`-mcX` parsed and forwarded; DELTA/E8 applied by decoder |
 | **File versioning** (`-ver[n]`) | Versioned adds keep N versions of the same name (`FHEXTRA_VERSION`); extraction filter `-ver<idx>` |
-| **Not yet** | RAR 7.0-style recovery-record vintage (0x11D), POSIX extended attributes & MotW (`-oz` — roadmap v1.27), RAR 5.0 compression v1 streams (write-side) |
+| **POSIX/macOS extended attributes** (`-ox`) | v1.27: `FHEXTRA_XATTR` (0x08) records — `user.*`/`security.*`/`trusted.*` + macOS Finder-tag namespaces; restore allow-listed namespaces (`--xattr-security` opts in to `security.*`/`trusted.*`); stock WinRAR/UnRAR skip the records (Track 10) |
+| **Mark of the Web / quarantine** (`-oz`) | v1.27: propagation keyed on the archive file's own Zone.Identifier ADS (Windows) / `com.apple.quarantine` (macOS); mark content generated locally — never parsed from archive-provided streams; `-oz-` disables |
+| **Not yet** | RAR 7.0-style recovery-record vintage (0x11D), resource forks & FinderInfo (2.1), RAR 5.0 compression v1 streams (write-side) |
 
 ---
 
@@ -104,8 +106,12 @@ openrar a -m5 -r best.rar ./src
 | `-rr[N[%]]` | In-archive recovery record: Reed-Solomon GF(2¹⁶) parity (`rs16`) protecting up to RR header; repaired via `openrar r`. |
 | `-rv` | External `.rev` recovery volumes for multi-volume sets (`-v` required); rebuilt data volumes via `openrar r`. |
 | `-ow` | Save and restore NTFS file security and access control lists (ACLs) via `win32acl.cpp`. |
-| `-os` | Save and restore NTFS Alternate Data Streams (ADS) as `STM` service blocks via `win32stm.cpp`. |
+| `-os` | Save and restore NTFS Alternate Data Streams (ADS) as `STM` service blocks via `win32stm.cpp`. Zone.Identifier is excluded: it is transport provenance, not content — propagation is the `-oz` policy. |
 | `-ol` | Save symbolic links and junctions as `FHEXTRA_REDIR` records. Links are default-deny on extraction; `-ol` opts in (v1.24 §6.1). |
+| `-ox` | Save POSIX/macOS extended attributes into the header's `FHEXTRA_XATTR` (0x08) record: `user.*`, `security.*`, `trusted.*`, `com.apple.metadata.*` (Finder tags). `system.*` (ACL side door), quarantine/provenance namespaces and resource forks are never stored. Over-cap attributes (name > 255 B, value > 64 KiB, > 1 MiB per file) are skipped, never truncated. Symlinks/hardlinks carry no records. Restore is automatic for `user.*`/`com.apple.metadata.*`; `--xattr-security` additionally restores `security.*`/`trusted.*` (admin opt-in, the `--preserve-suid` model). Stock WinRAR/UnRAR skip the record without error. |
+| `-oz` / `-oz-` | Mark-of-the-Web propagation at extraction (default ON; `-oz-` disables). When the archive file itself carries a Zone.Identifier ADS (Windows) or `com.apple.quarantine` (macOS), each extracted file receives a freshly generated mark — content is generated locally (`[ZoneTransfer]
+ZoneId=N
+`); the archive's HostUrl/ReferrerUrl never travel; an existing stronger mark is never removed or downgraded. Zone streams stored inside the archive (WinRAR `-os` shape) are never restored. Extraction-side only: nothing is emitted into the archive. |
 | `--json-summary[=path]` | Machine-readable per-entry extraction report (v1.24); without `path`, stdout carries only JSON. |
 | `--no-mmap` | Force the buffered scan engine (v1.25; the mapped engine is default-on for listing). |
 | `-v<size>` | Create multi-volume split archive (`.part01.rar`, etc.) with per-slice checksums and MACs. |

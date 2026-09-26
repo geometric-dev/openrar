@@ -1712,6 +1712,64 @@ static void test_cdc_packed_rr_repair() {
     std::cout << "[PASS] cdc_packed_rr_repair (plan test 7)\n";
 }
 
+// v1.27 M5: -oi3/-oi4 exit WITHOUT creating the archive — the post-add -rr
+// dispatch must not then run against a file that was never written.
+static void test_oi34_no_archive_no_dispatch() {
+    namespace fsx = std::filesystem;
+    std::error_code ec;
+    fsx::path temp_dir = "test_oi34";
+    fsx::remove_all(temp_dir, ec);
+    fsx::create_directories(temp_dir, ec);
+
+    fsx::path f1 = temp_dir / "d1.bin";
+    fsx::path f2 = temp_dir / "d2.bin";
+    const std::string body(128 * 1024, 'D');
+    for (const fsx::path& p : {f1, f2}) {
+        std::ofstream f(p, std::ios::binary);
+        assert(f);
+        f.write(body.data(), static_cast<std::streamsize>(body.size()));
+    }
+
+    fsx::path arc = temp_dir / "oi34.rar";
+    fsx::path err_log = temp_dir / "err.txt";
+    // -oi3 + -rr3: the analysis exits 0 without an archive; no recovery
+    // record attempt may run against the nonexistent path.
+    std::string cmd = get_cli_path() + " a -oi3 -rr3 -q " + arc.string() + " " + f1.string() + " " +
+                      f2.string() + " 2> " + err_log.string();
+    const int res = std::system(cmd.c_str());
+    assert(res == 0);
+    assert(!fsx::exists(arc, ec));
+    std::ifstream ef(err_log, std::ios::binary);
+    std::string err((std::istreambuf_iterator<char>(ef)), std::istreambuf_iterator<char>());
+    assert(err.find("recovery") == std::string::npos);
+
+    // -oi4 WITH duplicates: exit before any archive is written (no rr).
+    fsx::path arc4 = temp_dir / "oi4.rar";
+    cmd = get_cli_path() + " a -oi4 -rr3 -q " + arc4.string() + " " + f1.string() + " " +
+          f2.string() + " 2> " + err_log.string();
+    assert(std::system(cmd.c_str()) == 0);
+    assert(!fsx::exists(arc4, ec));
+    std::ifstream ef4(err_log, std::ios::binary);
+    std::string err4((std::istreambuf_iterator<char>(ef4)), std::istreambuf_iterator<char>());
+    assert(err4.find("recovery") == std::string::npos);
+
+    // -oi4 WITHOUT duplicates: normal add flow — the archive IS created and
+    // the post-add -rr dispatch runs against the real file successfully.
+    fsx::path u1 = temp_dir / "u1.bin";
+    {
+        std::ofstream f(u1, std::ios::binary);
+        f << "unique";
+    }
+    fsx::path arc5 = temp_dir / "oi4clean.rar";
+    cmd = get_cli_path() + " a -oi4 -rr3 -q " + arc5.string() + " " + u1.string() +
+          " > " DEVNULL " 2>&1";
+    assert(std::system(cmd.c_str()) == 0);
+    assert(fsx::exists(arc5, ec));
+
+    fsx::remove_all(temp_dir, ec);
+    std::cout << "[PASS] oi34_no_archive_no_dispatch: post-add dispatch skipped\n";
+}
+
 // ── v1.27 M4: MotW propagation + zone-stream policy (plan tests 7-11) ───────
 
 #ifdef _WIN32
@@ -1966,6 +2024,7 @@ int main() {
     test_timestamp_clamped_flag();
     test_cdc_packed_caps_enforced();
     test_cdc_packed_rr_repair();
+    test_oi34_no_archive_no_dispatch();
     test_motw_propagation_cli();
     test_zone_stream_never_restored();
     test_os_excludes_zone_capture();
