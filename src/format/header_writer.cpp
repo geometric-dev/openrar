@@ -397,7 +397,10 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
         std::vector<core::byte> entries;
         size_t emitted = 0;
         for (const auto& xa : block.xattrs) {
-            if (xa.name.empty() || xa.name.size() > 255 || xa.value.size() > 65536) continue;
+            if (xa.name.empty() || xa.name.size() > format::FHEXTRA_XATTR_NAME_MAX ||
+                xa.value.size() > format::FHEXTRA_XATTR_VALUE_MAX) {
+                continue;
+            }
             core::push_vint(entries, xa.name.size());
             entries.insert(entries.end(), xa.name.begin(), xa.name.end());
             core::push_vint(entries, xa.value.size());

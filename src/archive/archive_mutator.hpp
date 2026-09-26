@@ -162,6 +162,10 @@ public:
     // header's win_size and must match the compressor's dictionary.
     // want_streams / want_acl attach NTFS ADS and Security ACL child records.
     // direct_stream enables zero-spool direct streaming into the archive.
+    // want_xattr captures POSIX/macOS extended attributes into the header's
+    // FHEXTRA_XATTR record (v1.27, allow-listed namespaces — see
+    // xattr_capturable). Symlink and hardlink entries carry no xattr records
+    // (an extracted hardlink shares the master's inode; plan §1.3).
     static bool
     prepare_add_file(const std::filesystem::path& src_file, const std::string& arc_entry_name,
                      int method, const std::string& password, PreparedAdd& out,
@@ -170,7 +174,14 @@ public:
                      bool direct_stream = false, const compress::FilterConfig& filter_cfg = {},
                      const std::string& default_group = "", const std::string& default_user = "",
                      unsigned threads = 1, compress::SolidPacker* solid_packer = nullptr,
-                     bool solid_chain_member = false);
+                     bool solid_chain_member = false, bool want_xattr = false);
+
+    // v1.27: namespace policy for -ox capture. Allow-list: user.*,
+    // security.*, trusted.*, com.apple.metadata.* — everything else (the
+    // system.* ACL side door, quarantine/provenance transport metadata,
+    // resource forks deferred to 2.1) is never stored. Pure predicate,
+    // unit-testable on every platform.
+    static bool xattr_capturable(const std::string& name);
 
     // Stage 1 variant for a directory: emits a directory record (FHFL_DIRECTORY,
     // no data area) carrying the directory's timestamps. Encryption does not
@@ -179,7 +190,7 @@ public:
                                 const std::string& arc_entry_name, PreparedAdd& out,
                                 core::uint32 times_mask = time_flags::MTIME, bool want_acl = false,
                                 const std::string& default_group = "",
-                                const std::string& default_user = "");
+                                const std::string& default_user = "", bool want_xattr = false);
 
     // Stage 1 variant for a symbolic link: emits a symlink record (FHEXTRA_REDIR,
     // redir_type = 2 on Windows, 1 on POSIX, no data area) carrying the link's timestamps.
@@ -210,7 +221,7 @@ public:
                                      const std::string& target_entry_name, PreparedAdd& out,
                                      core::uint32 times_mask = time_flags::MTIME,
                                      const std::string& default_group = "",
-                                     const std::string& default_user = "");
+                                     const std::string& default_user = "", bool want_xattr = false);
 
     // Query disk file last-modification time as unix epoch seconds.
     static bool get_file_mtime(const std::filesystem::path& path, core::uint64& mtime_out);
