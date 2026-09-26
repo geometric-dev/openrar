@@ -14,6 +14,7 @@
 #include "../crypto/pbkdf2.hpp"
 #include "../crypto/rng.hpp"
 #include "../io/win32_meta.hpp"
+#include "../io/posix_xattr.hpp"
 #include <chrono>
 
 #include <algorithm>
@@ -442,6 +443,51 @@ bool solid_replace_permitted(const std::vector<ArchiveEntry>& entries,
 }
 
 } // namespace
+
+// ── Extended-attribute capture (FHEXTRA_XATTR, v1.27 plan §1.3) ────────────
+bool ArchiveMutator::xattr_capturable(const std::string& name) {
+    // Namespace allow-list: user.*, security.*, trusted.*,
+    // com.apple.metadata.* (macOS Finder tags ride here). Everything else
+    // is never stored — system.* would side-step the -ow ACL policy,
+    // quarantine/provenance are transport metadata that SECURITY_
+    // ARCHITECTURE §4.3 forbids carrying as archive content, resource
+    // forks and FinderInfo are deferred to 2.1. Pure predicate — unit-
+    // tested on every platform.
+    static constexpr const char* kAllowPrefixes[] = {"user.", "security.", "trusted.",
+                                                     "com.apple.metadata:", "com.apple.metadata."};
+    for (const char* prefix : kAllowPrefixes) {
+        if (name.rfind(prefix, 0) == 0) return true;
+    }
+    return false;
+}
+
+// Reads the source's extended attributes through the allow-list and the
+// FHEXTRA_XATTR caps. Over-cap attributes are SKIPPED, never truncated
+// (a truncated value would corrupt attribute semantics silently).
+// Fail-soft by design (plan §3 FMM row C): unsupported filesystems and
+// per-attribute read failures yield fewer attributes, never a failed add.
+// Attributes are sorted by name so the same source always produces the
+// same record bytes (Pillar 7.8 decision-determinism).
+static void apply_xattrs(format::FileBlock& fb, const std::filesystem::path& src_file) {
+    std::vector<std::string> names;
+    if (!io::list_xattrs(src_file, names)) return; // no xattr support / unreadable
+    size_t total = 0;
+    for (const auto& name : names) {
+        if (!ArchiveMutator::xattr_capturable(name)) continue;
+        if (fb.xattrs.size() >= format::FHEXTRA_XATTR_COUNT_MAX) break;
+        if (name.size() > format::FHEXTRA_XATTR_NAME_MAX) continue;
+        std::vector<core::byte> value;
+        if (!io::get_xattr(src_file, name, value)) continue; // raced away / EPERM
+        if (value.size() > format::FHEXTRA_XATTR_VALUE_MAX) continue;
+        if (total + value.size() > format::FHEXTRA_XATTR_TOTAL_MAX) break;
+        total += value.size();
+        fb.xattrs.push_back({name, std::move(value)});
+    }
+    std::sort(fb.xattrs.begin(), fb.xattrs.end(),
+              [](const format::FileBlock::FileXattr& a, const format::FileBlock::FileXattr& b) {
+                  return a.name < b.name;
+              });
+}
 
 namespace {
 
@@ -1084,7 +1130,7 @@ bool ArchiveMutator::prepare_add_file(
     bool want_streams, bool want_acl, bool is_solid, bool direct_stream,
     const compress::FilterConfig& filter_cfg, const std::string& default_group,
     const std::string& default_user, unsigned threads, compress::SolidPacker* solid_packer,
-    bool solid_chain_member) {
+    bool solid_chain_member, bool want_xattr) {
     if (!std::filesystem::exists(src_file)) {
         return false;
     }
@@ -1601,7 +1647,11 @@ bool ArchiveMutator::prepare_add_file(
 
     if (want_acl) {
 #ifndef _WIN32
-        apply_unix_owner(fb, src_file);
+        // v1.27 fix: the owner fields were previously applied to the
+        // MOVED-FROM local block here (out.fb = std::move(fb) runs before
+        // this section), so -ow on POSIX silently dropped FHEXTRA_OWNER
+        // for regular files. Target the live prepared block.
+        apply_unix_owner(out.fb, src_file);
 #else
         std::vector<core::byte> sd;
         if (io::read_security_descriptor(src_file, sd) && !sd.empty()) {
@@ -1627,6 +1677,12 @@ bool ArchiveMutator::prepare_add_file(
 #endif
     }
 
+    // v1.27: extended-attribute capture (-ox). Applied to the live prepared
+    // block, after the owner/ACL section — see apply_xattrs for the policy.
+    if (want_xattr) {
+        apply_xattrs(out.fb, src_file);
+    }
+
     // entry_name/src_path are caller-owned identity fields, filled before the
     // call: the batch writer reads them concurrently while this prepare may
     // still be running, so writing them here would be a data race (M4).
@@ -1637,7 +1693,7 @@ bool ArchiveMutator::prepare_add_dir(const std::filesystem::path& src_dir,
                                      const std::string& arc_entry_name, PreparedAdd& out,
                                      core::uint32 times_mask, [[maybe_unused]] bool want_acl,
                                      const std::string& default_group,
-                                     const std::string& default_user) {
+                                     const std::string& default_user, bool want_xattr) {
     std::error_code ec;
     if (!std::filesystem::is_directory(src_dir, ec)) return false;
 
@@ -1659,6 +1715,9 @@ bool ArchiveMutator::prepare_add_dir(const std::filesystem::path& src_dir,
         apply_unix_owner(fb, src_dir);
     }
 #endif
+    if (want_xattr) {
+        apply_xattrs(fb, src_dir);
+    }
     apply_owner_overrides(fb, default_group, default_user);
 
     // entry_name/src_path stay caller-owned (see prepare_add_file, M4).
@@ -1738,7 +1797,7 @@ bool ArchiveMutator::prepare_add_filecopy(const std::filesystem::path& src_file,
                                           const std::string& arc_entry_name,
                                           const std::string& target_entry_name, PreparedAdd& out,
                                           core::uint32 times_mask, const std::string& default_group,
-                                          const std::string& default_user) {
+                                          const std::string& default_user, bool want_xattr) {
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
     fb.unp_size = 0;
@@ -1753,6 +1812,13 @@ bool ArchiveMutator::prepare_add_filecopy(const std::filesystem::path& src_file,
     FileTimes times;
     if (get_file_times(src_file, times)) {
         apply_file_times(fb, times, times_mask);
+    }
+    // v1.27: FILECOPY refs capture their own source's extended attributes
+    // (a materialized reference is a separate inode at extraction — plan
+    // §1.3; unlike hardlinks, which share the master's inode and carry no
+    // records).
+    if (want_xattr) {
+        apply_xattrs(fb, src_file);
     }
     apply_owner_overrides(fb, default_group, default_user);
     out.fb = std::move(fb);

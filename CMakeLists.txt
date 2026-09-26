@@ -37,6 +37,7 @@ set(OPENRAR_CORE_SOURCES
     src/io/file_stream.cpp
     src/io/path_util.cpp
     src/io/win32_meta.cpp
+    src/io/posix_xattr.cpp
     src/io/containment.cpp
     src/io/extraction_journal.cpp
     src/io/mapped_file.cpp

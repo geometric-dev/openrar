@@ -446,9 +446,9 @@ void test_cli_help_switch_parity() {
     assert(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "payload.txt"));
 
     const char* switches[] = {
-        "-ed", "-ep",  "-ep1",  "-ep2", "-ep3", "-ol",      "-ol-",      "-os",  "-ow", "-plain",
-        "-q",  "-r",   "-r-",   "-s",   "-sfx", "-y",       "-kb",       "-o+",  "-o-", "-vp",
-        "-m3", "-mt1", "-md1m", "-tsm", "-v1k", "-psecret", "-hpsecret", "-rr3",
+        "-ed", "-ep", "-ep1", "-ep2",  "-ep3", "-ol",  "-ol-",     "-os",       "-ow",  "-plain",
+        "-ox", "-q",  "-r",   "-r-",   "-s",   "-sfx", "-y",       "-kb",       "-o+",  "-o-",
+        "-vp", "-m3", "-mt1", "-md1m", "-tsm", "-v1k", "-psecret", "-hpsecret", "-rr3",
     };
     for (const char* sw : switches) {
         std::string cmd =
