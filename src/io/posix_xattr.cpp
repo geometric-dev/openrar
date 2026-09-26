@@ -10,17 +10,18 @@ namespace openrar::io {
 
 namespace {
 
-// The l-variant signatures differ between Linux (no options parameter) and
-// macOS (position + options parameters) — one call site per syscall.
+// The no-follow call shapes differ: Linux exposes the l-variants directly;
+// macOS gates those declarations behind _DARWIN_C_SOURCE, so it uses the
+// canonical option-flag API (XATTR_NOFOLLOW == the l- semantics).
 #if defined(__APPLE__)
 ssize_t llist(const std::filesystem::path& p, char* buf, size_t size) {
-    return llistxattr(p.c_str(), buf, size, 0);
+    return listxattr(p.c_str(), buf, size, XATTR_NOFOLLOW);
 }
 ssize_t lget(const std::filesystem::path& p, const char* name, void* buf, size_t size) {
-    return lgetxattr(p.c_str(), name, buf, size, 0, 0);
+    return getxattr(p.c_str(), name, buf, size, 0, XATTR_NOFOLLOW);
 }
 int lset(const std::filesystem::path& p, const char* name, const void* buf, size_t size) {
-    return lsetxattr(p.c_str(), name, buf, size, 0, 0);
+    return setxattr(p.c_str(), name, buf, size, 0, XATTR_NOFOLLOW);
 }
 #else
 ssize_t llist(const std::filesystem::path& p, char* buf, size_t size) {
