@@ -113,6 +113,16 @@ public:
     void set_extract_symlinks(bool es) { extract_symlinks_ = es; }
     bool extract_symlinks() const { return extract_symlinks_; }
 
+    // v1.26 M3 (security-arch §4.4 reconciliation): absurd archive mtimes
+    // clamp to these bounds when file/dir times are applied — the v1.24
+    // bounds helpers finally wired into time application. Defaults:
+    // 1970-01-01 .. 3000-01-01.
+    void set_mtime_bounds(const MtimeBounds& bounds) { mtime_bounds_ = bounds; }
+    // True when the MOST RECENT extract_entry call clamped a timestamp
+    // (file commit or deferred dir-meta build). The CLI surfaces it as the
+    // timestamp_clamped security flag plus a report line.
+    bool last_mtime_clamped() const { return last_mtime_clamped_; }
+
     // v1.24 plan §7.1: --preserve-suid admin opt-in — when false (default),
     // archived POSIX modes lose their SUID/SGID/sticky bits.
     void set_preserve_suid(bool ps) { preserve_suid_ = ps; }
@@ -324,6 +334,10 @@ private:
     // links enabled, absolute/escaping links are rejected and every regular
     // file write still goes through the containment walk.
     bool extract_symlinks_{false};
+
+    // v1.26 M3: timestamp clamping bounds + the per-entry clamp flag.
+    MtimeBounds mtime_bounds_{};
+    bool last_mtime_clamped_{false};
 
     // Session-scoped link registry (v1.24 plan §6.3): absolute normalized
     // paths of files created by THIS extraction session. Hardlink entries
