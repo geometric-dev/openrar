@@ -72,6 +72,71 @@ bool parse_part_number(const std::filesystem::path& p, long& num) {
 }
 
 constexpr size_t kStreamChunk = 64 * 1024; // stored/decrypt slice (multiple of 16)
+
+// v1.26 M3 (security-arch §4.4): the entry's archived mtime as unix seconds.
+// Precedence matches the deferred dir-meta builder: FHEXTRA_HTIME first,
+// then the plain unix field, then a Windows FILETIME conversion. A zero
+// stamp means "unset" on every path (a real 1970-01-01 00:00:00 UTC stamp
+// is indistinguishable from unset — same convention the builder shipped
+// with; the field cannot carry it).
+bool entry_mtime_unix(const format::FileBlock& h, core::int64& out_unix) {
+    if (h.htime_is_unix && h.htime_mtime_unix != 0) {
+        out_unix = static_cast<core::int64>(h.htime_mtime_unix);
+        return true;
+    }
+    if (h.utime_unix != 0) {
+        out_unix = static_cast<core::int64>(h.utime_unix);
+        return true;
+    }
+    if (h.mtime_win != 0) {
+        out_unix = static_cast<core::int64>(h.mtime_win / 10000000LL) - 11644473600LL;
+        return true;
+    }
+    return false;
+}
+
+// Best-effort mtime application to the extraction temp before its commit
+// rename (rename preserves it; the containment handle stays the only
+// writer). Used for regular files — directories go through the deferred
+// bottom-up path.
+bool set_file_mtime(const std::filesystem::path& p, core::int64 unix_sec) {
+#ifdef _WIN32
+    const long long ft100 = (unix_sec + 11644473600LL) * 10000000LL;
+    ULARGE_INTEGER ul;
+    ul.QuadPart = static_cast<core::uint64>(ft100);
+    FILETIME ft;
+    ft.dwLowDateTime = ul.LowPart;
+    ft.dwHighDateTime = ul.HighPart;
+    HANDLE h = CreateFileW(p.wstring().c_str(), FILE_WRITE_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    const BOOL ok = SetFileTime(h, nullptr, nullptr, &ft);
+    CloseHandle(h);
+    return ok != FALSE;
+#else
+    struct timespec times[2];
+    times[0].tv_sec = 0;
+    times[0].tv_nsec = UTIME_OMIT; // atime untouched
+    times[1].tv_sec = static_cast<time_t>(unix_sec);
+    times[1].tv_nsec = 0;
+    return ::utimensat(AT_FDCWD, p.c_str(), times, AT_SYMLINK_NOFOLLOW) == 0;
+#endif
+}
+
+// v1.26 M3: clamp the entry's archived mtime to `bounds` and apply it to the
+// extraction temp before commit. Best-effort; a clamp surfaces through
+// `clamped_flag` (the reader's last_mtime_clamped_).
+void apply_commit_mtime(const format::FileBlock& header, const MtimeBounds& bounds,
+                        bool& clamped_flag, const std::filesystem::path& temp_path) {
+    core::int64 raw = 0;
+    if (!entry_mtime_unix(header, raw)) return;
+    if (mtime_out_of_bounds(raw, bounds)) {
+        clamped_flag = true;
+        raw = clamp_mtime(raw, bounds);
+    }
+    set_file_mtime(temp_path, raw);
+}
 } // namespace
 
 io::ExtractionSession& ArchiveReader::ensure_extraction_session() {
@@ -2260,6 +2325,8 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
     // from a previous call linger and mislead a caller that retries this
     // reader instance with the correct password.
     bad_password_ = false;
+    // v1.26 M3: the clamp flag describes THIS entry's time application.
+    last_mtime_clamped_ = false;
 
     // Directory record (FHFL_DIRECTORY, no data area): materialize the
     // directory itself so empty directories survive extraction. Best-effort —
@@ -2285,6 +2352,9 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             }
             // Times: FHEXTRA_HTIME (what the mutator writes) first, then
             // the plain unix field; a Windows FILETIME converts over.
+            // v1.26 M3: out-of-bounds stamps clamp here (the deferred
+            // application applies the clamped value) and surface through
+            // last_mtime_clamped_.
             if (entry.header.htime_is_unix && entry.header.htime_mtime_unix != 0) {
                 meta.has_mtime = true;
                 meta.mtime_unix = entry.header.htime_mtime_unix;
@@ -2295,6 +2365,13 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
                 meta.has_mtime = true;
                 meta.mtime_unix =
                     static_cast<core::uint64>(entry.header.mtime_win / 10000000LL - 11644473600LL);
+            }
+            if (meta.has_mtime) {
+                const core::int64 raw = static_cast<core::int64>(meta.mtime_unix);
+                if (mtime_out_of_bounds(raw, mtime_bounds_)) {
+                    last_mtime_clamped_ = true;
+                    meta.mtime_unix = static_cast<core::uint64>(clamp_mtime(raw, mtime_bounds_));
+                }
             }
             if (meta.has_mode || meta.has_mtime) pending_dir_meta_.push_back(std::move(meta));
         }
@@ -2526,6 +2603,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
         } else if (m_use_crc && m_crc.get() != entry.header.data_crc32) {
             return fail();
         }
+        apply_commit_mtime(entry.header, mtime_bounds_, last_mtime_clamped_, writer.temp_path());
         if (!writer.commit()) return fail();
         return true;
     }
@@ -2614,6 +2692,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
         } else if (v_use_crc && v_crc.get() != entry.header.data_crc32) {
             return fail();
         }
+        apply_commit_mtime(entry.header, mtime_bounds_, last_mtime_clamped_, writer.temp_path());
         if (!writer.commit()) return fail();
         return true;
     }
@@ -2660,6 +2739,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
         return fail();
     }
 
+    apply_commit_mtime(entry.header, mtime_bounds_, last_mtime_clamped_, writer.temp_path());
     if (!writer.commit()) return fail();
     return true;
 }
@@ -2740,6 +2820,7 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
         } else if (use_crc && crc.get() != entry.header.data_crc32) {
             return fail();
         }
+        apply_commit_mtime(entry.header, mtime_bounds_, last_mtime_clamped_, writer.temp_path());
         if (!writer.commit()) return fail();
         return true;
     }
@@ -2773,6 +2854,7 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
         // keep_broken committed it.
         return fail();
     }
+    apply_commit_mtime(entry.header, mtime_bounds_, last_mtime_clamped_, writer.temp_path());
     if (!writer.commit()) return fail();
     return true;
 }

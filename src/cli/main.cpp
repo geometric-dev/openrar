@@ -2107,6 +2107,10 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     // report.entries index of each job (M4): one pending entry per job,
     // updated by whichever loop processes the job.
     std::vector<size_t> job_rep_idx;
+    // v1.26 M3: per-job timestamp-clamp outcome, read from the reader right
+    // after each successful extract_entry (slot readers are exclusive per
+    // job, so the write is race-free; report-loop reads sync via flags.wait).
+    std::vector<char> job_ts_clamped;
     bool duplicate_targets = false;
     {
         std::set<std::string> seen_targets;
@@ -2408,6 +2412,19 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
 #endif
     };
 
+    // v1.26 M3: jobs are final — size the clamp flags and define the shared
+    // surfacing (JSON security flag + report line; the JSON summary owns
+    // stdout, so the line goes to stderr).
+    job_ts_clamped.assign(extract_jobs.size(), 0);
+    auto note_ts_clamp = [&](size_t job_idx, archive::ExtractionReportEntry& rep) {
+        if (!job_ts_clamped[job_idx]) return;
+        rep.security_flags.push_back("timestamp_clamped");
+        if (!g_quiet_mode) {
+            std::cerr << "W: timestamp out of bounds, clamped: "
+                      << extract_jobs[job_idx].display_name << "\n";
+        }
+    };
+
     if (slots.readers.empty()) {
         size_t idx = 0;
         for (size_t job_i = 0; job_i < extract_jobs.size(); ++job_i) {
@@ -2464,6 +2481,8 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     (g_json_stdout_only ? std::cerr : std::cout) << "OK\n";
                 restore_children(reader, job);
                 rep.status = "extracted";
+                if (reader.last_mtime_clamped()) job_ts_clamped[job_i] = 1;
+                note_ts_clamp(job_i, rep);
             } else {
                 if (!g_quiet_mode && !is_vt_supported()) {
                     if (reader.has_bad_password()) {
@@ -2521,7 +2540,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
 
         for (size_t idx : phase1_indices) {
             pool.submit([&slots, &flags, &extract_jobs, &badpw_flag, &restore_children,
-                         &phase1_remaining, &phase1_cv, &phase1_mu, idx] {
+                         &phase1_remaining, &phase1_cv, &phase1_mu, &job_ts_clamped, idx] {
                 bool okv = false;
                 size_t s = 0;
                 bool acquired = false;
@@ -2533,6 +2552,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                                                           slots.readers[s]->password());
                     if (okv) {
                         restore_children(*slots.readers[s], extract_jobs[idx]);
+                        if (slots.readers[s]->last_mtime_clamped()) job_ts_clamped[idx] = 1;
                     }
                     if (!okv && slots.readers[s]->has_bad_password()) badpw_flag.store(1);
                 } catch (...) {
@@ -2568,6 +2588,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                                                       slots.readers[0]->password());
                 if (okv) {
                     restore_children(*slots.readers[0], extract_jobs[idx]);
+                    if (slots.readers[0]->last_mtime_clamped()) job_ts_clamped[idx] = 1;
                 }
                 if (!okv && slots.readers[0]->has_bad_password()) badpw_flag.store(1);
             } catch (...) {
@@ -2590,6 +2611,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                                                       slots.readers[0]->password());
                 if (okv) {
                     restore_children(*slots.readers[0], extract_jobs[idx]);
+                    if (slots.readers[0]->last_mtime_clamped()) job_ts_clamped[idx] = 1;
                 }
                 if (!okv && slots.readers[0]->has_bad_password()) badpw_flag.store(1);
             } catch (...) {
@@ -2624,6 +2646,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                 rep.reason =
                     badpw_flag.load() ? "incorrect password / BADPSW" : "extraction failed";
             }
+            if (okv) note_ts_clamp(i, rep);
             if (!okv) any_failed = true;
         }
     }

@@ -15,6 +15,12 @@
 #include <string>
 #include <vector>
 #include "../../src/cli/progress.hpp"
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <time.h>
+#endif
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #endif
@@ -1409,6 +1415,129 @@ static void test_cdc_degenerate_inputs() {
     std::cout << "[PASS] cdc_degenerate_inputs (plan test 9)\n";
 }
 
+// v1.26 M3 helpers: set/read a file's mtime as unix seconds (the test needs
+// stamps outside std::filesystem::file_time_type's comfortable range).
+static bool test_set_mtime_unix(const std::filesystem::path& p, long long unix_sec) {
+#ifdef _WIN32
+    const long long ft100 = (unix_sec + 11644473600LL) * 10000000LL;
+    ULARGE_INTEGER ul;
+    ul.QuadPart = static_cast<unsigned long long>(ft100);
+    FILETIME ft;
+    ft.dwLowDateTime = ul.LowPart;
+    ft.dwHighDateTime = ul.HighPart;
+    HANDLE h = CreateFileW(p.wstring().c_str(), FILE_WRITE_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    const BOOL ok = SetFileTime(h, nullptr, nullptr, &ft);
+    CloseHandle(h);
+    return ok != FALSE;
+#else
+    struct timespec times[2];
+    times[0].tv_sec = 0;
+    times[0].tv_nsec = UTIME_OMIT;
+    times[1].tv_sec = static_cast<time_t>(unix_sec);
+    times[1].tv_nsec = 0;
+    return ::utimensat(AT_FDCWD, p.c_str(), times, AT_SYMLINK_NOFOLLOW) == 0;
+#endif
+}
+
+static long long test_read_mtime_unix(const std::filesystem::path& p) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &fa)) return -1;
+    const ULARGE_INTEGER ul{fa.ftLastWriteTime.dwLowDateTime, fa.ftLastWriteTime.dwHighDateTime};
+    return static_cast<long long>(ul.QuadPart / 10000000ULL) - 11644473600LL;
+#else
+    struct stat st;
+    if (::stat(p.c_str(), &st) != 0) return -1;
+    return static_cast<long long>(st.st_mtime);
+#endif
+}
+
+// Plan test 8 (v1.26 §6): out-of-bounds mtimes clamp to MtimeBounds and
+// surface as the timestamp_clamped security flag in the JSON summary plus a
+// report line. Also pins the parity-gap fix this wiring carries: extracted
+// FILES now restore the archived mtime exactly (only directories did
+// before). The absurd stamp is crafted directly into the header block as a
+// pre-1970 Windows FILETIME — mtime_win is the only 64-bit mtime field, so
+// this exercises the clamp on every platform without 32-bit truncation.
+static void test_timestamp_clamped_flag() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_ts_clamp";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    const std::string ok_text = "in-bounds mtime payload";
+    const std::string bad_text = "pre-1970 mtime payload";
+    fs::path ok_file = temp_dir / "ok.bin";
+    fs::path bad_file = temp_dir / "bad.bin";
+    {
+        std::ofstream f(ok_file, std::ios::binary);
+        f << ok_text;
+        std::ofstream g(bad_file, std::ios::binary);
+        g << bad_text;
+    }
+    // 2020-01-01: comfortably inside [1970, 3000].
+    assert(test_set_mtime_unix(ok_file, 1577836800));
+    const long long ok_mtime = test_read_mtime_unix(ok_file);
+    assert(ok_mtime == 1577836800);
+
+    // Build the archive in-process for exact header-field control:
+    // bad.bin carries ONLY a pre-1970 mtime_win (utime/htime zeroed).
+    fs::path arc = temp_dir / "ts.rar";
+    {
+        std::vector<openrar::archive::ArchiveMutator::PreparedAdd> prepared(2);
+        assert(openrar::archive::ArchiveMutator::prepare_add_file(ok_file, "ok.bin", 0, "",
+                                                                  prepared[0]));
+        assert(openrar::archive::ArchiveMutator::prepare_add_file(bad_file, "bad.bin", 0, "",
+                                                                  prepared[1]));
+        prepared[1].fb.utime_unix = 0;
+        prepared[1].fb.htime_is_unix = false;
+        prepared[1].fb.htime_mtime_unix = 0;
+        // Year 1960: unix -315619200 -> FILETIME 100ns ticks.
+        const long long pre1970_unix = -315619200LL;
+        prepared[1].fb.mtime_win =
+            static_cast<unsigned long long>((pre1970_unix + 11644473600LL) * 10000000LL);
+        assert(openrar::archive::ArchiveMutator::write_batch_add(arc, prepared, {}, "", false, {},
+                                                                 false));
+    }
+
+    // Extract with the JSON summary; stderr carries the report line.
+    fs::path out_dir = temp_dir / "out";
+    fs::path json_path = temp_dir / "summary.json";
+    fs::path err_path = temp_dir / "stderr.txt";
+    std::string cmd = get_cli_path() + " x --json-summary=" + json_path.string() + " " +
+                      arc.string() + " " + out_dir.string() + " 2> " + err_path.string();
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    // The out-of-bounds stamp clamped to the bounds minimum (1970-01-01).
+    assert(test_read_mtime_unix(out_dir / "bad.bin") == 0);
+    // The in-bounds stamp restored exactly (file mtime parity fix).
+    assert(test_read_mtime_unix(out_dir / "ok.bin") == ok_mtime);
+
+    // JSON summary flags the clamped entry; stderr carries the report line.
+    {
+        std::ifstream j(json_path, std::ios::binary);
+        assert(j);
+        std::string json_text((std::istreambuf_iterator<char>(j)),
+                              std::istreambuf_iterator<char>());
+        assert(json_text.find("timestamp_clamped") != std::string::npos);
+    }
+    {
+        std::ifstream e(err_path, std::ios::binary);
+        assert(e);
+        std::string err_text((std::istreambuf_iterator<char>(e)), std::istreambuf_iterator<char>());
+        assert(err_text.find("timestamp out of bounds, clamped") != std::string::npos);
+        assert(err_text.find("bad.bin") != std::string::npos);
+    }
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] timestamp_clamped_flag (plan test 8)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -1443,6 +1572,7 @@ int main() {
     test_cdc_index_cap_falls_back_reported();
     test_cdc_reduction_report_three_numbers();
     test_cdc_degenerate_inputs();
+    test_timestamp_clamped_flag();
     test_sanitize_for_display();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
