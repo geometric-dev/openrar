@@ -10,9 +10,19 @@
 > scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
 > v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
-## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 / v1.25.0)
+## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 / v1.25.0 / v1.26.0)
 
-- **v1.25.0 (current):** memory-mapped read engine (re-scoped) shipped —
+- **v1.26.0 (current):** CDC-driven solid-chain packing shipped — the
+  Gate-0-cleared Design A (docs/v1.26-pre-analysis.md §5): `-cdc`
+  affinity ordering over ordinary RAR5 solid compression, `-oi` creation
+  side (the round-2 critical finding — the README row is now true), and
+  the encoder-side solid window carry that finally lets the write side
+  realize cross-file compression. Rolled-in M-items landed: timestamp
+  clamping wired (file mtime restoration was a found parity gap) and
+  the caps/RR cross-checks. Nine named negative tests green; oracle
+  Track 9 (WinRAR/UnRAR read CDC-packed and -oi archives). Plan:
+  docs/v1.26-implementation-plan.md (challenge rounds 1+2 applied).
+- **v1.25.0:** memory-mapped read engine (re-scoped) shipped —
   io::MappedFile with truncation-aware pre-flight and fault-guarded reads
   (Windows SEH leaf; POSIX no-signal-handler posture), io::ReadSource seam
   (one scan code path for both engines), select_volume_source decision
@@ -240,25 +250,28 @@ architect review: docs/mmap-v1.25-design-review.md.
 
 ---
 
-## v1.26.0 — Content-Defined Chunking (format-legality gated)
+## v1.26.0 — Content-Defined Chunking (format-legality gated) ✅ SHIPPED
 
 Gate 0 format-legality review COMPLETE (docs/v1.26-pre-analysis.md,
-architect-challenge conditional approval): chunk-store and cross-archive
-increment designs rejected as illegal RAR5; the surviving design is
-**CDC-driven solid-chain packing** — ordinary RAR5 solid compression with
-packer-side ordering only, reduction bounded by the LZ window, measured
-against a plain-solid same-window baseline (three-number gate). Filters
-disabled/bounded per CDC chunk (same invariant class as `-mt` boundaries);
-bounded fingerprint index with honest memory model fed to
-`compress_plan.hpp`; index-cap fallback = original order, reported.
-Cross-check: cumulative output caps from `ExtractionLimits` apply to
-dedup-expanded streams (SECURITY_ARCHITECTURE §5.4).
+architect-challenge conditional approval + round-2 critical finding on
+the -oi creation side): chunk-store and cross-archive increment designs
+rejected as illegal RAR5; the surviving design — **CDC-driven
+solid-chain packing** — shipped with the encoder-side solid window carry
+(the write side now mirrors the reader's carried-window decode), the
+fingerprint-index cap with reported original-order fallback, and the
+three-number reduction gate (plan test 4: store 5,243,438 /
+plain-solid 4,226,802 / CDC-packed 3,672,842 on the engineered corpus).
+Filters stay scoped to chain heads (detection fires only at a fresh
+window); FILECOPY references break runs around themselves. All nine
+named negative tests green (plan §6); RR repair verified on reordered
+carried-window sets (R3 closed); caps cross-check pinned (§5.4).
 
 **Rolled-in M-items** (from the v1.24/v1.25 security-arch reconciliation):
-- **Timestamp clamping wiring**: apply `MtimeBounds`/`clamp_mtime`
-  (extraction_limits.hpp — shipped v1.24) to file/dir time application;
-  clamps feed skip-with-report + the `timestamp_clamped` JSON flag
-  (SECURITY_ARCHITECTURE §4.4 reconciliation).
+- **Timestamp clamping wiring**: SHIPPED — `MtimeBounds`/`clamp_mtime`
+  applied at file commit (the wiring surfaced and closed a parity gap:
+  file mtimes were never restored, only directory metadata was) and in
+  the deferred dir-meta build; clamps feed the report line + the
+  `timestamp_clamped` JSON flag (SECURITY_ARCHITECTURE §4.4).
 - **RR vintage 0x11D gap logged**: the RAR 7.0-style recovery-record
   vintage remains unclaimed (parity gap; see README "Not yet") — candidate
   for a later recovery arc, not v1.26.
@@ -348,7 +361,7 @@ C# NuGet (`OpenRAR.NET`).
 | **v1.23.0** | SFX scripting | Full §6 consent/runtime policy | Security design review; sandbox e2e |
 | **v1.24.0** | Extraction containment & integrity ✅ | §3/§4 syscall containment, atomic extraction, collisions, JSON summary | TOCTOU fault injection ✅; collision matrix ✅ |
 | **v1.25.0** | mmap read engine (listing/random-read) ✅ | §5.2 normative no-mmap-for-extraction | Limits-not-bypassable ✅; fault injection ✅ |
-| **v1.26.0** | CDC deduplication | Cumulative caps on dedup streams | **Format-legality gate 0** |
+| **v1.26.0** | CDC deduplication ✅ | Cumulative caps on dedup streams ✅ | Format-legality gate 0 ✅ |
 | **v1.27.0** | xattr / quarantine / MotW | §4.3 MotW local-generation; ownership policy | Legality gate; multi-OS matrix |
 | **v1.28.0** | TUI + benchmark | §7.1 terminal-injection gate | Non-TTY degradation; reproducibility |
 | **v1.29.0** | Transcoder (ZIP/TAR/GZIP) | ZIP CD/LF hardening; legacy-VM drop; name escaping | Bit-for-bit equivalence |
@@ -387,8 +400,12 @@ C# NuGet (`OpenRAR.NET`).
    record validation.
 3. **v1.23 SFX auto-execution** — security-sensitive by construction;
    guardrails are scope, not polish.
-4. **v1.26 CDC format legality** — the flagship reduction claim may not
-   survive the legality gate in its original non-solid form.
+4. **v1.26 CDC format legality** — RESOLVED. The legality gate rejected
+   the chunk-store and cross-archive designs outright; the surviving
+   Design A shipped with its reduction claim restated (window-bounded,
+   three-number gate, per-corpus measurement). The round-2 challenge
+   additionally caught that the `-oi` FILECOPY creation side had never
+   existed — the arc built it rather than shipping the claim.
 5. **v1.30 sandboxed worker** — three OS sandbox models is enterprise-scale
    work; scope-kill criteria should be agreed at v1.29 review.
 6. **Environment-dependent tests** — macOS jetsam / allocator-lazy-commit
