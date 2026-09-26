@@ -149,6 +149,45 @@ int main() {
         std::cout << "[PASS] cdc_chunk_boundary_fuzz: locality holds (16 flips)\n";
     }
 
+    // Streaming equivalence (v1.26 M2b): the fingerprint pass feeds files
+    // block-wise through CdcStreamChunker, so it must produce the exact
+    // chunk sequence (offsets, lengths, hashes) of whole-buffer chunk()
+    // for every block partition. Cut rules live only in the streamer —
+    // this gate is what makes the delegation honest.
+    {
+        for (unsigned seed : {1u, 42u, 777u}) {
+            const std::string data = make_random_data((3 << 20) + 12345, seed);
+            std::vector<compress::CdcChunk> whole;
+            chunker.chunk(reinterpret_cast<const core::byte*>(data.data()), data.size(), whole);
+
+            for (size_t block : {size_t(1), size_t(7), size_t(1000), size_t(1) << 10,
+                                 size_t(1) << 16, size_t(compress::CdcChunker::kMinChunk),
+                                 size_t(compress::CdcChunker::kMinChunk) + 1,
+                                 size_t(compress::CdcChunker::kAvgChunk) - 1,
+                                 size_t(compress::CdcChunker::kAvgChunk),
+                                 size_t(compress::CdcChunker::kAvgChunk) + 1,
+                                 size_t(compress::CdcChunker::kMaxChunk) - 1,
+                                 size_t(compress::CdcChunker::kMaxChunk),
+                                 size_t(compress::CdcChunker::kMaxChunk) + 123}) {
+                compress::CdcStreamChunker stream(chunker);
+                std::vector<compress::CdcChunk> streamed;
+                for (size_t off = 0; off < data.size(); off += block) {
+                    const size_t take = block < data.size() - off ? block : data.size() - off;
+                    stream.feed(reinterpret_cast<const core::byte*>(data.data()) + off, take,
+                                streamed);
+                }
+                stream.finish(streamed);
+                assert(streamed.size() == whole.size());
+                for (size_t i = 0; i < whole.size(); ++i) {
+                    assert(streamed[i].offset == whole[i].offset);
+                    assert(streamed[i].length == whole[i].length);
+                    assert(streamed[i].hash == whole[i].hash);
+                }
+            }
+        }
+        std::cout << "[PASS] streaming equivalence (feed partitions x3 seeds)\n";
+    }
+
     std::cout << "All cdc_chunker_tests passed.\n";
     return 0;
 }
