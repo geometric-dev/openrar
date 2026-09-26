@@ -28,6 +28,7 @@
 | **Extraction containment** | v1.24: syscall-level path containment (write-through-handle), atomic extraction with journal manifests, collision rejection, `--json-summary` |
 | **Mapped read engine** | v1.25: memory-mapped listing/header-scan (`--no-mmap` forces buffered; extraction always buffered) |
 | **Archive mutation** (`d`/`u`/`f`/`m`/`k`) | delete, update, freshen, move, lock — QO/locator stripped on mutation |
+| **CDC packing** (`-cdc`) | v1.26: content-defined chunking drives solid-chain ordering (window-bounded reduction, measured against a plain-solid baseline) — ordinary RAR5 solid streams, WinRAR/UnRAR-verified |
 | **Filter switches** (`-mc`) | `-mcE`/`-mcD`/`-mcL`/`-mcX` parsed and forwarded; DELTA/E8 applied by decoder |
 | **File versioning** (`-ver[n]`) | Versioned adds keep N versions of the same name (`FHEXTRA_VERSION`); extraction filter `-ver<idx>` |
 | **Not yet** | RAR 7.0-style recovery-record vintage (0x11D), POSIX extended attributes & MotW (`-oz` — roadmap v1.27), RAR 5.0 compression v1 streams (write-side) |
@@ -88,6 +89,7 @@ openrar a -m5 -r best.rar ./src
 | `-ep` | Strip all paths — store bare filenames. |
 | `-df` / `-dr` / `-dw` | Delete successfully archived sources: plain / to Recycle Bin / wipe (zero overwrite → truncate → temp-name → delete). `m` implies plain delete; explicit switch overrides. |
 | `-oi[0-4][:<size>]` | Identical files as references via `FILECOPY` (0 off, 1 silent, 2 list, 3 list+exit, 4 dup-list+exit; default 64 KB comparison threshold; stored as `FHEXTRA_REDIR` type 5 with no data area — the first stored copy is referenced; materializing references on extraction follows the `-ol` links opt-in). In solid archives the run breaks around reference entries. |
+| `-cdc` | CDC-driven solid-chain packing (v1.26): chunk-hash affinity ordering of solid runs + identical-file references (implies `-s` and `-oi1`; explicit `-oi0` wins). Pack-time report `cdc: logical/packed/window/flag`; the fingerprint index caps at 2M entries with an original-order fallback for the tail (reported). `-ver` and `-v` refused. |
 | `-ep1` | Strip the common base (as typed). |
 | `-ep2` | Save full path minus drive letter. |
 | `-ep3` | Full path with drive. |

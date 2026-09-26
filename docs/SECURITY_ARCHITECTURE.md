@@ -165,9 +165,10 @@ containment is enforced at the OS syscall level:
   both** UI rendering and extraction-path evaluation.
 * **Timestamps:** absurd file/directory `mtime` values are clamped to
   parameterized bounds (`MtimeBounds`, extraction_limits.hpp). **[Shipped
-  v1.24: the bounds helpers; wiring into file/dir time application rolls
-  in with the ROADMAP v1.26 M-item]** clamps feed skip-with-report when
-  applied.
+  v1.26: wired into file-commit and deferred dir-meta application — the
+  wiring also surfaced and closed a parity gap, files never restored their
+  archived mtime at all — clamps feed the report line and the
+  `timestamp_clamped` JSON flag.]**
 
 ## 5. Memory Robustness, Parser Security & Limits
 
