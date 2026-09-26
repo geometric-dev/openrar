@@ -93,6 +93,100 @@ def ensure_build():
         print(out, err); return False
     return find_openrar() is not None
 
+def vint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+def craft_xattr_record(attrs):
+    """FHEXTRA_XATTR (0x08, v1.27): [Size vint][Type vint][Flags=0 vint][Count vint]
+    then per attribute [NameLen vint][Name][ValueLen vint][Value]. Crafted from
+    the spec text — the reader side must accept exactly what the spec defines."""
+    payload = vint(0) + vint(len(attrs))
+    for name, value in attrs:
+        nb = name.encode("utf-8")
+        payload += vint(len(nb)) + nb + vint(len(value)) + value
+    rec = vint(0x08) + payload  # Size covers Type onward
+    return vint(len(rec)) + rec
+
+def craft_unknown_record(rtype, payload):
+    rec = vint(rtype) + payload
+    return vint(len(rec)) + rec
+
+def test_track10_xattr(openrar, unrar, rar):
+    """Track 10 (v1.27): FHEXTRA_XATTR (0x08) records — stock readers must
+    skip unknown-to-them extra records without error (spec: "Unknown record
+    types must be skipped without error"), and the payload must extract
+    byte-identically everywhere. The archive is CRAFTED in pure python from
+    docs/spec/01-headers.md so the records exist regardless of the creating
+    platform (the -ox capture is a no-op on Windows)."""
+    print("[16/16] Track 10: FHEXTRA_XATTR records skipped by stock readers...", flush=True)
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+
+        payload = os.urandom(96 * 1024)
+        name = b"carrier.bin"
+        extra = (craft_xattr_record([("user.test", b"hello"),
+                                     ("com.apple.metadata:tag", b"t1"),
+                                     ("security.selinux", b"unconfined_u")])
+                 + craft_unknown_record(0x42, bytes([0xDE, 0xAD, 0xBE, 0xEF])))
+        file_flags = 0x0004            # FHFL_CRC32
+        header_flags = 0x0001 | 0x0002  # HFL_EXTRA | HFL_DATA
+        # Common framing: type, flags, EXTRA AREA SIZE, then PACK SIZE (the
+        # data-size vint is part of the common framing when HFL_DATA), then
+        # the file-specific fields, then the extra area last.
+        body = (vint(2) + vint(header_flags) + vint(len(extra)) + vint(len(payload))
+                + vint(file_flags)
+                + vint(len(payload))
+                + vint(0x81A4)          # unix 0100644
+                + struct.pack("<I", zlib.crc32(payload) & 0xFFFFFFFF)
+                + vint(0)               # compression info: store, algo 0, dict 0
+                + vint(1)               # host OS: unix
+                + vint(len(name)) + name
+                + extra)
+        file_hdr = vint(len(body)) + body
+        file_hdr = struct.pack("<I", zlib.crc32(file_hdr) & 0xFFFFFFFF) + file_hdr
+
+        main_body = vint(1) + vint(0) + vint(0)  # type=main, flags=0, arcflags=0
+        main_hdr = vint(len(main_body)) + main_body
+        main_hdr = struct.pack("<I", zlib.crc32(main_hdr) & 0xFFFFFFFF) + main_hdr
+
+        arc = td / "xattr_crafted.rar"
+        arc.write_bytes(bytes([0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00])
+                        + main_hdr + file_hdr + payload)
+
+        # OpenRAR: list + extract byte-identically (records parsed, not fatal).
+        out_self = td / "out_self"
+        out_self.mkdir()
+        rc, out, err = run([openrar, "x", "-y", str(arc), str(out_self) + os.sep])
+        if rc != 0:
+            print(f"  FAIL: openrar x crafted rc={rc}\n{out}\n{err}"); return False
+        dec = find_extracted(out_self, "carrier.bin")
+        if not dec or dec.read_bytes() != payload:
+            print("  FAIL: openrar payload mismatch on crafted xattr archive"); return False
+
+        # Stock oracles: skip the records without error, payload intact.
+        ref = unrar or rar
+        if ref:
+            out_ref = td / "out_ref"
+            out_ref.mkdir()
+            rc, out, err = run([ref, "x", "-y", str(arc), str(out_ref) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: {ref} x crafted rc={rc}\n{out}\n{err}"); return False
+            dec = find_extracted(out_ref, "carrier.bin")
+            if not dec or dec.read_bytes() != payload:
+                print(f"  FAIL: {ref} payload mismatch on crafted xattr archive"); return False
+            print(f"  OK: {pathlib.Path(ref).name} skips FHEXTRA_XATTR + unknown records")
+        else:
+            print("  (no local oracle — self extraction only; CI contract)")
+        return True
+
 def test_self_roundtrip(openrar):
     print("[1/14] Self-roundtrip hash...", flush=True)
     with tempfile.TemporaryDirectory() as td:
@@ -1005,6 +1099,7 @@ def main():
         (test_ctest, ()),
         (test_exit_code_parity, (openrar, unrar)),
         (test_track9_cdc_oi, (openrar, unrar, rar)),
+        (test_track10_xattr, (openrar, unrar, rar)),
     ]
 
     for fn, args in stages:

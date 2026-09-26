@@ -278,19 +278,48 @@ carried-window sets (R3 closed); caps cross-check pinned (§5.4).
 
 ---
 
-## v1.27.0 — Extended Attributes, Quarantine & MotW
+## v1.27.0 — Extended Attributes, Quarantine & MotW ✅ SHIPPED
 
-Now normatively shaped by §4.3:
-1. **MotW `-oz` policy:** zone data read exclusively from the archive file's
-   own filesystem metadata / transport context; `Zone.Identifier` content
-   **generated locally** — never parsed from archive-provided streams.
-2. POSIX `user.*`/`security.*` xattrs as a new extra-record type (format-
-   legality gate applies; graceful degradation on stock WinRAR).
-3. macOS quarantine xattr + Finder tags; resource forks deferred to 2.1.
-4. **Ownership policy normative:** setuid/setgid/sticky never restored;
-   UID/GID/name restore remains explicit opt-in (`-ow`/`-og`/euid==0).
-5. Prerequisites from v1.21.2 (`:$DATA` rejection, CRC-drop warnings)
-   already landed — build on them.
+Gate 0 format-legality review COMPLETE (docs/v1.27-pre-analysis.md §7,
+conditional approval + ten directives): the 0x08 record type was verified
+free against unrar headers5.hpp and bitplane rar-research, and the
+unknown-record skip contract is spec-verbatim. Landed:
+
+1. **MotW `-oz` policy (default ON, `-oz-` disables):** zone data read
+   exclusively from the archive file's own filesystem metadata (Windows
+   Zone.Identifier ADS; macOS com.apple.quarantine); `Zone.Identifier`
+   content **generated locally** per extracted file
+   (`[ZoneTransfer]
+ZoneId=N
+` — HostUrl/ReferrerUrl never travel);
+   never strips or downgrades an existing mark. The shipped
+   Zone.Identifier-via-`-os` residue was CLOSED: `-os` capture excludes
+   zone streams, extraction never restores archive-provided zone content
+   from any producer (WinRAR's "restore if more secure" algorithm is a
+   documented, deliberate divergence — pre-analysis §1.6).
+2. **POSIX/macOS xattrs as `FHEXTRA_XATTR` (0x08)** — file-only record,
+   namespace allow-lists at capture (`-ox`) and restore (user.*/metadata.*
+   by default; security.*/trusted.* behind `--xattr-security`, the
+   --preserve-suid model); malformed records fall back to verbatim
+   unknown-extra capture; stock WinRAR/UnRAR skip the record without error
+   (interop Track 10, crafted-from-spec archive verified against the
+   UnRAR oracle). Also fixed en route: a latent POSIX bug where `-ow`
+   owner capture wrote into the moved-from prepared block (FHEXTRA_OWNER
+   silently dropped for regular files), and the §5.4 gap where FILECOPY
+   materialization bypassed the cumulative extraction byte caps.
+3. macOS quarantine xattr + Finder tags: quarantine = provenance (propagated
+   per item 1, never stored); Finder tags ride `com.apple.metadata.*` under
+   `-ox`; resource forks + FinderInfo deferred to 2.1.
+4. **Ownership policy (normative §4.3 — the earlier "never restored" bullet
+   was stale):** archived POSIX modes restore umask-bounded with
+   SUID/SGID/sticky masked unless the explicit `--preserve-suid` opt-in
+   (shipped v1.24, `sanitize_extract_mode`); UID/GID/name restore remains
+   explicit opt-in (`-ow`/`-og`/euid==0). Nothing re-implemented in v1.27.
+5. Rollover folded in: FILECOPY caps debit (§5.4 parity with the EXDEV
+   hardlink fallback), `-oi3`/`-oi4` exit-no-archive dispatch hygiene.
+   Deferred: FILECOPY default-materialization policy (needs its own
+   review), bench CDC corpus entry, RR single-erasure + vintage 0x11D,
+   parallel fingerprint pass, multi-volume no-data-area entries.
 
 ---
 

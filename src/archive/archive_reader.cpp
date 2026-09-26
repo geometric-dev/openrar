@@ -2602,6 +2602,13 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             std::error_code ec2;
             if (!std::filesystem::exists(src, ec2)) return true;
             if (has_symlink_parent(src)) return true;
+            // v1.27 M5 (5.4 consistency): FILECOPY materialization debits the
+            // cumulative byte caps exactly like the hardlink EXDEV fallback —
+            // an -oi-heavy archive can no longer materialize unbounded bytes
+            // outside LimitState accounting.
+            const uint64_t copy_size = std::filesystem::file_size(src, ec2);
+            if (ec2) return false;
+            if (!debit_bytes(copy_size, limits, state)) return false;
             std::filesystem::copy_file(src, dest_path,
                                        std::filesystem::copy_options::overwrite_existing, ec2);
             if (ec2) return false;
