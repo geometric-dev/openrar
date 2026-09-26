@@ -106,4 +106,29 @@ void StreamEncoder::reset() {
     total_in_ = 0;
 }
 
+bool StreamEncoder::pack_solid_begin(bool continue_window) {
+    if (method_ == 0) return false; // stored entries never join the session
+    // Per-file stream flags reset; the packer decides window carry vs. reset
+    // (begin_stream validates that a carried session is actually available).
+    finished_ = false;
+    aborted_ = false;
+    total_in_ = 0;
+    output_.clear();
+    scratch_.clear();
+    if (!packer_.begin_stream(method_, win_size_, continue_window)) return false;
+    packer_.set_filter_config(filter_cfg_);
+    packer_.set_memory_dest(&scratch_);
+    started_ = true;
+    return true;
+}
+
+bool StreamEncoder::pack_solid_finish() {
+    if (!started_ || finished_) return false;
+    if (packer_.finish_stream() < 0) return false;
+    drain();
+    if (aborted_) return false;
+    finished_ = true;
+    return true;
+}
+
 } // namespace openrar::compress
