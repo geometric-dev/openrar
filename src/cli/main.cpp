@@ -15,6 +15,7 @@
 #include "../recovery/recovery_record.hpp"
 #include "../recovery/recovery_writer.hpp"
 #include "../io/win32_meta.hpp"
+#include "../io/motw.hpp"
 #include "progress.hpp"
 #include "thread_pool.hpp"
 #include "../core/cpu.hpp"
@@ -1966,7 +1967,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     const std::vector<std::string>& exclude_patterns = {}, int extract_version = -1,
                     const std::vector<std::string>& file_patterns = {},
                     [[maybe_unused]] bool restore_owner = false, bool preserve_suid = false,
-                    bool use_mmap = true, bool xattr_security = false) {
+                    bool use_mmap = true, bool xattr_security = false, bool propagate_motw = true) {
     // --json-summary (v1.24 M4, plan §5): stdout purity + machine report.
     if (g_json_stdout_only) set_prog_out(std::cerr);
     archive::ExtractionReport report;
@@ -2112,6 +2113,11 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     // after each successful extract_entry (slot readers are exclusive per
     // job, so the write is race-free; report-loop reads sync via flags.wait).
     std::vector<char> job_ts_clamped;
+    // v1.27 M4: per-job MotW/zone outcomes (same race model as the clamp
+    // flags: slot readers are exclusive per job; report-loop reads sync via
+    // flags.wait).
+    std::vector<char> job_motw_flag;
+    std::vector<char> job_zone_skip_flag;
     bool duplicate_targets = false;
     {
         std::set<std::string> seen_targets;
@@ -2333,10 +2339,36 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     bool any_failed = false;
     std::atomic<int> badpw_flag{0};
 
-    auto restore_children = [restore_owner, preserve_suid](archive::ArchiveReader& r,
-                                                           const ExtractJob& j) {
+    // v1.27 M4: MotW provenance — probed ONCE from the archive file's own
+    // filesystem metadata (SECURITY_ARCHITECTURE 4.3: no path heuristics,
+    // no browser data). An unmarked archive yields motw.marked == false and
+    // -oz- disables the whole policy.
+    io::MotwProvenance motw;
+    if (propagate_motw) motw = io::probe_archive_motw(arc_path);
+
+    struct ChildRestoreResult {
+        int zone_streams_skipped = 0;
+        bool motw_written = false;
+    };
+    auto restore_children = [restore_owner, preserve_suid, motw](archive::ArchiveReader& r,
+                                                                 const ExtractJob& j) {
+        ChildRestoreResult result;
         for (const auto* child : j.children) {
             if (child->header.service_type == "STM") {
+                std::string sname(child->header.sub_data.begin(), child->header.sub_data.end());
+                // v1.27 M4 (SECURITY_ARCHITECTURE 4.3): archive-provided zone
+                // content is never written to disk — skip BEFORE reading the
+                // payload. WinRAR -os archives store real zone streams; our
+                // -os no longer stores them, and we never restore them from
+                // any producer.
+                if (io::is_zone_stream_name(sname)) {
+                    ++result.zone_streams_skipped;
+                    if (!g_quiet_mode) {
+                        std::cerr << "W: skipped archive-provided zone stream for "
+                                  << j.display_name << "\n";
+                    }
+                    continue;
+                }
                 std::vector<core::byte> payload;
                 if (r.read_packed_data(*child, payload)) {
                     if (child->header.has_crc32) {
@@ -2345,15 +2377,12 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                         if (c.get() != child->header.data_crc32) {
                             // Say so: a silently dropped ADS hides corruption
                             // from the user (v1.21.2).
-                            std::cerr
-                                << "W: checksum mismatch, skipping stream "
-                                << sanitize_for_display(std::string(child->header.sub_data.begin(),
-                                                                    child->header.sub_data.end()))
-                                << " for " << j.display_name << "\n";
+                            std::cerr << "W: checksum mismatch, skipping stream "
+                                      << sanitize_for_display(sname) << " for " << j.display_name
+                                      << "\n";
                             continue;
                         }
                     }
-                    std::string sname(child->header.sub_data.begin(), child->header.sub_data.end());
                     if (!sname.empty() && sname[0] == ':') {
                         io::write_alternate_stream(j.target, sname, payload.data(), payload.size());
                     }
@@ -2411,12 +2440,32 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             }
         }
 #endif
+        // v1.27 M4: MotW propagation — the archive file's own transport
+        // metadata is the ONLY provenance (probed once per session); mark
+        // content is generated locally (no HostUrl/ReferrerUrl ever
+        // travels). Files only; never strips or downgrades an existing
+        // stronger mark (the write helper enforces the rule).
+        if (motw.marked && j.entry && (j.entry->header.file_flags & format::FHFL_DIRECTORY) == 0 &&
+            (j.entry->header.redir_type == 0 || j.entry->header.redir_type == 5)) {
+            if (motw.zone >= 0 && io::write_file_zone_id(j.target, motw.zone)) {
+                result.motw_written = true;
+            }
+#ifdef __APPLE__
+            if (!motw.quarantine_flag.empty() &&
+                io::write_file_quarantine(j.target, motw.quarantine_flag)) {
+                result.motw_written = true;
+            }
+#endif
+        }
+        return result;
     };
 
     // v1.26 M3: jobs are final — size the clamp flags and define the shared
     // surfacing (JSON security flag + report line; the JSON summary owns
     // stdout, so the line goes to stderr).
     job_ts_clamped.assign(extract_jobs.size(), 0);
+    job_motw_flag.assign(extract_jobs.size(), 0);
+    job_zone_skip_flag.assign(extract_jobs.size(), 0);
     auto note_ts_clamp = [&](size_t job_idx, archive::ExtractionReportEntry& rep) {
         if (!job_ts_clamped[job_idx]) return;
         rep.security_flags.push_back("timestamp_clamped");
@@ -2480,7 +2529,9 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
             if (reader.extract_entry(*job.entry, job.target, password)) {
                 if (!g_quiet_mode && !is_vt_supported())
                     (g_json_stdout_only ? std::cerr : std::cout) << "OK\n";
-                restore_children(reader, job);
+                const auto kids = restore_children(reader, job);
+                if (kids.motw_written) rep.security_flags.push_back("motw_propagated");
+                if (kids.zone_streams_skipped) rep.security_flags.push_back("zone_stream_skipped");
                 rep.status = "extracted";
                 if (reader.last_mtime_clamped()) job_ts_clamped[job_i] = 1;
                 note_ts_clamp(job_i, rep);
@@ -2542,7 +2593,8 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
 
         for (size_t idx : phase1_indices) {
             pool.submit([&slots, &flags, &extract_jobs, &badpw_flag, &restore_children,
-                         &phase1_remaining, &phase1_cv, &phase1_mu, &job_ts_clamped, idx] {
+                         &phase1_remaining, &phase1_cv, &phase1_mu, &job_ts_clamped, &job_motw_flag,
+                         &job_zone_skip_flag, idx] {
                 bool okv = false;
                 size_t s = 0;
                 bool acquired = false;
@@ -2553,7 +2605,9 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                                                           extract_jobs[idx].target,
                                                           slots.readers[s]->password());
                     if (okv) {
-                        restore_children(*slots.readers[s], extract_jobs[idx]);
+                        const auto kids = restore_children(*slots.readers[s], extract_jobs[idx]);
+                        if (kids.motw_written) job_motw_flag[idx] = 1;
+                        if (kids.zone_streams_skipped) job_zone_skip_flag[idx] = 1;
                         if (slots.readers[s]->last_mtime_clamped()) job_ts_clamped[idx] = 1;
                     }
                     if (!okv && slots.readers[s]->has_bad_password()) badpw_flag.store(1);
@@ -2589,7 +2643,9 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                                                       extract_jobs[idx].target,
                                                       slots.readers[0]->password());
                 if (okv) {
-                    restore_children(*slots.readers[0], extract_jobs[idx]);
+                    const auto kids = restore_children(*slots.readers[0], extract_jobs[idx]);
+                    if (kids.motw_written) job_motw_flag[idx] = 1;
+                    if (kids.zone_streams_skipped) job_zone_skip_flag[idx] = 1;
                     if (slots.readers[0]->last_mtime_clamped()) job_ts_clamped[idx] = 1;
                 }
                 if (!okv && slots.readers[0]->has_bad_password()) badpw_flag.store(1);
@@ -2612,7 +2668,9 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                                                       extract_jobs[idx].target,
                                                       slots.readers[0]->password());
                 if (okv) {
-                    restore_children(*slots.readers[0], extract_jobs[idx]);
+                    const auto kids = restore_children(*slots.readers[0], extract_jobs[idx]);
+                    if (kids.motw_written) job_motw_flag[idx] = 1;
+                    if (kids.zone_streams_skipped) job_zone_skip_flag[idx] = 1;
                     if (slots.readers[0]->last_mtime_clamped()) job_ts_clamped[idx] = 1;
                 }
                 if (!okv && slots.readers[0]->has_bad_password()) badpw_flag.store(1);
@@ -2648,7 +2706,11 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                 rep.reason =
                     badpw_flag.load() ? "incorrect password / BADPSW" : "extraction failed";
             }
-            if (okv) note_ts_clamp(i, rep);
+            if (okv) {
+                note_ts_clamp(i, rep);
+                if (job_motw_flag[i]) rep.security_flags.push_back("motw_propagated");
+                if (job_zone_skip_flag[i]) rep.security_flags.push_back("zone_stream_skipped");
+            }
             if (!okv) any_failed = true;
         }
     }
@@ -2932,6 +2994,7 @@ static int cli_main(int argc, char* argv[]) {
     bool keep_broken = false;            // -kb
     bool preserve_suid = false;          // --preserve-suid (v1.24 §7.1)
     bool restore_xattr_security = false; // --xattr-security (v1.27 §1.4)
+    bool propagate_motw = true;          // -oz (default ON) / -oz- disables (v1.27 §1.5)
     bool use_mmap = true;                // --no-mmap (v1.25 §0 kill switch)
     openrar::cli::OverwriteMode overwrite_mode = openrar::cli::OverwriteMode::Prompt;
     bool want_qo = true;   // -qo, -qo+, -qo- (default: enabled)
@@ -3283,6 +3346,13 @@ static int cli_main(int argc, char* argv[]) {
             opt_user = s.substr(8);
         } else if (sw_eq(s, "-os") || sw_starts(s, "-os")) {
             want_stm = true;
+        } else if (sw_eq(s, "-oz")) {
+            // v1.27: explicit MotW propagation enable (default ON).
+            propagate_motw = true;
+        } else if (sw_eq(s, "-oz-")) {
+            // v1.27: disable MotW propagation (fail-safe direction stays ON
+            // by default; WinRAR 6.23+ parity).
+            propagate_motw = false;
         } else if (sw_eq(s, "-ox")) {
             // v1.27: capture POSIX/macOS extended attributes (allow-listed
             // namespaces — user.*, security.*, trusted.*, com.apple.metadata.*).
@@ -3510,7 +3580,7 @@ static int cli_main(int argc, char* argv[]) {
         return openrar::cli::extract_archive(
             arc_path, dest, cmd == "x", password, threads, keep_broken, overwrite_mode,
             extract_symlinks, exclude_patterns, extract_version, file_patterns,
-            (want_acl || want_og), preserve_suid, use_mmap, restore_xattr_security);
+            (want_acl || want_og), preserve_suid, use_mmap, restore_xattr_security, propagate_motw);
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
     } else if (cmd == "rr" || (cmd.rfind("rr", 0) == 0 && cmd.size() > 2 &&
