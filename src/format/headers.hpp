@@ -90,7 +90,9 @@ inline constexpr core::uint64 FHFL_CRC32 = file_flags::CRC32;
 inline constexpr core::uint64 FHFL_UNPUNKNOWN = file_flags::UNP_UNKNOWN;
 
 // Extra Field Types
-// Spec 01-headers/06-encoding: 0x01 Crypt, 0x02 Hash, 0x03 HTime, 0x04 Version, 0x05 Redir, 0x06 Owner, 0x07 SubData
+// Spec 01-headers/06-encoding: 0x01 Crypt, 0x02 Hash, 0x03 HTime, 0x04 Version, 0x05 Redir, 0x06 Owner, 0x07 SubData,
+//   0x08 Xattr (v1.27 — verified free against unrar headers5.hpp + bitplane rar-research; skipped
+//   without error by readers that do not implement it, per the spec's unknown-record contract)
 // Main extra: 0x01 Locator, 0x02 Metadata
 enum class ExtraType : core::uint8 {
     Crypt = 0x01,   // File encryption record (FHEXTRA_CRYPT)
@@ -100,6 +102,7 @@ enum class ExtraType : core::uint8 {
     Redir = 0x05,   // Redirection (symlink/junction/hardlink) (FHEXTRA_REDIR)
     Owner = 0x06,   // Unix owner (FHEXTRA_OWNER) — flags + names + UID/GID
     SubData = 0x07, // Service subdata (FHEXTRA_SUBDATA)
+    Xattr = 0x08,   // Extended attributes (FHEXTRA_XATTR) — v1.27
     Locator =
         0x01, // Main header locator (MHEXTRA_LOCATOR) — alias 0x01, distinct namespace from file extras
     Metadata = 0x02 // Main header metadata (MHEXTRA_METADATA) — name + time
@@ -112,6 +115,7 @@ inline constexpr core::uint8 FHEXTRA_VERSION = static_cast<core::uint8>(ExtraTyp
 inline constexpr core::uint8 FHEXTRA_REDIR = static_cast<core::uint8>(ExtraType::Redir);
 inline constexpr core::uint8 FHEXTRA_OWNER = static_cast<core::uint8>(ExtraType::Owner);
 inline constexpr core::uint8 FHEXTRA_SUBDATA = static_cast<core::uint8>(ExtraType::SubData);
+inline constexpr core::uint8 FHEXTRA_XATTR = static_cast<core::uint8>(ExtraType::Xattr);
 inline constexpr core::uint8 MHEXTRA_LOCATOR = static_cast<core::uint8>(ExtraType::Locator);
 inline constexpr core::uint8 MHEXTRA_METADATA = static_cast<core::uint8>(ExtraType::Metadata);
 
@@ -253,6 +257,17 @@ struct FileBlock {
 
     // Service SubData (e.g. CMT)
     std::vector<core::byte> sub_data;
+
+    // Extended attributes (FHEXTRA_XATTR, v1.27): POSIX user./security./
+    // trusted.* and macOS com.apple.metadata.* namespaces. Names carry
+    // their namespace prefix; values are opaque bytes. Well-formed
+    // records parse here; malformed ones fall back to unknown_extras
+    // (verbatim) — never a partial parse, never an abort.
+    struct FileXattr {
+        std::string name;
+        std::vector<core::byte> value;
+    };
+    std::vector<FileXattr> xattrs;
 
     // Unknown extra records (v1.24 plan §7.3): records whose type this
     // build does not implement are captured VERBATIM (type vint + size vint

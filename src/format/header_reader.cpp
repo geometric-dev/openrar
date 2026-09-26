@@ -5,6 +5,7 @@
 #include "../crypto/sha256.hpp"
 #include <algorithm>
 #include <cstring>
+#include <unordered_set>
 
 namespace openrar::format {
 
@@ -876,6 +877,82 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                         out_block.has_owner_gid = true;
                     }
                 }
+            } else if (rec_type == FHEXTRA_XATTR) {
+                // v1.27: extended attributes (FHEXTRA_XATTR). Parsed into
+                // FileBlock::xattrs; ANY validation failure (flags != 0,
+                // name/value length violations, count or length overrun,
+                // trailing bytes, duplicate names) captures the record
+                // VERBATIM as an unknown extra — the record is never
+                // partially applied and never aborts the header parse
+                // (v1.27 plan §1.1). Hostile-input allocation is bounded
+                // by the header-size cap: every read is clamped to
+                // rec_end, and the entry count to the remaining bytes.
+                std::vector<FileBlock::FileXattr> parsed;
+                std::unordered_set<std::string> seen_names;
+                bool ok = true;
+                size_t xoff = offset; // first byte after the type vint
+                size_t xr = 0;
+                core::uint64 xflags = 0, xcount = 0;
+                if (!core::read_vint(body + xoff, rec_end - xoff, xflags, xr) || xflags != 0) {
+                    ok = false;
+                } else {
+                    xoff += xr;
+                    if (!core::read_vint(body + xoff, rec_end - xoff, xcount, xr)) {
+                        ok = false;
+                    } else {
+                        xoff += xr;
+                        // Each entry consumes at least 3 bytes (name-length
+                        // vint + 1 name byte + value-length vint); a count
+                        // beyond that cannot be satisfiable.
+                        if (xcount > (rec_end - xoff) / 3) {
+                            ok = false;
+                        } else {
+                            seen_names.reserve(static_cast<size_t>(xcount));
+                            for (core::uint64 i = 0; ok && i < xcount; ++i) {
+                                core::uint64 nlen = 0, vlen = 0;
+                                if (!core::read_vint(body + xoff, rec_end - xoff, nlen, xr) ||
+                                    nlen == 0 || nlen > 255) {
+                                    ok = false;
+                                    break;
+                                }
+                                xoff += xr;
+                                if (static_cast<size_t>(nlen) > rec_end - xoff) {
+                                    ok = false;
+                                    break;
+                                }
+                                FileBlock::FileXattr xa;
+                                xa.name.assign(reinterpret_cast<const char*>(body + xoff),
+                                               static_cast<size_t>(nlen));
+                                xoff += static_cast<size_t>(nlen);
+                                if (!core::read_vint(body + xoff, rec_end - xoff, vlen, xr) ||
+                                    vlen > 65536) {
+                                    ok = false;
+                                    break;
+                                }
+                                xoff += xr;
+                                if (static_cast<size_t>(vlen) > rec_end - xoff) {
+                                    ok = false;
+                                    break;
+                                }
+                                xa.value.assign(body + xoff,
+                                                body + xoff + static_cast<size_t>(vlen));
+                                xoff += static_cast<size_t>(vlen);
+                                if (!seen_names.insert(xa.name).second) ok = false;
+                                if (ok) parsed.push_back(std::move(xa));
+                            }
+                            if (ok && xoff != rec_end) ok = false; // trailing bytes
+                        }
+                    }
+                }
+                if (ok) {
+                    out_block.xattrs.insert(out_block.xattrs.end(),
+                                            std::make_move_iterator(parsed.begin()),
+                                            std::make_move_iterator(parsed.end()));
+                } else {
+                    out_block.unknown_extras.push_back(
+                        {rec_type, std::vector<core::byte>(body + old_offset, body + rec_end)});
+                }
+                offset = rec_end;
             } else {
                 // v1.24 plan §7.3: unknown extra records are captured
                 // VERBATIM (type vint + size vint + payload) and re-encoded
