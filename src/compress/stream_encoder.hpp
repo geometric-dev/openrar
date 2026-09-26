@@ -49,6 +49,19 @@ public:
 
     void reset();
 
+    // ── Solid multi-file session (v1.26 M2b) ────────────────────────────────
+    // One encoder packs a whole solid run. pack_solid_begin() opens one
+    // file's stream — continue_window=true carries the LZ window, hash
+    // chains, and rep distances from the previously finished file (the
+    // encoder-side mirror of Decompressor50's solid carry), false resets
+    // the window (chain head). feed() ingests the file's bytes,
+    // pack_solid_finish() closes the file's stream; output routes through
+    // the flush sink if set, else accumulates for take_output(). Between
+    // files the caller decides carry vs. reset from the plan's chain
+    // membership; entries that end up STORED must never join the session.
+    bool pack_solid_begin(bool continue_window);
+    bool pack_solid_finish();
+
     size_t total_input() const { return total_in_; }
     bool is_finished() const { return finished_; }
 

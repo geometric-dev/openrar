@@ -313,12 +313,39 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
 }
 
 // -- Streaming session (Path A) ----------------------------------------------
-bool Compressor50::begin_stream(int method, size_t win_size) {
+bool Compressor50::begin_stream(int method, size_t win_size, bool continue_window) {
     if (method < 1 || method > 5) return false; // STORE (0) never streams - passthrough
     if (win_size == 0) win_size = 0x200000;
+    if (continue_window) {
+        // A carried window is only defined directly after a finished stream
+        // of the same geometry: buf_/cur_/pos_base_/hash chains/old_dist_
+        // must belong to bytes the decoder will carry for this chain.
+        if (!streaming_ || !stream_finished_ || win_size_ != win_size) return false;
+    }
     streaming_ = true;
     stream_finished_ = false;
-    file_start_pos_ = 0;
+    if (continue_window) {
+        // Keep: buf_, cur_, pos_base_, src_loaded_, head_/prev_/prev64_,
+        // old_dist_ (the decoder carries rep distances across solid members).
+        // Reset: per-file token/frequency/hash/filter state.
+        src_size_ = src_loaded_; // already-consumed history; feed() extends it
+        token_seq_.clear();
+        lit_bytes_.clear();
+        match_tokens_.clear();
+        filter_tokens_.clear();
+        filter_emitted_until_ = cur_;
+        input_since_block_ = 0;
+        total_at_file_start_ = packed_total_;
+        hash_crc32_.reset();
+        hash_blake2_.reset();
+        fail_count_ = 0;
+        init_match_params();
+        active_filter_ = FilterType::None; // detection fires only at cur_ == 0
+        filter_pretransformed_ = false;
+        file_start_pos_ = cur_;
+        unhashed_pos_ = cur_;
+        return true;
+    }
     begin_archive(nullptr, method, win_size);
     src_size_ = 0; // grows with every feed: every loaded byte is valid input
     init_match_params();
