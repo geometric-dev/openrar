@@ -3495,7 +3495,10 @@ static int cli_main(int argc, char* argv[]) {
                 max_versions, opt_group, opt_user, want_lock, oi_mode, oi_min_size, cdc_enabled,
                 want_xattr);
         }
-        if (rc == 0 && want_rr) {
+        // v1.27 M5: -oi3/-oi4 exit WITHOUT creating the archive — the
+        // post-add -rr handling must not then run against a file that was
+        // never written (it previously failed loudly on a nonexistent path).
+        if (rc == 0 && want_rr && std::filesystem::exists(target_arc)) {
             bool rr_ok;
             bool is_vol_set = vol_size != 0 && vol_size != openrar::archive::volume::VOLSIZE_AUTO;
             if (is_vol_set) {
