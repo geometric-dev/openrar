@@ -87,7 +87,7 @@ openrar a -m5 -r best.rar ./src
 | `-ed` | Omit directory records — files still archived with their paths; empty-dir info is lost (rar.exe semantics). |
 | `-ep` | Strip all paths — store bare filenames. |
 | `-df` / `-dr` / `-dw` | Delete successfully archived sources: plain / to Recycle Bin / wipe (zero overwrite → truncate → temp-name → delete). `m` implies plain delete; explicit switch overrides. |
-| `-oi[0-4][:<size>]` | Identical files as references via `FILECOPY` (0 off, 1 silent, 2 list, 3 list+exit, 4 dup-list+exit; default 64 KB; stored as `FHEXTRA_REDIR` type 5, packed 0). |
+| `-oi[0-4][:<size>]` | Identical files as references via `FILECOPY` (0 off, 1 silent, 2 list, 3 list+exit, 4 dup-list+exit; default 64 KB comparison threshold; stored as `FHEXTRA_REDIR` type 5 with no data area — the first stored copy is referenced; materializing references on extraction follows the `-ol` links opt-in). In solid archives the run breaks around reference entries. |
 | `-ep1` | Strip the common base (as typed). |
 | `-ep2` | Save full path minus drive letter. |
 | `-ep3` | Full path with drive. |
