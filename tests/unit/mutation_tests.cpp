@@ -62,6 +62,219 @@ static void write_bytes(const fs::path& p, const std::vector<uint8_t>& data) {
                 static_cast<std::streamsize>(data.size()));
 }
 
+// ── v1.27 M2: -ox capture tests ─────────────────────────────────────────────
+// The namespace policy is a pure predicate (testable everywhere); the
+// setxattr-backed capture tests run on POSIX hosts (Linux/macOS) and SKIP
+// on Windows, mirroring the -os ADS tests inverted.
+
+#ifndef _WIN32
+#include <cerrno>
+#include <sys/stat.h>
+#include <sys/xattr.h>
+static void set_xattr_posix(const fs::path& p, const char* name, const void* value, size_t size) {
+#if defined(__APPLE__)
+    const int rc = setxattr(p.c_str(), name, value, size, 0, 0);
+#else
+    const int rc = setxattr(p.c_str(), name, value, size, 0);
+#endif
+    if (rc != 0) {
+        std::fprintf(stderr, "setxattr(%s, %s) failed: errno=%d (%s)\n", p.string().c_str(), name,
+                     errno, strerror(errno));
+    }
+    assert(rc == 0);
+}
+
+// Picks a scratch base on a filesystem that supports user.* xattrs:
+// temp_directory_path first, then $HOME (WSL /tmp may be tmpfs, which
+// lacks user.* xattr support on pre-6.13 kernels). Returns an empty path
+// when neither supports xattrs — probe-then-skip per Risk Register item 6.
+static fs::path xattr_scratch_base() {
+#if defined(__APPLE__)
+    auto probe = [](const fs::path& dir) {
+#else
+    auto probe = [](const fs::path& dir) -> bool {
+#endif
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        const fs::path f = dir / ".openrar_xa_probe";
+        {
+            std::ofstream o(f, std::ios::binary);
+            o << 'x';
+        }
+        const char* v = "1";
+        const bool ok = setxattr(f.c_str(), "user.probe", v, 1, 0
+#if defined(__APPLE__)
+                                 ,
+                                 0
+#endif
+                                 ) == 0;
+        fs::remove(f, ec);
+        return ok;
+    };
+    const fs::path tmp = fs::temp_directory_path() / "openrar_xa_tmp";
+    if (probe(tmp)) return tmp;
+    const char* home = std::getenv("HOME");
+    if (home) {
+        const fs::path h = fs::path(home) / ".openrar_xa_home";
+        if (probe(h)) return h;
+    }
+    return fs::path();
+}
+#endif
+
+// v1.27 plan test 5 (policy half): the capture allow-list excludes the ACL
+// side door, transport-provenance namespaces, and resource-fork metadata.
+static void test_xattr_namespace_policy() {
+    using engine::ArchiveMutator;
+    // Allowed namespaces.
+    assert(ArchiveMutator::xattr_capturable("user.mime_type"));
+    assert(ArchiveMutator::xattr_capturable("security.selinux"));
+    assert(ArchiveMutator::xattr_capturable("trusted.backup.stamp"));
+    assert(ArchiveMutator::xattr_capturable("com.apple.metadata:_kMDItemUserTags"));
+    // Rejected: ACL side door, provenance, deferred resource forks, unknown.
+    assert(!ArchiveMutator::xattr_capturable("system.posix_acl_access"));
+    assert(!ArchiveMutator::xattr_capturable("com.apple.quarantine"));
+    assert(!ArchiveMutator::xattr_capturable("com.apple.provenance"));
+    assert(!ArchiveMutator::xattr_capturable("com.apple.ResourceFork"));
+    assert(!ArchiveMutator::xattr_capturable("com.apple.FinderInfo"));
+    assert(!ArchiveMutator::xattr_capturable("com.apple.decmpfs"));
+    assert(!ArchiveMutator::xattr_capturable("com.apple.lastuseddate#PS"));
+    assert(!ArchiveMutator::xattr_capturable("btrfs.compression"));
+    // Prefix discipline: "user" (no dot), "users.", "" do not match.
+    assert(!ArchiveMutator::xattr_capturable("user"));
+    assert(!ArchiveMutator::xattr_capturable("users.x"));
+    assert(!ArchiveMutator::xattr_capturable(""));
+    std::cout << "[PASS] xattr_namespace_policy: allow-list excludes ACL/provenance/forks\n";
+}
+
+// v1.27 plan test 1 (capture half): -ox captures user.* attributes sorted,
+// with values byte-identical through write + re-read; the default path
+// captures nothing.
+static void test_xattr_capture_roundtrip() {
+#ifdef _WIN32
+    std::cout << "[SKIP] xattr_capture_roundtrip (POSIX xattrs, Windows host)\n";
+#else
+    const fs::path base = xattr_scratch_base();
+    if (base.empty()) {
+        std::cout << "[SKIP] xattr_capture_roundtrip (no user.* xattr support on this fs)\n";
+        return;
+    }
+    const fs::path dir = base / "xattr_capture";
+    std::error_code mk_ec;
+    fs::remove_all(dir, mk_ec);
+    fs::create_directories(dir, mk_ec);
+    const fs::path src = dir / "xattrd.bin";
+    write_bytes(src, {'x', 'y'});
+    set_xattr_posix(src, "user.test.beta", "two", 3);
+    set_xattr_posix(src, "user.test.alpha", "one", 3);
+    // Empty value edge (0-length attribute values are legal).
+    set_xattr_posix(src, "user.test.empty", "", 0);
+    // Note: macOS-flat names (com.apple.*) and trusted.*/security.* cannot
+    // be SET on Linux (no namespace handler / EPERM), and >64 KiB user.*
+    // values exceed the kernel's XATTR_SIZE_MAX — those exclusion and cap
+    // paths are pinned by xattr_namespace_policy (predicate) and
+    // xattr_writer_caps_skip (format layer) instead of OS state.
+
+    // Default path: no capture.
+    ArchiveMutator::PreparedAdd plain;
+    assert(ArchiveMutator::prepare_add_file(src, "xattrd.bin", 0, "", plain));
+    assert(plain.fb.xattrs.empty());
+
+    // -ox: allow-listed attributes, sorted by name.
+    ArchiveMutator::PreparedAdd p;
+    assert(ArchiveMutator::prepare_add_file(src, "xattrd.bin", 0, "", p, engine::time_flags::MTIME,
+                                            0, false, false, false, false, {}, "", "", 1, nullptr,
+                                            false, true));
+    assert(p.fb.xattrs.size() == 3);
+    assert(p.fb.xattrs[0].name == "user.test.alpha");
+    assert(std::memcmp(p.fb.xattrs[0].value.data(), "one", 3) == 0);
+    assert(p.fb.xattrs[1].name == "user.test.beta");
+    assert(std::memcmp(p.fb.xattrs[1].value.data(), "two", 3) == 0);
+    assert(p.fb.xattrs[2].name == "user.test.empty");
+    assert(p.fb.xattrs[2].value.empty());
+
+    const fs::path arc = dir / "xattr_capture.rar";
+    std::vector<ArchiveMutator::PreparedAdd> batch;
+    batch.push_back(std::move(p));
+    std::string detail;
+    assert(ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {}, false, {}, detail) ==
+           0);
+
+    engine::ArchiveReader reader;
+    assert(reader.open(arc));
+    assert(reader.entries().size() == 1);
+    const auto& xas = reader.entries()[0].header.xattrs;
+    assert(xas.size() == 3);
+    assert(xas[0].name == "user.test.alpha" && std::memcmp(xas[0].value.data(), "one", 3) == 0);
+    assert(xas[1].name == "user.test.beta" && std::memcmp(xas[1].value.data(), "two", 3) == 0);
+    assert(xas[2].name == "user.test.empty" && xas[2].value.empty());
+    assert(reader.entries()[0].header.unknown_extras.empty());
+
+    std::cout << "[PASS] xattr_capture_roundtrip: -ox captures sorted user.* records\n";
+#endif
+}
+
+// v1.27 plan test 4 (format layer): attributes beyond the read-side caps
+// are skipped WHOLE by the writer (never truncated — a truncated value
+// would corrupt attribute semantics), and the emitted record stays
+// well-formed for our own parser. Runs on every platform.
+static void test_xattr_writer_caps_skip() {
+    const fs::path dir = make_scratch_dir("xattr_caps");
+    const std::string big(100 * 1024, 'B'); // > 64 KiB value cap
+    openrar::format::FileBlock fb;
+    fb.file_name = "capped.bin";
+    fb.xattrs.push_back({"user.ok", {'f', 'i', 'n', 'e'}});
+    fb.xattrs.push_back({"user.big", std::vector<openrar::core::byte>(big.begin(), big.end())});
+    fb.xattrs.push_back({std::string(300, 'n'), {'x'}}); // > 255-byte NAME cap (Linux xattr limit)
+
+    const fs::path arc = dir / "capped.rar";
+    {
+        openrar::io::FileStream out;
+        assert(out.open(arc, openrar::io::FileMode::CreateAlways));
+        openrar::format::HeaderWriter::write_signature(out);
+        openrar::format::MainBlock mb;
+        openrar::format::HeaderWriter::write_main_block(out, mb);
+        assert(openrar::format::HeaderWriter::write_file_block(out, fb));
+        out.write("c", 1);
+        openrar::format::EndArcBlock eb;
+        openrar::format::HeaderWriter::write_end_block(out, eb);
+    }
+    engine::ArchiveReader reader;
+    assert(reader.open(arc));
+    assert(reader.entries().size() == 1);
+    const auto& xas = reader.entries()[0].header.xattrs;
+    assert(xas.size() == 1); // over-cap attributes skipped whole
+    assert(xas[0].name == "user.ok");
+    assert(xas[0].value.size() == 4);
+    assert(reader.entries()[0].header.unknown_extras.empty());
+    std::cout << "[PASS] xattr_writer_caps_skip: over-cap attributes skipped, record well-formed\n";
+}
+
+// v1.27 M2 regression pin: POSIX owner capture (-ow) previously wrote into
+// the MOVED-FROM prepared block in prepare_add_file, silently dropping
+// FHEXTRA_OWNER for regular files (dir/symlink/hardlink/filecopy paths were
+// ordered correctly and are unaffected).
+static void test_owner_capture_survives_prepared_move() {
+#ifdef _WIN32
+    std::cout << "[SKIP] owner_capture_survives_prepared_move (POSIX owner, Windows host)\n";
+#else
+    const fs::path dir = make_scratch_dir("owner_move");
+    const fs::path src = dir / "owned.bin";
+    write_bytes(src, {'o'});
+    struct stat st;
+    assert(::lstat(src.c_str(), &st) == 0);
+
+    ArchiveMutator::PreparedAdd p;
+    assert(ArchiveMutator::prepare_add_file(src, "owned.bin", 0, "", p, engine::time_flags::MTIME,
+                                            0, false,
+                                            /*want_acl=*/true));
+    assert(p.fb.has_owner);
+    assert(p.fb.has_owner_uid);
+    assert(p.fb.owner_uid == static_cast<openrar::core::uint64>(st.st_uid));
+    std::cout << "[PASS] owner_capture_survives_prepared_move: FHEXTRA_OWNER lands in out.fb\n";
+#endif
+}
+
 static std::vector<uint8_t> read_bytes(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     assert(f);
@@ -1363,6 +1576,10 @@ int main() {
     test_deferred_store_and_adaptive_clamping();
     test_direct_stream_compression_and_backpatch();
     test_off_grid_dict_snap_roundtrip();
+    test_xattr_namespace_policy();
+    test_xattr_capture_roundtrip();
+    test_xattr_writer_caps_skip();
+    test_owner_capture_survives_prepared_move();
     std::cout << "ALL MUTATION TESTS PASSED\n";
     return 0;
 }

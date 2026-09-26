@@ -911,7 +911,7 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                             for (core::uint64 i = 0; ok && i < xcount; ++i) {
                                 core::uint64 nlen = 0, vlen = 0;
                                 if (!core::read_vint(body + xoff, rec_end - xoff, nlen, xr) ||
-                                    nlen == 0 || nlen > 255) {
+                                    nlen == 0 || nlen > format::FHEXTRA_XATTR_NAME_MAX) {
                                     ok = false;
                                     break;
                                 }
@@ -925,7 +925,7 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                                                static_cast<size_t>(nlen));
                                 xoff += static_cast<size_t>(nlen);
                                 if (!core::read_vint(body + xoff, rec_end - xoff, vlen, xr) ||
-                                    vlen > 65536) {
+                                    vlen > format::FHEXTRA_XATTR_VALUE_MAX) {
                                     ok = false;
                                     break;
                                 }

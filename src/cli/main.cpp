@@ -1015,7 +1015,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                          bool want_acl = false, bool want_qo = true, bool want_ams = false,
                          core::uint64 dict_size = 0, const compress::FilterConfig& filter_cfg = {},
                          int max_versions = -1, const std::string& default_group = "",
-                         const std::string& default_user = "") {
+                         const std::string& default_user = "", bool want_xattr = false) {
     const core::uint64 total_ram = get_total_physical_memory();
     const core::uint64 prepare_budget = std::clamp<core::uint64>(
         total_ram / 4, 1ULL << 30, 32ULL * 1024ULL * 1024ULL * 1024ULL); // 25% of RAM, 1-32 GiB
@@ -1058,7 +1058,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             else if (queue[0].is_filecopy)
                 okv = archive::ArchiveMutator::prepare_add_filecopy(
                     queue[0].src_path, queue[0].entry_name, queue[0].filecopy_target, prepared[0],
-                    times_mask, default_group, default_user);
+                    times_mask, default_group, default_user, want_xattr);
             else if (queue[0].is_symlink)
                 okv = archive::ArchiveMutator::prepare_add_symlink(
                     queue[0].src_path, queue[0].entry_name, queue[0].symlink_target,
@@ -1067,12 +1067,13 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             else if (queue[0].is_dir)
                 okv = archive::ArchiveMutator::prepare_add_dir(
                     queue[0].src_path, queue[0].entry_name, prepared[0], times_mask, want_acl,
-                    default_group, default_user);
+                    default_group, default_user, want_xattr);
             else
                 okv = archive::ArchiveMutator::prepare_add_file(
                     queue[0].src_path, queue[0].entry_name, method, password, prepared[0],
                     times_mask, dict_size, want_stm, want_acl, solid, /*direct_stream=*/true,
-                    filter_cfg, default_group, default_user, /*threads=*/threads);
+                    filter_cfg, default_group, default_user, /*threads=*/threads, nullptr, false,
+                    want_xattr);
         } catch (...) {
             okv = false;
         }
@@ -1158,8 +1159,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                                         ? exec_plan.entries[i].estimated_workspace_bytes
                                         : queue[i].file_size;
         pool.submit([&pl, &queue, &prepared, i, method, &password, delete_source, times_mask,
-                     want_stm, want_acl, est_ws, budget_bytes = prepare_budget, dict_size, solid,
-                     &filter_cfg, &default_group, &default_user, &solid_packer,
+                     want_stm, want_acl, want_xattr, est_ws, budget_bytes = prepare_budget,
+                     dict_size, solid, &filter_cfg, &default_group, &default_user, &solid_packer,
                      &solid_chain_member] {
             std::unique_lock<std::mutex> lk(pl.mu);
             pl.cv.wait(lk, [&] { return pl.aborting || pl.admit_head == i; });
@@ -1191,7 +1192,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                         else if (queue[i].is_filecopy)
                             okv = archive::ArchiveMutator::prepare_add_filecopy(
                                 queue[i].src_path, queue[i].entry_name, queue[i].filecopy_target,
-                                prepared[i], times_mask, default_group, default_user);
+                                prepared[i], times_mask, default_group, default_user, want_xattr);
                         else if (queue[i].is_symlink)
                             okv = archive::ArchiveMutator::prepare_add_symlink(
                                 queue[i].src_path, queue[i].entry_name, queue[i].symlink_target,
@@ -1200,13 +1201,14 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                         else if (queue[i].is_dir)
                             okv = archive::ArchiveMutator::prepare_add_dir(
                                 queue[i].src_path, queue[i].entry_name, prepared[i], times_mask,
-                                want_acl, default_group, default_user);
+                                want_acl, default_group, default_user, want_xattr);
                         else
                             okv = archive::ArchiveMutator::prepare_add_file(
                                 queue[i].src_path, queue[i].entry_name, method, password,
                                 prepared[i], times_mask, dict_size, want_stm, want_acl, solid,
                                 /*direct_stream=*/false, filter_cfg, default_group, default_user,
-                                /*threads=*/1, solid_packer.get(), solid_chain_member[i] != 0);
+                                /*threads=*/1, solid_packer.get(), solid_chain_member[i] != 0,
+                                want_xattr);
                     } catch (...) {
                         // std::filesystem throws on sources that vanish or
                         // become unreadable after the scan; same handling as
@@ -1305,22 +1307,20 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     return 0;
 }
 
-int add_to_archive(const std::string& arc_path, const std::vector<std::string>& files,
-                   int method = 3, const std::filesystem::path& sfx_stub = {},
-                   ::openrar::core::uint64 vol_size = 0, const std::string& password = "",
-                   bool encrypt_headers = false, unsigned threads = 1, bool solid = false,
-                   const std::vector<core::byte>& comment = {},
-                   core::uint32 times_mask = archive::time_flags::MTIME,
-                   bool no_dir_records = false,
-                   io::ExcludePathMode ep_mode = io::ExcludePathMode::None,
-                   bool recurse_subdirs = true, bool want_symlinks = false, bool freshen = false,
-                   bool want_stm = false, bool want_acl = false, bool want_hardlinks = false,
-                   bool want_qo = true, bool want_ams = false,
-                   const std::vector<std::string>& exclude_patterns = {},
-                   core::uint64 dict_size = 0, const compress::FilterConfig& filter_cfg = {},
-                   int max_versions = -1, const std::string& default_group = "",
-                   const std::string& default_user = "", bool want_lock = false, int oi_mode = 0,
-                   core::uint64 oi_min_size = 65536, bool cdc_enabled = false) {
+int add_to_archive(
+    const std::string& arc_path, const std::vector<std::string>& files, int method = 3,
+    const std::filesystem::path& sfx_stub = {}, ::openrar::core::uint64 vol_size = 0,
+    const std::string& password = "", bool encrypt_headers = false, unsigned threads = 1,
+    bool solid = false, const std::vector<core::byte>& comment = {},
+    core::uint32 times_mask = archive::time_flags::MTIME, bool no_dir_records = false,
+    io::ExcludePathMode ep_mode = io::ExcludePathMode::None, bool recurse_subdirs = true,
+    bool want_symlinks = false, bool freshen = false, bool want_stm = false, bool want_acl = false,
+    bool want_hardlinks = false, bool want_qo = true, bool want_ams = false,
+    const std::vector<std::string>& exclude_patterns = {}, core::uint64 dict_size = 0,
+    const compress::FilterConfig& filter_cfg = {}, int max_versions = -1,
+    const std::string& default_group = "", const std::string& default_user = "",
+    bool want_lock = false, int oi_mode = 0, core::uint64 oi_min_size = 65536,
+    bool cdc_enabled = false, bool want_xattr = false) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return EXIT_FATAL;
@@ -1920,7 +1920,7 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
                                /*delete_source=*/false, /*announce=*/true, threads, nullptr,
                                times_mask, solid, comment.empty() ? nullptr : &comment, want_stm,
                                want_acl, want_qo, want_ams, dict_size, filter_cfg, max_versions,
-                               default_group, default_user);
+                               default_group, default_user, want_xattr);
         if (rc != 0) return rc;
     }
 
@@ -2910,6 +2910,7 @@ static int cli_main(int argc, char* argv[]) {
     // Feature switch flags
     bool want_sfx = false, want_rr = false;
     bool want_acl = false, want_stm = false;
+    bool want_xattr = false;                   // -ox (v1.27)
     bool want_hardlinks = false;               // -oh
     int oi_mode = 0;                           // -oi[0-4]: identical files as references (0 = off)
     openrar::core::uint64 oi_min_size = 65536; // -oi[:<size>]: comparison threshold (README row)
@@ -3275,6 +3276,10 @@ static int cli_main(int argc, char* argv[]) {
             opt_user = s.substr(8);
         } else if (sw_eq(s, "-os") || sw_starts(s, "-os")) {
             want_stm = true;
+        } else if (sw_eq(s, "-ox")) {
+            // v1.27: capture POSIX/macOS extended attributes (allow-listed
+            // namespaces — user.*, security.*, trusted.*, com.apple.metadata.*).
+            want_xattr = true;
         } else if (sw_eq(s, "-qo") || sw_eq(s, "-qo+")) {
             want_qo = true;
         } else if (sw_eq(s, "-qo-")) {
@@ -3410,7 +3415,8 @@ static int cli_main(int argc, char* argv[]) {
                 want_header_encryption, threads, want_solid, comment, times_mask, no_dir_records,
                 ep_mode, recurse_subdirs, want_symlinks, (cmd == "f"), want_stm, want_acl,
                 want_hardlinks, want_qo, want_ams, exclude_patterns, opt_dict_size, opt_filter_cfg,
-                max_versions, opt_group, opt_user, want_lock, oi_mode, oi_min_size, cdc_enabled);
+                max_versions, opt_group, opt_user, want_lock, oi_mode, oi_min_size, cdc_enabled,
+                want_xattr);
         }
         if (rc == 0 && want_rr) {
             bool rr_ok;
