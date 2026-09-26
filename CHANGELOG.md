@@ -5,6 +5,108 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.0] - 2026-09-26
+
+Extended Attributes, Quarantine & MotW — the arc the Gate 0 format-legality
+review cleared (docs/v1.27-pre-analysis.md §7): one new extra-record type
+(`FHEXTRA_XATTR` 0x08, opt-in via `-ox`) that every stock RAR5 reader skips
+without error, and a Mark-of-the-Web policy (`-oz`) that emits nothing into
+the archive at all — propagation keys on the archive file's own transport
+metadata with content generated locally (SECURITY_ARCHITECTURE §4.3). The
+shipped Zone.Identifier-via-`-os` residue was closed in the same arc.
+
+### Added
+
+- **`FHEXTRA_XATTR` (0x08) extra record** (`src/format/headers.hpp`
+  `ExtraType::Xattr`, `header_reader.cpp` parse branch, `header_writer.cpp`
+  emission): `Size/Type/Flags(0)/Count` + per-attribute
+  `NameLen/Name/ValueLen/Value` with opaque byte values. The type number was
+  verified free against unrar `headers5.hpp` and bitplane rar-research;
+  record bounds (name 255 B, value 64 KiB, count 4096, 1 MiB per file) are
+  shared constants (`FHEXTRA_XATTR_*`) used by reader validation, writer
+  emission and capture. ANY malformed record (flags != 0, length violations,
+  count overrun, trailing bytes, duplicate names) falls back to the v1.24
+  unknown-extra VERBATIM capture — never a partial parse, never an abort.
+  Canonical re-serialization keeps mutation roundtrips byte-identical.
+- **`-ox` — extended-attribute capture** (`src/io/posix_xattr.{hpp,cpp}`,
+  `src/archive/archive_mutator.cpp` `apply_xattrs`/`xattr_capturable`,
+  `prepare_add_file`/`prepare_add_dir`/`prepare_add_filecopy`): Linux/macOS
+  xattr access via the no-follow l-variants with bounded probe-then-read
+  loops (Windows/WASM compile to stubs — the format layer stays
+  cross-platform). Namespace allow-list: `user.*`, `security.*`,
+  `trusted.*`, `com.apple.metadata.*` (macOS Finder tags ride here);
+  `system.*` (the ACL side door), quarantine/provenance namespaces and
+  resource-fork metadata are never stored. Over-cap attributes are skipped
+  whole, never truncated; attributes sort by name for deterministic record
+  bytes. Symlinks/hardlinks carry no records (an extracted hardlink shares
+  the master's inode); FILECOPY references capture their own source's.
+- **Extended-attribute restore** (`src/archive/archive_reader.cpp`
+  `xattr_restorable` + post-commit apply + `PendingDirMeta` deferred path,
+  `--xattr-security`): `user.*`/`com.apple.metadata.*` restore by default on
+  the committed path (reader-level, like modes/mtimes — DLL extraction
+  inherits it); `security.*`/`trusted.*` only with the explicit
+  `--xattr-security` admin opt-in (the `--preserve-suid` trust-decision
+  model); everything else never. Per-attribute failures (EPERM/ENOTSUP) are
+  fail-soft — extraction status unchanged.
+- **`-oz` / `-oz-` — Mark-of-the-Web propagation** (`src/io/motw.{hpp,cpp}`,
+  `src/cli/main.cpp` `restore_children`): default ON (the fail-safe
+  direction; WinRAR 6.23+ parity), `-oz-` disables. The archive file's OWN
+  `Zone.Identifier` ADS (Windows) or `com.apple.quarantine` (macOS) is
+  probed once per session — no path heuristics, no browser data; unparseable
+  provenance fails safe to zone 3. Each extracted file receives a freshly
+  generated `[ZoneTransfer]
+ZoneId=N
+` mark — HostUrl/ReferrerUrl
+  never travel (pinned byte-exact) — and an existing stronger mark on the
+  target is never removed or downgraded. Files only; redirs excluded.
+  Surfaced as the `motw_propagated` JSON security flag.
+- **Interop gate Track 10** (`tools/interop_gate.py`): an archive crafted
+  from docs/spec/01-headers.md in pure python carries a well-formed 0x08
+  record (three namespaces) plus a genuinely unknown 0x42 record; OpenRAR
+  and the local UnRAR oracle both extract the payload byte-identically —
+  the spec's "unknown record types must be skipped without error" contract
+  verified against a stock reader.
+
+### Changed
+
+- **Zone-stream policy closure** (`src/archive/archive_mutator.cpp` `-os`
+  capture, `src/cli/main.cpp` STM restore): `-os` no longer stores
+  `:Zone.Identifier` (provenance is not content), and extraction skips any
+  zone-named STM child BEFORE reading its payload — case-insensitive,
+  `:$DATA`-normalized — regardless of producer, including WinRAR `-os`
+  archives. Skips surface as a `W:` line + the `zone_stream_skipped` JSON
+  flag. WinRAR's "restore archive-provided zone if more secure than host"
+  algorithm is deliberately not implemented: attacker-chosen zone content
+  never reaches disk in either direction (documented divergence,
+  docs/spec/07-services.md).
+- **`-oz` is a behavior change by design**: archives that themselves carry a
+  transport mark now mark their extracted files by default (the safe
+  direction). Unmarked archives extract exactly as before; `-oz-` restores
+  the old behavior.
+
+### Fixed
+
+- **POSIX `-ow` owner capture silently dropped FHEXTRA_OWNER for regular
+  files** (`src/archive/archive_mutator.cpp` `prepare_add_file`): the owner
+  fields were applied to the MOVED-FROM local block after
+  `out.fb = std::move(fb)` — only the dir/symlink/hardlink/filecopy paths
+  were ordered correctly. Now targets the live prepared block; pinned by
+  `test_owner_capture_survives_prepared_move`.
+- **FILECOPY materialization bypassed the cumulative extraction byte caps**
+  (`src/archive/archive_reader.cpp` rtype==5): the §5.4 consistency gap with
+  the hardlink EXDEV fallback — an `-oi`-heavy archive could materialize
+  unbounded bytes outside `LimitState` accounting. The copy now debits; the
+  zero-cap refusal is pinned by `test_filecopy_debits_caps`.
+- **`-oi3`/`-oi4` exit paths ran the post-add `-rr` dispatch against the
+  nonexistent archive** (`src/cli/main.cpp`): the dispatch now checks the
+  archive exists (`test_oi34_no_archive_no_dispatch`).
+- **`test_dir_metadata_deferred` left its read-only directory behind**
+  (tests/unit/extraction_fidelity_tests.cpp): unlink inside a write-protected
+  directory fails for the owner, so the leftover tree poisoned every later
+  run sharing the temp path (reproduced 14/15 on rapid iteration over a
+  persistent /tmp; fresh CI environments masked it since v1.24). The test
+  re-opens the directory before cleanup.
+
 ## [1.26.0] - 2026-09-26
 
 CDC-Driven Solid-Chain Packing — the arc the Gate 0 format-legality review
