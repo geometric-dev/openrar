@@ -2,8 +2,12 @@
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/archive/archive_reader.hpp"
 #include "../../src/archive/rar_errors.hpp"
+#include "../../src/archive/extraction_report.hpp"
 #include "../../src/crypto/crc32.hpp"
+#include "../../src/format/header_writer.hpp"
+#include "../../src/io/file_stream.hpp"
 #include "../../src/io/motw.hpp"
+#include "../../src/io/path_util.hpp"
 #include "../../src/io/win32_meta.hpp"
 #include "openrar/version.h"
 #include <algorithm>
@@ -21,6 +25,7 @@
 #include "../../src/cli/progress.hpp"
 #ifdef _WIN32
 #include <windows.h>
+#include <share.h>
 #else
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -30,6 +35,14 @@
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #endif
+
+// Test-TU definitions of the progress-mode globals (normally defined in
+// cli/main.cpp, which is not linked into this suite); the v1.28 sink tests
+// toggle them directly.
+namespace openrar::cli {
+bool g_plain_mode = false;
+bool g_quiet_mode = false;
+} // namespace openrar::cli
 
 // Null device for output redirection: "nul" is only a device on Windows; on
 // POSIX it would silently create a regular file named "nul" in the CWD.
@@ -274,8 +287,18 @@ void test_sanitize_for_display() {
                                 "sum\xc3\xa9\xe2\x80\xae"
                                 ".txt") == "r??sum\xc3\xa9???.txt");
 
+    // v1.28 directive 7: the sanitizer is IDEMPOTENT — the render-time choke
+    // point re-sanitizes everything it is handed, which is only free because
+    // applying it twice is the identity. Pin across categories (ESC, bidi,
+    // C1, invalid UTF-8) and on the passthrough shape.
+    const std::string idem_hostile =
+        std::string("\x1b]0;t") + "\xe2\x80\xae" + "\xc2\x85" + "\xff\xfe" + ".txt";
+    const std::string once = sanitize_for_display(idem_hostile);
+    assert(sanitize_for_display(once) == once);
+    assert(sanitize_for_display(sanitize_for_display(legit)) == legit);
+
     std::cout << "[PASS] sanitize_for_display negative coverage (ESC/CSI/OSC, C1, bidi, "
-                 "invalid UTF-8)\n";
+                 "invalid UTF-8) + idempotency\n";
 }
 
 void test_cli_mt_batch_equivalence() {
@@ -1987,6 +2010,308 @@ static void test_os_excludes_zone_capture() {
 #endif
 }
 
+// ── v1.28 M1: §7.1 release-gate tests ────────────────────────────────────────
+
+// Captures a full command's stdout+stderr into `captured` and returns the
+// exit status (system_exit_code semantics live in the caller where needed).
+static int run_cli_capture(const std::string& args, const std::filesystem::path& captured) {
+    // Quote-free paths + trailing redirect: cmd /c strips the outer quote
+    // pair when >2 quotes appear (suite convention — no spaces in paths).
+    return std::system((get_cli_path() + " " + args + " > " + captured.string() + " 2>&1").c_str());
+}
+
+static std::string slurp_file(const std::filesystem::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+static bool has_raw_hostile_bytes(const std::string& data) {
+    if (data.find('\x1b') != std::string::npos) return true;         // ESC introducer
+    if (data.find('\x07') != std::string::npos) return true;         // BEL terminator
+    if (data.find("\xe2\x80\xae") != std::string::npos) return true; // RLO
+    if (data.find("\xc2\x85") != std::string::npos) return true;     // C1 NEL
+    return false;
+}
+
+// Crafts a stored archive in ONE pass: a CMT service header (comment in the
+// data area — the shipped `-z` writer's shape, archive_mutator.cpp:2302),
+// then every entry; the entry named `owner_entry_name` additionally carries
+// a hostile FHEXTRA_UOWNER record. Raw names land verbatim in the headers.
+static void write_hostile_archive(const std::filesystem::path& arc, const std::string& comment,
+                                  const std::string& owner_user, const std::string& owner_group,
+                                  const std::vector<std::pair<std::string, std::string>>& entries,
+                                  const std::string& owner_entry_name) {
+    openrar::io::FileStream out;
+    assert(out.open(arc, openrar::io::FileMode::CreateAlways));
+    using openrar::format::FileBlock;
+    using openrar::format::HeaderWriter;
+    HeaderWriter::write_signature(out);
+    openrar::format::MainBlock mb;
+    HeaderWriter::write_main_block(out, mb);
+    FileBlock cmt;
+    cmt.is_service = true;
+    cmt.file_name = "CMT";
+    cmt.unp_size = comment.size();
+    cmt.pack_size = static_cast<openrar::core::int64>(comment.size());
+    cmt.method = 0;
+    cmt.win_size = 0;
+    cmt.has_crc32 = true;
+    openrar::crypto::Crc32 crc;
+    crc.update(comment.data(), comment.size());
+    cmt.data_crc32 = crc.get();
+    assert(HeaderWriter::write_file_block(out, cmt));
+    out.write(comment.data(), comment.size());
+    for (const auto& [name, content] : entries) {
+        FileBlock fb;
+        fb.file_name = name;
+        fb.host_os = 0;
+        fb.unp_size = content.size();
+        fb.pack_size = static_cast<openrar::core::int64>(content.size());
+        fb.method = 0;
+        fb.win_size = 0;
+        if (name == owner_entry_name) {
+            fb.has_owner = true;
+            fb.owner_user = owner_user;
+            fb.owner_group = owner_group;
+        }
+        assert(HeaderWriter::write_file_block(out, fb));
+        out.write(content.data(), content.size());
+    }
+    openrar::format::EndArcBlock eb;
+    HeaderWriter::write_end_block(out, eb);
+}
+
+// v1.28 plan test 6 (`hostile_corpus_zero_payload_e2e`, M1 scope): every
+// render surface — listing, technical listing (owner names), comment,
+// testing, extraction per-file lines — is driven from one crafted archive
+// carrying one hostile payload per §7.1 category, and no attacker payload
+// byte may reach the captured output. CI legs are piped, so this is also
+// the zero-ESC non-TTY assertion (test 14 extends it to pipes explicitly).
+void test_hostile_render_surfaces_e2e() {
+    namespace fs = std::filesystem;
+    const std::string ESC = "\x1b";
+    const std::string BEL = "\x07";
+    const std::string RLO = "\xe2\x80\xae";
+    const std::string NEL = "\xc2\x85";
+    const std::string BAD = "\xff\xfe";
+
+    const std::string comment = ESC + "]0;pwned_title" + BEL + ESC + "[2Jclear";
+    const std::string owner_user = ESC + "]0;pwned" + BEL + "adm";
+    const std::string owner_group = "ev" + RLO + "il" + NEL;
+    const std::string name_rlo = "inv" + RLO + "exe.txt";
+    const std::string name_csi = "x" + ESC + "[4;20H" + "y.txt";
+    const std::string name_bad = "bad" + BAD + ".txt";
+
+    fs::path arc = "build/cli_hostile_render.rar";
+    fs::path captured = "build/cli_hostile_render_out.txt";
+    fs::path out_dir = "build/cli_hostile_render_x";
+    std::error_code ec;
+    fs::remove(arc, ec);
+    fs::remove(captured, ec);
+    fs::remove_all(out_dir, ec);
+
+    // One raw craft: CMT (hostile comment) + hostile-name entries + the
+    // owner-bearing entry. Raw names land verbatim in the headers — the
+    // same trust boundary a foreign producer's archive presents.
+    write_hostile_archive(arc, comment, owner_user, owner_group,
+                          {{name_rlo, "payload A"},
+                           {name_csi, "payload B"},
+                           {name_bad, "payload C"},
+                           {"owned.txt", "owned payload"}},
+                          "owned.txt");
+
+    // l: comment + names render sanitized; zero raw hostile bytes.
+    int res = system_exit_code(run_cli_capture("l " + arc.string(), captured));
+    assert(res == 0);
+    std::string data = slurp_file(captured);
+    assert(!has_raw_hostile_bytes(data));
+    assert(data.find("?[2Jclear") != std::string::npos); // comment mangled, text kept
+    assert(data.find("inv???exe.txt") != std::string::npos);
+    assert(data.find("x?[4;20Hy.txt") != std::string::npos);
+
+    // lb: names only.
+    res = system_exit_code(run_cli_capture("lb " + arc.string(), captured));
+    assert(res == 0);
+    data = slurp_file(captured);
+    assert(!has_raw_hostile_bytes(data));
+    assert(data.find("inv???exe.txt") != std::string::npos);
+
+    // lt: the owner names (FHEXTRA_UOWNER) render sanitized (plan test 3).
+    res = system_exit_code(run_cli_capture("lt " + arc.string(), captured));
+    assert(res == 0);
+    data = slurp_file(captured);
+    assert(!has_raw_hostile_bytes(data));
+    assert(data.find("?]0;pwned?adm / ev???il??") != std::string::npos);
+
+    // t: per-file testing lines sanitized.
+    res = system_exit_code(run_cli_capture("t " + arc.string(), captured));
+    assert(res == 0);
+    data = slurp_file(captured);
+    assert(!has_raw_hostile_bytes(data));
+    assert(data.find("inv???exe.txt") != std::string::npos);
+
+    // x: per-file lines sanitized; the invalid-UTF-8 name lands under its
+    // lossless %XX escape (displayed ≡ extracted, §4.4). The run also emits
+    // the JSON summary on stdout, which by the SAME pinned contract carries
+    // the raw on-disk name (valid UTF-8, RLO is a legal filename) — the
+    // terminal sanitizer owns rendering, the JSON owns on-disk truth.
+    res = system_exit_code(run_cli_capture("x " + arc.string() + " " + out_dir.string(), captured));
+    assert(res == 0);
+    data = slurp_file(captured);
+    const size_t json_at = data.find("{\"schema_version\"");
+    assert(json_at != std::string::npos);
+    const std::string human = data.substr(0, json_at);
+    const std::string json_doc = data.substr(json_at);
+    assert(!has_raw_hostile_bytes(human));
+    assert(openrar::io::is_valid_utf8(json_doc)); // JSON: valid UTF-8, not '?'-mangled
+    assert(human.find("bad%FF%FE.txt") != std::string::npos);
+    bool found_escaped = false;
+    for (const auto& e : fs::directory_iterator(out_dir)) {
+        if (e.path().filename().string() == "bad%FF%FE.txt") found_escaped = true;
+    }
+    assert(found_escaped);
+
+    fs::remove(arc, ec);
+    fs::remove(captured, ec);
+    fs::remove_all(out_dir, ec);
+    std::cout << "[PASS] hostile_corpus_zero_payload_e2e (l/lb/lt/t/x, comment+owner+names)\n";
+}
+
+// v1.28 plan test 4 (`json_summary_valid_utf8_hostile_paths`, M1 scope):
+// json_escape must emit valid UTF-8 under ALL inputs — RFC 8259 requires the
+// document be valid UTF-8, so every invalid byte becomes the ASCII \uFFFD
+// escape (never the raw character, directive 6). Valid non-ASCII passes.
+void test_json_escape_utf8_validity() {
+    using openrar::archive::ExtractionReport;
+    using openrar::archive::ExtractionReportEntry;
+
+    // Hostile archive path (invalid UTF-8, overlong): the emitted document
+    // must be pure ASCII here and carry the replacement escapes.
+    ExtractionReport hostile;
+    hostile.archive = std::string("a\xff\xfe") + "b\xc0\xaf.rar";
+    ExtractionReportEntry he;
+    he.name = "entry.txt";
+    he.status = "extracted";
+    hostile.entries.push_back(he);
+    const std::string j1 = openrar::archive::to_json(hostile);
+    assert(openrar::io::is_valid_utf8(j1));
+    assert(j1.find("\\uFFFD") != std::string::npos);
+    for (const unsigned char c : j1) assert(c < 0x80); // pure ASCII (no raw char)
+
+    // Valid non-ASCII (CJK) passes through as valid UTF-8 — not escaped away.
+    ExtractionReport cjk;
+    cjk.archive = "a\xc4\x81\xe4\xb8\xad.rar";
+    ExtractionReportEntry ce;
+    ce.name = "\xe4\xb8\xad\xe6\x96\x87.txt";
+    ce.status = "extracted";
+    cjk.entries.push_back(ce);
+    const std::string j2 = openrar::archive::to_json(cjk);
+    assert(openrar::io::is_valid_utf8(j2));
+    assert(j2.find("\xe4\xb8\xad\xe6\x96\x87.txt") != std::string::npos);
+
+    // Mixed hostile + legit in one field: only the broken bytes substitute.
+    ExtractionReport mixed;
+    mixed.archive = std::string("ok") + "\xff" + "\xe4\xb8\xad" + ".rar";
+    const std::string j3 = openrar::archive::to_json(mixed);
+    assert(openrar::io::is_valid_utf8(j3));
+    assert(j3.find("ok\\uFFFD\xe4\xb8\xad.rar") != std::string::npos);
+    std::cout << "[PASS] json_summary_valid_utf8_hostile_paths (\\uFFFD escape, CJK passthrough)\n";
+}
+
+// v1.28 plan test 5 (`local_path_warnings_sanitized`, M1 scope): the
+// add-side "cannot read" warning carries the LOCAL name — §2.2 local racing
+// can plant hostile names in shared directories, so it renders through the
+// sanitizer too. Deterministic trigger: a 100 KiB file (over the 64 KiB -oi
+// threshold) that cannot be READ — deny-read lock (Windows) / mode 000
+// (POSIX, probe-then-skip under privileged runners).
+void test_local_path_warnings_sanitized() {
+    namespace fs = std::filesystem;
+    fs::path dir = "build/cli_hostile_local";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const std::string name = std::string("w") + "\x1b" + "[3Barn" + "\x07" + ".txt";
+    fs::path f = dir / name;
+    fs::path arc = "build/cli_hostile_local.rar";
+    fs::path captured = "build/cli_hostile_local_out.txt";
+    fs::remove(arc, ec);
+    fs::remove(captured, ec);
+    {
+        std::ofstream payload(f, std::ios::binary);
+        payload << std::string(100 * 1024, 'W');
+    }
+
+    int res = 1;
+#ifdef _WIN32
+    // Hold a deny-read share lock across the child process: io::FileStream's
+    // CreateFile gets a sharing violation, the sha256 pre-read fails, and the
+    // W: line fires with the local (hostile) name. Defender-style AV scanners
+    // briefly hold new files open, which defeats the exclusive request —
+    // retry, then skip (probe-then-skip pattern) rather than flake.
+    FILE* lock = nullptr;
+    for (int attempt = 0; attempt < 20 && lock == nullptr; ++attempt) {
+        lock = _fsopen(f.string().c_str(), "rb", _SH_DENYRW);
+        if (lock == nullptr) Sleep(100);
+    }
+    if (lock == nullptr) {
+        fs::remove_all(dir, ec);
+        std::cout << "[PASS] local_path_warnings_sanitized (skipped: AV holds the new file)\n";
+        return;
+    }
+    res = run_cli_capture("a -oi " + arc.string() + " " + f.string(), captured);
+    fclose(lock);
+#else
+    const bool chmodded = (::chmod(f.string().c_str(), 0) == 0);
+    bool unreadable = false;
+    if (chmodded) {
+        std::ifstream probe(f.string());
+        unreadable = !probe.good(); // privileged runners read mode-000 files: skip
+    }
+    if (unreadable) {
+        res = run_cli_capture("a -oi " + arc.string() + " " + f.string(), captured);
+    }
+    // chmod back BEFORE cleanup — remove_all cannot delete inside a
+    // read-protected tree (the dir_metadata_deferred lesson).
+    ::chmod(f.string().c_str(), 0600);
+    if (!unreadable) {
+        fs::remove_all(dir, ec);
+        std::cout << "[PASS] local_path_warnings_sanitized (skipped: privileged runner)\n";
+        return;
+    }
+#endif
+    (void)res; // the add may fail overall; the W: line is the contract
+    const std::string data = slurp_file(captured);
+    assert(data.find('\x1b') == std::string::npos);
+    assert(data.find('\x07') == std::string::npos);
+    assert(data.find("cannot read") != std::string::npos);
+    assert(data.find("?[3Barn?") != std::string::npos); // sanitized local name
+
+    fs::remove_all(dir, ec);
+    fs::remove(arc, ec);
+    fs::remove(captured, ec);
+    std::cout << "[PASS] local_path_warnings_sanitized (W: line sanitized)\n";
+}
+
+// v1.28 plan test 7 (`vt_capability_follows_sink`, M1 scope): capability is
+// a property of the sink fd. CI pipes make both fds non-TTY, so only the
+// seam consistency and the suppression switches are assertable here; the
+// TTY side is pinned by the pure-renderer tests in M2 and the manual gate.
+void test_vt_capability_follows_sink() {
+    openrar::cli::g_plain_mode = false;
+    openrar::cli::g_quiet_mode = false;
+    const bool cout_vt = openrar::cli::is_vt_supported_fd(1);
+    const bool cerr_vt = openrar::cli::is_vt_supported_fd(2);
+    assert(openrar::cli::is_vt_supported_for(std::cout) == cout_vt);
+    assert(openrar::cli::is_vt_supported_for(std::cerr) == cerr_vt);
+    // The suppression switches gate BOTH sinks (L3 contract).
+    openrar::cli::g_plain_mode = true;
+    assert(!openrar::cli::is_vt_supported_fd(1) && !openrar::cli::is_vt_supported_fd(2));
+    openrar::cli::g_quiet_mode = true;
+    assert(!openrar::cli::is_vt_supported_fd(1));
+    openrar::cli::g_plain_mode = false;
+    openrar::cli::g_quiet_mode = false;
+    std::cout << "[PASS] vt_capability_follows_sink (fd seam + suppression switches)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -2029,6 +2354,10 @@ int main() {
     test_zone_stream_never_restored();
     test_os_excludes_zone_capture();
     test_sanitize_for_display();
+    test_hostile_render_surfaces_e2e();
+    test_json_escape_utf8_validity();
+    test_local_path_warnings_sanitized();
+    test_vt_capability_follows_sink();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
 }

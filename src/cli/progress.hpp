@@ -107,13 +107,25 @@ inline std::string sanitize_for_display(const std::string& name) {
     return out;
 }
 
-inline bool is_vt_supported() {
+// Output stream for all progress rendering. --json-summary (stdout-purity
+// mode, v1.24 plan §5.2) points this at stderr so stdout carries only JSON.
+inline std::ostream* g_prog_out = &std::cout;
+inline void set_prog_out(std::ostream& os) {
+    g_prog_out = &os;
+}
+
+// v1.28 §7.1: VT capability is a property of the SINK stream, not of stdout.
+// In --json-summary mode progress renders to stderr while stdout carries the
+// JSON, so the probe must follow the fd actually written to. The fd-taking
+// core is the testable seam; the ostream wrapper resolves the two sinks the
+// CLI uses (g_prog_out points at std::cout or std::cerr only).
+inline bool is_vt_supported_fd(int fd) {
     if (g_plain_mode || g_quiet_mode) return false;
     if (getenv("NO_COLOR") != nullptr) return false;
 #ifdef _WIN32
-    HANDLE out_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    HANDLE out_handle = GetStdHandle(fd == 2 ? STD_ERROR_HANDLE : STD_OUTPUT_HANDLE);
     DWORD mode = 0;
-    if (_isatty(_fileno(stdout)) && GetConsoleMode(out_handle, &mode)) {
+    if (_isatty(fd) && GetConsoleMode(out_handle, &mode)) {
         SetConsoleMode(out_handle, mode | 0x0004 /* ENABLE_VIRTUAL_TERMINAL_PROCESSING */);
         return true;
     }
@@ -121,15 +133,16 @@ inline bool is_vt_supported() {
 #else
     const char* term = getenv("TERM");
     if (term && strcmp(term, "dumb") == 0) return false;
-    return isatty(fileno(stdout));
+    return ::isatty(fd);
 #endif
 }
 
-// Output stream for all progress rendering. --json-summary (stdout-purity
-// mode, v1.24 plan §5.2) points this at stderr so stdout carries only JSON.
-inline std::ostream* g_prog_out = &std::cout;
-inline void set_prog_out(std::ostream& os) {
-    g_prog_out = &os;
+inline bool is_vt_supported_for(std::ostream& os) {
+    return is_vt_supported_fd(&os == &std::cerr ? 2 : 1);
+}
+
+inline bool is_vt_supported() {
+    return is_vt_supported_for(*g_prog_out);
 }
 
 class CLIProgress {
