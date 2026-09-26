@@ -4,6 +4,19 @@
 #include "posix_xattr.hpp"
 #include "win32_meta.hpp"
 
+// NOTE: <windows.h> must be included at global scope — inside a namespace
+// its declarations (and the ARM64 _Interlocked* machinery in winbase.h)
+// would land in openrar::io and break the build (v1.27 tag run).
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include <cctype>
 #include <ctime>
 #include <cstdio>
@@ -86,14 +99,6 @@ std::string generate_quarantine_value(const std::string& flag4hex) {
 
 // ── Windows implementation (ADS read/write via native paths) ────────────────
 #ifdef _WIN32
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
 
 namespace {
 
