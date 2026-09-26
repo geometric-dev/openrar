@@ -94,6 +94,17 @@ every decoder — OpenRAR, WinRAR, UnRAR — reads the emitted archives natively
   extraction temp before the commit rename, with the shipped
   FHEXTRA_HTIME > utime > FILETIME precedence.
 
+- **Solid chains are denser — deletion/replace refusals now cover any
+  non-suffix member**: with window-solid packing the store fallback is
+  forbidden inside the chain (a stored member's bytes never enter the
+  decoder's window), so members that previously degraded to `method 0`
+  and fragmented solid runs now remain compressed chain members. The
+  suffix-only deletion contract (docs/invariants.md §1) therefore bites
+  exactly where it always stated: only the run's last chain member (or
+  the whole tail) deletes; a mid-chain delete is refused fail-closed.
+  The writer-conformance suite's solid-delete subtest was aligned with
+  this contract and now also pins the mid-chain refusal.
+
 ### Security
 
 - **Timestamp clamping wired** (`MtimeBounds`/`clamp_mtime`, shipped v1.24
