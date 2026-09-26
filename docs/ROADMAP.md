@@ -30,6 +30,12 @@
   docs/v1.24-implementation-plan.md (pre-analysis parsed critically —
   §0 verdicts; gaps found during the arc recorded in §0/§12).
 
+- **Parity features shipped silently in earlier arcs (README now
+  current):** `-rv` external `.rev` recovery volumes (RecoveryWriter:
+  write + repair-from-.rev), RAR 7.0 fractional/non-power-of-two
+  dictionary sizing (`OPENRAR_ABI_FEATURE_DICT_EX`), `-ver[n]` file
+  versioning (versioned adds + extraction filter + `FHEXTRA_VERSION`
+  preservation through mutations), `-oi` FILECOPY dedup.
 - **v1.23.0:** advanced SFX scripting shipped with its security
   architecture — directive engine, consent framework with prompt-fatigue
   controls, TempMode hardening, Job Object runtime policy, WinGUI.SFX,
@@ -236,12 +242,26 @@ architect review: docs/mmap-v1.25-design-review.md.
 
 ## v1.26.0 — Content-Defined Chunking (format-legality gated)
 
-Unchanged: Gate 0 format-legality review (cross-file backward references are
-not legal RAR5 outside solid chains); filters disabled/bounded per CDC chunk
-(same invariant class as `-mt` boundaries); bounded fingerprint index with
-honest memory model fed to `compress_plan.hpp`. Cross-check: cumulative
-output caps from `ExtractionLimits` apply to dedup-expanded streams
-(SECURITY_ARCHITECTURE §5.4).
+Gate 0 format-legality review COMPLETE (docs/v1.26-pre-analysis.md,
+architect-challenge conditional approval): chunk-store and cross-archive
+increment designs rejected as illegal RAR5; the surviving design is
+**CDC-driven solid-chain packing** — ordinary RAR5 solid compression with
+packer-side ordering only, reduction bounded by the LZ window, measured
+against a plain-solid same-window baseline (three-number gate). Filters
+disabled/bounded per CDC chunk (same invariant class as `-mt` boundaries);
+bounded fingerprint index with honest memory model fed to
+`compress_plan.hpp`; index-cap fallback = original order, reported.
+Cross-check: cumulative output caps from `ExtractionLimits` apply to
+dedup-expanded streams (SECURITY_ARCHITECTURE §5.4).
+
+**Rolled-in M-items** (from the v1.24/v1.25 security-arch reconciliation):
+- **Timestamp clamping wiring**: apply `MtimeBounds`/`clamp_mtime`
+  (extraction_limits.hpp — shipped v1.24) to file/dir time application;
+  clamps feed skip-with-report + the `timestamp_clamped` JSON flag
+  (SECURITY_ARCHITECTURE §4.4 reconciliation).
+- **RR vintage 0x11D gap logged**: the RAR 7.0-style recovery-record
+  vintage remains unclaimed (parity gap; see README "Not yet") — candidate
+  for a later recovery arc, not v1.26.
 
 ---
 
