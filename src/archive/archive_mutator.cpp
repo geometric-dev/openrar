@@ -15,6 +15,7 @@
 #include "../crypto/rng.hpp"
 #include "../io/win32_meta.hpp"
 #include "../io/posix_xattr.hpp"
+#include "../io/motw.hpp"
 #include <chrono>
 
 #include <algorithm>
@@ -1624,6 +1625,12 @@ bool ArchiveMutator::prepare_add_file(
         if (io::read_alternate_streams(src_file, streams)) {
             for (const auto& s : streams) {
                 if (s.data.size() > 0x40000000ULL) continue; // cap at 1 GiB per spec
+                // v1.27 M4 (SECURITY_ARCHITECTURE 4.3): Zone.Identifier is
+                // transport provenance, not file content — never carried as
+                // archive data. Restoration of archive-provided zone content
+                // is prohibited; propagation keys on the archive file's own
+                // ADS instead (io::motw).
+                if (io::is_zone_stream_name(s.name)) continue;
                 PreparedAdd child;
                 child.fb.is_service = true;
                 child.fb.service_type = "STM";
