@@ -18,13 +18,18 @@
 | **Quick-open + locator** | `QO` service caching file headers + `MHEXTRA_LOCATOR` patched in main header |
 | **Encryption** (`-p`/`-hp`) | AES-256 CBC + PBKDF2; file-level and header-level encryption |
 | **Recovery record** (`-rr[N%]`) | Reed-Solomon GF(2¹⁶) Cauchy parity via `rs16`; `MHEXTRA_LOCATOR` RROffset; repair command `r` |
+| **Recovery volumes** (`-rv`) | External `.partNN.rev` parity volumes for multi-volume sets; reconstructs missing/corrupt data volumes via `r` |
+| **Unix owner/group** (`-og`) | `FHEXTRA_OWNER` UID/GID + names, restore opt-in (`-ow`/`-og`) |
 | **NTFS ACLs** (`-ow`) | Save and restore NTFS access control lists |
 | **NTFS Alternate Data Streams** (`-os`) | Save and restore alternate streams (`STM` service blocks) |
 | **Redirections / symlinks** (`-ol`) | `FHEXTRA_REDIR`; file/dir symlinks + junctions |
 | **Multi-volume** (`-v<size>`) | `.partNN.rar` naming; per-slice CRC/BLAKE2 MACs; encrypted multi-volume |
+| **SFX scripting** | v1.23: directive engine with consent framework, TempMode hardening, runtime process policy |
+| **Extraction containment** | v1.24: syscall-level path containment (write-through-handle), atomic extraction with journal manifests, collision rejection, `--json-summary` |
+| **Mapped read engine** | v1.25: memory-mapped listing/header-scan (`--no-mmap` forces buffered; extraction always buffered) |
 | **Archive mutation** (`d`/`u`/`f`/`m`/`k`) | delete, update, freshen, move, lock — QO/locator stripped on mutation |
 | **Filter switches** (`-mc`) | `-mcE`/`-mcD`/`-mcL`/`-mcX` parsed and forwarded; DELTA/E8 applied by decoder |
-| **Not yet** | file versioning (`-ver`), fractional dictionary sizes (v1 / non-power-of-2), `.rev` recovery volumes (`-rv`) |
+| **Not yet** | file versioning (`-ver`), fractional dictionary sizes (v1 / non-power-of-2) |
 
 ---
 
@@ -93,9 +98,12 @@ openrar a -m5 -r best.rar ./src
 | `-tk[<date>]` / `-tl` | Archive mtime: keep original on update, set `YYYYMMDDHHMMSS`, or set to newest stored file. Applied by `a` on close. |
 | `-p[<pwd>]` / `-hp[<pwd>]` | Encryption: AES-256 CBC with PBKDF2 (`crypt5`). `-p` encrypts file data; `-hp` encrypts headers and file data. |
 | `-rr[N[%]]` | In-archive recovery record: Reed-Solomon GF(2¹⁶) parity (`rs16`) protecting up to RR header; repaired via `openrar r`. |
+| `-rv` | External `.rev` recovery volumes for multi-volume sets (`-v` required); rebuilt data volumes via `openrar r`. |
 | `-ow` | Save and restore NTFS file security and access control lists (ACLs) via `win32acl.cpp`. |
 | `-os` | Save and restore NTFS Alternate Data Streams (ADS) as `STM` service blocks via `win32stm.cpp`. |
-| `-ol` | Save symbolic links and junctions as `FHEXTRA_REDIR` records. |
+| `-ol` | Save symbolic links and junctions as `FHEXTRA_REDIR` records. Links are default-deny on extraction; `-ol` opts in (v1.24 §6.1). |
+| `--json-summary[=path]` | Machine-readable per-entry extraction report (v1.24); without `path`, stdout carries only JSON. |
+| `--no-mmap` | Force the buffered scan engine (v1.25; the mapped engine is default-on for listing). |
 | `-v<size>` | Create multi-volume split archive (`.part01.rar`, etc.) with per-slice checksums and MACs. |
 | `-mc[params]` | Compression filter control: `-mcE` (x86 E8/E9), `-mcD` (Delta), `-mcL` (Long range), etc. |
 | `-y` | Assume Yes (no prompts), `-o+` overwrite. |
