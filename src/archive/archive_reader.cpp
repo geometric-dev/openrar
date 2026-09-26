@@ -8,6 +8,7 @@
 #include "../io/extraction_journal.hpp"
 #include "../io/mapped_file.hpp"
 #include "../io/containment.hpp"
+#include "../io/posix_xattr.hpp"
 #include "../core/vint.hpp"
 #include "../crypto/crc32.hpp"
 #include "../crypto/blake2sp.hpp"
@@ -296,6 +297,50 @@ core::uint32 ArchiveReader::sanitize_extract_mode(core::uint32 raw_mode, bool pr
     return mode & static_cast<core::uint32>(~umask_bits);
 }
 
+bool ArchiveReader::xattr_restorable(const std::string& name, bool security_opt_in) {
+    // v1.27 plan §1.4: restore allow-list. user.* and the macOS metadata
+    // namespaces (Finder tags) restore by default; security.*/trusted.*
+    // carry OS security semantics (SELinux labels, etc.) and restore only
+    // with the explicit --xattr-security admin opt-in — the same
+    // default-deny + documented-trust-decision line as --preserve-suid
+    // (SECURITY_ARCHITECTURE §4.3). Everything else is never restored from
+    // archive content: system.* would side-step the -ow ACL policy, and
+    // quarantine/provenance namespaces are transport metadata owned by the
+    // local OS, not by the archive.
+    static constexpr const char* kDefaultNamespaces[] = {
+        "user.", "com.apple.metadata:", "com.apple.metadata."};
+    for (const char* prefix : kDefaultNamespaces) {
+        if (name.rfind(prefix, 0) == 0) return true;
+    }
+    if (security_opt_in) {
+        static constexpr const char* kPrivilegedNamespaces[] = {"security.", "trusted."};
+        for (const char* prefix : kPrivilegedNamespaces) {
+            if (name.rfind(prefix, 0) == 0) return true;
+        }
+    }
+    return false;
+}
+
+namespace {
+// Applies allow-listed extended attributes; fail-soft per attribute
+// (v1.27 plan §3 FMM row R): unsupported filesystems (ENOTSUP/ENOSYS) and
+// EPERM-class failures skip the attribute — extraction status is unchanged.
+// Windows builds compile to a no-op (capture is platform-gated too).
+void apply_xattrs_restorable(const std::vector<format::FileBlock::FileXattr>& xattrs,
+                             const std::filesystem::path& target, bool security_opt_in) {
+#ifndef _WIN32
+    for (const auto& xa : xattrs) {
+        if (!ArchiveReader::xattr_restorable(xa.name, security_opt_in)) continue;
+        (void)io::set_xattr(target, xa.name, xa.value.data(), xa.value.size());
+    }
+#else
+    (void)xattrs;
+    (void)target;
+    (void)security_opt_in;
+#endif
+}
+} // namespace
+
 void ArchiveReader::apply_deferred_dir_metadata() {
     // Bottom-up: deepest first, so restrictive modes and final mtimes land
     // after every child write (plan §7.4). Best-effort throughout.
@@ -340,6 +385,11 @@ void ArchiveReader::apply_deferred_dir_metadata() {
             ::chmod(meta.path.c_str(),
                     static_cast<mode_t>(sanitize_extract_mode(
                         meta.mode, preserve_suid_, static_cast<core::uint32>(cached_umask()))));
+        }
+        // v1.27 M3: allow-listed directory xattrs ride the deferred path
+        // (applied with modes/mtimes, bottom-up). Fail-soft per attribute.
+        if (!meta.xattrs.empty()) {
+            apply_xattrs_restorable(meta.xattrs, meta.path, restore_xattr_security_);
         }
 #endif
     }
@@ -2311,6 +2361,16 @@ bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesyst
                                                               preserve_suid_, cached_umask())));
         }
 #endif
+        // v1.27 M3: restore allow-listed extended attributes on the
+        // committed path (header metadata — the reader-level surface, like
+        // modes, also covers DLL extraction). Regular files and
+        // FILECOPY-materialized copies; directories defer to the
+        // bottom-up path; symlinks/hardlinks carry none.
+        if ((entry.header.file_flags & format::FHFL_DIRECTORY) == 0 &&
+            (entry.header.redir_type == 0 || entry.header.redir_type == 5) &&
+            !entry.header.xattrs.empty()) {
+            apply_xattrs_restorable(entry.header.xattrs, dest_path, restore_xattr_security_);
+        }
     }
     return ok;
 }
@@ -2373,7 +2433,10 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
                     meta.mtime_unix = static_cast<core::uint64>(clamp_mtime(raw, mtime_bounds_));
                 }
             }
-            if (meta.has_mode || meta.has_mtime) pending_dir_meta_.push_back(std::move(meta));
+            if (meta.has_mode || meta.has_mtime || !entry.header.xattrs.empty()) {
+                meta.xattrs = entry.header.xattrs;
+                pending_dir_meta_.push_back(std::move(meta));
+            }
         }
         return ok;
     }

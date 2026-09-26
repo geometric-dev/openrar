@@ -127,6 +127,18 @@ public:
     // archived POSIX modes lose their SUID/SGID/sticky bits.
     void set_preserve_suid(bool ps) { preserve_suid_ = ps; }
 
+    // v1.27 plan §1.4: --xattr-security admin opt-in — when false (default),
+    // security.*/trusted.* extended attributes are never restored from the
+    // record data (user.*/com.apple.metadata.* restore by default).
+    void set_restore_xattr_security(bool v) { restore_xattr_security_ = v; }
+
+    // Restore policy shared by file commit and deferred dir restoration:
+    // user.* + com.apple.metadata.* always; security.*/trusted.* only with
+    // the opt-in (the --preserve-suid model); everything else never — the
+    // system.* ACL side door, transport-provenance namespaces, resource
+    // forks (SECURITY_ARCHITECTURE §4.3).
+    static bool xattr_restorable(const std::string& name, bool security_opt_in);
+
     // Mode policy shared by file chmod and deferred dir restoration:
     // umask-bounded, SUID/SGID/sticky masked unless preserve_suid.
     static core::uint32 sanitize_extract_mode(core::uint32 raw_mode, bool preserve_suid,
@@ -358,6 +370,9 @@ private:
         core::uint32 mode = 0; // POSIX mode bits (host_os == 1 archives)
         bool has_mtime = false;
         core::uint64 mtime_unix = 0;
+        // v1.27: allow-listed attributes restore bottom-up with the rest of
+        // the directory's deferred metadata.
+        std::vector<format::FileBlock::FileXattr> xattrs;
     };
     std::vector<PendingDirMeta> pending_dir_meta_;
 
@@ -365,6 +380,7 @@ private:
     static bool ensure_parent_dir(const std::filesystem::path& dest_path,
                                   const std::string& entry_name);
     bool preserve_suid_{false};
+    bool restore_xattr_security_{false}; // --xattr-security (v1.27)
 
     // v1.24 M5: impl bodies of the public extract wrappers — the wrappers
     // record successful destinations into session_created_paths_ (plan §6.3).
