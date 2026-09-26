@@ -132,6 +132,18 @@ public:
     // record data (user.*/com.apple.metadata.* restore by default).
     void set_restore_xattr_security(bool v) { restore_xattr_security_ = v; }
 
+    // v1.28 M2: instance-level hooks for the DISK extraction paths (stored
+    // chunks, compressed callback, encrypted one-shot, hardlink copy). Unlike
+    // the open/scan hooks (per-call, streaming APIs), these ride the reader so
+    // every extraction engine — CLI sequential, parallel slot readers, DLL —
+    // can drive within-file progress and cooperative cancel without changing
+    // call signatures. Slots are exclusive per job, so per-reader hooks are
+    // race-free; a non-zero cancel return aborts the in-flight entry (the
+    // AtomicWriter abandons the temp; per-directory journals keep the sweep
+    // exact) and last_cancel_requested() reports why the call failed.
+    void set_disk_hooks(const ReaderHooks& hooks) { disk_hooks_ = hooks; }
+    bool last_cancel_requested() const { return last_cancel_requested_; }
+
     // Restore policy shared by file commit and deferred dir restoration:
     // user.* + com.apple.metadata.* always; security.*/trusted.* only with
     // the opt-in (the --preserve-suid model); everything else never — the
@@ -381,6 +393,15 @@ private:
                                   const std::string& entry_name);
     bool preserve_suid_{false};
     bool restore_xattr_security_{false}; // --xattr-security (v1.27)
+
+    // v1.28 M2: disk-extraction hooks (see set_disk_hooks) + cancel outcome
+    // of the MOST RECENT extract_entry call.
+    ReaderHooks disk_hooks_{};
+    bool last_cancel_requested_{false};
+    core::uint64 disk_progress_done_{0};
+
+    // v1.28 M2: poll the disk-hook cancel request (records the outcome).
+    bool disk_poll_cancel();
 
     // v1.24 M5: impl bodies of the public extract wrappers — the wrappers
     // record successful destinations into session_created_paths_ (plan §6.3).

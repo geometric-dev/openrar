@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 #include "../../src/cli/progress.hpp"
+#include "../../src/cli/tui.hpp"
 #ifdef _WIN32
 #include <windows.h>
 #include <share.h>
@@ -2312,6 +2313,248 @@ void test_vt_capability_follows_sink() {
     std::cout << "[PASS] vt_capability_follows_sink (fd seam + suppression switches)\n";
 }
 
+// ── v1.28 M2: dual-progress TUI + cooperative cancel ─────────────────────────
+
+// Splits on '\n' and strips ESC sequences so visible width = code points.
+static size_t tui_visible_cols(const std::string& line) {
+    std::string plain;
+    for (size_t i = 0; i < line.size();) {
+        if (line[i] == '\x1b') {
+            size_t j = i + 1;
+            if (j < line.size() && line[j] == '[') {
+                ++j;
+                while (j < line.size() && !std::isalpha(static_cast<unsigned char>(line[j]))) ++j;
+                if (j < line.size()) ++j; // CSI final byte
+                i = j;
+                continue;
+            }
+            ++i;
+            continue;
+        }
+        plain += line[i];
+        ++i;
+    }
+    size_t cols = 0;
+    for (size_t i = 0; i < plain.size();) {
+        const size_t len = openrar::cli::utf8_seq_len(static_cast<unsigned char>(plain[i]));
+        if (i + len > plain.size()) break;
+        ++cols;
+        i += len;
+    }
+    return cols;
+}
+
+static std::vector<std::string> tui_split_lines(const std::string& s) {
+    std::vector<std::string> lines;
+    size_t start = 0;
+    for (size_t i = 0; i <= s.size(); ++i) {
+        if (i == s.size() || s[i] == '\n') {
+            lines.push_back(s.substr(start, i - start));
+            start = i + 1;
+        }
+    }
+    return lines;
+}
+
+// Plan test 8 (`renderer_width_clamp_no_wrap`) + test 9
+// (`renderer_truncate_utf8_safe`) + the §7.1 choke point: the pure render
+// core clamps EVERY line to the requested width at any width, truncates names
+// on sequence boundaries with '…', and re-sanitizes hostile names (the
+// renderer is the release-gate choke point).
+void test_renderer_core() {
+    using openrar::cli::render_tui;
+    using openrar::cli::TuiState;
+    TuiState st;
+    st.badge = "EXTRACTING";
+    st.fg_color = "\x1b[38;2;95;184;176m";
+    st.bg_color = "\x1b[48;2;19;37;35m";
+    st.total_files = 37;
+    st.done_files = 12;
+    st.total_bytes = 1000;
+    st.done_bytes = 470;
+    st.current_name = "big_file.iso";
+    st.current_done = 620;
+    st.current_total = 1000;
+
+    // test 8: region stays 4 lines and fits ANY width (20..200).
+    for (int width : {20, 40, 80, 200}) {
+        const auto lines = tui_split_lines(render_tui(st, width));
+        assert(lines.size() == 4);
+        for (const auto& line : lines) {
+            assert(tui_visible_cols(line) <= static_cast<size_t>(width));
+        }
+    }
+    // A 300-char name cannot wrap the region at width 30.
+    st.current_name = std::string(300, 'a') + ".bin";
+    for (const auto& line : tui_split_lines(render_tui(st, 30))) {
+        assert(tui_visible_cols(line) <= static_cast<size_t>(30));
+    }
+
+    // test 9: CJK name truncates on sequence boundaries ('…' appended, the
+    // whole line stays valid UTF-8 — no split bytes).
+    st.current_name = "\xe4\xb8\xad\xe6\x96\x87\xe6\x96\x87\xe4\xbb\xb6\xe5\x90\x8d.dat";
+    for (const auto& line : tui_split_lines(render_tui(st, 24))) {
+        assert(openrar::io::is_valid_utf8(line));
+        assert(tui_visible_cols(line) <= static_cast<size_t>(24));
+    }
+    assert(render_tui(st, 24).find("\xe2\x80\xa6") != std::string::npos);
+    // A short name is never truncated.
+    st.current_name = "ok.txt";
+    assert(render_tui(st, 120).find("ok.txt") != std::string::npos);
+    assert(render_tui(st, 120).find("\xe2\x80\xa6") == std::string::npos);
+
+    // §7.1 choke point: the renderer re-sanitizes the name field — a raw
+    // ESC-led sequence never appears, the '?'-substituted text does.
+    st.current_name = std::string("x") + "\x1b[4;20H" + "y.txt";
+    const std::string hostile = render_tui(st, 120);
+    assert(hostile.find("\x1b[4;20H") == std::string::npos);
+    assert(hostile.find("x?[4;20Hy.txt") != std::string::npos);
+
+    // Spin mode renders exactly ONE line; zero totals do not divide by zero.
+    TuiState sp;
+    sp.mode = TuiState::Mode::Spin;
+    sp.spin_frame = "\xe2\xa0\x8b";
+    sp.spin_message = "Scanning files";
+    assert(tui_split_lines(render_tui(sp, 40)).size() == 1);
+    TuiState zero;
+    zero.badge = "X";
+    assert(!render_tui(zero, 80).empty());
+    std::cout << "[PASS] renderer_width_clamp_no_wrap + truncate_utf8_safe + choke point\n";
+}
+
+// Plan test 10 (`renderer_cancel_state_machine`, non-TTY legs): the cancel
+// scope arms to a NO-OP without a TTY, pause/resume/disarm are safe no-ops,
+// and the shared flag stays clean. (The armed state machine on a real
+// terminal is the manual gate; the flag side is exercised by the cancel e2e
+// tests below through the env hooks.)
+void test_keyboard_cancel_nontty_nop() {
+    auto& kb = openrar::cli::KeyboardCancel::instance();
+    kb.arm(false);
+    assert(!kb.active());
+    kb.pause();
+    kb.resume();
+    kb.arm(true);       // stdin piped under ctest → still disarmed
+    if (!kb.active()) { // interactive manual runs legitimately arm here
+        kb.pause();
+        kb.resume();
+    }
+    kb.disarm();
+    assert(!kb.active());
+    assert(!openrar::cli::g_tui_cancel.load());
+    std::cout << "[PASS] renderer_cancel_state_machine (non-TTY legs, flag clean)\n";
+}
+
+static void set_cancel_hook(const char* name, const char* value) {
+#ifdef _WIN32
+    const std::string kv = std::string(name) + "=" + (value ? value : "");
+    _putenv(kv.c_str());
+#else
+    if (value && *value) {
+        ::setenv(name, value, 1);
+    } else {
+        ::unsetenv(name);
+    }
+#endif
+}
+
+static bool dir_has_tmp_leftovers(const std::filesystem::path& dir) {
+    std::error_code ec;
+    if (!std::filesystem::exists(dir, ec)) return false;
+    for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+        if (e.path().extension() == ".tmp") return true;
+        (void)e;
+    }
+    return false;
+}
+
+// Plan test 13 (`midfile_cancel_via_hooks`): the cooperative-cancel predicate
+// fires DURING a large file's decode via the reader disk hooks; the run exits
+// user-break (255), the JSON reports aborted, and no partial temp survives.
+void test_midfile_cancel_via_hooks() {
+    namespace fs = std::filesystem;
+    fs::path src = "build/cli_cancel_big.bin";
+    fs::path arc = "build/cli_cancel_big.rar";
+    fs::path out = "build/cli_cancel_big_out";
+    fs::path captured = "build/cli_cancel_out.txt";
+    std::error_code ec;
+    fs::remove(arc, ec);
+    fs::remove(captured, ec);
+    fs::remove_all(out, ec);
+    fs::remove(src, ec);
+    {
+        std::ofstream payload(src, std::ios::binary);
+        payload << std::string(4 * 1024 * 1024, 'W');
+    }
+    int res = system_exit_code(
+        run_cli_capture("a -m0 -q " + arc.string() + " " + src.string(), captured));
+    assert(res == 0);
+
+    set_cancel_hook("OPENRAR_TEST_CANCEL_AFTER_BYTES", "1048576");
+    res = system_exit_code(run_cli_capture("x " + arc.string() + " " + out.string(), captured));
+    set_cancel_hook("OPENRAR_TEST_CANCEL_AFTER_BYTES", "");
+    assert(res == 255); // EXIT_USER_BREAK (pinned taxonomy)
+    const std::string data = slurp_file(captured);
+    assert(data.find("User break") != std::string::npos);
+    assert(data.find("\"aborted\":true") != std::string::npos);
+    assert(!dir_has_tmp_leftovers(out));             // AtomicWriter abandoned + removed
+    assert(!fs::exists(out / "cli_cancel_big.bin")); // never committed
+
+    // Without the hook the same archive extracts cleanly (hook is inert).
+    res = system_exit_code(run_cli_capture("x " + arc.string() + " " + out.string(), captured));
+    assert(res == 0);
+    assert(fs::exists(out / "cli_cancel_big.bin"));
+
+    fs::remove(arc, ec);
+    fs::remove(captured, ec);
+    fs::remove_all(out, ec);
+    fs::remove(src, ec);
+    std::cout << "[PASS] midfile_cancel_via_hooks (255 + aborted JSON + no temp)\n";
+}
+
+// Plan test 12 (`parallel_cancel_journal_sweep`): between-entries cancel under
+// -mt4 — two files complete, the rest fast-fail as unprocessed, exit 255, and
+// no journal-recorded temp is left behind.
+void test_parallel_cancel_journal_sweep() {
+    namespace fs = std::filesystem;
+    fs::path arc = "build/cli_cancel_par.rar";
+    fs::path out = "build/cli_cancel_par_out";
+    fs::path captured = "build/cli_cancel_par_out.txt";
+    std::error_code ec;
+    fs::remove(arc, ec);
+    fs::remove(captured, ec);
+    fs::remove_all(out, ec);
+    std::string srcs;
+    for (int i = 0; i < 8; ++i) {
+        fs::path f = "build/cli_cancel_par_" + std::to_string(i) + ".bin";
+        {
+            std::ofstream payload(f, std::ios::binary);
+            payload << std::string(1024 * 1024, static_cast<char>('A' + i));
+        }
+        srcs += " " + f.string();
+    }
+    int res = system_exit_code(run_cli_capture("a -m0 -q " + arc.string() + srcs, captured));
+    assert(res == 0);
+
+    set_cancel_hook("OPENRAR_TEST_CANCEL_AFTER_FILES", "2");
+    res =
+        system_exit_code(run_cli_capture("x -mt4 " + arc.string() + " " + out.string(), captured));
+    set_cancel_hook("OPENRAR_TEST_CANCEL_AFTER_FILES", "");
+    assert(res == 255);
+    const std::string data = slurp_file(captured);
+    assert(data.find("User break") != std::string::npos);
+    assert(data.find("\"aborted\":true") != std::string::npos);
+    assert(data.find("\"unprocessed\"") != std::string::npos);
+    assert(!dir_has_tmp_leftovers(out));
+
+    fs::remove(arc, ec);
+    fs::remove(captured, ec);
+    fs::remove_all(out, ec);
+    for (int i = 0; i < 8; ++i) {
+        fs::remove("build/cli_cancel_par_" + std::to_string(i) + ".bin", ec);
+    }
+    std::cout << "[PASS] parallel_cancel_journal_sweep (255 + unprocessed + no temp)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -2358,6 +2601,10 @@ int main() {
     test_json_escape_utf8_validity();
     test_local_path_warnings_sanitized();
     test_vt_capability_follows_sink();
+    test_renderer_core();
+    test_keyboard_cancel_nontty_nop();
+    test_midfile_cancel_via_hooks();
+    test_parallel_cancel_journal_sweep();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
 }
