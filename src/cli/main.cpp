@@ -476,7 +476,9 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
                 }
             }
             if (!cmt_text.empty()) {
-                std::cout << "Comment:\n" << cmt_text << "\n\n";
+                // §7.1 release gate (v1.28): the comment is attacker-
+                // controlled bytes; render through the terminal sanitizer.
+                std::cout << "Comment:\n" << sanitize_for_display(cmt_text) << "\n\n";
             }
             if (!technical) {
                 std::cout << " Attributes      Size     Date     Time   Name\n"
@@ -532,8 +534,11 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
                 }
                 if (entry.header.has_owner) {
                     if (!entry.header.owner_user.empty() || !entry.header.owner_group.empty()) {
-                        std::cout << "  User/Group:  " << entry.header.owner_user << " / "
-                                  << entry.header.owner_group << "\n";
+                        // §7.1 release gate (v1.28): owner names are archive-
+                        // controlled (FHEXTRA_UOWNER) — sanitize like names.
+                        std::cout << "  User/Group:  "
+                                  << sanitize_for_display(entry.header.owner_user) << " / "
+                                  << sanitize_for_display(entry.header.owner_group) << "\n";
                     }
                     if (entry.header.has_owner_uid || entry.header.has_owner_gid) {
                         std::cout << "  UID/GID:     " << entry.header.owner_uid << " / "
@@ -1602,7 +1607,10 @@ int add_to_archive(
             }
             core::uint64 sz = std::filesystem::file_size(p, stat_ec);
             if (stat_ec) {
-                std::cerr << "W: cannot stat " << p.string() << ", skipping\n";
+                // §7.1 (v1.28): local names render through the sanitizer —
+                // §2.2 local racing can plant hostile names in shared dirs.
+                std::cerr << "W: cannot stat " << sanitize_for_display(p.string())
+                          << ", skipping\n";
                 continue;
             }
             std::string entry =
@@ -1770,7 +1778,7 @@ int add_to_archive(
             if (item.file_size < oi_min_size) continue;
             std::array<core::byte, 32> digest{};
             if (!sha256_file_content(item.src_path, digest.data())) {
-                std::cerr << "W: cannot read " << item.src_path.string()
+                std::cerr << "W: cannot read " << sanitize_for_display(item.src_path.string())
                           << " for identical-file comparison, adding normally\n";
                 continue;
             }
@@ -1854,7 +1862,7 @@ int add_to_archive(
                 break;
             }
             if (fp_result == CDC_FP_UNREADABLE) {
-                std::cerr << "W: cannot read " << item.src_path.string()
+                std::cerr << "W: cannot read " << sanitize_for_display(item.src_path.string())
                           << " for CDC fingerprinting; packing it without affinity\n";
                 continue;
             }
