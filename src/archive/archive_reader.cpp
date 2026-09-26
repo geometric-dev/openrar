@@ -2338,6 +2338,16 @@ bool ArchiveReader::ensure_parent_dir(const std::filesystem::path& dest_path,
     return true;
 }
 
+// v1.28 M2: poll the disk-hook cancel request (records the outcome so the
+// caller can distinguish cooperative cancel from other extraction failures).
+bool ArchiveReader::disk_poll_cancel() {
+    if (disk_hooks_.cancel && disk_hooks_.cancelled()) {
+        last_cancel_requested_ = true;
+        return true;
+    }
+    return false;
+}
+
 bool ArchiveReader::extract_entry(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
                                   const std::string& password, const ExtractionLimits* limits,
                                   LimitState* state) {
@@ -2387,6 +2397,10 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
     bad_password_ = false;
     // v1.26 M3: the clamp flag describes THIS entry's time application.
     last_mtime_clamped_ = false;
+    // v1.28 M2: disk-hook state is per-entry — progress restarts at zero and
+    // the cancel outcome describes this call only.
+    last_cancel_requested_ = false;
+    disk_progress_done_ = 0;
 
     // Directory record (FHFL_DIRECTORY, no data area): materialize the
     // directory itself so empty directories survive extraction. Best-effort —
@@ -2579,6 +2593,10 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
                 for (;;) {
                     const size_t got = src.read(buf, sizeof(buf));
                     if (got == 0) break;
+                    if (disk_poll_cancel()) {
+                        writer.abandon();
+                        return false; // cooperative cancel (v1.28 disk hooks)
+                    }
                     if (!debit_bytes(got, limits, state)) {
                         writer.abandon();
                         return false; // byte cap exceeded (plan §7.2)
@@ -2587,6 +2605,8 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
                         writer.abandon();
                         return false;
                     }
+                    disk_progress_done_ += got;
+                    disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
                 }
                 if (!writer.commit()) return false;
                 return true;
@@ -2653,11 +2673,17 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
         if (entry.header.method == 0) {
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > entry.memory_data.size()) write_len = entry.memory_data.size();
+            if (disk_poll_cancel()) return fail();
             if (out.write(entry.memory_data.data(), write_len) != write_len) return fail();
+            disk_progress_done_ = write_len;
+            disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
             if (m_use_blake) m_b2.update(entry.memory_data.data(), write_len);
             if (m_use_crc) m_crc.update(entry.memory_data.data(), write_len);
         } else {
             auto cb = [&](const core::byte* data, size_t size) -> bool {
+                if (disk_poll_cancel()) return false;
+                disk_progress_done_ += size;
+                disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
                 if (m_use_blake) m_b2.update(data, size);
                 if (m_use_crc) m_crc.update(data, size);
                 return out.write(data, size) == size;
@@ -2744,11 +2770,17 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
         if (entry.header.method == 0) {
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > cipher.size()) write_len = cipher.size();
+            if (disk_poll_cancel()) return fail();
             if (out.write(cipher.data(), write_len) != write_len) return fail();
+            disk_progress_done_ = write_len;
+            disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
             if (v_use_blake) v_b2.update(cipher.data(), write_len);
             if (v_use_crc) v_crc.update(cipher.data(), write_len);
         } else {
             auto cb = [&](const core::byte* data, size_t size) -> bool {
+                if (disk_poll_cancel()) return false;
+                disk_progress_done_ += size;
+                disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
                 if (v_use_blake) v_b2.update(data, size);
                 if (v_use_crc) v_crc.update(data, size);
                 return out.write(data, size) == size;
@@ -2794,6 +2826,9 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
     crypto::Blake2sp v_b2;
     crypto::Crc32 v_crc;
     auto cb = [&](const core::byte* data, size_t size) -> bool {
+        if (disk_poll_cancel()) return false;
+        disk_progress_done_ += size;
+        disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
         if (v_use_blake) v_b2.update(data, size);
         if (v_use_crc) v_crc.update(data, size);
         return out.write(data, size) == size;
@@ -2877,7 +2912,10 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
                 size_t take = static_cast<size_t>(
                     std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
                 if (vs.read(buf, take) != take) return fail();
+                if (disk_poll_cancel()) return fail();
                 if (out.write(buf, take) != take) return fail();
+                disk_progress_done_ += take;
+                disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
                 if (use_blake) blake.update(buf, take);
                 if (use_crc) crc.update(buf, take);
                 remaining -= take;
@@ -2907,7 +2945,10 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
         size_t take =
             static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
         if (stream_.read(buf, take) != take) return fail();
+        if (disk_poll_cancel()) return fail();
         if (out.write(buf, take) != take) return fail();
+        disk_progress_done_ += take;
+        disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
         if (use_blake) blake.update(buf, take);
         if (use_crc) crc.update(buf, take);
         remaining -= take;
