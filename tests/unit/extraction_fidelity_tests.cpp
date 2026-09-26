@@ -8,6 +8,7 @@
 // plus the §6.1 default-deny pin.
 
 #include "../../src/archive/archive_reader.hpp"
+#include "../../src/archive/archive_mutator.hpp"
 #include "../../src/format/header_writer.hpp"
 #include "../../src/io/file_stream.hpp"
 #include "../../src/io/path_util.hpp"
@@ -346,6 +347,79 @@ void test_dir_metadata_deferred() {
     rm(dir);
 }
 
+// ── v1.27 M5: FILECOPY materialization debits the byte caps (§5.4 parity) ───
+
+void test_filecopy_debits_caps() {
+    const fs::path dir = make_dir("fc_cap");
+    const fs::path out = dir / "out";
+    fs::create_directories(out);
+
+    // Two identical 128 KiB sources: the -oi machinery stores the master and
+    // emits a FILECOPY reference (no data area) for the duplicate.
+    const std::string body(128 * 1024, 'F');
+    const fs::path master = dir / "master.bin";
+    const fs::path dup = dir / "dup.bin";
+    for (const fs::path& p : {master, dup}) {
+        std::ofstream f(p, std::ios::binary);
+        assert(f);
+        f.write(body.data(), static_cast<std::streamsize>(body.size()));
+    }
+
+    fs::path arc = dir / "fc.rar";
+    {
+        archive::ArchiveMutator::PreparedAdd pm;
+        assert(archive::ArchiveMutator::prepare_add_file(master, "master.bin", 0, "", pm));
+        archive::ArchiveMutator::PreparedAdd pr;
+        assert(archive::ArchiveMutator::prepare_add_filecopy(dup, "dup.bin", "master.bin", pr));
+        std::vector<archive::ArchiveMutator::PreparedAdd> batch;
+        batch.push_back(std::move(pm));
+        batch.push_back(std::move(pr));
+        std::string detail;
+        assert(archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {}, false, {},
+                                                           detail) == 0);
+    }
+
+    archive::ArchiveReader reader;
+    reader.set_extract_symlinks(true); // FILECOPY refs follow the -ol opt-in
+    reader.set_extraction_root(out);
+    assert(reader.open(arc));
+    assert(reader.entries().size() == 2u);
+    assert(reader.entries()[0].header.redir_type == 0);
+    assert(reader.entries()[1].header.redir_type == 5);
+
+    // The ref runs with a zero cap: any debited byte must refuse the
+    // materialization instead of silently copying outside the accounting.
+    {
+        archive::ExtractionLimits limits;
+        limits.max_total_output_bytes = 0;
+        archive::LimitState state;
+        // Master first with a generous cap — its bytes must land.
+        archive::ExtractionLimits wide;
+        assert(reader.extract_entry(reader.entries()[0], out / "master.bin", "", &wide, &state));
+        assert(std::filesystem::exists(out / "master.bin"));
+        // REF with the zero cap: materialization must refuse (debit fires)
+        // instead of silently copying outside the accounting.
+        assert(!reader.extract_entry(reader.entries()[1], out / "dup.bin", "", &limits, &state));
+        assert(!std::filesystem::exists(out / "dup.bin"));
+    }
+    // Generous cap: the reference materializes byte-identically.
+    {
+        archive::ArchiveReader reader2;
+        reader2.set_extract_symlinks(true);
+        reader2.set_extraction_root(out);
+        assert(reader2.open(arc));
+        archive::ExtractionLimits wide;
+        archive::LimitState state;
+        assert(reader2.extract_entry(reader2.entries()[0], out / "m2.bin", "", &wide, &state));
+        assert(reader2.extract_entry(reader2.entries()[1], out / "dup.bin", "", &wide, &state));
+        std::ifstream f(out / "dup.bin", std::ios::binary);
+        std::string got((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        assert(got == body);
+    }
+    std::cout << "[PASS] filecopy_debits_caps: materialization honors LimitState\n";
+    rm(dir);
+}
+
 // ── §6.1 default-deny pin ────────────────────────────────────────────────────
 
 void test_links_default_deny() {
@@ -533,6 +607,7 @@ int main() {
     test_links_default_deny();
     test_xattr_restore_policy();
     test_xattr_restore_roundtrip();
+    test_filecopy_debits_caps();
     std::cout << "All extraction_fidelity_tests passed.\n";
     return 0;
 }
