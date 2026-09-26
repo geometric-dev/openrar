@@ -173,8 +173,8 @@ static void bench_listing_50gb() {
     // METHOD_BUFFERED, FILE_ANY_ACCESS); the value is the documented ABI
     // constant — winioctl.h is excluded by WIN32_LEAN_AND_MEAN). If sparse
     // is unsupported, skip: NTFS would otherwise allocate every 500 KiB gap.
-    bool sparse_ok = true;
 #ifdef _WIN32
+    bool sparse_ok = true;
     {
         HANDLE h = CreateFileW((dir / "sparse_50g.rar").wstring().c_str(), GENERIC_WRITE, 0,
                                nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
