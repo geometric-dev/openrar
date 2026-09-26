@@ -5,10 +5,12 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <string>
 #include <vector>
 #include "../../src/cli/progress.hpp"
@@ -754,6 +756,319 @@ void test_cli_dict_size_flag() {
     std::cout << "[PASS] CLI -md<size> dictionary configuration\n";
 }
 
+// v1.26 M2a: deterministic content generator for the -oi duplicate corpus.
+// Long same-byte runs keep the corpus compressible, so entries stay
+// method>0 and actually join solid chains (the store fallback would opt
+// every entry out of chain membership and the precedence pin would be
+// vacuous).
+static std::vector<char> make_pattern_bytes(size_t n, unsigned seed) {
+    std::vector<char> v(n);
+    for (size_t i = 0; i < n; ++i) {
+        v[i] = static_cast<char>(((i / 64) % 251) ^ (seed * 7));
+    }
+    return v;
+}
+
+static void write_pattern_file(const std::filesystem::path& p, size_t n, unsigned seed) {
+    std::vector<char> data = make_pattern_bytes(n, seed);
+    std::ofstream f(p, std::ios::binary);
+    assert(f);
+    f.write(data.data(), static_cast<std::streamsize>(data.size()));
+    assert(f);
+}
+
+static bool file_bytes_equal(const std::filesystem::path& a, const std::filesystem::path& b) {
+    std::ifstream fa(a, std::ios::binary);
+    std::ifstream fb(b, std::ios::binary);
+    if (!fa || !fb) return false;
+    char ba[4096], bb[4096];
+    for (;;) {
+        fa.read(ba, sizeof(ba));
+        fb.read(bb, sizeof(bb));
+        auto ga = fa.gcount(), gb = fb.gcount();
+        if (ga != gb) return false;
+        if (ga == 0) return true;
+        if (std::memcmp(ba, bb, static_cast<size_t>(ga)) != 0) return false;
+    }
+}
+
+// Plan test 1 (v1.26 §6): `a -oi1` on a corpus with exact duplicates emits
+// FHEXTRA_REDIR type-5 entries; extraction reproduces identical bytes. Also
+// pins the README -oi row (Pillar 7.6 drift fix) and the default 64 KiB
+// comparison threshold (below it, identical files are stored normally).
+static void test_oi_creation_side_emitted() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_oi_create";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    const size_t big = 192 * 1024;
+    fs::path master = temp_dir / "aa.bin";
+    fs::path dup = temp_dir / "ab.bin";
+    fs::path uniq = temp_dir / "zz.bin";
+    fs::path s1 = temp_dir / "s1.bin";
+    fs::path s2 = temp_dir / "s2.bin";
+    write_pattern_file(master, big, 1);
+    write_pattern_file(dup, big, 1); // byte-identical to aa.bin
+    write_pattern_file(uniq, big, 2);
+    write_pattern_file(s1, 1024, 3); // identical pair BELOW the default
+    write_pattern_file(s2, 1024, 3); // 64 KiB threshold: must stay stored
+
+    fs::path arc = temp_dir / "oi.rar";
+    std::string cmd = get_cli_path() + " a -oi1 -q " + arc.string() + " " + master.string() + " " +
+                      dup.string() + " " + uniq.string() + " " + s1.string() + " " + s2.string() +
+                      " > " DEVNULL " 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+    assert(fs::exists(arc));
+
+    // Header-level assertions: the duplicate became a FILECOPY redir to the
+    // master; everything else is an ordinary stored/packed entry.
+    {
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc));
+        std::map<std::string, const openrar::archive::ArchiveEntry*> by_name;
+        for (const auto& e : r.entries()) {
+            if (!e.header.is_service) by_name[e.header.file_name] = &e;
+        }
+        assert(by_name.size() == 5);
+        const auto* aa = by_name["aa.bin"];
+        const auto* ab = by_name["ab.bin"];
+        const auto* zz = by_name["zz.bin"];
+        const auto* q1 = by_name["s1.bin"];
+        const auto* q2 = by_name["s2.bin"];
+        assert(aa && ab && zz && q1 && q2);
+        assert(aa->header.redir_type == 0 && aa->data_size > 0);
+        assert(zz->header.redir_type == 0 && zz->data_size > 0);
+        // Threshold: sub-64KiB identical pair is stored, never referenced.
+        assert(q1->header.redir_type == 0 && q2->header.redir_type == 0);
+        // The duplicate: FHEXTRA_REDIR type 5, no data area.
+        assert(ab->header.redir_type == 5);
+        assert(ab->header.redir_target == "aa.bin");
+        assert(!ab->header.redir_dir_target);
+        assert(ab->data_size == 0);
+    }
+
+    // `t` must pass: integrity of the archive including the redir entries.
+    cmd = get_cli_path() + " t " + arc.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    // Extraction (-ol: redirs are links default-deny, v1.24 §6.1) reproduces
+    // every byte, including the referenced duplicate.
+    fs::path out_dir = temp_dir / "out";
+    cmd = get_cli_path() + " x -ol -q " + arc.string() + " " + out_dir.string() +
+          " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+    assert(file_bytes_equal(master, out_dir / "aa.bin"));
+    assert(file_bytes_equal(master, out_dir / "ab.bin")); // FILECOPY copy of the target
+    assert(file_bytes_equal(uniq, out_dir / "zz.bin"));
+    assert(file_bytes_equal(s1, out_dir / "s1.bin"));
+    assert(file_bytes_equal(s1, out_dir / "s2.bin"));
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] oi_creation_side_emitted (plan test 1)\n";
+}
+
+// Plan test 5 (v1.26 §6): in a solid archive, FILECOPY redirs sit OUTSIDE
+// solid runs — the run breaks around them (no data area), the next
+// data-bearing entry starts a fresh chain, and the chain reforms after that
+// head. The archive stays decodable across the redir gaps and identical
+// content is never double-packed.
+static void test_cdc_filecopy_precedence() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_oi_solid";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    const size_t sz = 128 * 1024;
+    // Archive order (sorted): a, a2, b, b2, c, d. a2 references a; b2
+    // references b; every redir therefore sits between solid candidates.
+    fs::path a = temp_dir / "a.bin";
+    fs::path a2 = temp_dir / "a2.bin";
+    fs::path b = temp_dir / "b.bin";
+    fs::path b2 = temp_dir / "b2.bin";
+    fs::path c = temp_dir / "c.bin";
+    fs::path d = temp_dir / "d.bin";
+    write_pattern_file(a, sz, 10);
+    write_pattern_file(a2, sz, 10);
+    write_pattern_file(b, sz, 11);
+    write_pattern_file(b2, sz, 11);
+    write_pattern_file(c, sz, 12);
+    write_pattern_file(d, sz, 13);
+
+    fs::path arc = temp_dir / "solid_oi.rar";
+    std::string cmd = get_cli_path() + " a -s -oi1 -m3 -q " + arc.string() + " " + a.string() +
+                      " " + a2.string() + " " + b.string() + " " + b2.string() + " " + c.string() +
+                      " " + d.string() + " > " DEVNULL " 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    {
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc));
+        std::map<std::string, const openrar::archive::ArchiveEntry*> by_name;
+        for (const auto& e : r.entries()) {
+            if (!e.header.is_service) by_name[e.header.file_name] = &e;
+        }
+        assert(by_name.size() == 6);
+        const auto* pa = by_name["a.bin"];
+        const auto* pa2 = by_name["a2.bin"];
+        const auto* pb = by_name["b.bin"];
+        const auto* pb2 = by_name["b2.bin"];
+        const auto* pc = by_name["c.bin"];
+        const auto* pd = by_name["d.bin"];
+        assert(pa && pa2 && pb && pb2 && pc && pd);
+        // References: FILECOPY, no data, FCI_SOLID unset (never a chain member).
+        assert(pa2->header.redir_type == 5 && pa2->header.redir_target == "a.bin");
+        assert(pa2->data_size == 0 && pa2->header.is_solid == 0);
+        assert(pb2->header.redir_type == 5 && pb2->header.redir_target == "b.bin");
+        assert(pb2->data_size == 0 && pb2->header.is_solid == 0);
+        // Run-breaking: the entry after each redir starts a FRESH chain
+        // (is_solid unset) even though the archive is solid — the plan §2.2
+        // pin that the writer breaks runs around no-data-area redirs.
+        assert(pa->header.is_solid == 0); // first chain head
+        assert(pb->header.is_solid == 0); // new head across the a2 redir gap
+        assert(pc->header.is_solid == 0); // new head across the b2 redir gap
+        assert(pd->header.is_solid != 0); // chain reformed: d continues c
+        // Identical content never double-packed: a2/b2 carry no packed data.
+        assert(pb->data_size > 0 && pc->data_size > 0);
+    }
+
+    // Solid chain decodable across the redir gaps: test + extraction.
+    cmd = get_cli_path() + " t " + arc.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    fs::path out_dir = temp_dir / "out";
+    cmd = get_cli_path() + " x -ol -q " + arc.string() + " " + out_dir.string() +
+          " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+    assert(file_bytes_equal(a, out_dir / "a.bin"));
+    assert(file_bytes_equal(a, out_dir / "a2.bin"));
+    assert(file_bytes_equal(b, out_dir / "b.bin"));
+    assert(file_bytes_equal(b, out_dir / "b2.bin"));
+    assert(file_bytes_equal(c, out_dir / "c.bin"));
+    assert(file_bytes_equal(d, out_dir / "d.bin"));
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] cdc_filecopy_precedence (plan test 5)\n";
+}
+
+// -oi switch semantics per the README row: 2 list, 3 list+exit (no archive),
+// 4 exit-only-when-dups, :<size> threshold override, -oi5 rejected (usage;
+// CDC packing is -cdc in M2b), -oi+v refused (volume path has no redir
+// entries yet).
+static void test_oi_switch_modes() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_oi_modes";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    fs::path m1 = temp_dir / "aa.bin";
+    fs::path m2 = temp_dir / "ab.bin";
+    fs::path u1 = temp_dir / "zz.bin";
+    write_pattern_file(m1, 192 * 1024, 21);
+    write_pattern_file(m2, 192 * 1024, 21); // duplicate of aa
+    write_pattern_file(u1, 192 * 1024, 22);
+    std::string exe = get_cli_path();
+
+    // -oi3: duplicates listed, exit 0, NO archive created.
+    {
+        fs::path arc = temp_dir / "mode3.rar";
+        fs::path list_out = temp_dir / "mode3.out";
+        std::string cmd = exe + " a -oi3 " + arc.string() + " " + m1.string() + " " + m2.string() +
+                          " " + u1.string() + " > " + list_out.string() + " 2>&1";
+        int res = std::system(cmd.c_str());
+        assert(res == 0);
+        assert(!fs::exists(arc)); // list+exit never archives
+        std::ifstream in(list_out, std::ios::binary);
+        assert(in);
+        std::string out_text((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+        assert(out_text.find("Identical files") != std::string::npos);
+        assert(out_text.find("ab.bin -> aa.bin") != std::string::npos);
+    }
+
+    // -oi4: no duplicates -> proceeds with a normal archive.
+    {
+        fs::path p1 = temp_dir / "p1.bin";
+        fs::path p2 = temp_dir / "p2.bin";
+        write_pattern_file(p1, 8 * 1024, 23);
+        write_pattern_file(p2, 8 * 1024, 24);
+        fs::path arc = temp_dir / "mode4.rar";
+        std::string cmd = exe + " a -oi4 -q " + arc.string() + " " + p1.string() + " " +
+                          p2.string() + " > " DEVNULL " 2>&1";
+        int res = std::system(cmd.c_str());
+        assert(res == 0);
+        assert(fs::exists(arc));
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc));
+        for (const auto& e : r.entries()) {
+            if (!e.header.is_service) assert(e.header.redir_type == 0);
+        }
+    }
+
+    // -oi2:0 — threshold override includes small identical files; mode 2
+    // lists the pair while archiving.
+    {
+        fs::path t1 = temp_dir / "t1.bin";
+        fs::path t2 = temp_dir / "t2.bin";
+        write_pattern_file(t1, 1024, 25);
+        write_pattern_file(t2, 1024, 25);
+        fs::path arc = temp_dir / "mode2.rar";
+        fs::path list_out = temp_dir / "mode2.out";
+        std::string cmd = exe + " a -oi2:0 " + arc.string() + " " + t1.string() + " " +
+                          t2.string() + " > " + list_out.string() + " 2>&1";
+        int res = std::system(cmd.c_str());
+        assert(res == 0);
+        assert(fs::exists(arc));
+        std::ifstream in(list_out, std::ios::binary);
+        assert(in);
+        std::string out_text((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+        assert(out_text.find("t2.bin -> t1.bin") != std::string::npos);
+        openrar::archive::ArchiveReader r;
+        assert(r.open(arc));
+        int redirs = 0;
+        for (const auto& e : r.entries()) {
+            if (e.header.is_service) continue;
+            if (e.header.redir_type == 5) {
+                assert(e.header.redir_target == "t1.bin");
+                redirs++;
+            }
+        }
+        assert(redirs == 1);
+    }
+
+    // -oi5 is not a mode (0-4 is the whole scale; CDC packing is -cdc, M2b).
+    {
+        fs::path arc = temp_dir / "bad5.rar";
+        std::string cmd =
+            exe + " a -oi5 " + arc.string() + " " + m1.string() + " > " DEVNULL " 2>&1";
+        int res = std::system(cmd.c_str());
+        assert(res == 7); // EXIT_USAGE
+        assert(!fs::exists(arc));
+    }
+
+    // -oi with multi-volume is refused fail-closed (exit 7), no archive.
+    {
+        fs::path arc = temp_dir / "vol.rar";
+        std::string cmd = exe + " a -oi1 -v1m " + arc.string() + " " + m1.string() + " " +
+                          m2.string() + " > " DEVNULL " 2>&1";
+        int res = std::system(cmd.c_str());
+        assert(res == 7);
+    }
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] oi_switch_modes (README -oi row semantics)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -781,6 +1096,9 @@ int main() {
     test_cli_help_switch_parity();
     test_cli_v1_10_features();
     test_cli_dict_size_flag();
+    test_oi_creation_side_emitted();
+    test_cdc_filecopy_precedence();
+    test_oi_switch_modes();
     test_sanitize_for_display();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;

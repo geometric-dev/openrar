@@ -197,6 +197,19 @@ public:
                                      bool want_acl = false, const std::string& default_group = "",
                                      const std::string& default_user = "");
 
+    // Stage 1 variant for an identical-file reference (-oi): emits a FILECOPY
+    // record (FHEXTRA_REDIR, redir_type = 5, no data area) pointing to
+    // target_entry_name, an earlier entry in the same archive holding the
+    // same content byte-for-byte. The caller owns the duplicate detection;
+    // this only serializes the reference. The batch writer breaks solid runs
+    // around the emitted entry (compress_plan.hpp breaks_solid_chain).
+    static bool prepare_add_filecopy(const std::filesystem::path& src_file,
+                                     const std::string& arc_entry_name,
+                                     const std::string& target_entry_name, PreparedAdd& out,
+                                     core::uint32 times_mask = time_flags::MTIME,
+                                     const std::string& default_group = "",
+                                     const std::string& default_user = "");
+
     // Query disk file last-modification time as unix epoch seconds.
     static bool get_file_mtime(const std::filesystem::path& path, core::uint64& mtime_out);
 

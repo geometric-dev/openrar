@@ -17,17 +17,20 @@
 #include "thread_pool.hpp"
 #include "../core/cpu.hpp"
 #include "../crypto/crc32.hpp"
+#include "../crypto/sha256.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cmath>
 #include <condition_variable>
+#include <cstring>
 #include <iostream>
 #include <fstream>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include <filesystem>
@@ -869,6 +872,8 @@ struct PendingFile {
     std::string symlink_target;
     bool is_hardlink{false};
     std::string hardlink_target;
+    bool is_filecopy{false};     // -oi: identical-file reference (FHEXTRA_REDIR type 5)
+    std::string filecopy_target; // archive name of the stored master entry
 
     PendingFile() = default;
     PendingFile(std::filesystem::path src, std::string entry, core::uint64 sz, bool dir = false,
@@ -878,6 +883,45 @@ struct PendingFile {
           is_symlink(symlink), is_dir_target(dir_target), symlink_target(std::move(target)),
           is_hardlink(hardlink), hardlink_target(std::move(htarget)) {}
 };
+
+// Streaming SHA-256 over a file's whole content (-oi duplicate prefilter).
+// Returns false on any open failure (the -oi pass then adds the file
+// normally); a short read is the EOF signal, matching every other
+// FileStream loop in this CLI.
+static bool sha256_file_content(const std::filesystem::path& p, core::byte* digest_out) {
+    io::FileStream f;
+    if (!f.open(p, io::FileMode::ReadOnly)) return false;
+    crypto::Sha256 h;
+    std::vector<core::byte> buf(1024 * 1024);
+    for (;;) {
+        const size_t got = f.read(buf.data(), buf.size());
+        if (got == 0) break;
+        h.update(buf.data(), got);
+    }
+    h.finish(digest_out);
+    return true;
+}
+
+// Byte-exact confirmation for a -oi reference: the SHA-256 match only
+// nominates a candidate pair, the emitted FILECOPY must never claim an
+// identity a hash collision could fake — so the bytes decide.
+static bool files_byte_identical(const std::filesystem::path& a, const std::filesystem::path& b) {
+    std::error_code ec;
+    const auto sa = std::filesystem::file_size(a, ec);
+    if (ec) return false;
+    const auto sb = std::filesystem::file_size(b, ec);
+    if (ec || sa != sb) return false;
+    io::FileStream fa, fb;
+    if (!fa.open(a, io::FileMode::ReadOnly) || !fb.open(b, io::FileMode::ReadOnly)) return false;
+    core::byte ba[65536], bb[65536];
+    for (;;) {
+        const size_t ga = fa.read(ba, sizeof(ba));
+        const size_t gb = fb.read(bb, sizeof(bb));
+        if (ga != gb) return false;
+        if (ga == 0) return true;
+        if (std::memcmp(ba, bb, ga) != 0) return false;
+    }
+}
 
 static core::uint64 get_total_physical_memory() {
 #if defined(_WIN32)
@@ -962,6 +1006,10 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                 okv = archive::ArchiveMutator::prepare_add_hardlink(
                     queue[0].src_path, queue[0].entry_name, queue[0].hardlink_target, prepared[0],
                     times_mask, want_acl, default_group, default_user);
+            else if (queue[0].is_filecopy)
+                okv = archive::ArchiveMutator::prepare_add_filecopy(
+                    queue[0].src_path, queue[0].entry_name, queue[0].filecopy_target, prepared[0],
+                    times_mask, default_group, default_user);
             else if (queue[0].is_symlink)
                 okv = archive::ArchiveMutator::prepare_add_symlink(
                     queue[0].src_path, queue[0].entry_name, queue[0].symlink_target,
@@ -1022,7 +1070,9 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     plan_reqs.reserve(queue.size());
     for (const auto& q : queue) {
         compress::EntryPlan ep;
-        ep.is_dir = q.is_dir || q.is_symlink || q.is_hardlink;
+        // FILECOPY references carry no data area: estimate them like dirs so
+        // no compression workspace is budgeted for the reference.
+        ep.is_dir = q.is_dir || q.is_symlink || q.is_hardlink || q.is_filecopy;
         ep.method = ep.is_dir ? 0 : static_cast<uint32_t>(method);
         ep.raw_size = q.file_size;
         plan_reqs.push_back(ep);
@@ -1066,6 +1116,10 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                             okv = archive::ArchiveMutator::prepare_add_hardlink(
                                 queue[i].src_path, queue[i].entry_name, queue[i].hardlink_target,
                                 prepared[i], times_mask, want_acl, default_group, default_user);
+                        else if (queue[i].is_filecopy)
+                            okv = archive::ArchiveMutator::prepare_add_filecopy(
+                                queue[i].src_path, queue[i].entry_name, queue[i].filecopy_target,
+                                prepared[i], times_mask, default_group, default_user);
                         else if (queue[i].is_symlink)
                             okv = archive::ArchiveMutator::prepare_add_symlink(
                                 queue[i].src_path, queue[i].entry_name, queue[i].symlink_target,
@@ -1179,24 +1233,28 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     return 0;
 }
 
-int add_to_archive(const std::string& arc_path, const std::vector<std::string>& files,
-                   int method = 3, const std::filesystem::path& sfx_stub = {},
-                   ::openrar::core::uint64 vol_size = 0, const std::string& password = "",
-                   bool encrypt_headers = false, unsigned threads = 1, bool solid = false,
-                   const std::vector<core::byte>& comment = {},
-                   core::uint32 times_mask = archive::time_flags::MTIME,
-                   bool no_dir_records = false,
-                   io::ExcludePathMode ep_mode = io::ExcludePathMode::None,
-                   bool recurse_subdirs = true, bool want_symlinks = false, bool freshen = false,
-                   bool want_stm = false, bool want_acl = false, bool want_hardlinks = false,
-                   bool want_qo = true, bool want_ams = false,
-                   const std::vector<std::string>& exclude_patterns = {},
-                   core::uint64 dict_size = 0, const compress::FilterConfig& filter_cfg = {},
-                   int max_versions = -1, const std::string& default_group = "",
-                   const std::string& default_user = "", bool want_lock = false) {
+int add_to_archive(
+    const std::string& arc_path, const std::vector<std::string>& files, int method = 3,
+    const std::filesystem::path& sfx_stub = {}, ::openrar::core::uint64 vol_size = 0,
+    const std::string& password = "", bool encrypt_headers = false, unsigned threads = 1,
+    bool solid = false, const std::vector<core::byte>& comment = {},
+    core::uint32 times_mask = archive::time_flags::MTIME, bool no_dir_records = false,
+    io::ExcludePathMode ep_mode = io::ExcludePathMode::None, bool recurse_subdirs = true,
+    bool want_symlinks = false, bool freshen = false, bool want_stm = false, bool want_acl = false,
+    bool want_hardlinks = false, bool want_qo = true, bool want_ams = false,
+    const std::vector<std::string>& exclude_patterns = {}, core::uint64 dict_size = 0,
+    const compress::FilterConfig& filter_cfg = {}, int max_versions = -1,
+    const std::string& default_group = "", const std::string& default_user = "",
+    bool want_lock = false, int oi_mode = 0, core::uint64 oi_min_size = 65536) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return EXIT_FATAL;
+    }
+    if (oi_mode > 0 && vol_size != 0) {
+        // Fail-closed rather than silently dropping the requested references:
+        // the multi-volume write path has no no-data-area entry support yet.
+        std::cerr << "Error: -oi is not supported for multi-volume archives (-v)\n";
+        return EXIT_USAGE;
     }
 
     std::unordered_map<std::string, core::uint64> existing_files;
@@ -1613,6 +1671,61 @@ int add_to_archive(const std::string& arc_path, const std::vector<std::string>& 
             }
         }
 #endif
+    }
+
+    // -oi: content-hash duplicate detection over the batch inputs (v1.26 M2a).
+    // Candidates are regular files at or above the minimum size; the first
+    // occurrence in the (entry-name sorted) queue becomes the stored master,
+    // every later byte-identical file becomes a FHEXTRA_REDIR type-5 FILECOPY
+    // reference to it (identical content is never packed twice). Size buckets
+    // plus SHA-256 prefilter the candidate pairs; the reference is emitted
+    // only after a full byte comparison — the archive must never claim an
+    // identity a hash collision could fake.
+    std::vector<std::pair<std::string, std::string>> oi_pairs; // (duplicate, master)
+    if (oi_mode > 0) {
+        struct OiSubgroup {
+            std::array<core::byte, 32> digest;
+            size_t master_index;
+        };
+        std::unordered_map<core::uint64, std::vector<OiSubgroup>> oi_buckets;
+        for (size_t i = 0; i < queue.size(); ++i) {
+            PendingFile& item = queue[i];
+            if (item.is_dir || item.is_symlink || item.is_hardlink || item.is_filecopy) continue;
+            if (item.file_size < oi_min_size) continue;
+            std::array<core::byte, 32> digest{};
+            if (!sha256_file_content(item.src_path, digest.data())) {
+                std::cerr << "W: cannot read " << item.src_path.string()
+                          << " for identical-file comparison, adding normally\n";
+                continue;
+            }
+            auto& bucket = oi_buckets[item.file_size];
+            bool referenced = false;
+            for (const auto& sg : bucket) {
+                if (sg.digest != digest) continue;
+                // Hash match nominates the pair; bytes decide.
+                if (!files_byte_identical(queue[sg.master_index].src_path, item.src_path)) continue;
+                item.is_filecopy = true;
+                item.filecopy_target = queue[sg.master_index].entry_name;
+                if (total_unp >= item.file_size) total_unp -= item.file_size;
+                item.file_size = 0;
+                oi_pairs.emplace_back(item.entry_name, item.filecopy_target);
+                referenced = true;
+                break;
+            }
+            if (!referenced) bucket.push_back({digest, i});
+        }
+    }
+    if (!oi_pairs.empty() && oi_mode >= 2 && !g_quiet_mode) {
+        std::cout << "Identical files (references):\n";
+        for (const auto& dup : oi_pairs) {
+            std::cout << "  " << dup.first << " -> " << dup.second << "\n";
+        }
+    }
+    if (oi_mode == 3 || (oi_mode == 4 && !oi_pairs.empty())) {
+        // -oi3 lists and exits without archiving; -oi4 exits only when
+        // duplicates were found (README -oi row). Exit 0: the analysis
+        // itself is the requested operation and it succeeded.
+        return 0;
     }
 
     Prog.set_totals(queue.size(), total_unp);
@@ -2606,11 +2719,13 @@ static int cli_main(int argc, char* argv[]) {
     // Feature switch flags
     bool want_sfx = false, want_rr = false;
     bool want_acl = false, want_stm = false;
-    bool want_hardlinks = false;                                            // -oh
-    bool want_solid = false;                                                // -s
-    bool no_dir_records = false;                                            // -ed
-    bool want_lock = false;                                                 // -k
-    std::string comment_path;                                               // -z<file>
+    bool want_hardlinks = false;               // -oh
+    int oi_mode = 0;                           // -oi[0-4]: identical files as references (0 = off)
+    openrar::core::uint64 oi_min_size = 65536; // -oi[:<size>]: comparison threshold (README row)
+    bool want_solid = false;                   // -s
+    bool no_dir_records = false;               // -ed
+    bool want_lock = false;                    // -k
+    std::string comment_path;                  // -z<file>
     openrar::core::uint32 times_mask = openrar::archive::time_flags::MTIME; // -ts<...>
     std::string sfx_name_raw;
     openrar::core::uint32 rr_percent = 3;
@@ -2652,6 +2767,42 @@ static int cli_main(int argc, char* argv[]) {
             want_hardlinks = true;
         } else if (sw_eq(s, "-oh-")) {
             want_hardlinks = false;
+        } else if (sw_starts(s, "-oi")) {
+            // -oi[0-4][:<size>] — identical files as references (README row).
+            // The numeric scale is report verbosity; bare -oi behaves as
+            // -oi1. (CDC packing is the separate -cdc switch, M2b.)
+            std::string body = s.substr(3);
+            int mode = 1;
+            if (!body.empty() && body[0] >= '0' && body[0] <= '4') {
+                mode = body[0] - '0';
+                body.erase(0, 1);
+            }
+            openrar::core::uint64 min_size = 65536;
+            if (!body.empty()) {
+                bool ok = body[0] == ':' && body.size() >= 2;
+                openrar::core::uint64 v = 0;
+                if (ok) {
+                    for (size_t k = 1; k < body.size(); ++k) {
+                        if (body[k] < '0' || body[k] > '9') {
+                            ok = false;
+                            break;
+                        }
+                        if (v > (UINT64_MAX - openrar::core::uint64(body[k] - '0')) / 10) {
+                            ok = false;
+                            break;
+                        }
+                        v = v * 10 + openrar::core::uint64(body[k] - '0');
+                    }
+                }
+                if (!ok) {
+                    std::cerr << "Error: bad -oi switch '" << s
+                              << "' (expected -oi[0-4][:<min-size>])\n";
+                    return EXIT_USAGE;
+                }
+                min_size = v;
+            }
+            oi_mode = mode;
+            oi_min_size = min_size;
         } else if (sw_eq(s, "-ol")) {
             want_symlinks = true;
             extract_symlinks = true;
@@ -3048,7 +3199,7 @@ static int cli_main(int argc, char* argv[]) {
                 want_header_encryption, threads, want_solid, comment, times_mask, no_dir_records,
                 ep_mode, recurse_subdirs, want_symlinks, (cmd == "f"), want_stm, want_acl,
                 want_hardlinks, want_qo, want_ams, exclude_patterns, opt_dict_size, opt_filter_cfg,
-                max_versions, opt_group, opt_user, want_lock);
+                max_versions, opt_group, opt_user, want_lock, oi_mode, oi_min_size);
         }
         if (rc == 0 && want_rr) {
             bool rr_ok;
@@ -3250,6 +3401,8 @@ static int cli_main(int argc, char* argv[]) {
             if (want_solid) std::cerr << "W: -s is not applied by m (solid mode dropped)\n";
             if (times_mask != openrar::archive::time_flags::MTIME)
                 std::cerr << "W: -ts is not applied by m (times stored with the default mask)\n";
+            if (oi_mode > 0)
+                std::cerr << "W: -oi is not applied by m (no identical-file references)\n";
         }
         std::string move_arc = sfx_stub_path.empty() ? arc_path : sfx_arc_path_str;
         int rc = openrar::cli::move_to_archive(move_arc, files, method, sfx_stub_path, vol_size,
