@@ -1,6 +1,7 @@
 #include "../../src/core/types.hpp"
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/archive/archive_reader.hpp"
+#include "../../src/archive/rar_errors.hpp"
 #include "openrar/version.h"
 #include <algorithm>
 #include <cassert>
@@ -1538,6 +1539,164 @@ static void test_timestamp_clamped_flag() {
     std::cout << "[PASS] timestamp_clamped_flag (plan test 8)\n";
 }
 
+// Plan test 6 (v1.26 §6, security-arch §5.4 cross-check): a CDC-packed
+// carried-window solid stream is an ordinary solid stream at extraction —
+// the cumulative max_total_output_bytes cap fires mid-decode, with the
+// carried matches expanding against the same accounting as any other solid
+// member. A generous cap proves the limit policy is the only difference.
+static void test_cdc_packed_caps_enforced() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_cdc_caps";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    const size_t sz = 512 * 1024;
+    fs::path base = temp_dir / "base.bin";
+    fs::path v1 = temp_dir / "v1.bin";
+    write_noise_file(base, sz, 70);
+    {
+        std::vector<char> data = make_noise_bytes(sz, 70);
+        std::vector<char> mid = make_noise_bytes(sz / 4, 71);
+        std::copy(mid.begin(), mid.end(), data.begin() + static_cast<std::ptrdiff_t>(sz / 4));
+        std::ofstream f(v1, std::ios::binary);
+        assert(f);
+        f.write(data.data(), static_cast<std::streamsize>(data.size()));
+        assert(f);
+    }
+    fs::path arc = temp_dir / "caps.rar";
+    std::string cmd = get_cli_path() + " a -cdc -md1m -q " + arc.string() + " " + base.string() +
+                      " " + v1.string() + " > " DEVNULL " 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    {
+        openrar::archive::ArchiveReader r;
+        int status = 0;
+        std::string detail;
+        assert(r.open_ex(arc, "", status, detail));
+
+        // Cumulative cap below the first member's size: must fire mid-decode.
+        openrar::archive::ExtractionLimits limits;
+        limits.max_total_output_bytes = 100;
+        openrar::archive::LimitState state;
+        std::vector<unsigned char> out;
+        int rc = r.extract_entry_to_memory(0, out, 1 << 20, {}, &limits, &state);
+        assert(rc == openrar::archive::RAR_ERR_LIMIT_EXCEEDED);
+        assert(state.total_out <= limits.max_total_output_bytes);
+
+        // Fresh reader state, generous cap: full decode succeeds and the
+        // bytes are exact — the cap is the only thing that ever stops it.
+        openrar::archive::ArchiveReader r2;
+        assert(r2.open_ex(arc, "", status, detail));
+        openrar::archive::ExtractionLimits wide;
+        openrar::archive::LimitState wide_state;
+        for (size_t i = 0; i < 2; ++i) {
+            out.clear();
+            rc = r2.extract_entry_to_memory(i, out, 4 << 20, {}, &wide, &wide_state);
+            assert(rc == openrar::archive::RAR_OK);
+            const fs::path src = (i == 0) ? base : v1;
+            std::ifstream f(src, std::ios::binary);
+            assert(f);
+            std::vector<char> raw((std::istreambuf_iterator<char>(f)),
+                                  std::istreambuf_iterator<char>());
+            assert(out.size() == raw.size());
+            assert(std::memcmp(out.data(), raw.data(), raw.size()) == 0);
+        }
+    }
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] cdc_packed_caps_enforced (plan test 6)\n";
+}
+
+// Plan test 7 (v1.26 §6, pre-analysis R3): recovery record + repair works on
+// a CDC-packed reordered solid archive — the RR covers the run regardless of
+// the planner's ordering, and a damaged carried-window stream reconstructs
+// byte-exactly from parity.
+static void test_cdc_packed_rr_repair() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path temp_dir = "test_cdc_rr";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+
+    const size_t sz = 256 * 1024;
+    fs::path base = temp_dir / "base.bin";
+    fs::path v1 = temp_dir / "v1.bin";
+    fs::path u1 = temp_dir / "u1.bin";
+    write_noise_file(base, sz, 80);
+    write_noise_file(u1, sz, 81);
+    {
+        std::vector<char> data = make_noise_bytes(sz, 80);
+        std::vector<char> mid = make_noise_bytes(sz / 4, 82);
+        std::copy(mid.begin(), mid.end(), data.begin() + static_cast<std::ptrdiff_t>(sz / 3));
+        std::ofstream f(v1, std::ios::binary);
+        assert(f);
+        f.write(data.data(), static_cast<std::streamsize>(data.size()));
+        assert(f);
+    }
+    fs::path arc = temp_dir / "cdc_rr.rar";
+    std::string exe = get_cli_path();
+    std::string cmd = exe + " a -cdc -md1m -rr5 -q " + arc.string() + " " + base.string() + " " +
+                      u1.string() + " " + v1.string() + " > " DEVNULL " 2>&1";
+    int res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    // Control: the intact archive tests clean and has an inline RR.
+    cmd = exe + " t " + arc.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    // Damage the packed region: flip 8 bytes at ~40% of the archive size
+    // (headers sit at the front, RR parity at the end). The shipped repair
+    // decodes a SINGLE erased data shard per record (Cauchy single-erasure
+    // identification), so the damage stays within one RS shard — the test
+    // pins R3 (repair on a reordered carried-window run), not the erasure
+    // count NR could theoretically cover.
+    {
+        std::ifstream in(arc, std::ios::binary);
+        assert(in);
+        std::vector<char> buf((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+        in.close();
+        assert(buf.size() > 4 * 1024);
+        const size_t pos1 = buf.size() * 2 / 5;
+        for (size_t i = 0; i < 8; ++i) {
+            buf[pos1 + i] = static_cast<char>(buf[pos1 + i] ^ 0xA5);
+        }
+        std::ofstream out(arc, std::ios::binary | std::ios::trunc);
+        assert(out);
+        out.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+        assert(out);
+    }
+
+    // The damage is real: integrity check fails before repair.
+    cmd = exe + " t " + arc.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res != 0);
+
+    // Repair reconstructs the packed solid data from parity.
+    cmd = exe + " r " + arc.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    cmd = exe + " t " + arc.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+
+    // Byte-exact recovery of every member.
+    fs::path out_dir = temp_dir / "out";
+    cmd = exe + " x -q " + arc.string() + " " + out_dir.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    assert(res == 0);
+    assert(file_bytes_equal(base, out_dir / "base.bin"));
+    assert(file_bytes_equal(v1, out_dir / "v1.bin"));
+    assert(file_bytes_equal(u1, out_dir / "u1.bin"));
+
+    fs::remove_all(temp_dir, ec);
+    std::cout << "[PASS] cdc_packed_rr_repair (plan test 7)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -1573,6 +1732,8 @@ int main() {
     test_cdc_reduction_report_three_numbers();
     test_cdc_degenerate_inputs();
     test_timestamp_clamped_flag();
+    test_cdc_packed_caps_enforced();
+    test_cdc_packed_rr_repair();
     test_sanitize_for_display();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
