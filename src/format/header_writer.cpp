@@ -386,6 +386,35 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
         extra.insert(extra.end(), block.sub_data.begin(), block.sub_data.end());
     }
 
+    // Extended Attributes (FHEXTRA_XATTR 0x08, v1.27 plan §1.1). Names are
+    // re-emitted in stored order (capture sorts; the parser preserves
+    // record order), so a well-formed record roundtrips byte-identically.
+    // Attributes beyond the read-side caps (name > 255, value > 64 KiB)
+    // are skipped here — truncation would corrupt the value semantics and
+    // our own parser would capture the record verbatim; the user-visible
+    // skip report lives at capture time.
+    if (!block.xattrs.empty()) {
+        std::vector<core::byte> entries;
+        size_t emitted = 0;
+        for (const auto& xa : block.xattrs) {
+            if (xa.name.empty() || xa.name.size() > 255 || xa.value.size() > 65536) continue;
+            core::push_vint(entries, xa.name.size());
+            entries.insert(entries.end(), xa.name.begin(), xa.name.end());
+            core::push_vint(entries, xa.value.size());
+            entries.insert(entries.end(), xa.value.begin(), xa.value.end());
+            ++emitted;
+        }
+        if (emitted > 0) {
+            std::vector<core::byte> xa_content;
+            core::push_vint(xa_content, 0); // flags — reserved, must be 0
+            core::push_vint(xa_content, emitted);
+            xa_content.insert(xa_content.end(), entries.begin(), entries.end());
+            core::push_vint(extra, xa_content.size() + 1);
+            extra.push_back(FHEXTRA_XATTR);
+            extra.insert(extra.end(), xa_content.begin(), xa_content.end());
+        }
+    }
+
     // Unknown extra records (v1.24 plan §7.3): captured verbatim on parse
     // and re-encoded byte-identically here, appended after the known
     // records (extra-area record order is not significant per spec — each
