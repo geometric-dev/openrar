@@ -86,8 +86,14 @@ Fail-closed, with granularity split between the **process exit code** and the
 * *Cleanup:* `FILE_FLAG_DELETE_ON_CLOSE` prevents atomic renaming, so
   abandoned temps rely on best-effort disposition-on-abort
   (`FILE_DISPOSITION_INFO`). Startup sweeps delete only temps recorded in a
-  **per-run journal manifest** — never pattern-matched sweeps, which an
-  attacker could feed pre-planted victims.
+  **journal manifest** — never pattern-matched sweeps, which an attacker
+  could feed pre-planted victims. **[Shipped v1.24]** Journals are
+  per-directory (`.openrar_journal_*` under an exclusive advisory lock,
+  durable-first record ordering, per-record CRC32), and the sweep validates
+  every record: same directory as the journal + this build's exact temp
+  shape — a forged journal can only ever name candidates the engine itself
+  would create. Journals close+unlink at zero in-flight temps, so
+  descriptor use is bounded by parallelism, not tree size.
 
 ## 4. Extraction Boundaries & File System Security
 
@@ -107,6 +113,10 @@ containment is enforced at the OS syscall level:
   names (`NAME~X.ext`) are rejected to prevent resolution through 8.3
   short-name alias space. (Baseline: DOS-device stems and colon rules exist
   since v1.9.0/v1.21.2; the alias-space rejection is new.)
+  **[Shipped v1.24]** NtCreateFile-anchored walk (per-component reparse
+  rejection), GetFinalPathNameByHandle assertion, write-through-handle;
+  POSIX openat2 + O_NOFOLLOW walk with kernel-path prefix assertion on the
+  final anchor (io::ReadSource seam — one scan path, mapped or buffered).
 
 ### 4.2. Entry Semantics (Symlinks, Hardlinks)
 * **Default deny:** symlinks, hardlinks, and NTFS junctions are never
@@ -119,14 +129,18 @@ containment is enforced at the OS syscall level:
   extraction session.
 
 ### 4.3. Metadata, Ownership & MotW **[Revised]**
-* **Ownership & security bits:** setuid/setgid/sticky bits are **never**
-  restored at any privilege level. Numeric UID/GID and name restoration
-  (shipped in v1.17, `-ow`/`-og`) remains available **only as explicit
-  opt-in** (`-ow`/`-og` or euid == 0) for backup-restore workflows —
-  matching WinRAR behavior — and is documented as a trust decision. The
-  original draft's unconditional "never restore ownership" contradicted
-  shipped, oracle-tested behavior; the defensible line is
-  *default-deny + explicit opt-in + never privilege bits*.
+* **Ownership & security bits:** **[Revised v1.24]** archived POSIX modes
+  are restored umask-bounded, with SUID/SGID/sticky **masked by default**
+  and restorable only via the explicit `--preserve-suid` admin opt-in —
+  the same default-deny + explicit opt-in + documented trust decision line
+  as ownership. (The earlier "never at any privilege level" draft
+  contradicted WinRAR parity.) POSIX-mode attributes are honored only when
+  the producer stored a real st_mode (file-type bits 0170000 present) —
+  DOS-style attribute blobs would otherwise become garbage restrictive
+  modes. Numeric UID/GID and name restoration (shipped in v1.17,
+  `-ow`/`-og`) remains available **only as explicit opt-in**
+  (`-ow`/`-og` or euid == 0) for backup-restore workflows — matching
+  WinRAR behavior — and is documented as a trust decision.
 * ACL restoration remains heavily-flagged opt-in.
 * **MotW & quarantine forgery:** Mark-of-the-Web (Windows `Zone.Identifier`)
   and macOS quarantine attributes are first-class. Zone data is read
@@ -136,16 +150,24 @@ containment is enforced at the OS syscall level:
   zone/quarantine stream content from inside the archive.
 
 ### 4.4. Encoding, Normalization & Timestamps
-* **Filename encoding:** names in legacy formats or invalid UTF-8 are decoded
-  per format spec; undecodable names are losslessly escaped and feed the
-  skip-with-report path.
+* **Filename encoding:** **[Revised v1.24]** names that are not well-formed
+  UTF-8 are admitted byte-losslessly (the header parser no longer rejects
+  them — such archives were previously unreadable) and the invalid
+  sequences are percent-encoded (`%XX`) inside the sanitizer: **the escaped
+  name IS the on-disk name**, reversible by hex-decoding, reported with the
+  `name_escaped` security flag in the JSON summary. (The earlier
+  "skip-with-report" draft made whole archives with such entries
+  unreadable.)
 * **UI invariant (CVE-2023-38831 mitigation):** the displayed entry name must
   exactly match the name of the file extracted to disk; the listing UI never
   executes files.
 * **Trimming:** on Windows, trailing spaces and dots are trimmed **before
   both** UI rendering and extraction-path evaluation.
-* **Timestamps:** absurd file/directory `mtime` values are clamped (bounds
-  parameterized); clamps feed skip-with-report.
+* **Timestamps:** absurd file/directory `mtime` values are clamped to
+  parameterized bounds (`MtimeBounds`, extraction_limits.hpp). **[Shipped
+  v1.24: the bounds helpers; wiring into file/dir time application rolls
+  in with the ROADMAP v1.26 M-item]** clamps feed skip-with-report when
+  applied.
 
 ## 5. Memory Robustness, Parser Security & Limits
 
@@ -163,7 +185,11 @@ containment is enforced at the OS syscall level:
   is fragile in multithreaded engines. Buffered `pread`/`ReadFile` I/O is
   used universally. (Normative since the v1.25.0 re-scope in
   `docs/ROADMAP.md`; mmap remains allowed for listing/random-read with
-  pre-flight size checks.)
+  pre-flight size checks. **[Shipped v1.25]** io::MappedFile +
+  io::ReadSource seam: the mapped engine serves listing/scan/random-read
+  only, scan-scoped views, fail-open to buffered on any mapping failure;
+  `--no-mmap`/`OPENRAR_NO_MMAP=1` kill switch; random-read region export
+  behind `OPENRAR_ABI_FEATURE_MMAP`.)
 * **Safe math & bounds checking:** overflow-checked arithmetic
   (`__builtin_*_overflow` family) is mandatory for vint decoding, size
   calculations, and offset arithmetic — preventing `malloc(size+1) → 0`
