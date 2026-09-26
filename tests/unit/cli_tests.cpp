@@ -19,7 +19,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #endif
 #ifdef _MSC_VER
@@ -33,6 +35,16 @@
 #else
 #define DEVNULL "/dev/null"
 #endif
+
+// std::system returns the raw wait status on POSIX (exit code << 8) but the
+// exit code itself on Windows: decode to the exit code everywhere.
+static int system_exit_code(int status) {
+#ifdef _WIN32
+    return status;
+#else
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
+}
 
 static std::string get_cli_path() {
     // Cross-arch runs (CI's QEMU leg) cannot exec the target binary directly
@@ -1080,7 +1092,7 @@ static void test_oi_switch_modes() {
         fs::path arc = temp_dir / "bad5.rar";
         std::string cmd =
             exe + " a -oi5 " + arc.string() + " " + m1.string() + " > " DEVNULL " 2>&1";
-        int res = std::system(cmd.c_str());
+        int res = system_exit_code(std::system(cmd.c_str()));
         assert(res == 7); // EXIT_USAGE
         assert(!fs::exists(arc));
     }
@@ -1090,7 +1102,7 @@ static void test_oi_switch_modes() {
         fs::path arc = temp_dir / "vol.rar";
         std::string cmd = exe + " a -oi1 -v1m " + arc.string() + " " + m1.string() + " " +
                           m2.string() + " > " DEVNULL " 2>&1";
-        int res = std::system(cmd.c_str());
+        int res = system_exit_code(std::system(cmd.c_str()));
         assert(res == 7);
     }
 
