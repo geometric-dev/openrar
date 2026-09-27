@@ -35,6 +35,10 @@ using namespace openrar::archive::foreign;
 
 #ifdef OPENRAR_CLI_EXE
 #include <cstdlib>
+#ifdef _WIN32
+#else
+#include <sys/wait.h>
+#endif
 static std::string cli_path() {
     return OPENRAR_CLI_EXE;
 }
@@ -46,7 +50,8 @@ static int run_cli(const std::string& args, const std::string& redirect) {
 #ifdef _WIN32
     return static_cast<int>(static_cast<unsigned>(raw) & 0xFF); // wait status
 #else
-    return raw;
+    // POSIX std::system returns a WAIT status (the cli_tests.cpp trap):
+    return WIFEXITED(raw) ? WEXITSTATUS(raw) : raw;
 #endif
 }
 #endif
