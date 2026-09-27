@@ -70,6 +70,8 @@ set(OPENRAR_CORE_SOURCES
     src/sandbox/ipc.cpp
     src/sandbox/channel.cpp
     src/sandbox/sandbox_mode.cpp
+    src/sandbox/worker_protocol.cpp
+    src/sandbox/worker_broker.cpp
     src/archive/volume.cpp
     src/recovery/rs16.cpp
     src/recovery/rs16_gfni.cpp
@@ -649,6 +651,34 @@ if(NOT EMSCRIPTEN)
     # (EOF / poison propagation / threaded large-frame flow) — independent
     # of any per-OS sandbox model.
     add_openrar_test(sandbox_ipc_tests tests/unit/sandbox_ipc_tests.cpp)
+
+    # Reader handle seam (v1.30.0 M3 harness): open_read_handle scan/extract
+    # parity and the single-volume contract, independent of the worker.
+    add_openrar_test(reader_handle_seam_tests tests/unit/reader_handle_seam_tests.cpp)
+
+    # The sandboxed worker process (v1.30.0 M3): drives the SAME
+    # ArchiveReader engine over the IPC protocol, holds no paths, writes
+    # nothing. The per-OS privilege models (AppContainer / seccomp /
+    # Seatbelt) wrap this exact spawn contract.
+    add_executable(openrar_worker src/sandbox/worker_main.cpp)
+    target_link_libraries(openrar_worker PRIVATE openrar_core)
+    target_include_directories(openrar_worker PRIVATE ${OPENRAR_INCLUDES})
+    if(OPENRAR_THREAD_LIB)
+        target_link_libraries(openrar_worker PRIVATE ${OPENRAR_THREAD_LIB})
+    endif()
+
+    # Broker/worker e2e over a real (unsandboxed) spawn: protocol parity,
+    # broker-side cap enforcement, crash isolation.
+    add_executable(sandbox_worker_e2e_tests tests/unit/sandbox_worker_e2e_tests.cpp)
+    target_link_libraries(sandbox_worker_e2e_tests PRIVATE openrar_core)
+    target_include_directories(sandbox_worker_e2e_tests PRIVATE ${OPENRAR_INCLUDES})
+    if(OPENRAR_THREAD_LIB)
+        target_link_libraries(sandbox_worker_e2e_tests PRIVATE ${OPENRAR_THREAD_LIB})
+    endif()
+    target_compile_definitions(sandbox_worker_e2e_tests PRIVATE
+        OPENRAR_WORKER_EXE="$<TARGET_FILE:openrar_worker>")
+    openrar_enable_test_asserts(sandbox_worker_e2e_tests)
+    add_test(NAME sandbox_worker_e2e_tests COMMAND sandbox_worker_e2e_tests)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_FOUND)
