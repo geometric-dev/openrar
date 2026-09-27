@@ -2,6 +2,7 @@
 #define OPENRAR_ARCHIVE_ARCHIVE_MUTATOR_HPP
 
 #include "archive_reader.hpp"
+#include "../io/source_delete.hpp"
 #include "../compress/compress_plan.hpp"
 #include "../compress/filters50.hpp"
 #include "../compress/solid_packer.hpp"
@@ -133,6 +134,9 @@ public:
         std::filesystem::path src_path;   // original file, removed for move after success
         std::string entry_name;
         bool delete_source{false};
+        // v1.30 M2.5 (-df/-dr/-dw): HOW the source is deleted after the batch
+        // write succeeds. Plain is the historical behavior (`m`).
+        io::SourceDeleteMode delete_mode{io::SourceDeleteMode::Plain};
         bool needs_deferred_crc{false};
         bool needs_direct_stream{false};
         std::vector<PreparedAdd> child_services;

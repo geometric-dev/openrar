@@ -1,7 +1,8 @@
 #include "archive_mutator.hpp"
 #include "archive_reader.hpp"
 #include "volume.hpp"
-#include "rar_errors.hpp" // RAR_* status codes for the mutation variants
+#include "rar_errors.hpp"          // RAR_* status codes for the mutation variants
+#include "../io/source_delete.hpp" // RAR_* status codes for the mutation variants
 #include "../compress/compressor50.hpp"
 #include "../compress/stream_encoder.hpp"
 #include "../compress/parallel_compressor.hpp"
@@ -2895,8 +2896,7 @@ int ArchiveMutator::write_batch_add_ex(
         for (const auto& pf : files) {
             if (!pf.delete_source) continue;
             std::error_code ec;
-            std::filesystem::remove(pf.src_path, ec);
-            if (ec) {
+            if (!io::delete_source_securely(pf.src_path, pf.delete_mode, ec)) {
                 detail_out = "cannot delete moved source";
                 return RAR_ERR_IO;
             }

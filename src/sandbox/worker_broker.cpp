@@ -1,4 +1,5 @@
 #include "worker_broker.hpp"
+#include "spawn.hpp"
 
 #include "../archive/rar_errors.hpp"
 
@@ -7,7 +8,7 @@
 #include <thread>
 
 #if defined(_WIN32)
-#include <windows.h>
+// windows.h arrives via channel.hpp (global scope, before anything else)
 #else
 #include <fcntl.h>
 #include <signal.h>
@@ -23,15 +24,13 @@ using namespace openrar::archive;
 
 namespace {
 
+std::string handle_str(native_io_handle h) {
 #if defined(_WIN32)
-std::string handle_str(native_io_handle h) {
     return std::to_string(reinterpret_cast<uintptr_t>(h));
-}
 #else
-std::string handle_str(native_io_handle h) {
     return std::to_string(h);
-}
 #endif
+}
 
 } // namespace
 
@@ -107,8 +106,9 @@ bool WorkerBroker::read_frames(std::vector<Frame>& out, std::string& detail) {
 }
 
 bool WorkerBroker::start(const std::string& worker_exe, const std::filesystem::path& arc_path,
-                         Limits limits, std::string& detail) {
+                         Limits limits, std::string& detail, SpawnProfile profile) {
     shutdown();
+    profile_ = profile;
     limits_ = limits;
     total_emitted_ = 0;
     entries_.clear();
@@ -143,44 +143,21 @@ bool WorkerBroker::start(const std::string& worker_exe, const std::filesystem::p
 
     // 3. Spawn. The unsandboxed spawn is the seam the per-OS models wrap:
     // same argv contract, same handles, plus the platform privilege profile.
-#if defined(_WIN32)
-    const std::string cmdline = "\"" + worker_exe + "\" --openrar-sandbox-worker " +
-                                handle_str(pair_.cmd_read) + " " + handle_str(pair_.res_write) +
-                                " " + handle_str(volume_);
-    std::string cmdline_mut = cmdline; // CreateProcessA may write its argument
-    STARTUPINFOA si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    if (!CreateProcessA(nullptr, cmdline_mut.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr,
-                        &si, &pi)) {
-        detail = "cannot spawn worker process";
-        close_pair();
-        CloseHandle(volume_);
-        volume_ = kInvalidIoHandle;
-        return false;
-    }
-    CloseHandle(pi.hThread);
-    proc_ = pi.hProcess;
-#else
-    const pid_t pid = ::fork();
-    if (pid < 0) {
-        detail = "cannot fork worker process";
-        close_pair();
-        ::close(volume_);
-        volume_ = kInvalidIoHandle;
-        return false;
-    }
-    if (pid == 0) {
-        // Child: the worker side. Never returns.
-        const std::string a1 = handle_str(pair_.cmd_read);
-        const std::string a2 = handle_str(pair_.res_write);
-        const std::string a3 = handle_str(volume_);
-        ::execl(worker_exe.c_str(), worker_exe.c_str(), "--openrar-sandbox-worker", a1.c_str(),
-                a2.c_str(), a3.c_str(), static_cast<char*>(nullptr));
-        _exit(127);
-    }
-    proc_ = reinterpret_cast<void*>(static_cast<intptr_t>(pid));
+    std::vector<std::string> argv_tail;
+#if defined(__linux__)
+    if (profile_ == SpawnProfile::PlatformSandboxed)
+        argv_tail.push_back("--install-seccomp"); // in-child filter install
 #endif
+    argv_tail.push_back("--openrar-sandbox-worker");
+    argv_tail.push_back(handle_str(pair_.cmd_read));
+    argv_tail.push_back(handle_str(pair_.res_write));
+    argv_tail.push_back(handle_str(volume_));
+    if (!spawn_worker_process(worker_exe, argv_tail, profile_, &proc_, detail)) {
+        close_pair();
+        close_io_handle(volume_);
+        volume_ = kInvalidIoHandle;
+        return false;
+    }
 
     // 4. Parent drops its copies of the worker-side ends (exact EOF semantics).
     close_io_handle(pair_.cmd_read);
@@ -334,6 +311,105 @@ int WorkerBroker::extract(core::uint32 index,
         }
     }
     return rc;
+}
+
+bool WorkerBroker::run_selftest(const std::string& worker_exe,
+                                const std::filesystem::path& probe_dir,
+                                const std::filesystem::path& volume_path, SpawnProfile profile,
+                                WireSelftest& out, std::string& detail) {
+    // The volume handle gives the worker's third probe something real to
+    // read (the sandbox must keep the broker's grant usable); the broker
+    // opens it, exactly like the real flow.
+    WorkerBroker broker;
+    broker.profile_ = profile;
+    if (!create_channel_pair(broker.pair_)) {
+        detail = "cannot create selftest channels";
+        return false;
+    }
+#if defined(_WIN32)
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    broker.volume_ = CreateFileW(volume_path.c_str(), GENERIC_READ, FILE_SHARE_READ, &sa,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (broker.volume_ == kInvalidIoHandle) {
+        detail = "cannot open selftest volume handle";
+        broker.close_pair();
+        return false;
+    }
+#else
+    broker.volume_ = ::open(volume_path.c_str(), O_RDONLY);
+    if (broker.volume_ == kInvalidIoHandle) {
+        detail = "cannot open selftest volume handle";
+        broker.close_pair();
+        return false;
+    }
+#endif
+    std::vector<std::string> argv_tail;
+#if defined(__linux__)
+    if (profile == SpawnProfile::PlatformSandboxed) argv_tail.push_back("--install-seccomp");
+#endif
+    argv_tail.push_back("--sandbox-selftest");
+    argv_tail.push_back(probe_dir.string());
+    argv_tail.push_back(handle_str(broker.pair_.cmd_read));
+    argv_tail.push_back(handle_str(broker.pair_.res_write));
+    argv_tail.push_back(handle_str(broker.volume_));
+    if (!spawn_worker_process(worker_exe, argv_tail, profile, &broker.proc_, detail)) {
+        broker.close_pair();
+        return false;
+    }
+    close_io_handle(broker.pair_.cmd_read);
+    close_io_handle(broker.pair_.res_write);
+    close_io_handle(broker.volume_);
+    broker.cmd_ = std::make_unique<FramedChannel>(broker.pair_.cmd_write);
+    broker.res_ = std::make_unique<FramedChannel>(broker.pair_.res_read);
+
+    // Handshake: Ping.
+    {
+        std::vector<Frame> in;
+        if (!broker.read_frames(in, detail)) {
+            broker.kill();
+            return false;
+        }
+        bool pinged = false;
+        for (const Frame& f : in)
+            if (f.type == FrameType::Ping) pinged = true;
+        if (!pinged) {
+            detail = "selftest handshake failed (no Ping)";
+            broker.kill();
+            return false;
+        }
+    }
+    // Ask for the probes.
+    {
+        Frame req{FrameType::SelftestReq, {}};
+        if (!broker.cmd_->send(req)) {
+            detail = "selftest channel died at SelftestReq";
+            broker.kill();
+            return false;
+        }
+    }
+    {
+        std::vector<Frame> in;
+        if (!broker.read_frames(in, detail)) {
+            broker.kill();
+            return false;
+        }
+        for (const Frame& f : in) {
+            if (f.type == FrameType::SelftestResult) {
+                if (!unpack_selftest(f.payload.data(), f.payload.size(), out)) {
+                    detail = "malformed SelftestResult";
+                    broker.kill();
+                    return false;
+                }
+                broker.kill(); // the worker exits after reporting; reap + close
+                return true;
+            }
+        }
+        detail = "selftest failed (no SelftestResult)";
+        broker.kill();
+        return false;
+    }
 }
 
 } // namespace openrar::sandbox
