@@ -16,8 +16,12 @@ little-endian unless marked big-endian (network order).
 
 1. `52 61 72 21 1A 07 01 00` → RAR5 — NOT a `cv` source (usage error 7;
    re-packing existing RAR5 is `a`/`u`/`f`).
-2. `52 61 72 21 1A 07 00` (7 bytes) → legacy RAR 1.5–4 (see
-   `12-legacy-rar.md`).
+2. `52 61 72 21 1A 07 00` (7 bytes) → legacy RAR 1.5–4 — **not supported in
+   v1.29 (scope decision)**: refused with an explicit error naming the
+   reason (the legacy RAR reader, including header parsing and store-entry
+   extraction, was dropped from the arc; SECURITY_ARCHITECTURE §5.3's VM
+   boundary is provable by absence — no legacy decoder or parser exists).
+   A future migration arc would need its own Gate 0.
 3. `50 4B 03 04` or `50 4B 05 06` (EOCD-only empty archive) → ZIP.
 4. `1F 8B` → GZIP.
 5. Otherwise: TAR if the 512-byte block at offset 0 validates per §4.1
