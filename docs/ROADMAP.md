@@ -10,7 +10,26 @@
 > scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
 > v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
-## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 / v1.25.0 / v1.26.0 / v1.27.0)
+## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 / v1.25.0 / v1.26.0 / v1.27.0 / v1.28.0)
+
+- **v1.28.0 (current):** Interactive TUI & Benchmark Engine shipped —
+  Gate 0 cleared with a ZERO-FORMAT claim (docs/v1.28-pre-analysis.md §7:
+  conditional approval + twelve directives; no emitted archive bytes —
+  the 0x08 record set stays closed; confirmed by diff-surface review +
+  unchanged interop gate + golden bytes). The §7.1 terminal-injection
+  release gate landed FIRST (M1): the coverage audit's shipped gaps
+  closed (raw archive comment, `lt` owner names, local-path `W:` lines,
+  `p` error lines), `--json-summary` output guaranteed valid UTF-8
+  (`\uFFFD` ASCII escapes), VT capability follows the sink stream. M2
+  shipped the dual-progress TUI (pure width-clamped renderer, single-
+  writer rule, PROMPT state, interactive ESC/q/^C cancel scoped to TUI
+  operations, reader disk hooks for within-file progress + mid-file
+  cancel) without disturbing the v1.24 parallel guarantees. M3 pinned
+  the non-TTY degradation contract (zero escape bytes, per-file lines,
+  exit-code parity, `-q`/`-plain`, JSON purity) as named negative tests.
+  M4 shipped the benchmark engine (warm-up + median-of-7 + spread,
+  hardware disclosure, `--json` schema v1, `--strict`, CDC three-number
+  suite — rollover item 2 closed). Plan: docs/v1.28-implementation-plan.md.
 
 - **v1.27.0 (current):** Extended Attributes, Quarantine & MotW shipped —
   Gate 0 cleared (docs/v1.27-pre-analysis.md §7, conditional approval +
@@ -339,14 +358,25 @@ ZoneId=N
 
 ---
 
-## v1.28.0 — Interactive TUI & Benchmark Engine
+## v1.28.0 — Interactive TUI & Benchmark Engine ✅ SHIPPED
 
-As planned; security/UX addenda:
-- **Terminal injection hardening is a release gate:** every rendered string
-  passes the §7.1 sanitizer (ESC/CSI/OSC, RTL, invalid UTF-8) — the dual-
-  progress TUI renders attacker-controlled filenames by construction.
-- Non-TTY degradation (pipe/file/CI) as negative-path tests.
-- Benchmark reproducibility (<5% variance) + `--json` output for CI trends.
+As planned; security/UX addenda — all three landed:
+- **Terminal injection hardening (release gate):** every rendered string
+  passes the §7.1 sanitizer — enforced at the render choke point
+  (idempotent re-sanitize) and closed over the shipped gaps (comment,
+  owner names, `W:` lines, `p` error lines, JSON UTF-8 validity).
+  Docs/v1.28-pre-analysis.md §1.2 is the audit record.
+- **Non-TTY degradation:** L1/L2/L3 contract pinned by named negative
+  tests (`non_tty_degradation_contract`: zero escape bytes, per-file
+  lines, exit-code parity with pinned stdin, `-q`/`-plain`/`NO_COLOR`,
+  JSON purity under hostile names).
+- **Benchmark reproducibility:** protocol (1 warm-up + 7 timed passes,
+  median, spread), hardware disclosure, `--json` schema v1 for CI
+  trends, `--strict` opt-in gate; the <5% claim is scoped to compute
+  suites on a quiescent host (README Performance section).
+- Zero format surface held: the interop gate (17 stages) and golden
+  bytes ran unchanged on every milestone commit; the `FHEXTRA_XATTR`
+  (0x08) record set is untouched.
 
 ---
 
@@ -408,7 +438,7 @@ C# NuGet (`OpenRAR.NET`).
 | **v1.25.0** | mmap read engine (listing/random-read) ✅ | §5.2 normative no-mmap-for-extraction | Limits-not-bypassable ✅; fault injection ✅ |
 | **v1.26.0** | CDC deduplication ✅ | Cumulative caps on dedup streams ✅ | Format-legality gate 0 ✅ |
 | **v1.27.0** | xattr / quarantine / MotW | §4.3 MotW local-generation; ownership policy | Legality gate; multi-OS matrix |
-| **v1.28.0** | TUI + benchmark | §7.1 terminal-injection gate | Non-TTY degradation; reproducibility |
+| **v1.28.0** | TUI + benchmark ✅ | §7.1 terminal-injection gate ✅ | Non-TTY degradation ✅; reproducibility protocol ✅ |
 | **v1.29.0** | Transcoder (ZIP/TAR/GZIP) | ZIP CD/LF hardening; legacy-VM drop; name escaping | Bit-for-bit equivalence |
 | **v1.30.0** | 2.0 LTS + SDKs | §5.1 sandboxed worker; §7.2 assurance; supply chain | Freeze prerequisites 1–7 |
 
