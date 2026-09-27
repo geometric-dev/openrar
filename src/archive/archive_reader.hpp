@@ -123,6 +123,14 @@ public:
     // timestamp_clamped security flag plus a report line.
     bool last_mtime_clamped() const { return last_mtime_clamped_; }
 
+    // v1.29 M6 (rollover settlement): FILECOPY materialization is
+    // default-on (decoupled from -ol — an in-archive copy directive is not
+    // a filesystem link). The outcome of the MOST RECENT extract_entry call
+    // lets the CLI report a missing/unsafe FILECOPY target as a skipped
+    // entry instead of a silent fake success (fail-open verification closed).
+    enum class FilecopyOutcome { None, Materialized, TargetMissing, TargetUnsafe };
+    FilecopyOutcome last_filecopy_outcome() const { return last_filecopy_outcome_; }
+
     // v1.24 plan §7.1: --preserve-suid admin opt-in — when false (default),
     // archived POSIX modes lose their SUID/SGID/sticky bits.
     void set_preserve_suid(bool ps) { preserve_suid_ = ps; }
@@ -362,6 +370,7 @@ private:
     // v1.26 M3: timestamp clamping bounds + the per-entry clamp flag.
     MtimeBounds mtime_bounds_{};
     bool last_mtime_clamped_{false};
+    FilecopyOutcome last_filecopy_outcome_{FilecopyOutcome::None};
 
     // Session-scoped link registry (v1.24 plan §6.3): absolute normalized
     // paths of files created by THIS extraction session. Hardlink entries
