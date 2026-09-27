@@ -276,14 +276,30 @@ remains on the frozen surface. Verification: CHANGELOG 1.21.2 (off-grid
 dictionary windows) + the current header (openrar_dll.h:623–639) + the
 mutation solid-refusal contract (openrar_dll.h:531–538).
 
-## 12. Audit P2 ledger — freeze triage record (prereq 7)
+## 12. Audit P2 ledger — freeze triage record (prereq 7) — COMPLETE (M2)
 
 The v1.6.0→v1.21.0 audit's residual P2s shipped fixed in v1.21.2
-(CHANGELOG.md:738–800). v1.30.0 M2 re-walks each item (regression tests
-present and green) and sweeps the frozen-surface defect classes
+(CHANGELOG.md:738–800). The M2 re-walk verified each item is STILL fixed
+in the current tree (source guards present with their v1.21.2 citations,
+regression tests where named) and swept the frozen-surface defect classes
 (allocator pairing, error mapping, handle lifetime, callback re-entrancy,
-struct packing); findings land BEFORE the freeze commit. Record fills
-here at M2. *(Pending M2.)*
+struct packing — all enforced or pinned by the §14 gates; the
+dll-enhancement-plan §5 non-goals re-affirmed as frozen debt, nothing
+reopened):
+
+| P2 item (v1.21.2) | Evidence still fixed |
+| :--- | :--- |
+| Off-grid dictionary windows | `test_off_grid_dict_snap_roundtrip` (tests/unit/mutation_tests.cpp:1265), green in the suites |
+| `:`/`:$DATA` stream names (truncation vector) | guard present, src/io/win32_meta.cpp:147–155 (rejects empty/`$DATA` any-case before CREATE_ALWAYS; cites v1.21.2) |
+| FHEXTRA_OWNER 255-byte name limit | reader discards over-long records (src/format/header_reader.cpp:809–815), writer truncates (src/format/header_writer.cpp:363–368) |
+| `start_vol` orphan volume | cleanup guard registered immediately after volume open (src/archive/archive_mutator.cpp:3459–3462) |
+| `-hp` append error fidelity | `RAR_ERR_UNSUPPORTED_FEATURE` + "mutating header-encrypted archive" (tests/unit/mutation_tests.cpp:587) |
+| Non-throwing cleanup | structural: `std::error_code` overloads throughout the boundary code (B2 residual sweep note, src/dll/dll_api.cpp:46–53) |
+
+New findings touching the frozen surface: none — the sweep found no open
+defect in the allocator-pairing, error-mapping, handle-lifetime,
+callback-re-entrancy, or struct-packing classes beyond what the M1 gates
+now pin mechanically. The freeze commit may proceed.
 
 ## 13. v1.29.0 inherited surface (placeholder — filled at the freeze commit)
 
