@@ -14,6 +14,8 @@
 // The per-OS privilege models (AppContainer / seccomp / Seatbelt) carry
 // their own proof-of-denial suites when they land (M3a/b/c).
 
+#include "test_support.hpp"
+
 #include "../../src/sandbox/channel.hpp"
 #include "../../src/sandbox/ipc.hpp"
 #include "../../src/sandbox/sandbox_mode.hpp"
@@ -322,6 +324,7 @@ void test_mode_decision_function() {
 } // namespace
 
 int main() {
+    OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
     test_frame_roundtrip();
     test_malformed_frames_poison();
     test_incomplete_then_complete();
