@@ -3,7 +3,9 @@ cmake_minimum_required(VERSION 3.16)
 # commit counter since the current MAJOR.MINOR line's anchor tag - see
 # docs/versioning.md).
 # wasm/js/package.json and CHANGELOG.md are synced at release time.
-project(openrar VERSION 1.29.0 LANGUAGES CXX)
+# C is enabled for tests/unit/abi_header_c_compat.c — the C-mode compile proof
+# of the frozen public C ABI (docs/abi-freeze.md); no production source is C.
+project(openrar VERSION 1.29.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -612,6 +614,44 @@ if(NOT EMSCRIPTEN)
     target_compile_definitions(dll_cpp_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     openrar_enable_test_asserts(dll_cpp_tests)
     add_test(NAME dll_cpp_tests COMMAND dll_cpp_tests)
+
+    # ── ABI freeze gates (v1.30.0; docs/abi-freeze.md) ────────────────────────
+    # Layout golden + C-mode compile proof + feature-mask parity, exercised
+    # against the real shared library. The .c TU is compiled by the C compiler
+    # inside this target: if the public header stops compiling as plain C the
+    # build itself fails.
+    add_executable(abi_layout_tests
+        tests/unit/abi_layout_tests.cpp
+        tests/unit/abi_header_c_compat.c)
+    target_link_libraries(abi_layout_tests PRIVATE openrar_dll)
+    target_include_directories(abi_layout_tests PRIVATE
+        ${OPENRAR_INCLUDES} src/dll include)
+    target_compile_definitions(abi_layout_tests PRIVATE
+        OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    openrar_enable_test_asserts(abi_layout_tests)
+    add_test(NAME abi_layout_tests COMMAND abi_layout_tests)
+
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_FOUND)
+        # Export-list parity: the built library's C-ABI symbol surface must
+        # equal tools/abi_exports_canonical.txt. Skips loudly (exit 0 +
+        # [SKIP]) on hosts with no symbol tool (dumpbin/llvm-nm/nm); CI
+        # wiring lands with the post-rebase workflow changes.
+        add_test(NAME abi_export_parity
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/abi_exports.py
+                    --check $<TARGET_FILE:openrar_dll>)
+
+        # JS mirror parity: wasm JS CODE_MAP + RarErrorCode union must equal
+        # the C RarError enum (the wasm binding defect class, gated).
+        # Registered only where the wasm JS surface exists (the lean CLI
+        # build tree may not carry wasm/js).
+        if(EXISTS "${CMAKE_SOURCE_DIR}/wasm/js/openrar-archive.js"
+           AND EXISTS "${CMAKE_SOURCE_DIR}/wasm/js/openrar-archive.d.ts")
+            add_test(NAME js_error_mirror_parity
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tools/check_js_error_mirror.py)
+        endif()
+    endif()
 
     # ── Kernel throughput benchmark (informational, never a gate) ───────────
     if(NOT EMSCRIPTEN)
