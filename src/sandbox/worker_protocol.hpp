@@ -36,10 +36,15 @@ struct WireEntry {
     core::uint32 crc32;
     core::uint64 size;
     core::uint64 packed_size;
-    core::uint64 mtime;   // UNIX seconds
-    core::uint64 _pad[2]; // zero
+    core::uint64 mtime; // UNIX seconds
+    // Sandbox-INTERNAL wire flags (this struct mirrors the 64-byte ABI layout
+    // by FIELD ORDER, but is a separate surface — the ABI's _pad stays zero).
+    // _pad[0] bit 0 = is_service (QO/CMT/RR service headers are not file
+    // entries and must not surface in list/test output); _pad[1] stays zero.
+    core::uint64 _pad[2];
 };
 static_assert(sizeof(WireEntry) == 64, "WireEntry must mirror the 64-byte ABI layout");
+inline constexpr core::uint64 kWIRE_FLAG_SERVICE = 1ull;
 
 struct WireScanHeader {
     core::uint32 entry_count;
@@ -63,6 +68,21 @@ struct WireEntryResult {
 struct WireError {
     core::int32 rc; // RarError value
     // followed by (payload_size - sizeof(WireError)) bytes of UTF-8 detail
+};
+
+// v1.30.0 M3a/b proof-of-denial self-test results (SelftestResult payload).
+// The worker ATTEMPTS each probe and reports what the OS actually did —
+// the e2e suites assert the DENIAL matrix per sandbox model (v1.29 Gate 0
+// directive: an observed denial, never mere worker liveness). errs are the
+// platform error codes (Windows GetLastError / POSIX errno); 0 = success.
+struct WireSelftest {
+    core::uint32 write_ok;       // 1 if the probe file write SUCCEEDED
+    core::uint32 write_err;      // platform error when write_ok == 0
+    core::uint32 net_ok;         // 1 if a loopback socket()/connect() SUCCEEDED
+    core::uint32 net_err;        // platform error when net_ok == 0
+    core::uint32 volume_read_ok; // 1 if the inherited volume handle was usable
+    core::uint32 volume_read_err;
+    core::uint32 pad[2]; // zero
 };
 
 #pragma pack(pop)
@@ -90,6 +110,10 @@ bool pack_entry_result(core::uint32 index, core::int32 rc, core::uint64 bytes,
 bool unpack_entry_result(const core::byte* payload, size_t len, WireEntryResult& out);
 bool pack_error(core::int32 rc, const std::string& detail, std::vector<core::byte>& payload);
 bool unpack_error(const core::byte* payload, size_t len, core::int32& rc, std::string& detail);
+
+// Selftest payloads (v1.30.0 M3a/b).
+bool pack_selftest(const WireSelftest& st, std::vector<core::byte>& payload);
+bool unpack_selftest(const core::byte* payload, size_t len, WireSelftest& out);
 
 } // namespace openrar::sandbox
 

@@ -8,7 +8,7 @@ namespace {
 
 bool type_registered(core::uint8 t) {
     return t >= static_cast<core::uint8>(FrameType::Ping) &&
-           t <= static_cast<core::uint8>(FrameType::Shutdown);
+           t <= static_cast<core::uint8>(FrameType::SelftestResult);
 }
 
 } // namespace
