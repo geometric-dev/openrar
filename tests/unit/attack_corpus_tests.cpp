@@ -170,7 +170,7 @@ int main() {
         CHECK(read_file(dir / "invoice.jpg.cmd") == "hostile");
         std::error_code dec;
         size_t landed = 0;
-        for (const auto& e : fs::directory_iterator(dir, dec)) landed++;
+        for (const auto& _ : fs::directory_iterator(dir, dec)) (void)_, landed++;
         CHECK(landed == 3); // arc + invoice.jpg + invoice.jpg.cmd — nothing else
         r.close();
         std::error_code ec;
