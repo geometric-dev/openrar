@@ -2397,6 +2397,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
     bad_password_ = false;
     // v1.26 M3: the clamp flag describes THIS entry's time application.
     last_mtime_clamped_ = false;
+    last_filecopy_outcome_ = FilecopyOutcome::None;
     // v1.28 M2: disk-hook state is per-entry — progress restarts at zero and
     // the cancel outcome describes this call only.
     last_cancel_requested_ = false;
@@ -2422,7 +2423,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             if (entry.header.host_os == 1 && (entry.header.attributes & 0170000u) != 0 &&
                 (entry.header.attributes & 07777u) != 0) {
                 meta.has_mode = true;
-                meta.mode = entry.header.attributes;
+                meta.mode = static_cast<core::uint32>(entry.header.attributes);
             }
             // Times: FHEXTRA_HTIME (what the mutator writes) first, then
             // the plain unix field; a Windows FILETIME converts over.
@@ -2455,9 +2456,13 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
         return ok;
     }
 
-    // 07-services.md: Redirection – symlinks/junctions/hardlinks/filecopy
+    // 07-services.md: Redirection – symlinks/junctions/hardlinks/filecopy.
+    // v1.29 M6: FILECOPY (type 5) is an in-archive copy directive, not a
+    // filesystem link — it materializes by default (the -ol opt-in still
+    // gates symlinks/hardlinks/junctions); the caps debit below already
+    // shipped in v1.27.
     if (entry.header.redir_type != 0) {
-        if (!extract_symlinks_) {
+        if (!extract_symlinks_ && entry.header.redir_type != 5) {
             return true; // skipped per -ol-
         }
         // NameSize already validated <2048 in header_reader
@@ -2618,10 +2623,19 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             tgt_generic = strip_trailing_slashes(tgt_generic);
             if (tgt_generic.empty()) return true;
             std::filesystem::path src;
-            if (!resolve_under_root(dest_root, tgt_generic, src)) return true;
+            if (!resolve_under_root(dest_root, tgt_generic, src)) {
+                last_filecopy_outcome_ = FilecopyOutcome::TargetUnsafe;
+                return true;
+            }
             std::error_code ec2;
-            if (!std::filesystem::exists(src, ec2)) return true;
-            if (has_symlink_parent(src)) return true;
+            if (!std::filesystem::exists(src, ec2)) {
+                last_filecopy_outcome_ = FilecopyOutcome::TargetMissing;
+                return true;
+            }
+            if (has_symlink_parent(src)) {
+                last_filecopy_outcome_ = FilecopyOutcome::TargetUnsafe;
+                return true;
+            }
             // v1.27 M5 (5.4 consistency): FILECOPY materialization debits the
             // cumulative byte caps exactly like the hardlink EXDEV fallback —
             // an -oi-heavy archive can no longer materialize unbounded bytes
@@ -2632,6 +2646,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             std::filesystem::copy_file(src, dest_path,
                                        std::filesystem::copy_options::overwrite_existing, ec2);
             if (ec2) return false;
+            last_filecopy_outcome_ = FilecopyOutcome::Materialized;
             return true;
         }
         return true;
