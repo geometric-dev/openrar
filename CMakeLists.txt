@@ -86,6 +86,21 @@ set(OPENRAR_INMEM_ARCHIVE_SOURCES
 
 option(OPENRAR_INMEM_ARCHIVE "Include the in-memory archive layer (buffer_archive): used by the DLL and the WASM archive API, and registers their native tests. Excluded from the CLI binary and the lean block-codec wasm build." OFF)
 
+# ── Foreign-format readers + cv transcoder (v1.29.0) ─────────────────────────
+# ZIP/TAR/GZIP/legacy-RAR readers (docs/spec/11, docs/spec/12) and the `cv`
+# CLI pipeline. Native-only: the lean wasm builds exclude them by default
+# (the 500 KiB budget, docs/wasm-limitations.md §5.3); a wasm build that
+# wants them passes -DOPENRAR_FOREIGN_FORMATS=ON explicitly.
+if(EMSCRIPTEN)
+    set(OPENRAR_FOREIGN_FORMATS_DEFAULT OFF)
+else()
+    set(OPENRAR_FOREIGN_FORMATS_DEFAULT ON)
+endif()
+option(OPENRAR_FOREIGN_FORMATS "Foreign-format readers (ZIP/TAR/GZIP/legacy RAR), inflate, and the cv transcoder. Excluded from the lean wasm block-codec build." ${OPENRAR_FOREIGN_FORMATS_DEFAULT})
+set(OPENRAR_FOREIGN_FORMATS_SOURCES
+    src/compress/inflate.cpp
+)
+
 # Warning policy: MSVC /W4, GCC/Clang -Wall -Wextra everywhere. Warnings are
 # not errors by default; CI turns them on for one gate leg via this option
 # (see .github/workflows/build.yml and CONTRIBUTING.md §Warnings).
@@ -247,6 +262,12 @@ endif()
 # buffer_archive / archive_api test targets are not registered.
 if(OPENRAR_INMEM_ARCHIVE)
     target_sources(openrar_core PRIVATE ${OPENRAR_INMEM_ARCHIVE_SOURCES})
+endif()
+
+# Foreign-format readers + cv transcoder (v1.29.0): attached to openrar_core
+# behind OPENRAR_FOREIGN_FORMATS (default ON native, OFF under EMSCRIPTEN).
+if(OPENRAR_FOREIGN_FORMATS)
+    target_sources(openrar_core PRIVATE ${OPENRAR_FOREIGN_FORMATS_SOURCES})
 endif()
 
 # Main CLI executable (native). When EMSCRIPTEN, this target is skipped — wasm uses src/wasm/wasm_api.cpp instead.
@@ -495,6 +516,12 @@ if(NOT EMSCRIPTEN)
         # hello5_p.rar) for the encrypted-listing coverage.
         target_compile_definitions(buffer_archive_tests PRIVATE
             OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    endif()
+
+    # Foreign-format reader tests (v1.29): gated by OPENRAR_FOREIGN_FORMATS
+    # exactly like the sources they exercise.
+    if(OPENRAR_FOREIGN_FORMATS)
+        add_openrar_test(inflate_tests tests/unit/inflate_tests.cpp)
     endif()
 
     # WASM ABI surface test (C exports are linkable on every platform).
