@@ -2747,6 +2747,102 @@ void test_non_tty_degradation_contract() {
     std::cout << "[PASS] non_tty_degradation_contract (zero-ESC, parity, -q/-plain, JSON, p)\n";
 }
 
+// ── v1.28 M4: benchmark engine v2 ────────────────────────────────────────────
+
+static std::filesystem::path bench_exe_path() {
+#ifdef OPENRAR_BENCH_EXE
+    if (std::filesystem::exists(OPENRAR_BENCH_EXE)) return {OPENRAR_BENCH_EXE};
+#endif
+    return "openrar_bench.exe";
+}
+
+// Plan test 20 (`bench_json_schema_roundtrip`): --json stdout carries ONLY
+// the schema_version-1 document (host/protocol/suites with median, passes,
+// spread_pct); exit 0. --strict is deterministic through the
+// --spread-threshold-pct test hook against a deterministic suite: a
+// threshold below zero always fires (exit 1), a huge one never does.
+void test_bench_json_schema_roundtrip() {
+    namespace fs = std::filesystem;
+    const std::string bench = "\"" + bench_exe_path().string() + "\"";
+    fs::path out = "build/cli_bench_json.txt";
+    fs::path err = "build/cli_bench_err.txt";
+    std::error_code ec;
+    fs::remove(out, ec);
+
+    const std::string cmd = bench + " --json --quick --suite cdc_fingerprint < " DEVNULL " > " +
+                            out.string() + " 2> " + err.string();
+    const int res = system_exit_code(std::system(cmd.c_str()));
+    assert(res == 0);
+    const std::string doc = slurp_file(out);
+    assert(doc.find("{\"schema_version\":1") == 0);
+    assert(doc.find("\"host\":{") != std::string::npos);
+    assert(doc.find("\"cpu\":") != std::string::npos);
+    assert(doc.find("\"cores\":") != std::string::npos);
+    assert(doc.find("\"protocol\":{") != std::string::npos);
+    assert(doc.find("\"warmup\":1") != std::string::npos);
+    assert(doc.find("\"spread_pct\":") != std::string::npos);
+    assert(doc.find("\"passes\":[") != std::string::npos);
+    assert(openrar::io::is_valid_utf8(doc));
+    // stdout purity: nothing but the JSON document on stdout.
+    for (const auto& line : tui_split_lines(doc)) {
+        assert(line.empty() || line.rfind("{\"schema_version\"", 0) == 0 ||
+               line.rfind(",\"host\"", 0) == 0 || line.rfind(",\"protocol\"", 0) == 0 ||
+               line.rfind(",\"suites\"", 0) == 0 || line.rfind("  {", 0) == 0 ||
+               line.rfind("]") == 0 || line == "}" || line == "}");
+    }
+
+    // --strict deterministic legs via the threshold hook: a negative
+    // threshold always fires (exit 1); a huge one never does (exit 0).
+    const std::string strict_bad = bench + " --strict --spread-threshold-pct -1 --suite " +
+                                   "cdc_fingerprint < " DEVNULL " > " + DEVNULL " 2>&1";
+    assert(system_exit_code(std::system(strict_bad.c_str())) == 1);
+    const std::string strict_ok =
+        bench + " --strict --spread-threshold-pct 1000000 --suite cdc_fingerprint < " DEVNULL
+                " > " DEVNULL " 2>&1";
+    assert(system_exit_code(std::system(strict_ok.c_str())) == 0);
+
+    // Unknown suite name is a usage error (exit 2).
+    const std::string bad_suite = bench + " --suite no_such_suite < " DEVNULL " > " DEVNULL " 2>&1";
+    assert(system_exit_code(std::system(bad_suite.c_str())) == 2);
+
+    fs::remove(out, ec);
+    fs::remove(err, ec);
+    std::cout << "[PASS] bench_json_schema_roundtrip (schema, purity, strict legs)\n";
+}
+
+// Plan test 21 (`bench_cdc_three_number_suite`): the engine-measured
+// three-number reduction on the engineered corpus — store > plain-solid >
+// CDC-packed, spread 0.0% (deterministic bytes), rollover item 2 closed.
+void test_bench_cdc_three_number_suite() {
+    namespace fs = std::filesystem;
+    const std::string bench = "\"" + bench_exe_path().string() + "\"";
+    fs::path out = "build/cli_bench_cdc.txt";
+    std::error_code ec;
+    fs::remove(out, ec);
+    const std::string cmd =
+        bench +
+        " --quick --suite cdc_three_number_store --suite cdc_three_number_plain_solid "
+        "--suite cdc_three_number_cdc_packed < " DEVNULL " > " +
+        out.string() + " 2>&1";
+    const int res = system_exit_code(std::system(cmd.c_str()));
+    assert(res == 0);
+    const std::string data = slurp_file(out);
+    auto value_of = [&data](const std::string& name) -> double {
+        const size_t at = data.find(name);
+        assert(at != std::string::npos);
+        const size_t eq = data.find('=', at);
+        return std::atof(data.c_str() + eq + 1);
+    };
+    const double store = value_of("cdc_three_number_store");
+    const double plain = value_of("cdc_three_number_plain_solid");
+    const double packed = value_of("cdc_three_number_cdc_packed");
+    assert(store > plain);
+    assert(plain > packed); // the reduction direction (plan test 4, bench leg)
+    assert(data.find("(spread 0.0%)") != std::string::npos); // deterministic bytes
+    fs::remove(out, ec);
+    std::cout << "[PASS] bench_cdc_three_number_suite (store > plain-solid > CDC-packed)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -2798,6 +2894,8 @@ int main() {
     test_midfile_cancel_via_hooks();
     test_parallel_cancel_journal_sweep();
     test_non_tty_degradation_contract();
+    test_bench_json_schema_roundtrip();
+    test_bench_cdc_three_number_suite();
     std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
     return 0;
 }
