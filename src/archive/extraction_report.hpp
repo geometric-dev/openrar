@@ -26,7 +26,10 @@ namespace openrar::archive {
 // timestamp_clamped, collision_case, ...). The list is open-ended; consumers
 // must ignore unknown tags.
 
-inline constexpr int kExtractionReportSchemaVersion = 1;
+// v2 (v1.29): appends the transcode fields after `abort_reason` when the run
+// is a `cv` migration (has_transcode_fields) — additive, documented order;
+// v1 consumer keys are unchanged in position (plan D3).
+inline constexpr int kExtractionReportSchemaVersion = 2;
 
 struct ExtractionReportEntry {
     std::string name;   // post-sanitization name == on-disk name
@@ -42,6 +45,12 @@ struct ExtractionReport {
     std::vector<ExtractionReportEntry> entries;
     bool aborted = false;
     std::string abort_reason;
+
+    // v2 transcode fields (cv only; absent from x/e documents).
+    bool has_transcode_fields = false;
+    std::string format;          // "zip" | "tar" | "gzip"
+    bool verified = false;       // roundtrip verify outcome
+    bool source_deleted = false; // -df outcome
 
     // Marks every entry still pending as unprocessed (abort semantics, plan
     // §5.4: entries processed before an abort keep their real status).

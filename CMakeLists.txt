@@ -103,6 +103,7 @@ set(OPENRAR_FOREIGN_FORMATS_SOURCES
     src/archive/foreign_zip.cpp
     src/archive/foreign_tar.cpp
     src/archive/foreign_gzip.cpp
+    src/archive/foreign_transcode.cpp
 )
 
 # Warning policy: MSVC /W4, GCC/Clang -Wall -Wextra everywhere. Warnings are
@@ -527,6 +528,10 @@ if(NOT EMSCRIPTEN)
     if(OPENRAR_FOREIGN_FORMATS)
         add_openrar_test(inflate_tests tests/unit/inflate_tests.cpp)
         add_openrar_test(foreign_format_tests tests/unit/foreign_format_tests.cpp)
+        add_openrar_test(transcode_tests tests/unit/transcode_tests.cpp)
+        target_compile_definitions(transcode_tests PRIVATE
+            OPENRAR_CLI_EXE="$<TARGET_FILE:openrar>")
+        add_dependencies(transcode_tests openrar)
     endif()
 
     # WASM ABI surface test (C exports are linkable on every platform).
