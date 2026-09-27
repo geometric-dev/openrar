@@ -96,6 +96,13 @@ jobs:
           find src include tests -name '*.cpp' -o -name '*.hpp' -o -name '*.h' | \
             xargs clang-format-18 --dry-run --Werror
 
+      - name: Layer direction check (gate leg only)
+        # ARCHITECTURE.md section 2: downward-only includes. Ratchet: new
+        # violations fail; accepted ones live in tools/layer_baseline.json,
+        # updated manually only (see docs/verification-legs.md).
+        if: matrix.format_check == true
+        run: python3 tools/layer_check.py
+
       - name: Version consistency check (gate leg only)
         if: matrix.format_check == true
         shell: bash
@@ -146,14 +153,15 @@ jobs:
 
       - name: Kernel throughput report (native x86-64, informational)
         # Real AVX2/SSE2 hardware numbers for the v1.22.0 SIMD arc. Native
-        # runners are shared and noisy: best-of-3 inside the bench damps
-        # spikes, and this step is informational, never a gate.
+        # runners are shared and noisy: the median-of-passes protocol damps
+        # spikes, and this step is informational, never a gate. --quick
+        # keeps the v1.28 engine's CI time bounded (3 passes).
         if: matrix.os == 'ubuntu-latest' && matrix.compiler == 'gcc'
-        run: ./build/openrar_bench
+        run: ./build/openrar_bench --quick
 
       - name: Kernel throughput report (native Apple Silicon NEON, informational)
         if: matrix.os == 'macos-latest'
-        run: ./build/openrar_bench
+        run: ./build/openrar_bench --quick
 
       - name: Interop Gate (local spec, no rar.exe in CI)
         if: matrix.arch != 'arm64'
@@ -389,9 +397,12 @@ jobs:
         # They only demonstrate the kernel does more work per instruction
         # than the scalar fold even under emulation. Native GFNI numbers
         # require Ice Lake+ hardware (none available in CI or locally).
+        # v1.28: only the kernel suite runs under SDE (the full engine's
+        # packing/extract suites are meaningless emulated and slow); the
+        # consumer greps the v2 label name(kernel).
         run: |
-          "${SDE_EXE}" -future -- ./build/openrar_bench | tee sde_bench.log
-          grep -q "rs16_fold dispatched(GFNI)" sde_bench.log \
+          "${SDE_EXE}" -future -- ./build/openrar_bench --suite rs16_fold_dispatched | tee sde_bench.log
+          grep -q "rs16_fold_dispatched(GFNI)" sde_bench.log \
             || { echo "FAIL: GFNI fold kernel did not dispatch under SDE"; exit 1; }
 
       - name: End-to-end .rev parity under SDE (CLI drives the GFNI kernel)

@@ -514,7 +514,7 @@ struct SuiteResult {
 };
 
 std::string host_cpu() {
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
     int regs[4] = {0};
     char brand[49] = {0};
     __cpuid(regs, 0x80000000);
@@ -527,6 +527,10 @@ std::string host_cpu() {
         if (!s.empty()) return s;
     }
     return "unknown";
+#elif defined(_MSC_VER) && defined(_M_ARM64)
+    // __cpuid does not exist on ARM64 MSVC; the architecture is the honest
+    // disclosure (no brand-string API usable without extra dependencies).
+    return "aarch64 (ARM64 windows)";
 #elif defined(__APPLE__)
     char buf[128] = {0};
     size_t len = sizeof(buf);
@@ -602,11 +606,15 @@ SuiteResult run_suite(const SuiteDef& def, bool quick) {
 
 void print_human(const SuiteResult& r, bool to_stderr) {
     std::FILE* out = to_stderr ? stderr : stdout;
+    // The label carries the dispatched kernel (v1.22 contract: CI's SDE gate
+    // greps "rs16_fold_dispatched(GFNI)" — the kernel must be visible in the
+    // human line, not only in the JSON).
+    const std::string label = r.kernel.empty() ? r.name : r.name + "(" + r.kernel + ")";
     if (r.skipped) {
-        std::fprintf(out, "[bench] %-34s SKIPPED (%s)\n", r.name.c_str(), r.skip_reason.c_str());
+        std::fprintf(out, "[bench] %-34s SKIPPED (%s)\n", label.c_str(), r.skip_reason.c_str());
         return;
     }
-    std::fprintf(out, "[bench] %-34s = %12.1f %s   (spread %.1f%%)\n", r.name.c_str(), r.median,
+    std::fprintf(out, "[bench] %-34s = %12.1f %s   (spread %.1f%%)\n", label.c_str(), r.median,
                  r.unit.c_str(), r.spread_pct);
 }
 
