@@ -2,11 +2,15 @@
 #include "../io/file_stream.hpp"
 #include "../io/path_util.hpp"
 #include "../io/containment.hpp"
+#include "../io/source_delete.hpp"
 #include "../archive/collision_detector.hpp"
 #include "../archive/extraction_report.hpp"
 #include "../archive/foreign_transcode.hpp"
 #include "../format/headers.hpp"
 #include "../archive/archive_reader.hpp"
+#include "../sandbox/sandbox_mode.hpp"
+#include "../sandbox/spawn.hpp"
+#include "../sandbox/worker_broker.hpp"
 #include "../archive/archive_mutator.hpp"
 #include "../compress/filters50.hpp"
 #include "../compress/cdc_chunker.hpp"
@@ -75,6 +79,18 @@ static mode_t cached_umask_bits() {
 
 bool g_plain_mode = false;
 bool g_quiet_mode = false;
+// v1.30 sandboxed worker (SECURITY_ARCHITECTURE §5.1): --in-proc / the
+// OPENRAR_IN_PROC env force the in-process engine (the OPENRAR_NO_MMAP
+// kill-switch pattern). The WORKER-vs-in-proc decision itself is the ONE
+// decision function sandbox_mode_for() (cli consumes it per command).
+bool g_in_proc_flag = false;
+// v1.30 M2.5 (-df/-dr/-dw, -tl/-tk): source-deletion mode for the batch add
+// path and the archive-mtime policy applied on close. Parsed per run; the
+// README rows are the contract (delete only after a fully successful write).
+io::SourceDeleteMode g_src_delete_mode = io::SourceDeleteMode::Plain;
+bool g_delete_sources = false;
+int g_arc_mtime_policy = 0; // 0 none, 1 keep-original (-tk), 2 set-date (-tk<date>), 3 newest (-tl)
+std::string g_arc_mtime_date; // -tk<date> YYYYMMDDHHMMSS
 bool g_assume_yes = false;
 // --json-summary (v1.24 plan §5): when set without a path, ALL human-readable
 // output routes to stderr and stdout carries only the JSON summary.
@@ -717,9 +733,153 @@ bool entries_independently_decodable(const archive::ArchiveReader& reader) {
     return true;
 }
 
+// ── Sandboxed worker path for `t` (v1.30.0 §5.1) ─────────────────────────────
+// Runs the SAME verify pipeline the in-process path runs (decode + hash via
+// the production engine), inside the sandboxed worker process. The broker
+// owns the volume handle and every policy decision; the worker only decodes.
+// Output shape and exit codes mirror test_archive exactly (the interop
+// gate's exit-code parity stage drives this path on the legs that ship a
+// sandbox model). Returns >= 0 = the worker path ran (exit code); -1 = the
+// worker could not be engaged and the caller MUST fall back in-process,
+// loudly (spawn failure, multi-volume, header-encrypted — every fallback is
+// policy-visible, never silent).
+int test_archive_worker(const std::string& arc_path, const std::string& password,
+                        const std::vector<std::string>& exclude_patterns,
+                        const std::vector<std::string>& file_masks, std::string& werr) {
+    const std::filesystem::path worker = sandbox::worker_exe_path();
+    if (worker.empty() || !std::filesystem::exists(worker)) {
+        werr = "openrar_worker not found beside the CLI";
+        return -1;
+    }
+    if (!std::filesystem::exists(arc_path)) {
+        // The taxonomy for a missing archive is decided before any spawn.
+        std::cerr << "Cannot open " << arc_path << "\n";
+        return EXIT_NO_FILES;
+    }
+
+    sandbox::WorkerBroker broker;
+    sandbox::WorkerBroker::Limits limits; // engine floors are non-disableable regardless
+    if (!broker.start(worker.string(), arc_path, limits, werr)) {
+        return -1; // loud in-proc fallback (multi-volume, -hp, spawn failure...)
+    }
+
+    // Job selection mirrors test_archive exactly.
+    struct TestJob {
+        const sandbox::BrokerEntry* entry;
+        size_t index;
+    };
+    std::vector<TestJob> jobs;
+    {
+        size_t ei = 0;
+        for (const auto& entry : broker.entries()) {
+            if (entry.is_service()) {
+                // Service headers (QO/CMT/RR) are not entries (same filter as
+                // the in-process test path — output parity).
+                ei++;
+                continue;
+            }
+            if (!entry.path.empty() && entry.path.back() == '/') {
+                // Directory records: nothing to decode, nothing to report.
+                ei++;
+                continue;
+            }
+            if (is_path_excluded(entry.path, exclude_patterns)) {
+                ei++;
+                continue;
+            }
+            if (!file_masks.empty()) {
+                bool matched = false;
+                for (const auto& mask : file_masks) {
+                    if (io::wildcard_match(mask, entry.path) ||
+                        io::wildcard_match(mask,
+                                           std::filesystem::path(entry.path).filename().string())) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) {
+                    ei++;
+                    continue;
+                }
+            }
+            jobs.push_back({&entry, ei});
+            ei++;
+        }
+    }
+    if (jobs.empty()) return EXIT_NO_FILES;
+
+    // Encrypted entries WITH a password are out of worker scope (the worker
+    // holds no keys): fall back in-process so -p verification stays exact.
+    for (const auto& j : jobs) {
+        if (j.entry->wire.is_encrypted && !password.empty()) {
+            werr = "encrypted entries with a password verify in-process";
+            return -1;
+        }
+    }
+
+    if (!g_quiet_mode && !is_vt_supported()) {
+        std::cout << "Testing archive: " << arc_path << "\n\n";
+    }
+
+    const core::uint64 total_bytes = [&] {
+        core::uint64 s = 0;
+        for (const auto& j : jobs) s += j.entry->wire.size;
+        return s;
+    }();
+    Prog.init("TESTING", "[38;2;95;184;176m", "[48;2;19;37;35m");
+    Prog.set_totals(jobs.size(), total_bytes);
+
+    size_t error_count = 0;
+    size_t skipped_count = 0;
+    size_t idx = 0;
+    for (const auto& job : jobs) {
+        idx++;
+        Prog.start_file(job.entry->path, idx);
+        if (!g_quiet_mode && !is_vt_supported()) {
+            std::cout << "Testing     " << sanitize_for_display(job.entry->path) << "... ";
+        }
+        // The in-proc contract: encrypted entries with no password can not be
+        // verified — reported as a skip and counted as an error (11), never
+        // OK. Encrypted WITH a password never reaches the worker path at all
+        // (the broker falls back in-process; the worker holds no keys).
+        if (job.entry->wire.is_encrypted && password.empty()) {
+            skipped_count++;
+            if (!g_quiet_mode && !is_vt_supported())
+                std::cout << "SKIPPED (encrypted - no password)" << "\n";
+            error_count++;
+            Prog.update_bytes(job.entry->wire.size);
+            continue;
+        }
+        std::string edetail;
+        const int rc = broker.extract(
+            static_cast<core::uint32>(job.index),
+            [](const core::byte*, size_t) -> bool { return true; }, // verify-only sink
+            nullptr, edetail);
+        const bool okv = rc == archive::RAR_OK;
+        if (!okv) error_count++;
+        if (!g_quiet_mode && !is_vt_supported()) std::cout << (okv ? "OK" : "FAILED") << "\n";
+        Prog.update_bytes(job.entry->wire.size);
+    }
+    Prog.done(jobs.size(), "tested", "", total_bytes, 0,
+              error_count == 0 ? "all OK" : (std::to_string(error_count) + " errors"));
+    if (error_count == 0) return EXIT_OK;
+    return skipped_count > 0 ? EXIT_BAD_PASSWORD : EXIT_CRC;
+}
+
 int test_archive(const std::string& arc_path, const std::string& password = "",
                  unsigned threads = 1, const std::vector<std::string>& exclude_patterns = {},
                  const std::vector<std::string>& file_masks = {}) {
+    // v1.30 sandboxed worker (§5.1): ONE decision function decides; a
+    // worker that cannot be engaged falls back in-process LOUDLY (once per
+    // run) and the run stays output-identical and exit-identical.
+    if (sandbox::sandbox_mode_for(g_in_proc_flag) == sandbox::SandboxMode::Worker) {
+        std::string werr;
+        const int wrc = test_archive_worker(arc_path, password, exclude_patterns, file_masks, werr);
+        if (wrc >= 0) return wrc;
+        if (!g_quiet_mode)
+            std::cerr << "W: sandboxed worker unavailable (" << werr << "); parsing in-process\n";
+    }
+
     archive::ArchiveReader reader;
     int open_status = archive::RAR_OK;
     std::string open_detail;
@@ -1100,6 +1260,64 @@ static core::uint64 get_total_physical_memory() {
 // released when the entry's payload reaches the archive — preparing ahead of
 // the writer can never accumulate the whole batch in RAM. Any prepare or
 // write failure aborts before the archive is replaced (all-or-nothing).
+// v1.30 M2.5 (-tl/-tk): the archive-mtime policy applied by a/u/f on close
+// (README contract). Policy: 1 keep-original, 2 set YYYYMMDDHHMMSS (UTC),
+// 3 newest stored file.
+static void apply_archive_mtime_policy(const std::filesystem::path& arc,
+                                       std::filesystem::file_time_type pre_mtime) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (g_arc_mtime_policy == 1) {
+        // Keep the ORIGINAL archive time across the update (capture happened
+        // before the batch write replaced the file).
+        if (std::filesystem::exists(arc)) fs::last_write_time(arc, pre_mtime, ec);
+        return;
+    }
+    core::uint64 target_unix = 0;
+    if (g_arc_mtime_policy == 2) {
+        const std::string& d = g_arc_mtime_date;
+        if (d.size() != 14 || d.find_first_not_of("0123456789") != std::string::npos) {
+            if (!g_quiet_mode) std::cerr << "W: -tk date must be YYYYMMDDHHMMSS" << "\n";
+            return;
+        }
+        std::tm tm{};
+        tm.tm_year = std::stoi(d.substr(0, 4)) - 1900;
+        tm.tm_mon = std::stoi(d.substr(4, 2)) - 1;
+        tm.tm_mday = std::stoi(d.substr(6, 2));
+        tm.tm_hour = std::stoi(d.substr(8, 2));
+        tm.tm_min = std::stoi(d.substr(10, 2));
+        tm.tm_sec = std::stoi(d.substr(12, 2));
+#ifdef _WIN32
+        const time_t tt = _mkgmtime(&tm);
+#else
+        const time_t tt = timegm(&tm);
+#endif
+        if (tt == static_cast<time_t>(-1)) return;
+        target_unix = static_cast<core::uint64>(tt);
+    } else {
+        // -tl: newest mtime among the archive's file entries (exact: read the
+        // archive we just wrote).
+        archive::ArchiveReader r;
+        if (!r.open(arc)) return;
+        core::uint64 max_win = 0;
+        for (const auto& e : r.entries()) {
+            if (e.header.is_service) continue;
+            if (e.header.mtime_win > max_win) max_win = e.header.mtime_win;
+        }
+        if (max_win == 0) return;
+        target_unix =
+            max_win >= 116444736000000000ull ? (max_win - 116444736000000000ull) / 10000000ull : 0;
+    }
+    // C++17-portable system_clock -> file-clock conversion (the two clocks
+    // differ only by a constant offset while both are steady).
+    const auto sys_tp = std::chrono::system_clock::from_time_t(static_cast<time_t>(target_unix));
+    const auto file_tp = std::chrono::time_point_cast<std::filesystem::file_time_type::duration>(
+        sys_tp - std::chrono::system_clock::now() + std::filesystem::file_time_type::clock::now());
+    fs::last_write_time(arc, file_tp, ec);
+    if (ec && !g_quiet_mode)
+        std::cerr << "W: cannot set archive mtime (" << ec.message() << ")" << "\n";
+}
+
 // err_name (optional) receives the failing entry's name.
 static int run_batch_add(const std::string& arc_path, const std::vector<PendingFile>& queue,
                          int method, const std::filesystem::path& sfx_stub,
@@ -1111,6 +1329,13 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                          core::uint64 dict_size = 0, const compress::FilterConfig& filter_cfg = {},
                          int max_versions = -1, const std::string& default_group = "",
                          const std::string& default_user = "", bool want_xattr = false) {
+    // -tk: the ORIGINAL archive time is captured before the batch write
+    // replaces the file (a new archive has none — keep is a no-op there).
+    const bool arc_existed = std::filesystem::exists(arc_path);
+    const std::filesystem::file_time_type pre_mtime =
+        arc_existed ? std::filesystem::last_write_time(arc_path)
+                    : std::filesystem::file_time_type{};
+
     const core::uint64 total_ram = get_total_physical_memory();
     const core::uint64 prepare_budget = std::clamp<core::uint64>(
         total_ram / 4, 1ULL << 30, 32ULL * 1024ULL * 1024ULL * 1024ULL); // 25% of RAM, 1-32 GiB
@@ -1180,7 +1405,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             }
             return EXIT_FATAL;
         }
-        prepared[0].delete_source = delete_source;
+        prepared[0].delete_source = delete_source || g_delete_sources;
+        prepared[0].delete_mode = g_src_delete_mode;
         Prog.note_file_done(queue[0].entry_name, queue[0].file_size);
         if (!archive::ArchiveMutator::write_batch_add(
                 arc_path, prepared, sfx_stub, password, encrypt_headers, {}, solid,
@@ -1191,6 +1417,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         if (announce && !g_quiet_mode && !is_vt_supported()) {
             std::cout << "Adding    " << sanitize_for_display(queue[0].entry_name) << " ... OK\n";
         }
+        if (g_arc_mtime_policy != 0) apply_archive_mtime_policy(arc_path, pre_mtime);
         return 0;
     }
 
@@ -1312,7 +1539,10 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                         okv = false;
                     }
                     if (okv) {
-                        prepared[i].delete_source = delete_source;
+                        prepared[i].delete_source = delete_source || g_delete_sources;
+                        prepared[i].delete_mode = g_delete_sources
+                                                      ? g_src_delete_mode
+                                                      : openrar::io::SourceDeleteMode::Plain;
                         Prog.note_file_done(queue[i].entry_name, queue[i].file_size);
                     }
 
@@ -1401,6 +1631,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             std::cout << "Adding    " << sanitize_for_display(item.entry_name) << " ... OK\n";
         }
     }
+    if (g_arc_mtime_policy != 0) apply_archive_mtime_policy(arc_path, pre_mtime);
     return 0;
 }
 
@@ -3338,6 +3569,29 @@ static int cli_main(int argc, char* argv[]) {
             openrar::cli::g_quiet_mode = true;
         } else if (sw_eq(s, "-y")) {
             openrar::cli::g_assume_yes = true;
+        } else if (sw_eq(s, "--in-proc")) {
+            openrar::cli::g_in_proc_flag = true;
+        } else if (sw_eq(s, "-df") && cmd != "cv") {
+            // cv owns its own -df (delete-after-VERIFIED-migration, v1.29);
+            // these branches are the ADD path (a/u/f/m) wiring (M2.5).
+            openrar::cli::g_delete_sources = true;
+            openrar::cli::g_src_delete_mode = openrar::io::SourceDeleteMode::Plain;
+        } else if (sw_eq(s, "-dr") && cmd != "cv") {
+            openrar::cli::g_delete_sources = true;
+            openrar::cli::g_src_delete_mode = openrar::io::SourceDeleteMode::Recycle;
+#ifndef _WIN32
+            if (!openrar::cli::g_quiet_mode)
+                std::cerr << "W: -dr has no recycle bin on this platform; deleted permanently"
+                          << "\n";
+#endif
+        } else if (sw_eq(s, "-dw") && cmd != "cv") {
+            openrar::cli::g_delete_sources = true;
+            openrar::cli::g_src_delete_mode = openrar::io::SourceDeleteMode::Wipe;
+        } else if (sw_eq(s, "-tl") && cmd != "cv") {
+            openrar::cli::g_arc_mtime_policy = 3;
+        } else if (sw_starts(s, "-tk") && cmd != "cv") {
+            openrar::cli::g_arc_mtime_date = s.substr(3);
+            openrar::cli::g_arc_mtime_policy = openrar::cli::g_arc_mtime_date.empty() ? 1 : 2;
         } else if (sw_eq(s, "-r")) {
             recurse_subdirs = true;
         } else if (sw_eq(s, "-r-")) {
