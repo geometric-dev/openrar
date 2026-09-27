@@ -1,0 +1,78 @@
+{
+  "comment": "OpenRAR ABI layout golden (v1.30.0 freeze, docs/abi-freeze.md). Machine-checked by tests/unit/abi_layout_tests.cpp on every platform; a change to any value here is an ABI event and needs the docs/versioning.md MAJOR/MINOR decision made explicitly in the same change. Offsets are byte offsets for the packed little-endian structs declared in include/openrar/openrar_dll.h.",
+  "structs": [
+    {
+      "name": "openrar_archive_entry_t",
+      "size": 64,
+      "align": 1,
+      "fields": [
+        { "name": "path_offset", "offset": 0, "size": 4 },
+        { "name": "path_len", "offset": 4, "size": 4 },
+        { "name": "is_dir", "offset": 8, "size": 4 },
+        { "name": "method", "offset": 12, "size": 4 },
+        { "name": "is_encrypted", "offset": 16, "size": 4 },
+        { "name": "crc32", "offset": 20, "size": 4 },
+        { "name": "size", "offset": 24, "size": 8 },
+        { "name": "packed_size", "offset": 32, "size": 8 },
+        { "name": "mtime", "offset": 40, "size": 8 },
+        { "name": "_pad", "offset": 48, "size": 16 }
+      ]
+    },
+    {
+      "name": "openrar_entry_ex_t",
+      "size": 48,
+      "align": 1,
+      "fields": [
+        { "name": "attrs", "offset": 0, "size": 4 },
+        { "name": "host_os", "offset": 4, "size": 4 },
+        { "name": "mtime_ft", "offset": 8, "size": 8 },
+        { "name": "ctime_ft", "offset": 16, "size": 8 },
+        { "name": "atime_ft", "offset": 24, "size": 8 },
+        { "name": "flags", "offset": 32, "size": 4 },
+        { "name": "win_size", "offset": 36, "size": 4 },
+        { "name": "redir_type", "offset": 40, "size": 4 },
+        { "name": "version_needed", "offset": 44, "size": 4 }
+      ]
+    },
+    {
+      "name": "openrar_entry_owner_t",
+      "size": 20,
+      "align": 1,
+      "fields": [
+        { "name": "uid", "offset": 0, "size": 8 },
+        { "name": "gid", "offset": 8, "size": 8 },
+        { "name": "flags", "offset": 16, "size": 4 }
+      ]
+    },
+    {
+      "name": "openrar_archive_info_t",
+      "size": 24,
+      "align": 1,
+      "fields": [
+        { "name": "flags", "offset": 0, "size": 4 },
+        { "name": "volume_index", "offset": 4, "size": 4 },
+        { "name": "volume_count", "offset": 8, "size": 4 },
+        { "name": "recovery_size", "offset": 12, "size": 8 },
+        { "name": "comment_len", "offset": 20, "size": 4 }
+      ]
+    },
+    {
+      "name": "openrar::api::ArchiveEntryOut",
+      "size": 64,
+      "align": 8,
+      "note": "Canonical C++ layout (src/api/abi_contract.hpp, alignas(8)); field offsets are pinned identical to openrar_archive_entry_t by the offsetof pairs in src/dll/dll_api.cpp.",
+      "fields": [
+        { "name": "path_offset", "offset": 0, "size": 4 },
+        { "name": "path_len", "offset": 4, "size": 4 },
+        { "name": "is_dir", "offset": 8, "size": 4 },
+        { "name": "method", "offset": 12, "size": 4 },
+        { "name": "is_encrypted", "offset": 16, "size": 4 },
+        { "name": "crc32", "offset": 20, "size": 4 },
+        { "name": "size", "offset": 24, "size": 8 },
+        { "name": "packed_size", "offset": 32, "size": 8 },
+        { "name": "mtime", "offset": 40, "size": 8 },
+        { "name": "_pad", "offset": 48, "size": 16 }
+      ]
+    }
+  ]
+}
