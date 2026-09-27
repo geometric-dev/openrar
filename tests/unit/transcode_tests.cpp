@@ -39,13 +39,20 @@ using namespace openrar::archive::foreign;
 #else
 #include <sys/wait.h>
 #endif
+// OPENRAR_RUNNER prefix contract (cross-arch legs): the runner prefixes
+// every invocation (e.g. qemu-aarch64-static), since the CLI binary cannot
+// be exec'd directly from the host kernel.
+static std::string cli_prefix() {
+    const char* runner = std::getenv("OPENRAR_RUNNER");
+    return (runner && *runner) ? std::string(runner) + " " : "";
+}
 static std::string cli_path() {
     return OPENRAR_CLI_EXE;
 }
 // Quote-free command per the cli_tests convention: cmd /c strips the
 // outer quote pair, so paths here must be space-free (build + temp dirs).
 static int run_cli(const std::string& args, const std::string& redirect) {
-    const std::string cmd = cli_path() + " " + args + " " + redirect;
+    const std::string cmd = cli_prefix() + cli_path() + " " + args + " " + redirect;
     const int raw = std::system(cmd.c_str());
 #ifdef _WIN32
     return static_cast<int>(static_cast<unsigned>(raw) & 0xFF); // wait status
