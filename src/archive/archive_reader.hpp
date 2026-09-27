@@ -217,6 +217,21 @@ public:
                  bool strict_volumes = false, const ExtractionLimits* limits = nullptr,
                  LimitState* state = nullptr);
 
+    // Sandbox worker seam (v1.30.0 §5.1): open the FIRST volume from an
+    // already-open OS handle (Windows HANDLE / POSIX fd — the same void*
+    // convention as io::FileStream::attach_os_handle) WITHOUT learning any
+    // filesystem path: the broker opens the archive, the worker only ever
+    // holds the read handle. The scan runs on the attached stream. The
+    // volume walk beyond the first volume can never resolve (the synthetic
+    // display path is guaranteed unopenable), so multi-volume sets report
+    // RAR_ERR_MISSING_VOLUME cleanly — worker mode is single-volume by
+    // contract and the broker falls back in-process, loudly, for volume
+    // sets. The handle is OWNED by the reader after a successful attach:
+    // close() closes it (the worker exits right after, so this is the
+    // intended lifetime).
+    bool open_read_handle(void* os_handle, const std::string& password, int& status_out,
+                          std::string& detail_out, const ReaderHooks& hooks = {});
+
     // Volume paths in the open set (primary first, then every extent volume,
     // deduplicated) — destination-guard input for the DLL layer.
     std::vector<std::filesystem::path> volume_paths() const;
@@ -335,7 +350,22 @@ private:
     io::FileStream stream_;
     std::filesystem::path path_;
     std::string password_;
+    // Sandbox-worker seam (open_read_handle): volume 0 is the attached
+    // handle — the scanner must not re-open it by the synthetic path.
+    bool attached_first_volume_{false};
     bool bad_password_{false};
+
+    // Seam extent serving: when `p` is the attached first volume (the
+    // synthetic, unresolvable display path), attaches a PRIVATE duplicate
+    // of the attached OS handle to `vs` (the caller's read position stays
+    // independent — the same const/read-only discipline as report L16);
+    // otherwise opens `p` as an ordinary file. Returns false on failure.
+    bool open_extent_source(const std::filesystem::path& p, io::FileStream& vs) const;
+    // Private duplicate of the attached handle (DuplicateHandle / dup);
+    // nullptr when no volume is attached or the duplicate fails. The
+    // CALLER owns the returned handle (io::FileStream::attach_os_handle
+    // takes the ownership).
+    void* duplicate_attached_handle() const;
     bool saw_crypt_header_{false};
     bool crypt_unsupported_{false};
     core::uint64 sfx_offset_{0};

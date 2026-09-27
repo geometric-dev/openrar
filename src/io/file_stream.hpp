@@ -59,7 +59,7 @@ public:
     // containment walk IS the write handle (write-through-handle, plan
     // §1.1.3 / §4.1).
     bool attach_os_handle(void* os_handle, const std::filesystem::path& display_path);
-    void* os_handle() { return handle_; }
+    void* os_handle() const { return handle_; }
 
     // v1.24 containment commit (Windows): rename THIS open file to `leaf`
     // inside the already-verified parent directory handle — no path
