@@ -610,7 +610,7 @@ jobs:
           gh release upload "$TAG" --clobber openrar-${VER}-sbom.json
 
       - name: Attest build provenance (Sigstore keyless)
-        uses: actions/attest-build-provenance@173725a1209d09b31f9d30a389a86c4237efe015 # v2.2.0
+        uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
             openrar-*/openrar-*.zip
