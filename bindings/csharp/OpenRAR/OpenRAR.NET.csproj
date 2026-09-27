@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>OpenRAR.NET</AssemblyName>
+    <RootNamespace>OpenRAR</RootNamespace>
+    <Version>1.30.0</Version>
+    <PackageId>OpenRAR.NET</PackageId>
+    <Description>OpenRAR C# SDK — P/Invoke binding over the frozen OpenRAR C ABI (RAR 5.0 read/create/mutate)</Description>
+    <Authors>OpenRAR Project</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/geometric-dev/openrar</RepositoryUrl>
+    <!-- Native assets: the release workflow places the per-RID built
+         openrar shared libraries in runtimes/<rid>/native (plan M4). -->
+  </PropertyGroup>
+</Project>
