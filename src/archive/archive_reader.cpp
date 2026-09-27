@@ -497,6 +497,7 @@ size_t ArchiveReader::test_get_solid_window_size() const {
 
 void ArchiveReader::close() {
     stream_.close();
+    attached_first_volume_ = false;
     entries_.clear();
     sfx_offset_ = 0;
     bad_password_ = false;
@@ -601,6 +602,86 @@ bool ArchiveReader::open_ex(const std::filesystem::path& arc_path, const std::st
 std::filesystem::path ArchiveReader::derive_next_volume_name(const std::filesystem::path& cur,
                                                              bool old_numbering) {
     return volume::next_volume_name(cur, old_numbering);
+}
+
+void* ArchiveReader::duplicate_attached_handle() const {
+    if (!attached_first_volume_) return nullptr;
+    void* h = stream_.os_handle();
+    if (h == nullptr) return nullptr;
+#ifdef _WIN32
+    HANDLE dup = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), static_cast<HANDLE>(h), GetCurrentProcess(), &dup, 0,
+                         FALSE, DUPLICATE_SAME_ACCESS)) {
+        return nullptr;
+    }
+    return dup;
+#else
+    const int fd = static_cast<int>(reinterpret_cast<intptr_t>(h));
+    const int d = ::dup(fd);
+    return d < 0 ? nullptr : reinterpret_cast<void*>(static_cast<intptr_t>(d));
+#endif
+}
+
+bool ArchiveReader::open_extent_source(const std::filesystem::path& p, io::FileStream& vs) const {
+    if (attached_first_volume_ && p == path_) {
+        // The attached first volume: serve from a private duplicate of the
+        // OS handle — no path is ever opened (the synthetic display path is
+        // unresolvable by construction), and the caller's read position is
+        // independent of the shared stream_ (report L16 discipline).
+        void* dup = duplicate_attached_handle();
+        if (dup == nullptr) {
+            return false;
+        }
+        if (!vs.attach_os_handle(dup, path_)) {
+#ifdef _WIN32
+            CloseHandle(static_cast<HANDLE>(dup));
+#else
+            ::close(static_cast<int>(reinterpret_cast<intptr_t>(dup)));
+#endif
+            return false;
+        }
+        return true;
+    }
+    return vs.open(p, io::FileMode::ReadOnly);
+}
+
+bool ArchiveReader::open_read_handle(void* os_handle, const std::string& password, int& status_out,
+                                     std::string& detail_out, const ReaderHooks& hooks) {
+    std::string effective_password = password.empty() ? password_ : password;
+    close();
+    status_out = RAR_OK;
+    detail_out.clear();
+    // A synthetic display path that is GUARANTEED unopenable on each OS, so
+    // the multi-volume walk past volume 0 can never resolve a real file (no
+    // volume name ever reaches the worker; a planted look-alike cannot be
+    // resolved either):
+    //   Windows: '<' and '|' are reserved path characters — CreateFile fails.
+    //   POSIX:   a component under /dev/null (a regular file) is ENOTDIR.
+    // Both are also non-resolvable as relative names from any CWD.
+#ifdef _WIN32
+    path_ = std::filesystem::path(L"\\<|openrar-worker-volume");
+#else
+    path_ = std::filesystem::path("/dev/null/openrar-worker-volume");
+#endif
+    password_ = effective_password;
+
+    if (!stream_.attach_os_handle(os_handle, path_)) {
+        status_out = RAR_ERR_IO;
+        detail_out = "cannot attach worker volume handle";
+        close();
+        return false;
+    }
+    attached_first_volume_ = true;
+
+    if (!scan_archive(hooks, /*strict_volumes=*/false, status_out, detail_out, nullptr, nullptr)) {
+        bool bad = bad_password_;
+        std::filesystem::path missing = missing_volume_path_;
+        close();
+        bad_password_ = bad;
+        missing_volume_path_ = missing;
+        return false;
+    }
+    return true;
 }
 
 std::filesystem::path ArchiveReader::derive_first_volume_name(const std::filesystem::path& cur,
@@ -1086,8 +1167,11 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
     // selects the per-volume source — mapped when enabled and mappable,
     // buffered otherwise (fail-open, diagnosable). No other mapped/buffered
     // branches exist in the scanner.
+    // v1.30.0 sandbox-worker seam: when the first volume was attached as an
+    // OS handle (open_read_handle), volume 0 IS stream_ — no path open.
     auto select_volume_source = [&](const std::filesystem::path& vol_path, io::FileStream& buffered,
                                     io::MappedFile& mapped) -> io::ReadSource* {
+        if (vol_path == path_ && attached_first_volume_) return &stream_;
         if (use_mapped_scan_ && !mmap_disabled_by_env()) {
             if (mapped.open(vol_path)) return &mapped;
             if (mmap_fallback_debug()) {
@@ -1269,9 +1353,16 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
         entries_.push_back(std::move(e));
     }
     // Keep stream_ open to first volume for compat single-volume reads
-    stream_.close();
-    stream_.open(path_, io::FileMode::ReadOnly);
-    stream_.seek(static_cast<core::int64>(sfx_offset_ + 8), io::SeekOrigin::Begin);
+    if (attached_first_volume_) {
+        // Sandbox-worker seam: the attached handle cannot be re-opened by
+        // the synthetic display path — an absolute seek restores exactly the
+        // position the close+reopen below produces.
+        stream_.seek(static_cast<core::int64>(sfx_offset_ + 8), io::SeekOrigin::Begin);
+    } else {
+        stream_.close();
+        stream_.open(path_, io::FileMode::ReadOnly);
+        stream_.seek(static_cast<core::int64>(sfx_offset_ + 8), io::SeekOrigin::Begin);
+    }
     (void)saw_end;
     hooks.emit(vol_done_base, vol_done_base); // exactly one final (total, total)
     return true;
@@ -1390,9 +1481,13 @@ namespace {
 // IV carried across them (§2), so memory stays bounded regardless of size.
 class ExtentPullSource {
 public:
+    // open_source: the reader's extent-source opener (sandbox-worker seam:
+    // the attached first volume is served from a private duplicate of the
+    // attached OS handle, never by path).
     ExtentPullSource(const ArchiveEntry& entry, const std::filesystem::path& fallback_path,
-                     const crypto::Rar5Keys* keys)
-        : keys_(keys) {
+                     const crypto::Rar5Keys* keys,
+                     std::function<bool(const std::filesystem::path&, io::FileStream&)> open_source)
+        : keys_(keys), open_source_(std::move(open_source)) {
         if (entry.extents.empty())
             exts_.push_back({fallback_path, entry.data_offset, entry.data_size});
         else
@@ -1430,7 +1525,7 @@ private:
             }
             if (!stream_.is_open()) {
                 const auto& ext = exts_[ext_idx_];
-                if (!stream_.open(ext.volume_path, io::FileMode::ReadOnly)) {
+                if (!open_source_(ext.volume_path, stream_)) {
                     error_ = missing_ = true;
                     missing_path_ = ext.volume_path;
                     return false;
@@ -1482,6 +1577,7 @@ private:
     io::FileStream stream_;
     core::uint64 ext_remain_{0};
     const crypto::Rar5Keys* keys_;
+    std::function<bool(const std::filesystem::path&, io::FileStream&)> open_source_;
     core::byte iv_[16]{};
     std::vector<core::byte> staging_;
     size_t plain_pos_{0};
@@ -1548,7 +1644,7 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
         std::vector<core::byte> buf(kStreamChunk);
         for (const auto& ext : exts) {
             io::FileStream vs;
-            if (!vs.open(ext.volume_path, io::FileMode::ReadOnly)) {
+            if (!open_extent_source(ext.volume_path, vs)) {
                 missing_volume_path_ = ext.volume_path;
                 return RAR_ERR_MISSING_VOLUME;
             }
@@ -1582,7 +1678,10 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
             }
         }
     } else {
-        ExtentPullSource src(entry, path_, keys);
+        ExtentPullSource src(entry, path_, keys,
+                             [this](const std::filesystem::path& vol, io::FileStream& vs) {
+                                 return open_extent_source(vol, vs);
+                             });
         bool ok = decode_compressed(
             entry, [&src](core::byte* buf, size_t want) -> size_t { return src.pull(buf, want); },
             static_cast<size_t>(entry.data_size), core_sink);
@@ -1868,7 +1967,7 @@ bool ArchiveReader::read_packed_data(const ArchiveEntry& entry,
         out.reserve(total);
         for (auto& e : entry.extents) {
             io::FileStream vs;
-            if (!vs.open(e.volume_path, io::FileMode::ReadOnly)) return false;
+            if (!open_extent_source(e.volume_path, vs)) return false;
             core::uint64 fsz = vs.size();
             core::uint64 remain =
                 e.offset < fsz ? std::min<core::uint64>(e.size, fsz - e.offset) : 0;
@@ -1890,7 +1989,7 @@ bool ArchiveReader::read_packed_data(const ArchiveEntry& entry,
     // const, logically read-only operation, so it must not reposition the
     // shared stream_ (a data race with concurrent readers — report L16).
     io::FileStream local;
-    if (!local.open(path_, io::FileMode::ReadOnly)) return false;
+    if (!open_extent_source(path_, local)) return false;
     local.seek(static_cast<core::int64>(entry.data_offset), io::SeekOrigin::Begin);
     // Bound the allocation by the bytes the file actually holds; data_size is
     // untrusted header data and must not size a vector directly.
@@ -1908,8 +2007,9 @@ namespace {
 // each extent and never materialises the whole payload — matters when a
 // single entry is 20 GiB and callers just want to verify a checksum.
 // Returns false on any I/O failure.
-template <class Fn>
-bool stream_stored_entry_chunks(const archive::ArchiveEntry& entry, Fn&& chunk_sink) {
+template <class Fn, class OpenFn>
+bool stream_stored_entry_chunks(const archive::ArchiveEntry& entry, Fn&& chunk_sink,
+                                OpenFn&& open_source) {
     core::byte buf[64 * 1024];
     if (entry.in_memory) {
         chunk_sink(entry.memory_data.data(), entry.memory_data.size());
@@ -1918,7 +2018,7 @@ bool stream_stored_entry_chunks(const archive::ArchiveEntry& entry, Fn&& chunk_s
     if (!entry.extents.empty()) {
         for (const auto& ext : entry.extents) {
             io::FileStream vs;
-            if (!vs.open(ext.volume_path, io::FileMode::ReadOnly)) return false;
+            if (!open_source(ext.volume_path, vs)) return false;
             if (!vs.seek(static_cast<core::int64>(ext.offset), io::SeekOrigin::Begin)) return false;
             core::uint64 remain = ext.size;
             while (remain > 0) {
@@ -2043,7 +2143,10 @@ bool ArchiveReader::test_entry(const ArchiveEntry& entry) {
                 b2.update(entry.memory_data.data(), entry.memory_data.size());
             } else {
                 bool io_ok = stream_stored_entry_chunks(
-                    entry, [&](const core::byte* p, size_t n) { b2.update(p, n); });
+                    entry, [&](const core::byte* p, size_t n) { b2.update(p, n); },
+                    [this](const std::filesystem::path& vol, io::FileStream& vs) {
+                        return open_extent_source(vol, vs);
+                    });
                 if (!io_ok) {
                     // Fall back to buffered read for the legacy single-stream
                     // path that stream_stored_entry_chunks doesn't cover.
@@ -2087,7 +2190,10 @@ bool ArchiveReader::test_entry(const ArchiveEntry& entry) {
             crc.update(entry.memory_data.data(), entry.memory_data.size());
         } else {
             bool io_ok = stream_stored_entry_chunks(
-                entry, [&](const core::byte* p, size_t n) { crc.update(p, n); });
+                entry, [&](const core::byte* p, size_t n) { crc.update(p, n); },
+                [this](const std::filesystem::path& vol, io::FileStream& vs) {
+                    return open_extent_source(vol, vs);
+                });
             if (!io_ok) {
                 std::vector<core::byte> packed;
                 if (!read_packed_data(entry, packed)) return false;
