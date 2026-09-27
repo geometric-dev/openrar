@@ -2579,6 +2579,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     job_ts_clamped.assign(extract_jobs.size(), 0);
     job_motw_flag.assign(extract_jobs.size(), 0);
     job_zone_skip_flag.assign(extract_jobs.size(), 0);
+    std::vector<int> job_filecopy_skip;
     auto note_ts_clamp = [&](size_t job_idx, archive::ExtractionReportEntry& rep) {
         if (!job_ts_clamped[job_idx]) return;
         rep.security_flags.push_back("timestamp_clamped");
@@ -2663,6 +2664,19 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                 if (kids.motw_written) rep.security_flags.push_back("motw_propagated");
                 if (kids.zone_streams_skipped) rep.security_flags.push_back("zone_stream_skipped");
                 rep.status = "extracted";
+                // v1.29 M6: a FILECOPY whose target cannot be materialized
+                // is a SKIPPED entry, never a silent fake success.
+                if (reader.last_filecopy_outcome() ==
+                    archive::ArchiveReader::FilecopyOutcome::TargetMissing) {
+                    rep.status = "skipped";
+                    rep.reason = "filecopy target missing";
+                    rep.security_flags.push_back("filecopy_skipped");
+                } else if (reader.last_filecopy_outcome() ==
+                           archive::ArchiveReader::FilecopyOutcome::TargetUnsafe) {
+                    rep.status = "skipped";
+                    rep.reason = "filecopy target unsafe";
+                    rep.security_flags.push_back("filecopy_skipped");
+                }
                 if (reader.last_mtime_clamped()) job_ts_clamped[job_i] = 1;
                 note_ts_clamp(job_i, rep);
                 hook_files_done.fetch_add(1, std::memory_order_relaxed);
@@ -2791,6 +2805,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
         }
 
         // Phase 2: Sequential links/redirections (target files guaranteed to exist on disk)
+        job_filecopy_skip.assign(extract_jobs.size(), 0);
         for (size_t idx : phase2_indices) {
             bool okv = false;
             try {
@@ -2802,6 +2817,10 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     if (kids.motw_written) job_motw_flag[idx] = 1;
                     if (kids.zone_streams_skipped) job_zone_skip_flag[idx] = 1;
                     if (slots.readers[0]->last_mtime_clamped()) job_ts_clamped[idx] = 1;
+                    if (slots.readers[0]->last_filecopy_outcome() !=
+                        archive::ArchiveReader::FilecopyOutcome::None)
+                        job_filecopy_skip[idx] =
+                            static_cast<int>(slots.readers[0]->last_filecopy_outcome());
                 }
                 if (!okv && slots.readers[0]->has_bad_password()) badpw_flag.store(1);
             } catch (...) {
@@ -2859,7 +2878,20 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     << "\n";
             }
             auto& rep = report.entries[job_rep_idx[i]];
-            if (okv) {
+            if (okv && job_filecopy_skip.size() > i &&
+                job_filecopy_skip[i] ==
+                    static_cast<int>(archive::ArchiveReader::FilecopyOutcome::TargetMissing)) {
+                rep.status = "skipped";
+                rep.reason = "filecopy target missing";
+                rep.security_flags.push_back("filecopy_skipped");
+            } else if (okv && job_filecopy_skip.size() > i &&
+                       job_filecopy_skip[i] ==
+                           static_cast<int>(
+                               archive::ArchiveReader::FilecopyOutcome::TargetUnsafe)) {
+                rep.status = "skipped";
+                rep.reason = "filecopy target unsafe";
+                rep.security_flags.push_back("filecopy_skipped");
+            } else if (okv) {
                 rep.status = extract_jobs[i].children.empty() ? "extracted" : "modified";
             } else if (user_break) {
                 rep.status = "unprocessed";
