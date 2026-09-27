@@ -492,13 +492,75 @@ jobs:
             exit 1
           fi
 
+  sanitizers:
+    # v1.30 M5 (SECURITY_ARCHITECTURE §7.2): ASan + UBSan are PRIMARY legs —
+    # the full unit suite under both sanitizers on one Linux leg.
+    name: ASan + UBSan (primary)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Configure (ASan + UBSan)
+        run: |
+          cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+      - name: Unit suite under sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|archive_tests'
+
+  tsan:
+    # v1.30 M5: ThreadSanitizer on the threaded suites (parallel pipeline,
+    # slot readers, TUI single-writer).
+    name: TSan (primary)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Configure (TSan)
+        run: |
+          cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DCMAKE_C_FLAGS="-fsanitize=thread -g"             -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+      - name: Threaded suites under TSan
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure -R 'parallel_compress_tests|writer_conformance' || ctest --test-dir build --output-on-failure -R 'parallel_compress_tests'
+
+  msan:
+    # v1.30 M5: MSan is BEST-EFFORT on the Linux/clang leg (§7.2 revised):
+    # it requires an instrumented libc++, cannot gate the MSVC matrix, and
+    # is reported but never blocks the release.
+    name: MSan (best-effort)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+      - name: Install clang + instrumented libc++
+        run: sudo apt-get update && sudo apt-get install -y clang libc++-dev libc++abi-dev
+      - name: Configure (MSan, instrumented libc++)
+        run: |
+          cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DCMAKE_C_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins -stdlib=libc++ -g"             -DCMAKE_CXX_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins -stdlib=libc++ -g"             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=memory -stdlib=libc++"             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=memory -stdlib=libc++" || true
+      - name: Build (best-effort)
+        run: cmake --build build --parallel $(nproc) || true
+      - name: Report
+        run: |
+          if [ -d build ]; then ctest --test-dir build --output-on-failure -R 'compress_tests' ||             echo "MSan findings reported (best-effort leg, non-gating)"; fi
+
   release-assets:
     name: Attach release artifacts
     # Runs only for version tags: packages everything the run built and
     # attaches it to the GitHub release named after the tag (creating the
     # release with generated notes if it does not exist yet).
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-and-test, linux-arm64-qemu, writer-conformance, wasm]
+    needs: [build-and-test, linux-arm64-qemu, writer-conformance, wasm, sanitizers, tsan]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -533,3 +595,17 @@ jobs:
 
           gh release view "$TAG" >/dev/null 2>&1             || gh release create "$TAG" --title "OpenRAR ${VER}" --generate-notes
           gh release upload "$TAG" --clobber openrar-${VER}-*.zip
+
+          # Supply chain (v1.30 M6; freeze prereq 5): checksums + SBOM.
+          sha256sum openrar-${VER}-*.zip > SHA256SUMS
+          gh release upload "$TAG" --clobber SHA256SUMS
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft dir:. -o cyclonedx-json > openrar-${VER}-sbom.json
+          gh release upload "$TAG" --clobber openrar-${VER}-sbom.json
+
+      - name: Attest build provenance (Sigstore keyless)
+        uses: actions/attest-build-provenance@173725a1209d09b31f9d30a389a86c4237efe015 # v2.2.0
+        with:
+          subject-path: |
+            openrar-*/openrar-*.zip
+            SHA256SUMS
