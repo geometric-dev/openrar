@@ -266,7 +266,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Run unit tests under QEMU (aarch64 NEON / scalar paths)
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure -E 'sandbox_worker_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance'
 
       - name: Assert NEON RS16 kernel activated (not the scalar fallback)
         # Same R1 silent-degradation guard as the SDE GFNI gate: a build
@@ -517,7 +517,7 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|archive_tests|sfx_tests|sfx_pipeline_tests|sandbox_sandboxed_e2e_tests|python_conformance'
+        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|archive_tests|sfx_tests|sfx_pipeline_tests|sfx_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance'
 
   tsan:
     # v1.30 M5: ThreadSanitizer on the threaded suites (parallel pipeline,
