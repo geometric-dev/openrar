@@ -36,6 +36,8 @@
 #include "../../src/io/file_stream.hpp"
 #include "../../src/io/win32_meta.hpp"
 
+#include "test_support.hpp"
+
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -360,6 +362,7 @@ static void test_containment_no_disable_switch() {
 }
 
 int main() {
+    OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
     test_set_limits_caller_layer_is_tunable();
     test_kdf_floor_unaffected_by_unlimited_limits();
     test_dll_destinations_are_caller_owned();
