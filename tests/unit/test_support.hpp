@@ -7,12 +7,21 @@
 // Under ctest (piped stdio) the MSVC default for _CRT_ASSERT is a modal
 // dialog, which silently hangs the test process forever while ctest moves
 // on, leaving file locks behind. Route assert failures to stderr instead.
+// abort() — reached after a routed assert, or via Debug bounds checks —
+// additionally pops the WER "abort has been called" dialog through
+// _CALL_REPORTFAULT; that is disabled too, so a failing test prints and
+// dies instead of blocking the run.
 #ifdef _MSC_VER
 #include <crtdbg.h>
+#include <cstdlib>
 #define OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR()                                                       \
     do {                                                                                           \
+        _set_error_mode(_OUT_TO_STDERR);                                                           \
+        _set_abort_behavior(0, _CALL_REPORTFAULT);                                                 \
         _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);                                         \
         _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);                                       \
+        _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);                                          \
+        _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);                                        \
     } while (0)
 #else
 #define OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR()                                                       \
