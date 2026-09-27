@@ -469,7 +469,10 @@ if(NOT EMSCRIPTEN)
     # to a hard-coded Debug path and failed. Hand it the real path instead.
     target_compile_definitions(cli_tests PRIVATE
         OPENRAR_CLI_EXE="$<TARGET_FILE:openrar>")
-    add_dependencies(cli_tests openrar)
+    # v1.28 M4: the bench-engine tests shell out to the openrar_bench tool.
+    target_compile_definitions(cli_tests PRIVATE
+        OPENRAR_BENCH_EXE="$<TARGET_FILE:openrar_bench>")
+    add_dependencies(cli_tests openrar openrar_bench)
 
     # collision_matrix_tests (gate 2) also shells out to the built CLI for
     # the end-to-end abort assertions (plan §10 tests 7-10).
