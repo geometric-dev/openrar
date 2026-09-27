@@ -301,16 +301,17 @@ defect in the allocator-pairing, error-mapping, handle-lifetime,
 callback-re-entrancy, or struct-packing classes beyond what the M1 gates
 now pin mechanically. The freeze commit may proceed.
 
-## 13. v1.29.0 inherited surface (placeholder — filled at the freeze commit)
+## 13. v1.29.0 inherited surface — VERIFIED: ZERO C ABI additions
 
-The transcoder arc (arc/v1.29.0-transcoder, merged FIRST per the parallel
-coordination rules) may land additive C ABI exports for migration flows.
-Per Gate 0: this arc INHERITS and documents whatever shipped — no redesign.
-At the freeze commit (M7, post-rebase) this section records: new exports
-(name, since v1.29.0, feature bit if gated), error-code additions (next
-slot −16), registry additions, and the layout goldens of any new structs.
-The `abi_layout_tests`/`abi_export_parity` gates are re-run against the
-rebased tree as the freeze evidence. *(Pending rebase.)*
+The transcoder arc (v1.29.0, merged to master before this arc's rebase)
+added NO new C ABI surface: `include/openrar/openrar_dll.h` is unchanged
+since v1.28.0 (`git diff 08089ec v1.29.0 -- include/openrar/openrar_dll.h`
+is empty), the error enum/registry slots are unchanged, and the export-list
+parity gate confirms 58 exports == `tools/abi_exports_canonical.txt` on the
+rebased tree. The `cv` migration command is CLI-surface only (it rides the
+existing create/mutation machinery); no new structs, no new feature bits.
+The freeze therefore covers exactly the §6 list, and the export/parity
+gates (§14) remain the drift enforcers.
 
 ## 14. Enforcement inventory (how this freeze is checked, not just written)
 

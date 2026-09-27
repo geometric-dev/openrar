@@ -10,9 +10,25 @@
 > scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
 > v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
-## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 / v1.25.0 / v1.26.0 / v1.27.0 / v1.28.0 / v1.29.0)
+## Shipped Baseline (v1.21.x / ... / v1.29.0 / v1.30.0)
 
-- **v1.29.0 (current):** Archive Migration & Transcoder shipped —
+- **v1.30.0 (current):** OpenRAR 2.0 LTS shipped — the ABI-freeze arc
+  (docs/v1.30-pre-analysis.md §0/§8: Gate 0 conditional approval +
+  twelve directives; ZERO emitted RAR5 bytes, confirmed by diff-surface
+  review + the 23-stage interop gate + golden bytes). Freeze
+  prerequisites 1–7 all landed: (1) ABI freeze inventory +
+  machine-enforced layout/export/mirror gates; (2) sandboxed worker —
+  Windows AppContainer + Linux seccomp-BPF with OBSERVED-denial e2e per
+  model (Risk Register 5 resolved: two tested mechanisms), broker holds
+  every handle, sandboxed `t` byte-identical, library-mode floors pinned
+  non-disableable; (3) Python + C# SDKs behind the normative conformance
+  gate; (4) attack corpus (CVE-2025-8088/2023-38831/2023-40477 classes,
+  bombs, hostile vint) + differential-vs-7z Track 16 + ASan/UBSan/TSan
+  primary legs + MSan best-effort + fuzz dedup; (5) SHA256SUMS + SBOM +
+  Sigstore attestations; (6) interop 23 stages 100% + multi-OS matrix;
+  (7) P2 ledger triaged clean + the CLI switch debt CLOSED (-df/-dr/-dw
+  add path, -tl/-tk). Plan: docs/v1.30-implementation-plan.md.
+- **v1.29.0:** Archive Migration & Transcoder shipped —
   Gate 0 cleared with a SPLIT-SURFACE claim (docs/v1.29-pre-analysis.md
   §0/§9: new PARSED-byte surface, zero new emission code — confirmed by
   diff-surface review, unchanged interop gate + golden bytes, and the new
@@ -492,7 +508,7 @@ C# NuGet (`OpenRAR.NET`).
 | **v1.27.0** | xattr / quarantine / MotW | §4.3 MotW local-generation; ownership policy | Legality gate; multi-OS matrix |
 | **v1.28.0** | TUI + benchmark ✅ | §7.1 terminal-injection gate ✅ | Non-TTY degradation ✅; reproducibility protocol ✅ |
 | **v1.29.0** | Transcoder (ZIP/TAR/GZIP) | ZIP CD/LF hardening; legacy-VM drop; name escaping | Bit-for-bit equivalence |
-| **v1.30.0** | 2.0 LTS + SDKs | §5.1 sandboxed worker; §7.2 assurance; supply chain | Freeze prerequisites 1–7 |
+| **v1.30.0** | 2.0 LTS + SDKs | §5.1 sandboxed worker; §7.2 assurance; supply chain | Freeze prerequisites 1–7 ✅ |
 
 ## ⚠️ Risk Register (top items)
 
