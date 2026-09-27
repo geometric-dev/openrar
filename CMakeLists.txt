@@ -101,6 +101,8 @@ set(OPENRAR_FOREIGN_FORMATS_SOURCES
     src/compress/inflate.cpp
     src/archive/foreign_reader.cpp
     src/archive/foreign_zip.cpp
+    src/archive/foreign_tar.cpp
+    src/archive/foreign_gzip.cpp
 )
 
 # Warning policy: MSVC /W4, GCC/Clang -Wall -Wextra everywhere. Warnings are
