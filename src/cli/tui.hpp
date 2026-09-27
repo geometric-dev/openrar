@@ -46,6 +46,12 @@
 #include <termios.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+// glibc's <termios.h> defines CTIME (a tc_lflag bitmask) as a macro, which
+// collides with archive::time_flags::CTIME at use sites (caught by the WSL
+// -Werror leg). This header never uses the tc flag — drop the macro.
+#ifdef CTIME
+#undef CTIME
+#endif
 #endif
 
 namespace openrar::cli {
@@ -607,7 +613,7 @@ private:
     termios saved_termios_{};
     bool raw_active_ = false;
     bool handler_installed_ = false;
-    sigaction saved_sigint_{};
+    struct sigaction saved_sigint_ {};
 #endif
 
     void run() {

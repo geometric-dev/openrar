@@ -195,7 +195,7 @@ struct BenchCorpora {
                 pool.push_back(std::move(blk));
             }
             const int rotations[4] = {0, 16, 8, 24}; // T0/T2/T4/T6 start offsets
-            for (int i = 0; i < kCdcFiles; ++i) {
+            for (size_t i = 0; i < kCdcFiles; ++i) {
                 const fs::path p = dir / ("cdc_" + std::to_string(i) + ".bin");
                 std::ofstream f(p, std::ios::binary);
                 if (i % 2 == 0) {
@@ -679,55 +679,45 @@ int main(int argc, char** argv) {
 #elif defined(OPENRAR_HAS_GFNI_KERNEL)
     if (recovery::ReedSolomon16::gfni_kernel_active()) rs_kernel = "GFNI";
 #endif
-    suites.push_back({"rs16_fold_scalar", "scalar", "compute", "MiB/s", [](int) {
-                          return pass_rs16(false);
-                      }});
-    suites.push_back({"rs16_fold_dispatched", rs_kernel, "compute", "MiB/s", [](int) {
-                          return pass_rs16(true);
-                      }});
+    suites.push_back({"rs16_fold_scalar", "scalar", "compute", "MiB/s",
+                      [](int) { return pass_rs16(false); }, true, ""});
+    suites.push_back({"rs16_fold_dispatched", rs_kernel, "compute", "MiB/s",
+                      [](int) { return pass_rs16(true); }, true, ""});
 
-    suites.push_back({"match_length_scalar", "scalar", "compute", "MiB/s", [](int) {
-                          return pass_match(arch::match_length_scalar);
-                      }});
+    suites.push_back({"match_length_scalar", "scalar", "compute", "MiB/s",
+                      [](int) { return pass_match(arch::match_length_scalar); }, true, ""});
 #if defined(OPENRAR_HAS_X86_SIMD)
     if (cpu.sse2)
-        suites.push_back({"match_length_SSE2", "SSE2", "compute", "MiB/s", [](int) {
-                              return pass_match(arch::match_length_sse2);
-                          }});
+        suites.push_back({"match_length_SSE2", "SSE2", "compute", "MiB/s",
+                          [](int) { return pass_match(arch::match_length_sse2); }, true, ""});
     if (cpu.avx2)
-        suites.push_back({"match_length_AVX2", "AVX2", "compute", "MiB/s", [](int) {
-                              return pass_match(arch::match_length_avx2);
-                          }});
+        suites.push_back({"match_length_AVX2", "AVX2", "compute", "MiB/s",
+                          [](int) { return pass_match(arch::match_length_avx2); }, true, ""});
 #endif
 #if defined(__aarch64__) || defined(__ARM_NEON) || defined(_M_ARM64)
     if (cpu.neon)
-        suites.push_back({"match_length_NEON", "NEON", "compute", "MiB/s", [](int) {
-                              return pass_match(arch::match_length_neon);
-                          }});
+        suites.push_back({"match_length_NEON", "NEON", "compute", "MiB/s",
+                          [](int) { return pass_match(arch::match_length_neon); }, true, ""});
 #endif
 
     // io suites: temp-disk driven. The listing corpus build IS the warm-up.
-    suites.push_back({"extract_throughput_store", "", "io", "MiB/s", [](int i) {
-                          return pass_extract(g_corpora.store_arc, kExtractCorpusBytes, i);
-                      }});
-    suites.push_back({"extract_throughput_m3", "", "io", "MiB/s", [](int i) {
-                          return pass_extract(g_corpora.m3_arc, g_corpora.m3_unp, i);
-                      }});
-    suites.push_back({"add_throughput_m3", "", "io", "MiB/s", [](int i) {
-                          return pass_add_m3(i);
-                      }});
-    suites.push_back({"cdc_fingerprint", "", "compute", "MiB/s", [](int) {
-                          return pass_cdc_fingerprint();
-                      }});
-    suites.push_back({"cdc_three_number_store", "", "compute", "B", [](int i) {
-                          return pass_cdc_pack(0, i);
-                      }});
-    suites.push_back({"cdc_three_number_plain_solid", "", "compute", "B", [](int i) {
-                          return pass_cdc_pack(1, i);
-                      }});
-    suites.push_back({"cdc_three_number_cdc_packed", "", "compute", "B", [](int i) {
-                          return pass_cdc_pack(2, i);
-                      }});
+    suites.push_back(
+        {"extract_throughput_store", "", "io", "MiB/s",
+         [](int i) { return pass_extract(g_corpora.store_arc, kExtractCorpusBytes, i); }, true,
+         ""});
+    suites.push_back({"extract_throughput_m3", "", "io", "MiB/s",
+                      [](int i) { return pass_extract(g_corpora.m3_arc, g_corpora.m3_unp, i); },
+                      true, ""});
+    suites.push_back(
+        {"add_throughput_m3", "", "io", "MiB/s", [](int i) { return pass_add_m3(i); }, true, ""});
+    suites.push_back({"cdc_fingerprint", "", "compute", "MiB/s",
+                      [](int) { return pass_cdc_fingerprint(); }, true, ""});
+    suites.push_back({"cdc_three_number_store", "", "compute", "B",
+                      [](int i) { return pass_cdc_pack(0, i); }, true, ""});
+    suites.push_back({"cdc_three_number_plain_solid", "", "compute", "B",
+                      [](int i) { return pass_cdc_pack(1, i); }, true, ""});
+    suites.push_back({"cdc_three_number_cdc_packed", "", "compute", "B",
+                      [](int i) { return pass_cdc_pack(2, i); }, true, ""});
 
     // listing suites: build the sparse corpus ONLY when they are selected
     // (the build is once-per-run, ~30 MB of header writes).
@@ -739,12 +729,22 @@ int main(int argc, char** argv) {
         g_corpora.build_listing_corpus();
         listing_ok = g_corpora.listing_ready;
     }
-    SuiteDef listing_mapped{"listing_50gb_mapped", "mapped", "io", "s", [](int) {
-                                return pass_listing(true);
-                            }};
-    SuiteDef listing_buffered{"listing_50gb_buffered", "buffered", "io", "s", [](int) {
-                                  return pass_listing(false);
-                              }};
+    SuiteDef listing_mapped{"listing_50gb_mapped",
+                            "mapped",
+                            "io",
+                            "s",
+                            [](int) {
+                                return pass_listing(true); },
+                            true,
+                            ""};
+    SuiteDef listing_buffered{"listing_50gb_buffered",
+                              "buffered",
+                              "io",
+                              "s",
+                              [](int) {
+                                  return pass_listing(false); },
+                              true,
+                              ""};
     if (!listing_ok) {
         listing_mapped.available = false;
         listing_mapped.skip_reason = "sparse unsupported";
