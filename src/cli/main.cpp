@@ -1174,7 +1174,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         if (!okv) {
             if (err_name) *err_name = queue[0].entry_name;
             if (announce && !g_quiet_mode && !is_vt_supported()) {
-                std::cout << "Adding    " << queue[0].entry_name << " ... FAILED\n";
+                std::cout << "Adding    " << sanitize_for_display(queue[0].entry_name)
+                          << " ... FAILED\n";
             }
             return EXIT_FATAL;
         }
@@ -1187,7 +1188,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             return EXIT_FATAL;
         }
         if (announce && !g_quiet_mode && !is_vt_supported()) {
-            std::cout << "Adding    " << queue[0].entry_name << " ... OK\n";
+            std::cout << "Adding    " << sanitize_for_display(queue[0].entry_name) << " ... OK\n";
         }
         return 0;
     }
@@ -1389,13 +1390,14 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     if (!ok) {
         if (failed_index < queue.size() && err_name) *err_name = queue[failed_index].entry_name;
         if (announce && !g_quiet_mode && !is_vt_supported() && failed_index < queue.size()) {
-            std::cout << "Adding    " << queue[failed_index].entry_name << " ... FAILED\n";
+            std::cout << "Adding    " << sanitize_for_display(queue[failed_index].entry_name)
+                      << " ... FAILED\n";
         }
         return EXIT_FATAL;
     }
     if (announce && !g_quiet_mode && !is_vt_supported()) {
         for (const auto& item : queue) {
-            std::cout << "Adding    " << item.entry_name << " ... OK\n";
+            std::cout << "Adding    " << sanitize_for_display(item.entry_name) << " ... OK\n";
         }
     }
     return 0;
@@ -1992,7 +1994,7 @@ int add_to_archive(
             Prog.start_file(item.entry_name, i + 1);
 
             if (!g_quiet_mode && !is_vt_supported()) {
-                std::cout << "Adding    " << item.entry_name << " ... ";
+                std::cout << "Adding    " << sanitize_for_display(item.entry_name) << " ... ";
             }
             bool ok = false;
             bool is_last = (i == queue.size() - 1);
