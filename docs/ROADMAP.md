@@ -413,6 +413,42 @@ security constraints normative:
 
 ---
 
+## CLI Switch Debt Ledger (post-v1.29.0 audit)
+
+README-documented switches that the CLI never wired (the v1.29 arc's
+ledger found the first; the full audit is recorded here so the debt is
+visible at the v1.30 freeze triage — CONTRIBUTING's changelog-as-contract
+rule means the README must stop over-promising before 2.0):
+
+- **`-df` / `-dr` / `-dw` on the add path** (`a`/`u`/`f`): documented as
+  "Delete successfully archived sources: plain / to Recycle Bin / wipe"
+  (README row) but never parsed — only the `m` command deletes sources
+  (main.cpp passes delete_source=true there; the mutator machinery exists:
+  `PreparedAdd::delete_source`, deleted after the successful batch write).
+  cv implements its own `-df` (v1.29, verify-before-delete —
+  foreign_transcode.cpp), so the gap is add-path only. Fix shape: parse the
+  three switches, thread a delete mode into the batch pipeline, plain
+  delete via the existing path; `-dr` needs the shell Recycle Bin API,
+  `-dw` the documented wipe sequence. Candidate: v1.30 pre-freeze
+  stabilization or a 1.29.x patch — either way BEFORE the 2.0 freeze,
+  since removing/renaming switches post-freeze is a MAJOR bump.
+- **`-tl` / `-tk`** (archive mtime on close: set to newest stored file /
+  keep original on update; `-tk[<date>]` sets a date): documented as
+  "Applied by `a` on close" (README row) but never parsed — the archive
+  header mtime is always the build time. Fix shape: parse both switches,
+  apply at `a` close (the writer already owns the final header patch
+  region; `-tl` is a max-mtime scan, `-tk[<date>]` a parse + clamp via
+  MtimeBounds). Same landing window as `-df` above.
+- **Audit method** (rerun before the freeze): compare every README switch
+  row against `sw_eq`/`sw_starts` parse sites in src/cli/main.cpp. As of
+  the v1.29.0 tag the mismatch set is exactly {-df(add), -dr, -dw, -tl,
+  -tk}; -ep3/-ed/-ts/-ver/-mc/-oi/-cdc/-ol/-ox/-oz/-os/-ow/-rr/-rv/-v/-p/-hp
+  all parse.
+
+Deferred-by-design (documented, not debt): cv output shaping `-s`/`-v`/
+`-ts*` and link migration (README "Not yet"; the link case would want a
+`prepare_add_symlink_from_memory` behind its own Gate 0), foreign-format
+write side, legacy RAR migration, foreign decryption.
 ## v1.30.0 — OpenRAR 2.0 LTS: Enterprise Stability, Sandboxing & Universal SDKs
 
 **Freeze prerequisites (blocking):**
@@ -433,10 +469,11 @@ security constraints normative:
    corpus retention and crash dedup.
 5. **Supply chain:** signed release binaries, SBOM, `SECURITY.md`
    disclosure policy, hardened updaters.
-6. Interop gate (15+ stages incl. exit-code parity) at 100%; multi-OS
-   regression matrix green.
+6. Interop gate (22 tracks incl. exit-code parity + the v1.29 cv oracle
+   tracks 11-15) at 100%; multi-OS regression matrix green.
 7. Audit P2 ledger triaged — anything touching the frozen surface fixed
-   before the freeze.
+   before the freeze; includes the CLI Switch Debt Ledger above (the
+   README must stop over-promising before 2.0).
 
 **SDKs:** C/C++ wrapper (exists), WASM NPM (exists), Python PyPI wheels,
 C# NuGet (`OpenRAR.NET`).
@@ -511,3 +548,12 @@ C# NuGet (`OpenRAR.NET`).
 6. **Environment-dependent tests** — macOS jetsam / allocator-lazy-commit
    behavior differs from Linux/Windows; tests probing allocation failure
    must probe-then-skip (pattern established in v1.21.2).
+7. **Defender .!ml false positive on fresh SFX-stub hashes** — Windows
+   Defender's ML heuristic intermittently quarantines freshly-linked
+   Default.SFX.exe builds (Trojan:Win32/Wacatac.B!ml, a known false-positive
+   class for embed-and-extract binaries), breaking the interop gate's SFX
+   stage locally and potentially on CI Windows legs. Local mitigation:
+   scoped Defender exclusion for the build tree, or re-seed the stub from a
+   known-good hash (per-commit chore; v1.29 ledger). v1.30 owns the workflow
+   change if a tag run ever trips on it: runner-scoped exclusion for the
+   build/output dir ONLY — never widen beyond the build tree.
