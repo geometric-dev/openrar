@@ -2749,11 +2749,17 @@ void test_non_tty_degradation_contract() {
 
 // ── v1.28 M4: benchmark engine v2 ────────────────────────────────────────────
 
-static std::filesystem::path bench_exe_path() {
+// Full command prefix for the bench tool: the OPENRAR_RUNNER contract
+// applies here too (the QEMU leg cannot exec target binaries directly).
+static std::string bench_cmd() {
+    const char* runner = std::getenv("OPENRAR_RUNNER");
+    const std::string prefix = (runner && *runner) ? std::string(runner) + " " : "";
 #ifdef OPENRAR_BENCH_EXE
-    if (std::filesystem::exists(OPENRAR_BENCH_EXE)) return {OPENRAR_BENCH_EXE};
+    if (std::filesystem::exists(OPENRAR_BENCH_EXE)) {
+        return prefix + "\"" + std::filesystem::canonical(OPENRAR_BENCH_EXE).string() + "\"";
+    }
 #endif
-    return "openrar_bench.exe";
+    return prefix + "openrar_bench";
 }
 
 // Plan test 20 (`bench_json_schema_roundtrip`): --json stdout carries ONLY
@@ -2763,7 +2769,7 @@ static std::filesystem::path bench_exe_path() {
 // threshold below zero always fires (exit 1), a huge one never does.
 void test_bench_json_schema_roundtrip() {
     namespace fs = std::filesystem;
-    const std::string bench = "\"" + bench_exe_path().string() + "\"";
+    const std::string bench = bench_cmd();
     fs::path out = "build/cli_bench_json.txt";
     fs::path err = "build/cli_bench_err.txt";
     std::error_code ec;
@@ -2815,7 +2821,7 @@ void test_bench_json_schema_roundtrip() {
 // CDC-packed, spread 0.0% (deterministic bytes), rollover item 2 closed.
 void test_bench_cdc_three_number_suite() {
     namespace fs = std::filesystem;
-    const std::string bench = "\"" + bench_exe_path().string() + "\"";
+    const std::string bench = bench_cmd();
     fs::path out = "build/cli_bench_cdc.txt";
     std::error_code ec;
     fs::remove(out, ec);
