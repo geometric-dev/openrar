@@ -49,6 +49,9 @@ LAYER_RANK = {
     "archive": 4,
     "cli": 5,
     "sfx": 5,
+    # src/sandbox (v1.30.0): the broker/worker sandboxed-parse runtime,
+    # driven by cli; includes core (+ io via the spawn layer) only.
+    "sandbox": 5,
     # Boundary surfaces wrap the top of the stack.
     "api": 6,
     "dll": 6,
