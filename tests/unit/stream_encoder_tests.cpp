@@ -199,6 +199,7 @@ void test_store_flush_sink() {
     openrar::compress::StreamEncoder enc(0, 1024 * 1024);
     std::vector<uint8_t> flushed;
     size_t calls = 0;
+    auto* flush_user = new std::pair<std::vector<uint8_t>*, size_t*>(&flushed, &calls);
     enc.set_flush(
         [](void* u, const openrar::core::byte* data, size_t size) -> int {
             auto* p = static_cast<std::pair<std::vector<uint8_t>*, size_t*>*>(u);
@@ -206,7 +207,11 @@ void test_store_flush_sink() {
             (*p->second)++;
             return 0;
         },
-        new std::pair<std::vector<uint8_t>*, size_t*>(&flushed, &calls));
+        flush_user);
+    struct FlushUserGuard {
+        void* p;
+        ~FlushUserGuard() { delete static_cast<std::pair<std::vector<uint8_t>*, size_t*>*>(p); }
+    } flush_user_guard{flush_user};
 
     const size_t chunk_size = 16 * 1024;
     for (size_t off = 0; off < src.size(); off += chunk_size) {

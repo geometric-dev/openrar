@@ -28,7 +28,7 @@ advisory, say so in its row.
 | **writer-conformance** | `node tools/run-tests.cjs` (full run) | Blocking. Suites self-gate: oracle asserts skip without WinRAR/UnRAR, privilege/OS-dependent suites self-skip. |
 | **simd-validation** | native kernel gates, then Intel SDE (pinned) GFNI RS16 + AVX-512 activation asserts, e2e `.rev` generate/destroy/repair under SDE | Activation greps make the gate loud; SDE bench ratios are non-normative (emulated timings). |
 | **wasm** | emsdk 3.1.50 (pinned), both wasm presets, `check-exports.mjs` contract, `node --test` JS suites, size budgets | Budgets: block codec ≤ 500 KiB, archive module ≤ 1.5 MiB (`docs/wasm-limitations.md` §5.3). Then the SIMD128 variant rebuilds and re-checks. |
-| **sanitizers** (v1.30 M5) | ASan+UBSan over the full unit suite on ubuntu/clang (`halt_on_error`) | PRIMARY leg; release-assets waits for it. |
+| **sanitizers** (v1.30 M5) | ASan+UBSan over the unit suite on ubuntu/clang (`halt_on_error`); excludes transcode/archive (long suites) and the SFX spawn suites (the SFX containment sets RLIMIT_AS for the child, incompatible with the child ASan shadow — spawn-under-sanitizer limitation, not a finding) | PRIMARY leg; release-assets waits for it. |
 | **tsan** (v1.30 M5) | ThreadSanitizer over the threaded suites (parallel pipeline, slot readers) | PRIMARY leg. |
 | **msan** (v1.30 M5) | MemorySanitizer over compress tests, instrumented libc++ | BEST-EFFORT per §7.2 revised: `continue-on-error`, reported, never gates. |
 | **release-assets** (tags `v*` only) | zips all uploaded artifacts onto the GitHub release, then SHA256SUMS + CycloneDX SBOM (syft) + Sigstore keyless build-provenance attestations (v1.30 M6) | `permissions: contents: write`, needs all jobs above (incl. sanitizers/tsan). |
@@ -51,7 +51,7 @@ advisory, say so in its row.
 | `node tools/run-tests.cjs` | full conformance layer locally | Oracle assertions skip when WinRAR/UnRAR isn't installed. |
 | `python_conformance` (ctest) | Python SDK normative conformance (bindings/python) against the built DLL (v1.30 M4) | Registered wherever Python3 is found; part of freeze prereq 3. |
 | `attack_corpus_tests` (ctest) | CVE-class attack regression corpus (v1.30 M5) | traversal / spoofing / RR overflow / bomb caps / hostile vint. |
-| `sandbox_sandboxed_e2e_tests` (ctest) | OBSERVED-denial matrix per sandbox model + extract parity through the sandboxed worker (v1.30 M3a/b) | Windows AppContainer / Linux seccomp; loud `[SKIP]` elsewhere. |
+| `sandbox_sandboxed_e2e_tests` (ctest) | OBSERVED-denial matrix per sandbox model + extract parity through the sandboxed worker (v1.30 M3a/b) | Windows AppContainer / Linux seccomp; loud `[SKIP]` on other platforms and under sanitizer runtimes (child-process spawn + instrumented runtime produce false findings — the non-spawning suites carry the sanitizer coverage). |
 | `abi_layout_tests` / `abi_export_parity` / `js_error_mirror_parity` (ctest) | the v1.30 ABI-freeze enforcement set | docs/abi-freeze.md §14. |
 | WASM | `emcmake cmake --preset wasm` / `wasm-archive`, `node wasm/js/test.mjs …`, size budget check | See `wasm/README.md`. |
 
