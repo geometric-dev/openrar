@@ -8,10 +8,13 @@
 // ZIP fixtures are crafted in-test (the builder below), not checked in.
 #include "../../src/archive/foreign_reader.hpp"
 #include "../../src/archive/foreign_zip.hpp"
+#include "../../src/archive/foreign_tar.hpp"
+#include "../../src/archive/foreign_gzip.hpp"
 #include "../../src/compress/inflate.hpp"
 #include "../../src/crypto/crc32.hpp"
 
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -628,6 +631,443 @@ static void test_zip_eocd_bounds() {
     std::cout << "    - prepended stub tolerated; truncated archive refused" << std::endl;
 }
 
+
+// ---------------------------------------------------------------------------
+// TAR + GZIP fixtures and tests (v1.29 M3)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct TarMember {
+    std::string name;
+    std::string linkname;
+    char typeflag = '0';
+    std::vector<core::byte> data;
+    core::uint32 mode = 0644;
+    core::uint64 mtime = 1704110400;
+    std::string uname = "tester";
+    std::string gname = "tgroup";
+    core::uint64 uid = 1000;
+    core::uint64 gid = 1000;
+    std::vector<std::pair<std::string, std::string>> pax; // emits 'x' first
+    bool use_longname = false;                            // GNU 'L' for the name
+};
+
+void put_octal(std::vector<core::byte>& b, size_t field, core::uint64 v, size_t width) {
+    char buf[32] = {0};
+    for (size_t i = 0; i < width; ++i) b[field + i] = static_cast<core::byte>(' ');
+    snprintf(buf, sizeof(buf), "%0*llo", static_cast<int>(width - 1),
+             static_cast<unsigned long long>(v));
+    for (size_t i = 0; i < width - 1 && buf[i]; ++i) b[field + i] = static_cast<core::byte>(buf[i]);
+}
+
+std::vector<core::byte> tar_header(const std::string& name, char typeflag, core::uint64 size,
+                                   core::uint32 mode, core::uint64 mtime,
+                                   const std::string& linkname, const std::string& uname,
+                                   const std::string& gname, core::uint64 uid, core::uint64 gid,
+                                   const std::string& prefix = {}) {
+    std::vector<core::byte> h(512, core::byte(0));
+    const auto copy_field = [&](size_t off, const std::string& s, size_t max) {
+        const size_t n = s.size() < max ? s.size() : max;
+        std::memcpy(h.data() + off, s.data(), n);
+    };
+    copy_field(0, name, 100);
+    put_octal(h, 100, mode, 8);
+    put_octal(h, 108, uid, 8);
+    put_octal(h, 116, gid, 8);
+    put_octal(h, 124, size, 12);
+    put_octal(h, 136, mtime, 12);
+    std::memcpy(h.data() + 148, "        ", 8); // checksum placeholder
+    h[156] = static_cast<core::byte>(typeflag);
+    copy_field(157, linkname, 100);
+    std::memcpy(h.data() + 257, "ustar\0", 6);
+    std::memcpy(h.data() + 263, "00", 2);
+    copy_field(265, uname, 32);
+    copy_field(297, gname, 32);
+    copy_field(345, prefix, 155);
+    core::uint32 sum = 0;
+    for (size_t i = 0; i < 512; ++i) sum += static_cast<core::uint32>(h[i]);
+    char cs[8] = {0};
+    snprintf(cs, sizeof(cs), "%06o", sum);
+    std::memcpy(h.data() + 148, cs, 6);
+    h[154] = core::byte(0);
+    h[155] = static_cast<core::byte>(' ');
+    return h;
+}
+
+std::vector<core::byte> build_tar(const std::vector<TarMember>& members, bool end_blocks = true) {
+    std::vector<core::byte> out;
+    for (const TarMember& m : members) {
+        if (!m.pax.empty()) {
+            std::vector<core::byte> recs;
+            for (const auto& kv : m.pax) {
+                std::string rec = kv.first + "=" + kv.second + "\n";
+                size_t total = rec.size() + std::to_string(rec.size()).size() + 1;
+                while (std::to_string(total).size() + 1 + rec.size() != total)
+                    total = std::to_string(total).size() + 1 + rec.size();
+                std::string full = std::to_string(total) + " " + rec;
+                recs.insert(recs.end(), full.begin(), full.end());
+            }
+            const size_t pad = (512 - recs.size() % 512) % 512;
+            recs.resize(recs.size() + pad, core::byte(0));
+            auto h =
+                tar_header("PaxHeaders/x", 'x', recs.size(), 0644, 0, "", "root", "root", 0, 0);
+            out.insert(out.end(), h.begin(), h.end());
+            out.insert(out.end(), recs.begin(), recs.end());
+        }
+        if (m.use_longname) {
+            std::vector<core::byte> lname(m.name.begin(), m.name.end());
+            lname.push_back(core::byte(0));
+            const size_t pad = (512 - lname.size() % 512) % 512;
+            lname.resize(lname.size() + pad, core::byte(0));
+            auto h =
+                tar_header("././@LongLink", 'L', lname.size(), 0644, 0, "", "root", "root", 0, 0);
+            out.insert(out.end(), h.begin(), h.end());
+            out.insert(out.end(), lname.begin(), lname.end());
+        }
+        std::string stored_name = m.use_longname ? std::string("longlink-target") : m.name;
+        std::string prefix;
+        if (!m.use_longname && m.name.size() > 100) {
+            const size_t slash = m.name.rfind('/', 154);
+            if (slash != std::string::npos) {
+                prefix = m.name.substr(0, slash);
+                stored_name = m.name.substr(slash + 1);
+            }
+        }
+        auto h = tar_header(stored_name, m.typeflag, m.data.size(), m.mode, m.mtime, m.linkname,
+                            m.uname, m.gname, m.uid, m.gid, prefix);
+        out.insert(out.end(), h.begin(), h.end());
+        out.insert(out.end(), m.data.begin(), m.data.end());
+        const size_t pad = (512 - m.data.size() % 512) % 512;
+        out.resize(out.size() + pad, core::byte(0));
+    }
+    if (end_blocks) out.resize(out.size() + 1024, core::byte(0));
+    return out;
+}
+
+bool write_file(const std::filesystem::path& p, const std::vector<core::byte>& data) {
+    std::ofstream f(p, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    return static_cast<bool>(f);
+}
+
+std::vector<core::byte> build_gzip(const std::vector<const std::vector<core::byte>*>& streams,
+                                   const std::vector<core::uint32>& crcs,
+                                   const std::vector<core::uint32>& isizes,
+                                   const std::string& fname = "", bool corrupt_trailer = false) {
+    std::vector<core::byte> out;
+    auto put16le = [&](core::uint16 v) {
+        out.push_back(static_cast<core::byte>(v & 0xFF));
+        out.push_back(static_cast<core::byte>(v >> 8));
+    };
+    auto put32le = [&](core::uint32 v) {
+        put16le(static_cast<core::uint16>(v & 0xFFFF));
+        put16le(static_cast<core::uint16>(v >> 16));
+    };
+    std::string first_fname = fname;
+    for (size_t i = 0; i < streams.size(); ++i) {
+        out.push_back(0x1F);
+        out.push_back(0x8B);
+        out.push_back(8); // CM = deflate
+        const core::uint8 flg = (i == 0 && !first_fname.empty()) ? 0x08 : 0x00;
+        out.push_back(static_cast<core::byte>(flg));
+        put32le(1704110400); // MTIME
+        out.push_back(0);    // XFL
+        out.push_back(3);    // OS = unix
+        if (flg & 0x08) {
+            out.insert(out.end(), first_fname.begin(), first_fname.end());
+            out.push_back(0);
+        }
+        out.insert(out.end(), streams[i]->begin(), streams[i]->end());
+        put32le(corrupt_trailer ? crcs[i] ^ 0xFFFFFFFFu : crcs[i]);
+        put32le(isizes[i]);
+    }
+    return out;
+}
+
+} // namespace
+
+static void test_tar_ustar_roundtrip() {
+    std::cout << "[+] test_tar_ustar_roundtrip" << std::endl;
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+
+    std::vector<TarMember> members;
+    TarMember empty;
+    empty.name = "empty.txt";
+    members.push_back(empty);
+
+    TarMember txt;
+    txt.name = "hello.txt";
+    txt.data = std::vector<core::byte>(100, core::byte('A'));
+    members.push_back(txt);
+
+    TarMember big;
+    big.name = "big.bin";
+    big.data = std::vector<core::byte>(70000, core::byte('B')); // multi-block payload
+    big.mode = 0600;
+    members.push_back(big);
+
+    TarMember d;
+    d.name = "subdir";
+    d.typeflag = '5';
+    d.mode = 0755;
+    members.push_back(d);
+
+    const auto p = dir / "ustar.tar";
+    assert(write_file(p, build_tar(members)));
+
+    TarReader r;
+    std::string detail;
+    ExtractionLimits limits;
+    assert(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+    assert(r.entry_count() == 4);
+    assert(r.entry(0).name == "empty.txt" && r.entry(0).type == ForeignType::File);
+    assert(r.entry(1).unpacked_size == 100);
+    assert(r.entry(2).unpacked_size == 70000);
+    assert(r.entry(2).has_posix_mode && r.entry(2).posix_mode == 0100600);
+    assert(r.entry(3).type == ForeignType::Dir);
+    assert(r.entry(1).owner_name == "tester" && r.entry(1).owner_uid == 1000);
+    assert(r.entry(1).mtime_sec == 1704110400);
+
+    LimitState state;
+    std::vector<core::byte> out;
+    auto sink = [&](const core::byte* data, size_t size) {
+        out.insert(out.end(), data, data + size);
+        return true;
+    };
+    assert(r.decode(1, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    assert(out.size() == 100);
+    out.clear();
+    assert(r.decode(2, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    assert(out.size() == 70000);
+    std::cout << "    - ustar members, modes, owners, times, multi-block payload" << std::endl;
+}
+
+static void test_tar_longname_and_pax() {
+    std::cout << "[+] test_tar_longname_and_pax" << std::endl;
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+
+    const std::string long_name(150, 'n');
+    std::vector<TarMember> members;
+    TarMember ln;
+    ln.name = long_name;
+    ln.use_longname = true;
+    ln.data = std::vector<core::byte>(10, core::byte('x'));
+    members.push_back(ln);
+
+    TarMember pref;
+    pref.name = std::string(60, 'd') + "/" + std::string(60, 'f');
+    pref.data = std::vector<core::byte>(5, core::byte('y'));
+    members.push_back(pref);
+
+    TarMember px;
+    px.name = "orig.txt";
+    px.pax = {{"path", "pax/renamed.txt"},
+              {"mtime", "1704110400.5"},
+              {"uid", "42"},
+              {"gid", "43"},
+              {"uname", "paxuser"},
+              {"gname", "paxgroup"},
+              {"vendor.custom.key", "ignored"}};
+    px.data = std::vector<core::byte>(3, core::byte('z'));
+    members.push_back(px);
+
+    const auto p = dir / "long.tar";
+    assert(write_file(p, build_tar(members)));
+
+    TarReader r;
+    std::string detail;
+    ExtractionLimits limits;
+    const ForeignStatus st = r.open(p, limits, ReaderHooks{}, detail);
+    if (st != ForeignStatus::Ok)
+        std::cout << "    ! open st=" << static_cast<int>(st) << " detail=" << detail << std::endl;
+    assert(st == ForeignStatus::Ok);
+    assert(r.entry_count() == 3);
+    assert(r.entry(0).name == long_name);
+    assert(r.entry(1).name == pref.name); // prefix split reconstructed
+    assert(r.entry(2).name == "pax/renamed.txt");
+    assert(r.entry(2).mtime_sec == 1704110400 && r.entry(2).mtime_nsec == 500000000);
+    assert(r.entry(2).owner_uid == 42 && r.entry(2).owner_name == "paxuser");
+    std::cout << "    - GNU longname, ustar prefix split, pax subset handled" << std::endl;
+}
+
+static void test_tar_sparse_refused_and_specials() {
+    std::cout << "[+] test_tar_sparse_refused_and_specials" << std::endl;
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+
+    std::vector<TarMember> members;
+    TarMember sparse;
+    sparse.name = "sparse.bin";
+    sparse.pax = {{"GNU.sparse.major", "1"}, {"GNU.sparse.minor", "0"}};
+    sparse.data = std::vector<core::byte>(512, core::byte(0));
+    members.push_back(sparse);
+
+    TarMember chr;
+    chr.name = "null";
+    chr.typeflag = '3';
+    members.push_back(chr);
+
+    TarMember lnk;
+    lnk.name = "link-to-hello";
+    lnk.typeflag = '1';
+    lnk.linkname = "hello.txt";
+    members.push_back(lnk);
+
+    TarMember sym;
+    sym.name = "sym-to-hello";
+    sym.typeflag = '2';
+    sym.linkname = "hello.txt";
+    members.push_back(sym);
+
+    const auto p = dir / "special.tar";
+    assert(write_file(p, build_tar(members)));
+
+    TarReader r;
+    std::string detail;
+    ExtractionLimits limits;
+    assert(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+    assert(r.entry_count() == 4);
+    LimitState state;
+    assert(r.decode(0, {}, limits, state, ReaderHooks{}) == ForeignStatus::SparseRefused);
+    assert(r.entry(1).type == ForeignType::Other);
+    assert(r.entry(2).type == ForeignType::Hardlink);
+    assert(r.entry(2).link_target == "hello.txt");
+    assert(r.entry(3).type == ForeignType::Symlink);
+    std::cout << "    - sparse refused per entry; specials Other; links as records" << std::endl;
+}
+
+static void test_tar_truncated_and_checksum() {
+    std::cout << "[+] test_tar_truncated_and_checksum" << std::endl;
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+
+    std::vector<TarMember> members;
+    TarMember m;
+    m.name = "a.txt";
+    m.data = std::vector<core::byte>(1000, core::byte('q'));
+    members.push_back(m);
+    const auto good = build_tar(members);
+
+    const auto p1 = dir / "cut.tar";
+    std::vector<core::byte> cut(good.begin(), good.begin() + 512 + 400);
+    assert(write_file(p1, cut));
+    {
+        TarReader r;
+        std::string detail;
+        ExtractionLimits limits;
+        assert(r.open(p1, limits, ReaderHooks{}, detail) == ForeignStatus::Truncated);
+    }
+
+    const auto p2 = dir / "badck.tar";
+    auto bad = good;
+    bad[10] ^= 0xFF; // inside the name field -> checksum no longer matches
+    assert(write_file(p2, bad));
+    {
+        TarReader r;
+        std::string detail;
+        ExtractionLimits limits;
+        assert(r.open(p2, limits, ReaderHooks{}, detail) == ForeignStatus::Unparseable);
+    }
+
+    // EOF without the two zero blocks is accepted (streamed tapes).
+    const auto p3 = dir / "nopad.tar";
+    std::vector<core::byte> nopad(good.begin(), good.end() - 1024);
+    assert(write_file(p3, nopad));
+    {
+        TarReader r;
+        std::string detail;
+        ExtractionLimits limits;
+        assert(r.open(p3, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+        assert(r.entry_count() == 1);
+    }
+    std::cout << "    - truncation refused, checksum refused, missing padding tolerated"
+              << std::endl;
+}
+
+static void test_gzip_multimember_and_caps() {
+    std::cout << "[+] test_gzip_multimember_and_caps" << std::endl;
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+
+    const auto p = dir / "multi.gz";
+    assert(write_file(p, build_gzip({&kat_text_stream, &kat_rle_stream},
+                                    {kat_text_plain_crc, kat_rle_plain_crc},
+                                    {static_cast<core::uint32>(kat_text_plain_len),
+                                     static_cast<core::uint32>(kat_rle_plain_len)},
+                                    "combined.txt")));
+
+    GzipReader r;
+    std::string detail;
+    ExtractionLimits limits;
+    assert(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+    assert(r.entry_count() == 1); // ONE logical entry
+    assert(r.entry(0).name == "combined.txt");
+
+    LimitState state;
+    std::vector<core::byte> out;
+    auto sink = [&](const core::byte* data, size_t size) {
+        out.insert(out.end(), data, data + size);
+        return true;
+    };
+    assert(r.decode(0, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    assert(out.size() == kat_text_plain_len + kat_rle_plain_len);
+    crypto::Crc32 c3;
+    c3.update(out.data(), kat_text_plain_len);
+    assert(c3.get() == kat_text_plain_crc);
+    crypto::Crc32 c4;
+    c4.update(out.data() + kat_text_plain_len, kat_rle_plain_len);
+    assert(c4.get() == kat_rle_plain_crc);
+
+    // In-flight cap (D5): the 100005-byte second member cannot hide.
+    GzipReader r2;
+    assert(r2.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+    ExtractionLimits capped;
+    capped.max_member_output_bytes = 1000;
+    LimitState s2;
+    assert(r2.decode(0, {}, capped, s2, ReaderHooks{}) == ForeignStatus::LimitExceeded);
+
+    // Corrupt trailer -> CrcMismatch.
+    const auto p3 = dir / "badcrc.gz";
+    assert(write_file(p3, build_gzip({&kat_text_stream}, {kat_text_plain_crc},
+                                     {static_cast<core::uint32>(kat_text_plain_len)}, "", true)));
+    {
+        GzipReader r3;
+        assert(r3.open(p3, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+        LimitState s3;
+        assert(r3.decode(0, {}, limits, s3, ReaderHooks{}) == ForeignStatus::CrcMismatch);
+    }
+    std::cout << "    - multi-member concatenated, per-member CRC/ISIZE, cap, bad CRC" << std::endl;
+}
+
+static void test_gzip_name_and_detect() {
+    std::cout << "[+] test_gzip_name_and_detect" << std::endl;
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+
+    // No FNAME -> stem convention (strip .gz).
+    const auto p = dir / "archive.tar.gz";
+    assert(write_file(p, build_gzip({&kat_text_stream}, {kat_text_plain_crc},
+                                    {static_cast<core::uint32>(kat_text_plain_len)})));
+    assert(detect_foreign_format(p) == SourceFormat::Gzip);
+    {
+        GzipReader r;
+        std::string detail;
+        ExtractionLimits limits;
+        assert(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+        assert(r.entry(0).name == "archive.tar");
+    }
+
+    // .tgz -> .tar.
+    const auto p2 = dir / "bundle.tgz";
+    assert(write_file(p2, build_gzip({&kat_text_stream}, {kat_text_plain_crc},
+                                     {static_cast<core::uint32>(kat_text_plain_len)})));
+    {
+        GzipReader r;
+        std::string detail;
+        ExtractionLimits limits;
+        assert(r.open(p2, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+        assert(r.entry(0).name == "bundle.tar");
+    }
+    std::cout << "    - stem conventions and gzip dispatch pinned" << std::endl;
+}
+
 int main() {
     OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
     test_dispatch_precedence();
@@ -652,6 +1092,18 @@ int main() {
     std::cout << std::flush;
     test_zip_eocd_bounds();
     std::cout << std::flush;
-    std::cout << "All Foreign Format (v1.29 M2) tests PASSED!" << std::endl;
+    test_tar_ustar_roundtrip();
+    std::cout << std::flush;
+    test_tar_longname_and_pax();
+    std::cout << std::flush;
+    test_tar_sparse_refused_and_specials();
+    std::cout << std::flush;
+    test_tar_truncated_and_checksum();
+    std::cout << std::flush;
+    test_gzip_multimember_and_caps();
+    std::cout << std::flush;
+    test_gzip_name_and_detect();
+    std::cout << std::flush;
+    std::cout << "All Foreign Format (v1.29 M2/M3) tests PASSED!" << std::endl;
     return 0;
 }
