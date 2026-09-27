@@ -257,10 +257,37 @@ containment is enforced at the OS syscall level:
 * **Sanitization:** all filenames printed to terminals are stripped of
   ESC/CSI/OSC sequences, RTL overrides, and invalid UTF-8. (Baseline:
   `sanitize_for_display` exists; a coverage audit against this list is
-  scheduled — ROADMAP v1.22.0/v1.28.0.)
+  scheduled — ROADMAP v1.22.0/v1.28.0. **[Shipped v1.28]** The coverage
+  audit COMPLETE and enforced as a release gate: the renderer re-sanitizes
+  every name-shaped field at render time with the idempotent sanitizer
+  (callers may pre-sanitize; the choke point does not trust them), and the
+  shipped gaps are closed — archive comments (`l`), `FHEXTRA_UOWNER`
+  owner names (`lt`), local-path `W:` lines, and the `p` command's error
+  lines. The JSON path (`--json-summary`) guarantees valid UTF-8 output
+  (RFC 8259) with invalid bytes neutralized as the ASCII `\uFFFD` escape;
+  the JSON reports the ON-DISK name (the §4.4 displayed ≡ extracted
+  contract) while the terminal layer owns rendering safety — two
+  sanitizers, two layers: `io::sanitize_archive_path` builds the disk
+  name, `cli::sanitize_for_display` builds terminal text. An e2e hostile
+  corpus (per §7.1-category payloads in names, comment and owner record)
+  drives every command with zero-payload assertions.)
+* **Interactive TUI (v1.28):** the dual-progress renderer width-clamps
+  every line (UTF-8-safe truncation) — a long name can no longer wrap and
+  corrupt the redraw region — and re-sanitizes at render. Interactive
+  cancel (ESC/q/^C) is cooperative: the ^C handler is installed ONLY
+  within TUI-active scopes (outside them ^C keeps the terminate
+  semantics); the raw-stdin keyboard thread never writes to the terminal
+  and never touches terminal modes; prompts own the terminal through an
+  explicit PROMPT state. Non-TTY degradation is a pinned contract: no TTY
+  ⇒ zero escape bytes, plain per-file lines, identical exit codes.
 * **Parallel extraction isolation:** multithreaded extraction maintains
   atomic cumulative counters, per-entry failure isolation, and guaranteed
-  temp-name uniqueness across workers.
+  temp-name uniqueness across workers. **[Shipped v1.28]** The TUI
+  preserves all three by construction — workers mutate state under one
+  mutex and never render; per-reader disk hooks drive within-file progress
+  and mid-file cooperative cancel (a cancel abandons the AtomicWriter
+  temp, so the journal sweep stays exact; per-entry isolation is
+  unchanged).
 
 ### 7.2. Assurance & Vulnerability Management
 * **Persistent fuzzing:** the parsing layer runs under persistent

@@ -33,6 +33,8 @@
 | **File versioning** (`-ver[n]`) | Versioned adds keep N versions of the same name (`FHEXTRA_VERSION`); extraction filter `-ver<idx>` |
 | **POSIX/macOS extended attributes** (`-ox`) | v1.27: `FHEXTRA_XATTR` (0x08) records — `user.*`/`security.*`/`trusted.*` + macOS Finder-tag namespaces; restore allow-listed namespaces (`--xattr-security` opts in to `security.*`/`trusted.*`); stock WinRAR/UnRAR skip the records (Track 10) |
 | **Mark of the Web / quarantine** (`-oz`) | v1.27: propagation keyed on the archive file's own Zone.Identifier ADS (Windows) / `com.apple.quarantine` (macOS); mark content generated locally — never parsed from archive-provided streams; `-oz-` disables |
+| **Interactive TUI** | v1.28: dual-progress renderer (overall + current-file bars) on TTYs — terminal-injection hardening is a release gate (every rendered string passes the §7.1 sanitizer, including the archive comment, owner names and the JSON path); ESC/q/^C cancel cooperatively (exit 255, temps swept); width-clamped lines, UTF-8-safe truncation; non-TTY (pipe/file/CI) renders plain per-file lines with zero escape bytes and identical exit codes |
+| **Benchmark engine** (`openrar_bench`) | v1.28: warm-up + median-of-7 protocol with spread reporting, hardware disclosure, `--json` (schema v1) for CI trends, `--strict` opt-in variance gate; CDC three-number reduction suite (rollover closed) |
 | **Not yet** | RAR 7.0-style recovery-record vintage (0x11D), resource forks & FinderInfo (2.1), RAR 5.0 compression v1 streams (write-side) |
 
 ---
@@ -175,6 +177,18 @@ OpenRAR is heavily optimized and often outperforms the official WinRAR engine in
 *(OpenRAR is ~4x faster)*
 
 Both archives achieve seamless cross-extraction interop, validating exact mathematical compression bounds.
+
+**Measurement protocol (v1.28).** Machine-collected numbers come from the
+`openrar_bench` tool: every suite runs 1 untimed warm-up pass plus 7 timed
+passes (3 with `--quick`), reports the MEDIAN and the spread
+(`(max−min)/median`), and discloses the host (CPU brand, cores, OS,
+compiler) in its output and `--json` document. The <5% variance claim is
+scoped to compute suites on a quiescent host (no concurrent load, fixed
+power plan); I/O-bound suites (listing, extract/add throughput) are labeled
+`kind:"io"` and excluded — disk cache state dominates them. `--json`
+(schema version 1) is the CI-trend artifact; `--strict` turns a compute
+suite spread above `--spread-threshold-pct` (default 5) into exit 1 for
+hosts that want the gate. The tool is informational by default (exit 0).
 
 ---
 
