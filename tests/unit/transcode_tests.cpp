@@ -409,14 +409,14 @@ static void test_cv_cli_contracts() {
     assert(json.find("\"schema_version\":2,\"archive\":\"") != std::string::npos);
 
     // dest == source → 7.
-    rc = rc = run_cli("cv " + src.string() + " " + src.string(), nul);
+    rc = run_cli("cv " + src.string() + " " + src.string(), nul);
     assert(rc == 7);
 
     // Non-TTY: zero ESC bytes on stdout (hostile-name control included via
     // the already-pinned v1.28 corpus; here the plain payload path).
     const auto cap = dir / "cap.txt";
-    rc = rc = run_cli("cv " + src.string() + " " + (dir / "nt.rar").string(),
-                      ">" + cap.string() + " 2>&1");
+    rc = run_cli("cv " + src.string() + " " + (dir / "nt.rar").string(),
+                 ">" + cap.string() + " 2>&1");
     assert(rc == 0);
     const auto out_bytes = read_bytes(cap);
     for (const core::byte b : out_bytes) assert(b != core::byte(0x1B));
@@ -424,19 +424,19 @@ static void test_cv_cli_contracts() {
     // -v refused → 7; unknown-but-inert switch warns and exits 0.
     rc = run_cli("cv -v " + src.string(), nul);
     assert(rc == 7);
-    rc = rc = run_cli("cv " + src.string() + " " + (dir / "inert.rar").string() + " -ams", nul);
+    rc = run_cli("cv " + src.string() + " " + (dir / "inert.rar").string() + " -ams", nul);
     assert(rc == 7); // -ams is on the explicit refuse list
 
     // RAR5 source → usage 7 with the named message.
     const auto r5 = dir / "r5.rar";
     write_bytes(r5, std::vector<core::byte>{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00});
-    rc = rc = run_cli("cv " + r5.string(), nul);
+    rc = run_cli("cv " + r5.string(), nul);
     assert(rc == 7);
 
     // Garbage source → 13.
     const auto junk = dir / "junk.bin";
     write_bytes(junk, std::vector<core::byte>(64, core::byte('z')));
-    rc = rc = run_cli("cv " + junk.string(), nul);
+    rc = run_cli("cv " + junk.string(), nul);
     assert(rc == 13);
 
     // Nothing migrated → 10, no output archive.
@@ -452,14 +452,14 @@ static void test_cv_cli_contracts() {
     enc.unp_size = data2.size();
     enc_members.push_back(enc);
     write_bytes(enc_src, build_zip(enc_members));
-    rc = rc = run_cli("cv " + enc_src.string() + " " + (dir / "never.rar").string(), nul);
+    rc = run_cli("cv " + enc_src.string() + " " + (dir / "never.rar").string(), nul);
     assert(rc == 11); // encrypted-refused class per D1
     assert(!std::filesystem::exists(dir / "never.rar"));
 
     // -df e2e: verified migration deletes the source.
     const auto df_src = dir / "df.zip";
     write_bytes(df_src, build_zip(members));
-    rc = rc = run_cli("cv -df " + df_src.string() + " " + (dir / "df_out.rar").string(), nul);
+    rc = run_cli("cv -df " + df_src.string() + " " + (dir / "df_out.rar").string(), nul);
     assert(rc == 0);
     assert(!std::filesystem::exists(df_src));
     assert(std::filesystem::exists(dir / "df_out.rar"));
