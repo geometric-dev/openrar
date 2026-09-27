@@ -631,6 +631,16 @@ if(NOT EMSCRIPTEN)
     openrar_enable_test_asserts(abi_layout_tests)
     add_test(NAME abi_layout_tests COMMAND abi_layout_tests)
 
+    # Library-mode containment gates (v1.30.0 M2): the non-disableable
+    # floors vs the tunable caller-budget layer, and containment parity
+    # under the OPENRAR_NO_MMAP kill-switch.
+    add_executable(library_mode_tests tests/unit/library_mode_tests.cpp)
+    target_link_libraries(library_mode_tests PRIVATE openrar_dll openrar_core)
+    target_include_directories(library_mode_tests PRIVATE
+        ${OPENRAR_INCLUDES} src/dll include)
+    openrar_enable_test_asserts(library_mode_tests)
+    add_test(NAME library_mode_tests COMMAND library_mode_tests)
+
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_FOUND)
         # Export-list parity: the built library's C-ABI symbol surface must
