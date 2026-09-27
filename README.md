@@ -35,7 +35,9 @@
 | **Mark of the Web / quarantine** (`-oz`) | v1.27: propagation keyed on the archive file's own Zone.Identifier ADS (Windows) / `com.apple.quarantine` (macOS); mark content generated locally — never parsed from archive-provided streams; `-oz-` disables |
 | **Interactive TUI** | v1.28: dual-progress renderer (overall + current-file bars) on TTYs — terminal-injection hardening is a release gate (every rendered string passes the §7.1 sanitizer, including the archive comment, owner names and the JSON path); ESC/q/^C cancel cooperatively (exit 255, temps swept); width-clamped lines, UTF-8-safe truncation; non-TTY (pipe/file/CI) renders plain per-file lines with zero escape bytes and identical exit codes |
 | **Benchmark engine** (`openrar_bench`) | v1.28: warm-up + median-of-7 protocol with spread reporting, hardware disclosure, `--json` (schema v1) for CI trends, `--strict` opt-in variance gate; CDC three-number reduction suite (rollover closed) |
-| **Not yet** | RAR 7.0-style recovery-record vintage (0x11D), resource forks & FinderInfo (2.1), RAR 5.0 compression v1 streams (write-side) |
+| **Archive migration (`cv`)** | v1.29: transcode ZIP / TAR (ustar + documented GNU/pax subset) / GZIP (multi-member = one concatenated entry) into RAR 5.0 through the shipped writer pipeline; ZIP CD-vs-LFH mismatch aborts before any output (spec 11); names normalized + percent-encoded losslessly (the escaped name IS the name); collision classes refused pre-output; unconditional per-entry BLAKE2sp roundtrip verify; `-df` deletes the source only on a 100% verified migration; `--json-summary` schema v2 fields (`format`/`verified`/`source_deleted`) |
+| **FILECOPY materialization** | v1.29: `-oi` FILECOPY references (FHEXTRA_REDIR type 5, an in-archive copy directive) materialize by default at extraction — decoupled from the `-ol` links opt-in; symlinks/hardlinks/junctions stay default-deny; the caps debit (v1.27) applies |
+| **Not yet** | RAR 7.0-style recovery-record vintage (0x11D), resource forks & FinderInfo (2.1), RAR 5.0 compression v1 streams (write-side), foreign-format WRITE side (ZIP/TAR/GZIP emission), legacy RAR (1.5–4.0) migration incl. header parsing, foreign-format decryption (ZipCrypto/AES-ZIP), `cv` `-s/-v/-ts` output shaping |
 
 ---
 
@@ -138,6 +140,25 @@ openrar v archive.rar        # verbose
 openrar t archive.rar        # test (hash-verified)
 openrar x archive.rar ./out/
 ```
+
+### Migrate a foreign archive into RAR 5 (`cv`)
+
+```bash
+openrar cv source.zip                  # -> source.rar
+openrar cv source.tar migrated.rar     # explicit destination
+openrar cv -m5 -rr3 backup.tar.gz b.rar # output compression + recovery record
+openrar cv -df old.zip old.rar         # delete source after a verified migration
+```
+
+Sources: ZIP (store/deflate, ZIP64, UTF-8+cp437 names), TAR (ustar + GNU long
+names + a documented pax subset; sparse refused per entry), GZIP (multi-member
+files migrate as one concatenated entry). Switches: `-m0..-m5`, `-md<n>`,
+`-p`/`-hp` (output encryption only), `-rr[N%]`, `-o+`/`-y`, `-df`,
+`--json-summary[=path]`. Output-shaping switches (`-s`, `-ts*`, `-v`, `-oi`,
+`-ep*`, `-z`, ...) are refused with exit 7 rather than silently ignored. The
+emitted RAR 5.0 archive is readable by WinRAR/UnRAR/7-Zip (interop Tracks
+11-15); every entry is roundtrip-verified (BLAKE2sp) before `cv` reports
+success.
 
 Magic bytes: every archive starts `52 61 72 21 1A 07 01 00`.
 

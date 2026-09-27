@@ -5,6 +5,80 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0] - 2026-09-27
+
+Archive Migration & Transcoder - the split-surface arc: a new PARSED-byte
+surface (ZIP / TAR / GZIP readers) with ZERO new emission code (Gate 0,
+docs/v1.29-pre-analysis.md section 0/9 - the cv output is produced entirely
+by the shipped writer pipeline; the interop gate and golden bytes ran
+unchanged on every milestone, plus the new cv-vs-a differential control).
+The ZIP CD-vs-LFH hardening (SECURITY_ARCHITECTURE 2.1) landed as a
+RELEASE GATE: any mismatch outside the documented tolerated set aborts
+with the structural exit code BEFORE any output exists.
+
+### Added
+
+- **RFC 1951 inflate** (src/compress/inflate.{hpp,cpp}): clean-room DEFLATE
+  decoder serving ZIP method 8 and GZIP; strict RFC semantics (oversubscribed
+  Huffman sets are hard errors, incomplete sets only for the documented
+  distance special cases, invalid bit patterns never coerce to symbols);
+  mandatory in-flight output cap wired to the caller's LimitState - no
+  declared size is ever a bound (plan D5). Known-answer vectors from raw
+  zlib streams (tests/unit/deflate_kats.inc) plus hand-crafted negatives;
+  fuzz_inflate target for the nightly harness.
+- **Foreign-format readers** (src/archive/foreign_*.cpp): one dispatch
+  function (signatures first, TAR checksum probe last - plan D8); ZIP with
+  EOCD/EOCD64/ZIP64, UTF-8+cp437 names, UT/NTFS timestamps (stream sub-blocks
+  never restored, 4.3) and the CD-vs-LFH pre-flight comparison table (spec 11
+  2.3); TAR with ustar + GNU long records + a documented pax subset (sparse
+  refused per entry); GZIP with per-member CRC32+ISIZE and multi-member files
+  migrating as ONE concatenated entry. Names flow through ONE composition
+  pipeline (decode, slash normalization, percent-encode, sanitize_archive_path
+  - plan D14); traversal shapes never reach an emitted archive.
+- **`cv` - migrate a foreign archive into RAR 5.0**: staging pipeline reusing
+  prepare_add_*/write_batch_add verbatim (CV-A1); archive-internal collision
+  pre-check over the translated names (3.2); unconditional roundtrip verify
+  (per-entry BLAKE2sp equality + count parity, D9); -df deletes the source
+  only after a 100% verified migration with zero skips; -rr via the shipped
+  RecoveryWriter pass; exit mapping per D1 (0 / 11 encrypted-refused /
+  13 unparseable / 2 structural+io / 3 source CRC-truncation / 7 usage /
+  10 nothing migrated, no output written); --json-summary schema v2 with the
+  additive format/verified/source_deleted fields. Output-shaping switches
+  (-s, -ts*, -v, -oi, -ep*, -z, ...) are refused with exit 7 (D7).
+- **Interop gate Tracks 11-15**: cv ZIP/TAR/GZIP roundtrips verified against
+  the UnRAR oracle byte-for-byte, the hostile-ZIP structural refusal (exit 2,
+  no output), and 7z readability where installed (availability-gated).
+- **New suites**: inflate_tests, foreign_format_tests, transcode_tests
+  (34 ctest suites total).
+
+### Changed
+
+- **FILECOPY materialization is default-on** (rollover settlement, pre-analysis
+  0.1): FHEXTRA_REDIR type 5 is an in-archive copy directive, not a filesystem
+  link, so extraction no longer requires -ol (which keeps gating actual links:
+  symlink/hardlink/junction types 1/2/4 stay default-deny). The v1.27 caps
+  debit applies unchanged (archive_reader.cpp FILECOPY branch). A FILECOPY
+  whose target cannot be materialized is now reported as a skipped entry with
+  the filecopy_skipped flag instead of a silent fake success.
+- **--json-summary schema v2** (plan D3): schema_version 2; x/e documents are
+  field-identical to v1 (the transcode fields appear only on cv runs).
+
+### Fixed
+
+- **A failing MSVC test no longer opens modal dialogs**: the shared assert
+  routing (tests/unit/test_support.hpp) also disables _CALL_REPORTFAULT and
+  routes _CRT_ERROR to stderr - assert failures print and die under ctest.
+- Deferred dir-meta mode assignment narrowed explicitly
+  (archive_reader.cpp static_cast; MSVC /W4 C4244).
+
+### Not implemented (truthful boundary)
+
+- Foreign-format WRITE side (ZIP/TAR/GZIP emission) - deferred (CV-B).
+- Legacy RAR (1.5-4.0) migration - DROPPED by user scope decision mid-arc;
+  cv refuses the signature explicitly (the 5.3 VM boundary is provable by
+  total absence).
+- Foreign decryption (ZipCrypto refused by policy; AES-ZIP needs a SHA-1
+  primitive) and cv -s/-v/-ts output shaping - see README Not yet.
 ## [1.28.0] - 2026-09-27
 
 Interactive TUI & Benchmark Engine — the zero-format arc: NO emitted

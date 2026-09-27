@@ -10,9 +10,24 @@
 > scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
 > v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
-## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 / v1.25.0 / v1.26.0 / v1.27.0 / v1.28.0)
+## Shipped Baseline (v1.21.x / v1.22.0 / v1.23.0 / v1.24.0 / v1.25.0 / v1.26.0 / v1.27.0 / v1.28.0 / v1.29.0)
 
-- **v1.28.0 (current):** Interactive TUI & Benchmark Engine shipped —
+- **v1.29.0 (current):** Archive Migration & Transcoder shipped —
+  Gate 0 cleared with a SPLIT-SURFACE claim (docs/v1.29-pre-analysis.md
+  §0/§9: new PARSED-byte surface, zero new emission code — confirmed by
+  diff-surface review, unchanged interop gate + golden bytes, and the new
+  cv-vs-a differential control). M1 shipped the clean-room RFC 1951
+  inflate (mandatory in-flight output cap, plan D5); M2/M3 the ZIP/TAR/GZIP
+  readers with the §2.1 CD-vs-LFH pre-flight gate as a RELEASE GATE; M5 the
+  `cv` command (staging + shipped-writer reuse, unconditional roundtrip
+  verify, `-df` verify-before-delete, exit taxonomy per D1, --json-summary
+  schema v2); M6 settled the FILECOPY rollover (default-on materialization,
+  decoupled from -ol). Legacy RAR was DROPPED from the arc by user scope
+  decision (dispatch refuses explicitly; the §5.3 VM boundary is provable
+  by absence). Interop gate grew Tracks 11-15 (cv vs UnRAR/WinRAR + hostile
+  ZIP structural refusal + 7z availability-gated). Plan:
+  docs/v1.29-implementation-plan.md.
+- **v1.28.0:** Interactive TUI & Benchmark Engine shipped —
   Gate 0 cleared with a ZERO-FORMAT claim (docs/v1.28-pre-analysis.md §7:
   conditional approval + twelve directives; no emitted archive bytes —
   the 0x08 record set stays closed; confirmed by diff-surface review +
@@ -481,8 +496,18 @@ C# NuGet (`OpenRAR.NET`).
    three-number gate, per-corpus measurement). The round-2 challenge
    additionally caught that the `-oi` FILECOPY creation side had never
    existed — the arc built it rather than shipping the claim.
-5. **v1.30 sandboxed worker** — three OS sandbox models is enterprise-scale
-   work; scope-kill criteria should be agreed at v1.29 review.
+5. **v1.30 sandboxed worker** — RESOLVED by the v1.29 Gate 0 review
+   (docs/v1.29-pre-analysis.md §8/§9): the feature ships in v1.30.0 iff
+   ALL of (a) broker/worker split with the broker holding file handles on
+   at least TWO OS mechanisms (AppContainer / seccomp-bPF / Seatbelt), each
+   with a fault-injection escape test, (b) library-mode non-disableable
+   bounds/containment unconditionally, (c) interop gate + attack corpus
+   green against the worker path on the delivered legs — and the worker
+   runs the SAME parser code as the non-worker path (no divergent parser).
+   Partial delivery is a scope-kill, not a slipped date: two tested
+   mechanisms or none; single-mechanism fallbacks become documented
+   non-goals and the full worker re-scopes to post-2.0 with the residual
+   risk stated in §7.3.
 6. **Environment-dependent tests** — macOS jetsam / allocator-lazy-commit
    behavior differs from Linux/Windows; tests probing allocation failure
    must probe-then-skip (pattern established in v1.21.2).
