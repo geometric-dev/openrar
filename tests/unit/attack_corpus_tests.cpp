@@ -102,25 +102,6 @@ void craft_stored(const fs::path& arc, const std::string& entry_name, size_t unp
     assert(format::HeaderWriter::write_end_block(out, eb));
 }
 
-// Bomb: declared unp_size is astronomically larger than the data area.
-void craft_bomb(const fs::path& arc, const std::string& entry_name) {
-    io::FileStream out;
-    assert(out.open(arc, io::FileMode::CreateAlways));
-    assert(format::HeaderWriter::write_signature(out));
-    format::MainBlock mb;
-    assert(format::HeaderWriter::write_main_block(out, mb));
-    format::FileBlock fb;
-    fb.file_name = entry_name;
-    fb.unp_size = 1ull << 40; // 1 TiB declared
-    fb.pack_size = 16;        // 16 bytes present
-    fb.method = 0;
-    fb.host_os = 1;
-    assert(format::HeaderWriter::write_file_block(out, fb, 0));
-    const std::string payload(16, 'B');
-    out.write(reinterpret_cast<const core::byte*>(payload.data()), payload.size());
-    format::EndArcBlock eb;
-    assert(format::HeaderWriter::write_end_block(out, eb));
-}
 
 // Hostile vint: the header SIZE field carries an overlong encoding.
 void craft_hostile_vint(const fs::path& arc) {
