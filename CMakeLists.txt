@@ -658,6 +658,10 @@ if(NOT EMSCRIPTEN)
     # parity and the single-volume contract, independent of the worker.
     add_openrar_test(reader_handle_seam_tests tests/unit/reader_handle_seam_tests.cpp)
 
+    # Attack regression corpus (v1.30 M5): the historical CVE classes
+    # re-run in CI with per-case guarantee assertions.
+    add_openrar_test(attack_corpus_tests tests/unit/attack_corpus_tests.cpp)
+
     # The sandboxed worker process (v1.30.0 M3): drives the SAME
     # ArchiveReader engine over the IPC protocol, holds no paths, writes
     # nothing. The per-OS privilege models (AppContainer / seccomp /
