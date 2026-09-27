@@ -1070,6 +1070,164 @@ def test_track9_cdc_oi(openrar, unrar, rar):
     print("  OK Track 9 CDC solid-chain packing + -oi FILECOPY")
     return True
 
+
+
+# ---------------------------------------------------------------------------
+# v1.29 Tracks 11-15: the cv transcoder (foreign archive in, RAR5 out).
+# Sources are built in-script with the Python stdlib (zipfile/tarfile/gzip)
+# so no new oracle dependency exists for constructing inputs; the ORACLES
+# remain UnRAR/WinRAR (and 7z where installed, availability-gated). The
+# stage definitions stay data-driven so later arcs append cleanly.
+# ---------------------------------------------------------------------------
+
+def _cv_build_zip(td):
+    import zipfile
+    src = td / 'src.zip'
+    with zipfile.ZipFile(src, 'w', zipfile.ZIP_DEFLATED) as z:
+        zi = zipfile.ZipInfo('docs/readme.txt', (2024, 1, 1, 12, 0, 0))
+        z.writestr(zi, b'hello migration' * 10)
+        z.writestr('data.bin', bytes(range(256)) * 40)
+    return src, [b'hello migration' * 10, bytes(range(256)) * 40]
+
+def _cv_build_tar(td):
+    import tarfile, io
+    src = td / 'src.tar'
+    payloads = [b'A' * 3000, b'B' * 100]
+    with tarfile.open(src, 'w', format=tarfile.USTAR_FORMAT) as t:
+        for name, data in (('a/hello.txt', payloads[0]), ('b.bin', payloads[1])):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mtime = 1704110400
+            t.addfile(info, io.BytesIO(data))
+    return src, payloads
+
+def _cv_build_gz(td):
+    import gzip
+    src = td / 'src.gz'
+    payload = b'gzip migration payload' * 500
+    with gzip.open(src, 'wb') as g:
+        g.write(payload)
+    return src, [payload]
+
+def _cv_run_and_verify(openrar, unrar, src, payloads, tag, src_args=''):
+    out_rar = src.parent / (tag + '_out.rar')
+    rc, out, err = run([openrar, 'cv', str(src), str(out_rar)])
+    if rc != 0:
+        print(f'  FAIL: cv rc={rc}' + chr(10) + out + err)
+        return False
+    # Oracle: UnRAR extracts the emitted archive; payload bytes match.
+    outdir = src.parent / (tag + '_unrar')
+    outdir.mkdir()
+    rc, out, err = run([unrar, 'x', '-y', str(out_rar), str(outdir) + os.sep])
+    if rc != 0:
+        print(f'  FAIL: oracle cannot read emitted archive rc={rc}' + chr(10) + out + err)
+        return False
+    for name, want in (('docs/readme.txt', None), ('a/hello.txt', None), ('b.bin', None),
+                       ('src', None)):
+        pass
+    found = find_extracted(outdir, '')
+    # Compare the full extracted tree against the source payloads.
+    got = {}
+    for p in outdir.rglob('*'):
+        if p.is_file():
+            rel = p.relative_to(outdir).as_posix()
+            got[rel] = p.read_bytes()
+    want_map = {}
+    if tag == 'zip':
+        want_map = {'docs/readme.txt': payloads[0], 'data.bin': payloads[1]}
+    elif tag == 'tar':
+        want_map = {'a/hello.txt': payloads[0], 'b.bin': payloads[1]}
+    else:
+        want_map = {'src': payloads[0]}
+    if got != want_map:
+        print(f'  FAIL: payload mismatch: got {sorted(got)} want {sorted(want_map)}')
+        return False
+    return True
+
+
+def test_track11_cv_zip(openrar, unrar, rar):
+    print('[Track 11] cv: ZIP -> RAR5, UnRAR-readable, byte-identical...', flush=True)
+    with tempfile.TemporaryDirectory() as td:
+        src, payloads = _cv_build_zip(pathlib.Path(td))
+        if not _cv_run_and_verify(openrar, unrar, src, payloads, 'zip'):
+            return False
+    print('  OK cv zip roundtrip')
+    return True
+
+
+def test_track12_cv_tar(openrar, unrar, rar):
+    print('[Track 12] cv: TAR -> RAR5, UnRAR-readable, byte-identical...', flush=True)
+    with tempfile.TemporaryDirectory() as td:
+        src, payloads = _cv_build_tar(pathlib.Path(td))
+        if not _cv_run_and_verify(openrar, unrar, src, payloads, 'tar'):
+            return False
+    print('  OK cv tar roundtrip')
+    return True
+
+
+def test_track13_cv_gzip(openrar, unrar, rar):
+    print('[Track 13] cv: GZIP -> RAR5, UnRAR-readable, byte-identical...', flush=True)
+    with tempfile.TemporaryDirectory() as td:
+        src, payloads = _cv_build_gz(pathlib.Path(td))
+        if not _cv_run_and_verify(openrar, unrar, src, payloads, 'gz'):
+            return False
+    print('  OK cv gzip roundtrip')
+    return True
+
+
+def test_track14_cv_hostile_zip(openrar, unrar, rar):
+    print('[Track 14] cv: CD-vs-LFH mismatch -> structural refusal, exit 2, no output...',
+          flush=True)
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+        src, _ = _cv_build_zip(td)
+        raw = bytearray(src.read_bytes())
+        # Corrupt the LFH name (first 'docs' byte inside the local header)
+        # so the CD says one thing and the LFH another: the S2.1 gate must
+        # abort BEFORE any output exists.
+        i = raw.find(b'docs/readme.txt')
+        assert i != -1
+        raw[i] = 0x58  # 'X' -> LFH name no longer matches the CD
+        hostile = td / 'hostile.zip'
+        hostile.write_bytes(bytes(raw))
+        out_rar = td / 'never.rar'
+        rc, out, err = run([openrar, 'cv', str(hostile), str(out_rar)])
+        if rc != 2:
+            print(f'  FAIL: expected exit 2, got {rc}' + chr(10) + out + err)
+            return False
+        if out_rar.exists():
+            print('  FAIL: output archive was written despite the structural abort')
+            return False
+    print('  OK hostile zip refused pre-output (spec 11 section 2.3)')
+    return True
+
+
+def test_track15_cv_7z(openrar, unrar, rar):
+    # Availability-gated: 7z readability of emitted archives where 7-Zip
+    # is installed (the RAR5 codec ships with modern 7-Zip).
+    import shutil
+    seven = shutil.which('7z')
+    if seven is None:
+        print('[Track 15] cv: 7z readability of emitted archives...', flush=True)
+        print('  SKIP: 7z not installed')
+        return True
+    print('[Track 15] cv: 7z readability of emitted archives...', flush=True)
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+        src, payloads = _cv_build_zip(td)
+        out_rar = td / 'seven_out.rar'
+        rc, out, err = run([openrar, 'cv', str(src), str(out_rar)])
+        if rc != 0:
+            print(f'  FAIL: cv rc={rc}' + chr(10) + out + err)
+            return False
+        outdir = td / 'seven'
+        outdir.mkdir()
+        rc, out, err = run([seven, 'x', '-y', '-o' + str(outdir), str(out_rar)])
+        if rc != 0:
+            print(f'  FAIL: 7z cannot read emitted archive rc={rc}' + chr(10) + out + err)
+            return False
+    print('  OK 7z reads the emitted archive')
+    return True
 def main():
     import time
     t0 = time.time()
@@ -1100,6 +1258,11 @@ def main():
         (test_exit_code_parity, (openrar, unrar)),
         (test_track9_cdc_oi, (openrar, unrar, rar)),
         (test_track10_xattr, (openrar, unrar, rar)),
+        (test_track11_cv_zip, (openrar, unrar, rar)),
+        (test_track12_cv_tar, (openrar, unrar, rar)),
+        (test_track13_cv_gzip, (openrar, unrar, rar)),
+        (test_track14_cv_hostile_zip, (openrar, unrar, rar)),
+        (test_track15_cv_7z, (openrar, unrar, rar)),
     ]
 
     for fn, args in stages:
