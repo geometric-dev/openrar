@@ -582,9 +582,8 @@ private:
     static void sigint_handler(int) { g_tui_cancel.store(1, std::memory_order_relaxed); }
     void install_signal_handler() {
         struct sigaction sa;
-        std::memset(&sa, 0, sizeof(sa));
+        std::memset(&sa, 0, sizeof(sa)); // zeroes sa_mask too — no sigemptyset needed
         sa.sa_handler = sigint_handler;
-        ::sigemptyset(&sa.sa_mask);
         ::sigaction(SIGINT, &sa, &saved_sigint_);
         handler_installed_ = true;
     }
