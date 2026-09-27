@@ -20,6 +20,8 @@ public:
     ForeignStatus decode(size_t index, const SinkFn& sink, const ExtractionLimits& limits,
                          LimitState& state, ReaderHooks hooks) override;
     std::string format_name() const override { return "zip"; }
+    // Raw EOCD comment bytes (the transcoder sanitizes to valid UTF-8).
+    const std::string& archive_comment() const { return archive_comment_; }
 
 private:
     struct Cdh {

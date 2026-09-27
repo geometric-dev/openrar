@@ -4,6 +4,7 @@
 #include "../io/containment.hpp"
 #include "../archive/collision_detector.hpp"
 #include "../archive/extraction_report.hpp"
+#include "../archive/foreign_transcode.hpp"
 #include "../format/headers.hpp"
 #include "../archive/archive_reader.hpp"
 #include "../archive/archive_mutator.hpp"
@@ -2058,6 +2059,26 @@ int add_to_archive(
     return 0;
 }
 
+// Shared --json-summary writer (v1.29 M5: extracted from the x-path lambda
+// so the cv command emits the identical document shape). The JSON always
+// lands on stdout unless a summary path was given (fallback: stdout).
+int emit_report_json(archive::ExtractionReport& report, int exit_code) {
+    report.exit_code = exit_code;
+    report.finalize_pending();
+    const std::string json = archive::to_json(report);
+    if (!g_json_summary_path.empty()) {
+        std::ofstream f(g_json_summary_path, std::ios::binary | std::ios::trunc);
+        if (f.good()) {
+            f << json << "\n";
+        } else {
+            std::cerr << "Cannot write --json-summary file: " << g_json_summary_path << "\n";
+            std::cout << json << "\n";
+        }
+    } else {
+        std::cout << json << "\n";
+    }
+    return exit_code;
+}
 int extract_archive(const std::string& arc_path, const std::string& dest_dir, bool full_paths,
                     const std::string& password = "", unsigned threads = 1,
                     bool keep_broken = false, OverwriteMode overwrite_mode = OverwriteMode::Prompt,
@@ -2074,23 +2095,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     // (open failures included) with exit_code set and pending entries
     // finalized as unprocessed.
     auto emit_json = [&](int exit_code) -> int {
-        report.exit_code = exit_code;
-        report.finalize_pending();
-        const std::string json = archive::to_json(report);
-        if (!g_json_summary_path.empty()) {
-            std::ofstream f(g_json_summary_path, std::ios::binary | std::ios::trunc);
-            if (f.good()) {
-                f << json << "\n";
-            } else {
-                std::cerr << "Cannot write --json-summary file: " << g_json_summary_path << "\n";
-                // fallback: the JSON itself ALWAYS goes to stdout
-                std::cout << json << "\n";
-            }
-        } else {
-            // stdout-purity: the JSON itself ALWAYS goes to stdout.
-            std::cout << json << "\n";
-        }
-        return exit_code;
+        return emit_report_json(report, exit_code); // shared writer (v1.29 M5)
     };
 
     archive::ArchiveReader reader;
@@ -2931,6 +2936,117 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     return emit_json(0);
 }
 
+// cv (v1.29 M5): migrate a foreign archive (ZIP/TAR/GZIP) into a RAR 5.0
+// archive produced entirely by the shipped writer pipeline. Exit mapping
+// per plan D1 (the shipped aggregation; no exit-1 class):
+//   0 migrated+verified (policy skips ride the report; encrypted-refused
+//     surfaces as 11, the bad-password class), 7 usage refusals,
+//   13 unparseable, 2 structural/limit/io, 3 source CRC/truncation,
+//   10 nothing migrated (no output written), 255 cancel.
+int convert_archive(const std::string& source_str, const std::string& dest_arg, int method,
+                    core::uint64 dict_size, const std::string& password, bool encrypt_headers,
+                    bool want_rr, core::uint32 rr_percent, bool delete_source,
+                    OverwriteMode overwrite_mode) {
+    if (g_json_stdout_only) set_prog_out(std::cerr);
+    archive::ExtractionReport report;
+    auto emit = [&](int code) -> int {
+        // Without --json-summary the report stays silent (the x-path model).
+        if (!g_json_stdout_only && g_json_summary_path.empty()) return code;
+        return emit_report_json(report, code);
+    };
+    auto line = [&](const std::string& text) {
+        (g_json_stdout_only ? std::cerr : std::cout) << text << "\n";
+    };
+
+    const std::filesystem::path source(source_str);
+    std::error_code fs_ec;
+    if (!std::filesystem::exists(source, fs_ec)) {
+        std::cerr << "Error: cannot open " << source_str << "\n";
+        return EXIT_OPEN;
+    }
+    std::filesystem::path dest = dest_arg.empty() ? source : std::filesystem::path(dest_arg);
+    if (dest_arg.empty()) dest.replace_extension(".rar");
+    const std::filesystem::path src_canon = std::filesystem::weakly_canonical(source, fs_ec);
+    const std::filesystem::path dest_canon = std::filesystem::weakly_canonical(dest, fs_ec);
+    if (!src_canon.empty() && src_canon == dest_canon) {
+        std::cerr << "Error: destination equals source\n";
+        return EXIT_USAGE;
+    }
+    if (std::filesystem::exists(dest, fs_ec)) {
+        if (overwrite_mode == OverwriteMode::SkipExisting) {
+            std::cerr << "Error: " << dest.string() << " already exists (-o-)\n";
+            return EXIT_NO_FILES;
+        }
+        if (overwrite_mode == OverwriteMode::Prompt) {
+            const OverwriteAnswer answer = ask_overwrite(sanitize_for_display(dest.string()));
+            if (answer != OverwriteAnswer::Yes && answer != OverwriteAnswer::Always) {
+                std::cerr << "Not overwritten\n";
+                return EXIT_NO_FILES;
+            }
+        }
+    }
+
+    openrar::archive::foreign::TranscodeOptions opts;
+    opts.method = method;
+    opts.dict_size = dict_size;
+    opts.password = password;
+    opts.encrypt_headers = encrypt_headers;
+    opts.want_rr = want_rr;
+    opts.rr_percent = rr_percent;
+    opts.delete_source = delete_source;
+    // cv cap defaults (spec 11 section 7; non-disableable at the CLI).
+    opts.limits.max_member_output_bytes = 16ULL * 1024 * 1024 * 1024;
+    opts.limits.max_total_output_bytes = 1024ULL * 1024 * 1024 * 1024;
+    opts.limits.max_header_count = 1000000;
+    opts.limits.max_header_bytes = 256ULL * 1024 * 1024;
+
+    openrar::archive::foreign::TranscodeResult result;
+    archive::ReaderHooks hooks; // Phase 1: no cancel source
+    const openrar::archive::foreign::ForeignStatus st =
+        openrar::archive::foreign::transcode(source, dest, opts, result, report, hooks);
+    report.has_transcode_fields = true;
+    report.format = result.format;
+    report.verified = result.verified;
+    report.source_deleted = result.source_deleted;
+
+    if (st != openrar::archive::foreign::ForeignStatus::Ok ||
+        result.status != openrar::archive::foreign::ForeignStatus::Ok) {
+        if (!result.detail.empty()) std::cerr << "Error: " << result.detail << "\n";
+        if (result.usage_refused) return emit(EXIT_USAGE);
+        switch (st == openrar::archive::foreign::ForeignStatus::Ok ? result.status : st) {
+        case openrar::archive::foreign::ForeignStatus::Unparseable:
+            return emit(EXIT_BAD_ARCHIVE);
+        case openrar::archive::foreign::ForeignStatus::Truncated:
+        case openrar::archive::foreign::ForeignStatus::CrcMismatch:
+            return emit(EXIT_CRC);
+        case openrar::archive::foreign::ForeignStatus::Aborted:
+            return emit(EXIT_USER_BREAK);
+        default:
+            return emit(EXIT_FATAL);
+        }
+    }
+
+    // Per-entry report lines for everything that did NOT migrate cleanly.
+    for (const auto& e : report.entries) {
+        if (e.status == "extracted") continue;
+        line("  " + e.status + " " + sanitize_for_display(e.name) +
+             (e.reason.empty() ? "" : " (" + e.reason + ")"));
+    }
+    line("Migrated " + std::to_string(result.migrated_files) + " file(s), " +
+         std::to_string(result.migrated_dirs) + " dir(s); skipped " +
+         std::to_string(result.skipped) + "; -> " + sanitize_for_display(dest.string()) +
+         (result.verified ? " [verified]" : ""));
+
+    // Encrypted-refused dominates the summary code (the D1 bad-password
+    // class), even when nothing else migrated; nothing-migrated writes no
+    // output archive and reports 10.
+    if (result.encrypted_refused_present) return emit(EXIT_BAD_PASSWORD);
+    if (result.migrated_files == 0 && result.migrated_dirs == 0) {
+        std::cerr << "Nothing migrated\n";
+        return emit(EXIT_NO_FILES); // no output archive was written
+    }
+    return emit(0);
+}
 int repair_archive(const std::string& arc_path) {
     // Uses the inline "RR" service block's Reed-Solomon parity (0x1100B GF(2^16)
     // Cauchy) for single-volume archives, or external .rev parity shards for
@@ -3129,8 +3245,9 @@ static int cli_main(int argc, char* argv[]) {
 
     // --json-summary is an extraction-run flag (v1.24 plan §5.2); elsewhere
     // it is a usage error so scripts never get silent no-op output.
-    if ((g_json_stdout_only || !g_json_summary_path.empty()) && cmd != "x" && cmd != "e") {
-        std::cerr << "Error: --json-summary is only valid with the x/e commands\n";
+    if ((g_json_stdout_only || !g_json_summary_path.empty()) && cmd != "x" && cmd != "e" &&
+        cmd != "cv") {
+        std::cerr << "Error: --json-summary is only valid with the x/e/cv commands\n";
         return EXIT_USAGE;
     }
 
@@ -3208,6 +3325,7 @@ static int cli_main(int argc, char* argv[]) {
     int max_versions = -1;    // -1 = disabled, 0 = unlimited, >0 = limit
     int extract_version = -1; // -1 = default, 0 = all versions (-ver), >0 = specific (-verN)
     bool want_og = false;     // -og
+    bool want_df = false;     // -df (v1.29: consumed by cv; add-side wiring is a pre-existing gap)
     std::string opt_group;
     std::string opt_user;
 
@@ -3562,8 +3680,13 @@ static int cli_main(int argc, char* argv[]) {
             want_qo = true;
         } else if (sw_eq(s, "-qo-")) {
             want_qo = false;
-        } else if (sw_eq(s, "-am") || sw_eq(s, "-ams")) {
+        } else if (sw_eq(s, "-ams") || sw_eq(s, "-am")) {
             want_ams = true;
+        } else if (sw_eq(s, "-df")) {
+            // v1.29 M5: delete-after-verified-migration for cv. (The add
+            // path's -df is a documented-but-unwired pre-existing gap; the
+            // ledger tracks it.)
+            want_df = true;
         } else if (sw_starts(s, "-mc")) {
             parse_mc_switch(s, opt_filter_cfg);
         } else if (sw_starts(s, "-x@") && s.size() > 3) {
@@ -3785,6 +3908,47 @@ static int cli_main(int argc, char* argv[]) {
             arc_path, dest, cmd == "x", password, threads, keep_broken, overwrite_mode,
             extract_symlinks, exclude_patterns, extract_version, file_patterns,
             (want_acl || want_og), preserve_suid, use_mmap, restore_xattr_security, propagate_motw);
+    } else if (cmd == "cv") {
+        // Source = arc_path; files[0] = optional destination (arc_path is
+        // always non-empty here - main() refuses an empty archive name).
+        if (files.size() > 1) {
+            std::cerr << "Error: cv takes a source and an optional destination\n";
+            return EXIT_USAGE;
+        }
+        // Output-shaping switches are explicit usage refusals (plan D7):
+        // refused beats silently-ignored for migration correctness.
+        if (want_solid || cdc_enabled) {
+            std::cerr << "Error: cv does not support -s/-cdc in Phase 1\n";
+            return EXIT_USAGE;
+        }
+        if (times_mask != openrar::archive::time_flags::MTIME) {
+            std::cerr << "Error: cv migrates mtime only (-ts refused)\n";
+            return EXIT_USAGE;
+        }
+        if (vol_size != 0) {
+            std::cerr << "Error: cv does not support volume split (-v refused)\n";
+            return EXIT_USAGE;
+        }
+        if (oi_given) {
+            std::cerr << "Error: cv does not support -oi\n";
+            return EXIT_USAGE;
+        }
+        if (ep_mode != openrar::io::ExcludePathMode::None) {
+            std::cerr << "Error: cv preserves source names (-ep refused)\n";
+            return EXIT_USAGE;
+        }
+        if (!comment_path.empty()) {
+            std::cerr << "Error: cv migrates the source comment (-z refused)\n";
+            return EXIT_USAGE;
+        }
+        if (no_dir_records || max_versions >= 0 || want_sfx || want_lock || want_rv || want_ams ||
+            want_symlinks || want_hardlinks || want_stm || want_acl || want_xattr || want_og) {
+            std::cerr << "Error: switch not supported by cv\n";
+            return EXIT_USAGE;
+        }
+        return convert_archive(arc_path, files.empty() ? std::string() : files[0], method,
+                               opt_dict_size, password, want_header_encryption, want_rr, rr_percent,
+                               want_df, overwrite_mode);
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
     } else if (cmd == "rr" || (cmd.rfind("rr", 0) == 0 && cmd.size() > 2 &&
