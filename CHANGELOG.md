@@ -5,6 +5,87 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.0] - 2026-09-27
+
+OpenRAR 2.0 LTS: Enterprise Stability, Sandboxing & Universal SDKs — the
+ABI-freeze arc. NO emitted RAR5 bytes change (Gate 0, docs/v1.30-pre-analysis.md
+§0/§8: conditional approval + twelve directives; the 23-stage interop gate
+and golden bytes ran unchanged through every milestone). Freeze
+prerequisites 1–7 all landed with file:line or artifact evidence
+(docs/v1.30-implementation-plan.md).
+
+### Added
+
+- **Sandboxed worker (SECURITY_ARCHITECTURE §5.1)** (`src/sandbox/`): the
+  parse/decode engine runs in a sandboxed worker process — Windows
+  AppContainer (per-run profile, empty capability set, CFG mitigation
+  policy) / Linux seccomp-BPF allowlist (fail-closed install, memory
+  family included, mmap/mprotect PROT_EXEC argument-filtered, RET_ERRNO
+  denials) — while the broker holds every file handle and enforces every
+  cap. The worker runs the SAME parser engine (no divergent parser);
+  entry names never reach it (open_read_handle) and its only I/O is the
+  channel pair + pread on the inherited volume. Proof-of-denial e2e per
+  model (`sandbox_sandboxed_e2e_tests`: AppContainer write denial err=5;
+  seccomp open/socket EPERM; volume grant usable; extract parity through
+  the sandboxed worker; unsandboxed control). v1.29 directive met: TWO
+  tested OS mechanisms.
+- **Sandboxed `t`**: the test command runs through the worker where a
+  model ships — byte-identical output and exit codes (pinned vs
+  `--in-proc`); multi-volume sets and encrypted-with-password archives
+  fall back in-process loudly (the interop gate's multivolume stage
+  caught the missing scan-time refusal).
+- **`--in-proc` switch + `OPENRAR_IN_PROC` env**: the in-process
+  kill-switch (the OPENRAR_NO_MMAP pattern); the ONE decision function
+  (`sandbox_mode_for`) consumes both.
+- **Python & C# SDKs** (`bindings/`): `openrar` (PyPI layout, ctypes over
+  the frozen C ABI — loader performs the ABI-version + feature-mask
+  probes) and `OpenRAR.NET` (NuGet layout, P/Invoke); the normative
+  cross-binding conformance suite runs as the `python_conformance` ctest
+  gate against the built library (freeze prereq 3; the WASM v2 defects
+  are the cautionary tale).
+- **Attack regression corpus** (`attack_corpus_tests`): CVE-2025-8088
+  traversal contained, CVE-2023-38831 spoofing exact-name extraction,
+  CVE-2023-40477 hostile RR geometry refused, decompression-bomb caps
+  fire mid-decode, hostile vint refused (freeze prereq 4).
+- **Assurance legs**: ASan+UBSan and TSan PRIMARY CI legs; MSan
+  best-effort (Linux/clang, non-gating, §7.2 revised); fuzz crash dedup
+  (`tools/dedup_crashes.py`, signature buckets) + corpus persistence.
+- **Supply chain** (freeze prereq 5): release SHA256SUMS, CycloneDX SBOM
+  (syft), Sigstore keyless build-provenance attestations; release
+  verification instructions in `SECURITY.md`.
+- **ABI freeze enforcement** (freeze prereq 1; `docs/abi-freeze.md`):
+  absolute-offset/alignof static_asserts for every public struct,
+  `abi_layout_tests` (golden JSON + C-mode compile proof +
+  feature-mask parity), `abi_export_parity` (58 exports ==
+  canonical list), `js_error_mirror_parity` (JS CODE_MAP/union == C
+  enum). The asserts caught a real frozen fact during the arc:
+  `openrar_archive_info_t.recovery_size` is UNALIGNED at offset 12
+  (pack(1), frozen since v1.6.0 — now documented).
+
+### Changed
+
+- **Library-mode containment made precise and testable** (§5.1, M2): the
+  non-disableable floors (MAX_STREAM_OUTPUT, KDF lg2≤24, window caps,
+  path containment) are pinned by named tests as unreachable by any
+  embedder call; `set_limits`/ExtractionLimits documented as the
+  CALLER's own budget layer (§7.3 embedder advisory normative in
+  `docs/dll-integration-spec.md` §13 and `SECURITY.md`).
+- **CLI switch debt closed** (M2.5, prereq 7): `-df`/`-dr`/`-dw` now
+  parse and delete sources only after a fully successful batch write
+  (Plain / Windows Recycle Bin / the documented wipe sequence; POSIX
+  `-dr` degrades with a `W:`); `-tl`/`-tk[<date>]` apply the archive
+  mtime on close (newest stored file / keep-original / UTC date). The
+  README-vs-parser audit's debt set is now EMPTY. cv keeps its own
+  verified-migration `-df` (the transcode suite caught the shadowing).
+
+### Fixed
+
+- `docs/dll-integration-spec.md` §5 error table synced with the shipped
+  enum (`RAR_ERR_LIMIT_EXCEEDED` −15, the reserved −8/−10 slots).
+- The assert-modal-dialog trap in new test suites: CRT assert routing
+  now also covers _CRT_ERROR and disables the abort() WER dialog
+  (`test_support.hpp`).
+
 ## [1.29.0] - 2026-09-27
 
 Archive Migration & Transcoder - the split-surface arc: a new PARSED-byte
