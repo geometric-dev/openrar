@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "notes": [
+    "Accepted violations of the downward-only rule (ARCHITECTURE.md section 2).",
+    "io -> crypto: extraction_journal.cpp needs CRC32 (journal record integrity) and RNG (temp names); motw.cpp needs RNG for Zone.Identifier GUIDs. crypto sits above io in the layer diagram but never includes io back, so the edge is one-way and stable.",
+    "recovery -> archive: RecoveryWriter reads archive/volume headers to generate external .rev parity volumes (v1.24+); the erasure math itself stays below archive."
+  ],
+  "violations": [
+    "src/io/extraction_journal.cpp -> src/crypto/crc32.hpp",
+    "src/io/extraction_journal.cpp -> src/crypto/rng.hpp",
+    "src/io/motw.cpp -> src/crypto/rng.hpp",
+    "src/recovery/recovery_writer.cpp -> src/archive/archive_entry.hpp",
+    "src/recovery/recovery_writer.cpp -> src/archive/archive_reader.hpp",
+    "src/recovery/recovery_writer.cpp -> src/archive/volume.hpp"
+  ]
+}
