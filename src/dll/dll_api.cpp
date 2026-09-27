@@ -95,7 +95,53 @@ OPENRAR_DLL_ENTRY_FIELD(crc32);
 OPENRAR_DLL_ENTRY_FIELD(size);
 OPENRAR_DLL_ENTRY_FIELD(packed_size);
 OPENRAR_DLL_ENTRY_FIELD(mtime);
+OPENRAR_DLL_ENTRY_FIELD(_pad);
 #undef OPENRAR_DLL_ENTRY_FIELD
+
+// ── Absolute layout pins (v1.30.0 ABI freeze; docs/abi-freeze.md) ────────────
+// The relative checks above pin the C struct to the canonical C++ layout.
+// These pin BOTH to the absolute offsets documented in abi-freeze.md and
+// machine-checked by tests/unit/abi_layout_tests.cpp against
+// tools/abi_layout.json — a re-order or width change fails here first.
+static_assert(offsetof(openrar_archive_entry_t, path_offset) == 0 &&
+                  offsetof(openrar_archive_entry_t, path_len) == 4 &&
+                  offsetof(openrar_archive_entry_t, is_dir) == 8 &&
+                  offsetof(openrar_archive_entry_t, method) == 12 &&
+                  offsetof(openrar_archive_entry_t, is_encrypted) == 16 &&
+                  offsetof(openrar_archive_entry_t, crc32) == 20 &&
+                  offsetof(openrar_archive_entry_t, size) == 24 &&
+                  offsetof(openrar_archive_entry_t, packed_size) == 32 &&
+                  offsetof(openrar_archive_entry_t, mtime) == 40 &&
+                  offsetof(openrar_archive_entry_t, _pad) == 48,
+              "openrar_archive_entry_t absolute offsets drifted (docs/abi-freeze.md)");
+static_assert(offsetof(openrar_entry_ex_t, attrs) == 0 &&
+                  offsetof(openrar_entry_ex_t, host_os) == 4 &&
+                  offsetof(openrar_entry_ex_t, mtime_ft) == 8 &&
+                  offsetof(openrar_entry_ex_t, ctime_ft) == 16 &&
+                  offsetof(openrar_entry_ex_t, atime_ft) == 24 &&
+                  offsetof(openrar_entry_ex_t, flags) == 32 &&
+                  offsetof(openrar_entry_ex_t, win_size) == 36 &&
+                  offsetof(openrar_entry_ex_t, redir_type) == 40 &&
+                  offsetof(openrar_entry_ex_t, version_needed) == 44,
+              "openrar_entry_ex_t absolute offsets drifted (docs/abi-freeze.md)");
+static_assert(offsetof(openrar_entry_owner_t, uid) == 0 &&
+                  offsetof(openrar_entry_owner_t, gid) == 8 &&
+                  offsetof(openrar_entry_owner_t, flags) == 16,
+              "openrar_entry_owner_t absolute offsets drifted (docs/abi-freeze.md)");
+static_assert(offsetof(openrar_archive_info_t, flags) == 0 &&
+                  offsetof(openrar_archive_info_t, volume_index) == 4 &&
+                  offsetof(openrar_archive_info_t, volume_count) == 8 &&
+                  offsetof(openrar_archive_info_t, recovery_size) == 12 &&
+                  offsetof(openrar_archive_info_t, comment_len) == 20,
+              "openrar_archive_info_t absolute offsets drifted (docs/abi-freeze.md)");
+// pack(push,1) on all four public structs: alignment is 1 on every supported
+// compiler (MSVC, GCC, Clang). A new compiler that disagrees breaks the frozen
+// layout and must be caught here, not by a host.
+static_assert(alignof(openrar_archive_entry_t) == 1,
+              "openrar_archive_entry_t must stay pack(1) (alignof 1)");
+static_assert(alignof(openrar_entry_ex_t) == 1, "openrar_entry_ex_t must stay pack(1)");
+static_assert(alignof(openrar_entry_owner_t) == 1, "openrar_entry_owner_t must stay pack(1)");
+static_assert(alignof(openrar_archive_info_t) == 1, "openrar_archive_info_t must stay pack(1)");
 
 namespace {
 // Thread-local error state from the shared contract. The DLL surface reports
