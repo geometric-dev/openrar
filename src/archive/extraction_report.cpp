@@ -132,6 +132,11 @@ std::string to_json(const ExtractionReport& report) {
     } else {
         out += ",\"abort_reason\":\"" + json_escape(report.abort_reason) + "\"";
     }
+    if (report.has_transcode_fields) {
+        out += ",\"format\":\"" + json_escape(report.format) + "\"";
+        out += std::string(",\"verified\":") + (report.verified ? "true" : "false");
+        out += std::string(",\"source_deleted\":") + (report.source_deleted ? "true" : "false");
+    }
     out += "}";
     return out;
 }
