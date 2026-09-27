@@ -129,7 +129,10 @@ enum RarError {
     RAR_ERR_ABORTED = -11,
     RAR_ERR_ENCRYPTED = -12,
     RAR_ERR_MISSING_VOLUME = -13,
-    RAR_ERR_BUSY = -14
+    RAR_ERR_BUSY = -14,
+    /* -8 and -10 are intentionally reserved (never assigned; binary
+       compatibility with consumers that range-check known codes). */
+    RAR_ERR_LIMIT_EXCEEDED = -15
 };
 ```
 
@@ -148,6 +151,7 @@ enum RarError {
 | `ENCRYPTED` | header-encrypted archive (`HEAD_CRYPT`) reached with no password — `_ex` and `_pw` listing; the non-`_ex` listing calls keep `UNSUPPORTED_FEATURE` for this condition |
 | `MISSING_VOLUME` | a volume of a multi-volume set required by the split flags / extent chain cannot be opened — file-handle open or extract/test (v1.3.0); path in the error detail |
 | `BUSY` | an open file-mode handle in this process holds the archive — the mutation exports (§6.12) refuse up front instead of failing on a sharing violation mid-rename (v1.4.0) |
+| `LIMIT_EXCEEDED` | a caller-imposed resource limit (ExtractionLimits via `set_limits`) was exceeded: per-member output, cumulative total, header count/bytes (v1.21.x; docs/abi-freeze.md §8 — the floors are NOT this layer) |
 
 ---
 
