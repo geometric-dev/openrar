@@ -60,6 +60,10 @@ public:
 
     core::uint64 total_out() const { return total_out_; }
     core::uint64 total_in() const { return total_in_; }
+    // Bits of the DEFLATE stream actually consumed (excludes buffered-ahead
+    // input): the byte after (bits+7)/8 is the stream's exact end — where a
+    // trailer (e.g. GZIP CRC32+ISIZE) begins.
+    core::uint64 bits_consumed() const { return consumed_bits_; }
 
 private:
     // ---- bit reader (LSB-first for integers; Huffman codes are consumed
