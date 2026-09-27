@@ -72,8 +72,9 @@ Frame make_frame(FrameType t, size_t payload_len, unsigned seed) {
 }
 
 bool frames_equal(const Frame& a, const Frame& b) {
-    return a.type == b.type && a.payload.size() == b.payload.size() &&
-           std::memcmp(a.payload.data(), b.payload.data(), a.payload.size()) == 0;
+    if (a.type != b.type || a.payload.size() != b.payload.size()) return false;
+    if (a.payload.empty()) return true; // memcmp(null, null, 0) is UB (UBSan)
+    return std::memcmp(a.payload.data(), b.payload.data(), a.payload.size()) == 0;
 }
 
 std::vector<core::byte> encode_all(const std::vector<Frame>& frames) {
@@ -316,9 +317,13 @@ void test_mode_decision_function() {
     CHECK(sandbox_mode_for(false) == SandboxMode::InProc);
     set_env("OPENRAR_IN_PROC", "0");
     unset_env("OPENRAR_IN_PROC");
-    // No flag, no env, probe false (foundation stub) → in-process.
-    CHECK(sandbox_mode_for(false) == SandboxMode::InProc);
-    CHECK(!platform_sandbox_available());
+    // No flag, no env: the platform probe decides — Worker where a model
+    // exists (Windows AppContainer / Linux seccomp), InProc otherwise.
+    if (platform_sandbox_available()) {
+        CHECK(sandbox_mode_for(false) == SandboxMode::Worker);
+    } else {
+        CHECK(sandbox_mode_for(false) == SandboxMode::InProc);
+    }
 }
 
 } // namespace

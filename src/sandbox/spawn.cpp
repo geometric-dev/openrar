@@ -328,6 +328,18 @@ bool platform_sandbox_available() {
     return false;
 }
 
+std::filesystem::path worker_exe_path() {
+    char buf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) {
+        // macOS: no /proc — fall back to argv[0] via /proc-less proc_pidpath
+        // is private API; the empty path is the loud in-proc fallback.
+        return std::filesystem::path();
+    }
+    buf[n] = 0;
+    return std::filesystem::path(buf).parent_path() / "openrar_worker";
+}
+
 bool spawn_worker_process(const std::string& exe, const std::vector<std::string>& argv_tail,
                           SpawnProfile profile, void** proc_out, std::string& err) {
     (void)profile;

@@ -19,7 +19,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # friends fail to inline with "target specific option mismatch".
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64" AND NOT APPLE AND
    CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-march=armv8-a+crypto)
+    # C++ only: the armv8+crypto value is rejected for plain-C translation
+    # units (abi_header_c_compat.c) and the crypto intrinsics are all C++.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-march=armv8-a+crypto>)
 endif()
 
 # ── Core sources (shared by native + wasm) — keep separate so wasm can reuse without CLI ──

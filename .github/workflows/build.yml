@@ -507,11 +507,15 @@ jobs:
           cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
       - name: Build
         run: cmake --build build --parallel $(nproc)
+      # sfx_tests/sfx_pipeline_tests excluded: the SFX spawn containment
+      # sets RLIMIT_AS for the child, which cannot coexist with the child
+      # ASan shadow reservation (spawn-under-sanitizer limitation, not a
+      # finding); verification-legs.md documents the exclusion.
       - name: Unit suite under sanitizers
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|archive_tests'
+        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|archive_tests|sfx_tests|sfx_pipeline_tests'
 
   tsan:
     # v1.30 M5: ThreadSanitizer on the threaded suites (parallel pipeline,
