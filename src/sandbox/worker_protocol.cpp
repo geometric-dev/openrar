@@ -47,7 +47,8 @@ bool unpack_scan_result(const core::byte* payload, size_t len, ScanView& out) {
     for (core::uint32 i = 0; i < hdr.entry_count; ++i) {
         WireEntry e;
         std::memcpy(&e, eb + static_cast<size_t>(i) * sizeof(WireEntry), sizeof(WireEntry));
-        if (e._pad[0] != 0 || e._pad[1] != 0) return false; // consumers must zero
+        if (e._pad[1] != 0) return false;                  // reserved
+        if (e._pad[0] & ~kWIRE_FLAG_SERVICE) return false; // unknown wire flags
         const core::uint64 end = static_cast<core::uint64>(e.path_offset) + e.path_len;
         if (end > hdr.paths_bytes) return false;
         out.entries.push_back(e);
@@ -110,6 +111,18 @@ bool unpack_error(const core::byte* payload, size_t len, core::int32& rc, std::s
     detail.assign(reinterpret_cast<const char*>(payload + sizeof(WireError)),
                   len - sizeof(WireError));
     return true;
+}
+
+bool pack_selftest(const WireSelftest& st, std::vector<core::byte>& payload) {
+    payload.assign(reinterpret_cast<const core::byte*>(&st),
+                   reinterpret_cast<const core::byte*>(&st) + sizeof(st));
+    return true;
+}
+
+bool unpack_selftest(const core::byte* payload, size_t len, WireSelftest& out) {
+    if (payload == nullptr || len != sizeof(WireSelftest)) return false;
+    std::memcpy(&out, payload, sizeof(out));
+    return out.pad[0] == 0 && out.pad[1] == 0;
 }
 
 } // namespace openrar::sandbox

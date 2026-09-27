@@ -42,6 +42,7 @@ set(OPENRAR_CORE_SOURCES
     src/io/posix_xattr.cpp
     src/io/motw.cpp
     src/io/containment.cpp
+    src/io/source_delete.cpp
     src/io/extraction_journal.cpp
     src/io/mapped_file.cpp
     src/format/header_reader.cpp
@@ -70,6 +71,7 @@ set(OPENRAR_CORE_SOURCES
     src/sandbox/ipc.cpp
     src/sandbox/channel.cpp
     src/sandbox/sandbox_mode.cpp
+    src/sandbox/spawn.cpp
     src/sandbox/worker_protocol.cpp
     src/sandbox/worker_broker.cpp
     src/archive/volume.cpp
@@ -663,6 +665,19 @@ if(NOT EMSCRIPTEN)
     add_executable(openrar_worker src/sandbox/worker_main.cpp)
     target_link_libraries(openrar_worker PRIVATE openrar_core)
     target_include_directories(openrar_worker PRIVATE ${OPENRAR_INCLUDES})
+    # The sandboxed worker ships BESIDE the CLI (worker_exe_path() looks
+    # there) — same output dirs as the openrar target, set AFTER it exists.
+    if(WIN32)
+        set_target_properties(openrar_worker PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/openrar64"
+            RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/build/openrar64/Debug"
+            RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/build/openrar64/Release"
+            RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/build/openrar64/RelWithDebInfo"
+        )
+    endif()
+    if(WIN32)
+        target_link_libraries(openrar_worker PRIVATE ws2_32) # selftest network probe
+    endif()
     if(OPENRAR_THREAD_LIB)
         target_link_libraries(openrar_worker PRIVATE ${OPENRAR_THREAD_LIB})
     endif()
@@ -679,6 +694,21 @@ if(NOT EMSCRIPTEN)
         OPENRAR_WORKER_EXE="$<TARGET_FILE:openrar_worker>")
     openrar_enable_test_asserts(sandbox_worker_e2e_tests)
     add_test(NAME sandbox_worker_e2e_tests COMMAND sandbox_worker_e2e_tests)
+
+    # Sandbox model e2e (M3a/b): the OBSERVED-denial matrix per shipped
+    # platform model (AppContainer / seccomp) + extraction parity through the
+    # sandboxed worker. Skips loudly where no model exists (macOS/other —
+    # the honest-cut follow-up).
+    add_executable(sandbox_sandboxed_e2e_tests tests/unit/sandbox_sandboxed_e2e_tests.cpp)
+    target_link_libraries(sandbox_sandboxed_e2e_tests PRIVATE openrar_core)
+    target_include_directories(sandbox_sandboxed_e2e_tests PRIVATE ${OPENRAR_INCLUDES})
+    if(OPENRAR_THREAD_LIB)
+        target_link_libraries(sandbox_sandboxed_e2e_tests PRIVATE ${OPENRAR_THREAD_LIB})
+    endif()
+    target_compile_definitions(sandbox_sandboxed_e2e_tests PRIVATE
+        OPENRAR_WORKER_EXE="$<TARGET_FILE:openrar_worker>")
+    openrar_enable_test_asserts(sandbox_sandboxed_e2e_tests)
+    add_test(NAME sandbox_sandboxed_e2e_tests COMMAND sandbox_sandboxed_e2e_tests)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_FOUND)
@@ -700,6 +730,13 @@ if(NOT EMSCRIPTEN)
                 COMMAND ${Python3_EXECUTABLE}
                         ${CMAKE_SOURCE_DIR}/tools/check_js_error_mirror.py)
         endif()
+
+        # Python SDK conformance gate (v1.30 M4, freeze prereq 3): the
+        # normative cross-binding case list against the freshly built DLL.
+        add_test(NAME python_conformance
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/bindings/python/tests/conformance_test.py
+                    $<TARGET_FILE:openrar_dll>)
     endif()
 
     # ── Kernel throughput benchmark (informational, never a gate) ───────────

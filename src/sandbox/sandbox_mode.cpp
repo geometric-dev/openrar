@@ -1,17 +1,14 @@
 #include "sandbox_mode.hpp"
+#include "spawn.hpp"
 
 #include <cstdlib>
 #include <string>
 
 namespace openrar::sandbox {
 
-bool platform_sandbox_available() {
-    // M3a/b/c flip this per platform when the model's e2e proof-of-denial
-    // suite is green on the CI leg that owns it (plan §5 M3 decision point;
-    // kill signals pre-analysis §3). Until then every host takes the
-    // in-process path — the wiring ships inert, behavior unchanged.
-    return false;
-}
+// platform_sandbox_available() lives in spawn.cpp (the per-OS privilege
+// models own it; M3a/b flip it when a model's proof-of-denial e2e is green
+// on the CI leg that owns that model).
 
 SandboxMode sandbox_mode_for(bool in_proc_flag) {
     if (in_proc_flag) return SandboxMode::InProc;

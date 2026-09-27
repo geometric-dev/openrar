@@ -20,6 +20,7 @@
 //      codes → same fallback; raw passwords never cross the boundary).
 // ─────────────────────────────────────────────────────────────────────────────
 
+#include "spawn.hpp"
 #include "channel.hpp"
 #include "worker_protocol.hpp"
 
@@ -36,6 +37,7 @@ namespace openrar::sandbox {
 struct BrokerEntry {
     WireEntry wire{};
     std::string path; // resolved from the paths blob at unpack time
+    bool is_service() const { return (wire._pad[0] & kWIRE_FLAG_SERVICE) != 0; }
 };
 
 class WorkerBroker {
@@ -52,7 +54,17 @@ public:
     // `arc_path` stays in the broker process. On failure the object returns
     // to the closed state and `detail` carries a human message.
     bool start(const std::string& worker_exe, const std::filesystem::path& arc_path, Limits limits,
-               std::string& detail);
+               std::string& detail, SpawnProfile profile = SpawnProfile::Unsandboxed);
+
+    // Proof-of-denial self-test (v1.29 Gate 0 directive): spawns the worker
+    // with `profile` against `probe_dir` (a scratch dir the CALLER created —
+    // no AppContainer ACE → the write probe must be denied), sends
+    // SelftestReq, and returns the OBSERVED outcomes in `out`. Returns false
+    // (with `detail`) on transport failure — a sandbox model that breaks the
+    // channel/volume grant is a broken sandbox, reported as such.
+    static bool run_selftest(const std::string& worker_exe, const std::filesystem::path& probe_dir,
+                             const std::filesystem::path& volume_path, SpawnProfile profile,
+                             WireSelftest& out, std::string& detail);
 
     // Sends Shutdown, waits briefly, closes everything. Safe to call twice.
     void shutdown();
@@ -84,6 +96,7 @@ private:
     std::unique_ptr<FramedChannel> cmd_; // broker → worker
     std::unique_ptr<FramedChannel> res_; // worker → broker
     Phase phase_ = Phase::Closed;
+    SpawnProfile profile_ = SpawnProfile::Unsandboxed;
     Limits limits_{};
     core::uint64 total_emitted_ = 0;
     std::vector<BrokerEntry> entries_;
