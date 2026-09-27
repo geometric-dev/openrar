@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/ usr / bin / env python3
 """ABI export-list parity tool (docs/abi-freeze.md; v1.30.0 freeze, M1).
 
 Two modes:
@@ -37,8 +37,8 @@ REPO = Path(__file__).resolve().parent.parent
 HEADER = REPO / "include" / "openrar" / "openrar_dll.h"
 CANONICAL = REPO / "tools" / "abi_exports_canonical.txt"
 
-# Every export is declared "OPENRAR_DLL_API <type> OPENRAR_DLL_CALL <name>("
-# (declarations may wrap lines — use DOTALL and anchor on the call marker).
+#Every export is declared "OPENRAR_DLL_API <type> OPENRAR_DLL_CALL <name>("
+#(declarations may wrap lines — use DOTALL and anchor on the call marker).
 EXPORT_RE = re.compile(
     r"OPENRAR_DLL_API\s+[^;]*?OPENRAR_DLL_CALL\s+(openrar_[A-Za-z0-9_]+)\s*\(", re.S
 )
@@ -61,34 +61,58 @@ def cmd_generate() -> int:
     return 0
 
 
-def binary_symbols(binary: Path) -> set:
-    """Return the set of exported symbols matching the C-ABI namespace."""
-    dumpbin = shutil.which("dumpbin")
+def _parse_dumpbin(out: str) -> set:
+    syms = set()
+    for line in out.splitlines():
+        toks = line.split()
+        if len(toks) >= 4 and SYMBOL_RE.match(toks[-1]):
+            syms.add(toks[-1])
+    return syms
+
+
+def _parse_nm(out: str) -> set:
+    syms = set()
+    for line in out.splitlines():
+        toks = line.split()
+        if toks and toks[-1].startswith("openrar_") and SYMBOL_RE.match(toks[-1]):
+            syms.add(toks[-1])
+    return syms
+
+
+def _tool_attempts(binary: Path):
+#(argv, parser) pairs tried in order; a tool that exists but fails
+#(wrong args for the format, wrong arch, not on PATH) falls through to
+#the next — CI environments differ in what they put on PATH.
+    attempts = []
+    if sys.platform == "win32":
+        dumpbin = shutil.which("dumpbin")
+        if dumpbin:
+            attempts.append(([dumpbin, "/exports", str(binary)], _parse_dumpbin))
     llvm_nm = shutil.which("llvm-nm")
     nm = shutil.which("nm")
-
-    if sys.platform == "win32" and dumpbin:
-        out = subprocess.run(
-            [dumpbin, "/exports", str(binary)],
-            capture_output=True, text=True, check=True,
-        ).stdout
-        # dumpbin lines: "ordinal hint RVA name" — the name is the last token.
-        return {tok for line in out.splitlines()
-                if (toks := line.split()) and len(toks) >= 4 and toks[-1].startswith("openrar_")
-                and SYMBOL_RE.match(toks[-1]) for tok in [toks[-1]]}
-
-    if llvm_nm or nm:
-        tool = llvm_nm or nm
+    for tool in (llvm_nm, nm):
+        if not tool:
+            continue
         if sys.platform == "darwin":
-            args = [tool, "-gU", str(binary)]  # defined external symbols only
+            args = [tool, "-gU", str(binary)]
         else:
-            args = [tool, "-D", "--defined-only", str(binary)]  # dynamic symbols
-        out = subprocess.run(args, capture_output=True, text=True, check=True).stdout
-        return {tok for line in out.splitlines()
-                if (toks := line.split()) and toks[-1].startswith("openrar_")
-                and SYMBOL_RE.match(toks[-1]) for tok in [toks[-1]]}
+            args = [tool, "-D", "--defined-only", str(binary)]
+        attempts.append((args, _parse_nm))
+    return attempts
 
-    return set()  # no tool on this host
+
+def binary_symbols(binary: Path) -> set:
+    """Return the exported C-ABI symbols; {} when every tool attempt fails
+    (the caller prints a loud [SKIP]) or when none of the tools exist."""
+    for args, extract in _tool_attempts(binary):
+        try:
+            out = subprocess.run(args, capture_output=True, text=True, check=True).stdout
+        except (subprocess.CalledProcessError, OSError):
+            continue
+        syms = extract(out)
+        if syms:
+            return syms
+    return set()
 
 
 def cmd_check(binary: Path) -> int:
