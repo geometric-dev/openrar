@@ -1245,6 +1245,61 @@ def test_track15_cv_7z(openrar, unrar, rar):
             return False
     print('  OK 7z reads the emitted archive')
     return True
+
+def test_track16_differential_7z(openrar, unrar, rar):
+    # v1.30 M5 (SECURITY_ARCHITECTURE §7.2): differential extraction vs 7z —
+    # a generated corpus (methods m0/m3/m5 + solid + timestamps) is extracted
+    # by BOTH openrar and 7z; outputs must be byte-identical. Availability-
+    # gated: SKIP loudly where 7-Zip is not installed (CI installs it).
+    if not _oracle_or_skip(unrar, 'Track 16'):
+        return True
+    import shutil
+    seven = shutil.which('7z')
+    if seven is None:
+        print('[Track 16] differential extraction vs 7z...', flush=True)
+        print('  SKIP: 7z not installed')
+        return True
+    print('[Track 16] differential extraction vs 7z...', flush=True)
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+        # Corpus: three files with distinct content classes (text, binary,
+        # compressible) archived three ways.
+        payload = {
+            'text.txt': ''.join(f'line-{i}: differential corpus' + chr(10) for i in range(500)).encode(),
+            'bin.dat': bytes((i * 31 + 7) & 0xFF for i in range(65536)),
+            'zeros.raw': bytes(131072),
+        }
+        for name, data in payload.items():
+            (td / name).write_bytes(data)
+        methods = [('m0', 0), ('m3', 3), ('m5s', None)]  # m5s = -m5 -s
+        for tag, method in methods:
+            switches = ' -' + (str(method) if method is not None else 'm5 -s')
+            arc = td / f'corp_{tag}.rar'
+            names = ' '.join(payload.keys())
+            rc, out, err = run([openrar, 'a' + switches, str(arc)] + [str(td / n) for n in payload])
+            if rc != 0:
+                print(f'  FAIL: create {tag} rc={rc}' + chr(10) + out + err)
+                return False
+            o_dir, s_dir = td / ('o_' + tag), td / ('s_' + tag)
+            o_dir.mkdir(); s_dir.mkdir()
+            rc, out, err = run([openrar, 'x', '-y', str(arc), str(o_dir) + os.sep])
+            if rc != 0:
+                print(f'  FAIL: openrar x {tag} rc={rc}' + chr(10) + out + err)
+                return False
+            rc, out, err = run([seven, 'x', '-y', '-o' + str(s_dir), str(arc)])
+            if rc != 0:
+                print(f'  FAIL: 7z x {tag} rc={rc}' + chr(10) + out + err)
+                return False
+            for name in payload:
+                a = (o_dir / name).read_bytes()
+                b = (s_dir / name).read_bytes()
+                if a != b:
+                    print(f'  FAIL: differential mismatch {tag}/{name} '
+                          f'({len(a)} vs {len(b)} bytes)')
+                    return False
+        print('  OK differential extraction parity (3 methods x 3 files)')
+        return True
+
 def main():
     import time
     t0 = time.time()
@@ -1280,6 +1335,7 @@ def main():
         (test_track13_cv_gzip, (openrar, unrar, rar)),
         (test_track14_cv_hostile_zip, (openrar, unrar, rar)),
         (test_track15_cv_7z, (openrar, unrar, rar)),
+        (test_track16_differential_7z, (openrar, unrar, rar)),
     ]
 
     for fn, args in stages:
