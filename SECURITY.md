@@ -66,6 +66,28 @@ Please include:
 - Reports that require modifying the host OS or the archive-testing tool
   (WinRAR/UnRAR) itself.
 
+## Release verification & supply chain (v1.30.0)
+
+Every tagged release ships with:
+
+- **SHA256SUMS** — a checksum file over every release artifact, attached to
+  the GitHub release. Verify before use: `sha256sum -c SHA256SUMS`.
+- **Build provenance attestations** — Sigstore keyless attestations
+  (`actions/attest-build-provenance`) binding each artifact to the workflow
+  run that built it. Verify with
+  [`cosign`](https://docs.sigstore.dev): `cosign verify-blob <artifact>
+  --bundle <attestation> --certificate-identity-regexp
+  '^https://github.com/geometric-dev/openrar/' --certificate-oidc-issuer
+  https://token.actions.githubusercontent.com`.
+- **SBOM** — a CycloneDX document (`openrar-<version>-sbom.json`) covering
+  the release tree. All crypto and math is in-tree; the SBOM's third-party
+  surface is build tooling only.
+
+Authenticode (Windows) / notarization (macOS) are best-effort and require
+organization certificates this project may not hold — their absence is
+stated here rather than hidden. Report a vulnerability in the release
+pipeline (provenance, SBOM, checksums) like any other security issue.
+
 ## Hardening posture, for context
 
 All crypto and math is in-tree (no third-party dependencies), the tree builds

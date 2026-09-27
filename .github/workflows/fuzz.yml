@@ -96,6 +96,10 @@ jobs:
         # naming variants per input (see tests/fuzz/fuzz_file_handle.cpp).
         run: ./build_fuzz/fuzz_file_handle -max_total_time=${{ env.FUZZ_TIME }} -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
 
+      - name: Dedup crashes (stack-signature buckets; new buckets survive)
+        if: always()
+        run: python3 tools/dedup_crashes.py
+
       - name: Upload new seeds (if any crashes or coverage expanded)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
