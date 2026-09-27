@@ -135,7 +135,9 @@ bool xattr_equal(const std::vector<format::FileBlock::FileXattr>& a,
     for (size_t i = 0; i < a.size(); ++i) {
         if (a[i].name != b[i].name) return false;
         if (a[i].value.size() != b[i].value.size()) return false;
-        if (std::memcmp(a[i].value.data(), b[i].value.data(), a[i].value.size()) != 0) return false;
+        if (!a[i].value.empty() &&
+            std::memcmp(a[i].value.data(), b[i].value.data(), a[i].value.size()) != 0)
+            return false;
     }
     return true;
 }
