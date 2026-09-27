@@ -5,6 +5,85 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.0] - 2026-09-27
+
+Interactive TUI & Benchmark Engine — the zero-format arc: NO emitted
+archive bytes change (Gate 0, docs/v1.28-pre-analysis.md §0/§7 — the
+`FHEXTRA_XATTR`/0x08 record set shipped in 1.27.0 stays closed; the
+interop gate and golden bytes ran unchanged on every milestone). The arc
+ships the SECURITY_ARCHITECTURE §7.1 terminal-injection RELEASE GATE, the
+dual-progress TUI on top of it, the non-TTY degradation contract, and the
+benchmark engine's reproducibility protocol.
+
+### Added
+
+- **Dual-progress TUI** (`src/cli/tui.hpp`): on TTYs, `x`/`e`/`t`/add render
+  a width-clamped 4-line region — overall bar plus CURRENT-FILE bar with
+  live within-file byte progress from the new reader disk hooks
+  (`ArchiveReader::set_disk_hooks`: stored/compressed/encrypted/hardlink
+  write loops). The renderer is a pure function (`render_tui(state,
+  width)`) with UTF-8-safe truncation — a long name can no longer wrap and
+  garble the redraw region (the shipped fixed-BAR_WIDTH renderer's latent
+  bug). Single-writer rule: workers mutate state under one mutex and never
+  render; 30 ms coalescing.
+- **Interactive cancel**: ESC or `q` cancels cooperatively (raw-stdin
+  keyboard thread, only when both streams are TTYs); `^C` maps to the same
+  path via a handler installed ONLY inside TUI-active scopes — outside
+  them, `^C` keeps the terminate semantics. Cancel = exit 255 (pinned
+  user-break), `"aborted":true` in the JSON summary, remaining entries
+  `unprocessed`, mid-file cancels abandon the temp (journal sweep stays
+  exact). Terminal modes are restored RAII-style on every exit.
+- **Benchmark engine v2** (`tests/bench/openrar_bench`): measurement
+  protocol — 1 untimed warm-up pass + 7 timed passes (3 with `--quick`),
+  result = median, spread = `(max−min)/median`; hardware disclosure (CPU
+  brand, cores, OS, compiler) in output and JSON; `--json` prints ONLY the
+  schema_version-1 document (humans move to stderr); `--strict` exits 1
+  when a compute suite's spread exceeds `--spread-threshold-pct` (default
+  5). New suites: `extract_throughput_store`/`_m3`, `add_throughput_m3`,
+  `cdc_fingerprint`, and `cdc_three_number_store`/`_plain_solid`/
+  `_cdc_packed` — the three-number reduction gate as a bench suite,
+  packed through the CLI's batch pipeline (`CompressPlan` →
+  `prepare_add_file` → `write_batch_add`); on the engineered corpus:
+  store 16.78 MB > plain-solid 10.49 MB > CDC-packed 9.84 MB at spread
+  0.0%. The 50 GB listing suites keep the v1.25 sparse harness (corpus
+  build = the warm-up).
+- **PROMPT state**: overwrite queries wipe the TUI region, park the
+  keyboard thread and restore cooked stdin; the region redraws after the
+  answer (fixes a shipped garble where the prompt printed inside the
+  drawn region).
+
+### Changed
+
+- **Terminal-injection release gate (§7.1)**: every rendered name-shaped
+  string passes the idempotent sanitizer AT RENDER — and the coverage
+  audit's shipped gaps are closed: the archive comment (`l`) and
+  `FHEXTRA_UOWNER` owner names (`lt`) rendered byte-raw until now;
+  local-path `W:` lines (`cannot stat`/`cannot read`); the `p` command's
+  error lines. Clean archives render identically; hostile bytes become
+  `?` per category. VT capability now follows the SINK stream
+  (`--json-summary` progress renders to stderr and probes stderr, not
+  hardcoded stdout).
+- **`--json-summary` output is always valid UTF-8** (RFC 8259): bytes of
+  invalid sequences are neutralized as the ASCII `\uFFFD` escape (never
+  the raw character); valid non-ASCII names pass through. The JSON still
+  reports the ON-DISK name (the displayed ≡ extracted contract) — the
+  terminal layer owns rendering safety, the JSON owns on-disk truth.
+- **Non-TTY degradation is a pinned contract**: piped/redirected runs
+  carry ZERO escape bytes, keep the per-file lines (stdout) and warnings
+  (stderr), and exit identically to rendered runs for the same archive,
+  flags and stdin state; `-q` silences human output; `-plain` never
+  emits VT bytes.
+
+### Fixed
+
+- **The overwrite prompt garbled the progress region** (pre-existing):
+  `ask_overwrite` printed inside the drawn 4-line block, corrupting the
+  cursor-up redraw math for the rest of the run — the PROMPT state clears
+  and redraws around it.
+- **VT detection could disagree with the render sink** (pre-existing):
+  capability was probed on stdout while `--json-summary` progress renders
+  to stderr.
+
 ## [1.27.0] - 2026-09-26
 
 Extended Attributes, Quarantine & MotW — the arc the Gate 0 format-legality
