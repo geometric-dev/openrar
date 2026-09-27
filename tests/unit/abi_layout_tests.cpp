@@ -19,6 +19,8 @@
 
 #include <openrar/openrar_dll.h>
 
+#include "test_support.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -341,6 +343,7 @@ void check_archive_info_t(const StructGolden& s) {
 } // namespace
 
 int main() {
+    OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
     // 1. C-mode compile + layout of the public header.
     CHECK(abi_c_mode_version_probe());
     CHECK(abi_c_mode_layout_check() == 0);
