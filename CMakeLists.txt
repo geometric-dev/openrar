@@ -99,6 +99,8 @@ endif()
 option(OPENRAR_FOREIGN_FORMATS "Foreign-format readers (ZIP/TAR/GZIP/legacy RAR), inflate, and the cv transcoder. Excluded from the lean wasm block-codec build." ${OPENRAR_FOREIGN_FORMATS_DEFAULT})
 set(OPENRAR_FOREIGN_FORMATS_SOURCES
     src/compress/inflate.cpp
+    src/archive/foreign_reader.cpp
+    src/archive/foreign_zip.cpp
 )
 
 # Warning policy: MSVC /W4, GCC/Clang -Wall -Wextra everywhere. Warnings are
@@ -522,6 +524,7 @@ if(NOT EMSCRIPTEN)
     # exactly like the sources they exercise.
     if(OPENRAR_FOREIGN_FORMATS)
         add_openrar_test(inflate_tests tests/unit/inflate_tests.cpp)
+        add_openrar_test(foreign_format_tests tests/unit/foreign_format_tests.cpp)
     endif()
 
     # WASM ABI surface test (C exports are linkable on every platform).
@@ -632,6 +635,15 @@ if(NOT EMSCRIPTEN)
         target_link_libraries(fuzz_decompress PRIVATE openrar_core)
         target_include_directories(fuzz_decompress PRIVATE ${OPENRAR_INCLUDES})
         openrar_enable_test_asserts(fuzz_decompress)
+
+        # Inflate fuzzer (v1.29): only meaningful when the foreign-format
+        # sources are built (it exercises src/compress/inflate).
+        if(OPENRAR_FOREIGN_FORMATS)
+            add_executable(fuzz_inflate tests/fuzz/fuzz_inflate.cpp)
+            target_link_libraries(fuzz_inflate PRIVATE openrar_core)
+            target_include_directories(fuzz_inflate PRIVATE ${OPENRAR_INCLUDES})
+            openrar_enable_test_asserts(fuzz_inflate)
+        endif()
 
         # Archive + block C ABI harness (the exact entry points browsers
         # reach through wasm/js). Needs archive_api.cpp + buffer_archive.cpp.
