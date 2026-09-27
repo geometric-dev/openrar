@@ -67,6 +67,9 @@ set(OPENRAR_CORE_SOURCES
     src/sfx/prompt_console.cpp
     src/sfx/process_exec.cpp
     src/sfx/sfx_pipeline.cpp
+    src/sandbox/ipc.cpp
+    src/sandbox/channel.cpp
+    src/sandbox/sandbox_mode.cpp
     src/archive/volume.cpp
     src/recovery/rs16.cpp
     src/recovery/rs16_gfni.cpp
@@ -640,6 +643,12 @@ if(NOT EMSCRIPTEN)
         ${OPENRAR_INCLUDES} src/dll include)
     openrar_enable_test_asserts(library_mode_tests)
     add_test(NAME library_mode_tests COMMAND library_mode_tests)
+
+    # Sandbox IPC gates (v1.30.0 M3 foundation): the frame codec's hostile-
+    # input semantics, bounded-memory guarantees, and the real-pipe channel
+    # (EOF / poison propagation / threaded large-frame flow) — independent
+    # of any per-OS sandbox model.
+    add_openrar_test(sandbox_ipc_tests tests/unit/sandbox_ipc_tests.cpp)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_FOUND)

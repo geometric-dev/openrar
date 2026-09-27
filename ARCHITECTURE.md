@@ -19,7 +19,7 @@ OpenRAR is an independent, clean-room C++17 implementation of the RAR 5.0 archiv
 
 The codebase is organized into eight decoupled subsystems under the root namespace `openrar::`. Dependencies flow strictly downward: higher layers may depend on lower layers, but lower layers must never depend on higher layers.
 
-Beside the layer stack sit the **boundary surfaces**: `src/api/abi_contract.hpp` (the types shared by both ABIs), `src/dll/` (C ABI, `openrar::api`), `src/wasm/` (Emscripten ABI, `openrar::wasm`), and the SFX extractor (`openrar::sfx` in `src/cli/sfx_main.cpp`). They wrap the top of the stack and follow the same downward-only rule.
+Beside the layer stack sit the **boundary surfaces**: `src/api/abi_contract.hpp` (the types shared by both ABIs), `src/dll/` (C ABI, `openrar::api`), `src/wasm/` (Emscripten ABI, `openrar::wasm`), and the SFX extractor (`openrar::sfx` in `src/cli/sfx_main.cpp`). They wrap the top of the stack and follow the same downward-only rule. Beside `cli` at rank 5 sits `src/sandbox/` (`openrar::sandbox`, v1.30.0): the broker/worker sandboxed-parse runtime — the frame codec (`ipc`), two one-way pipe channels (`channel`), and the single sandbox-mode decision function (`sandbox_mode`) that every command path consumes. It includes core (+ OS headers) only, never the layers above it; the sandboxed worker harness (which wraps the archive layer) lands with the per-OS models and keeps the same downward-only rule.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -212,6 +212,7 @@ Every module under `src/` is written from the ground up as clean-room `openrar::
 | Compression | `src/compress/compressor50.*`, `stream_encoder.*` |
 | Volumes, recovery records | `src/archive/volume.*`, `src/recovery/*` |
 | CLI | `src/cli/main.cpp`; SFX extractor `src/cli/sfx_main.cpp` |
+| Sandbox broker/worker runtime (mode decision, frame codec, channels) | `src/sandbox/sandbox_mode.*`, `src/sandbox/ipc.*`, `src/sandbox/channel.*` |
 
 Residual legacy vocabulary that is intentionally retained:
 
