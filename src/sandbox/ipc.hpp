@@ -48,6 +48,10 @@ enum class FrameType : core::uint8 {
     Error = 9,       // worker→broker: RarError code + UTF-8 detail
     Cancel = 10,     // broker→worker: abort current entry (cooperative)
     Shutdown = 11,   // broker→worker: clean exit
+    // v1.30.0 M3a/b: the sandbox proof-of-denial self-test (the v1.29 Gate 0
+    // directive requires an OBSERVED denial per shipped sandbox model).
+    SelftestReq = 12,    // broker→worker: attempt the denial probes
+    SelftestResult = 13, // worker→broker: probe outcomes (worker_protocol.hpp)
 };
 
 inline constexpr core::uint32 kMaxFramePayload = 4u * 1024 * 1024; // 4 MiB
