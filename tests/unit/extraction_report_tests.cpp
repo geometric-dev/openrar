@@ -100,7 +100,10 @@ void test_report_model() {
     r.aborted = true;
     r.abort_reason = "user break";
     const std::string json = archive::to_json(r);
-    assert(json.find("\"schema_version\":1") != std::string::npos);
+    // v2 (v1.29 D3): schema bumped for the additive transcode fields.
+    assert(json.find("\"schema_version\":2") != std::string::npos);
+    // v1 documents (x/e): the transcode fields are absent.
+    assert(json.find("\"format\":") == std::string::npos);
     assert(json.find("\"status\":\"pending_placeholder\"") == std::string::npos);
     // the backslash and quote in the archive name are JSON-escaped
     assert(json.find("a\\\\\\\"rar") != std::string::npos);
@@ -147,7 +150,7 @@ void test_json_stdout_purity() {
     const std::string stdout_txt = read_text(dir / "stdout.txt");
     const std::string stderr_txt = read_text(dir / "stderr.txt");
     // stdout is exactly one JSON object
-    assert(stdout_txt.find("{\"schema_version\":1") == 0);
+    assert(stdout_txt.find("{\"schema_version\":2") == 0);
     assert(stdout_txt.find("\"exit_code\":0") != std::string::npos);
     assert(stdout_txt.find("\"name\":\"fine.txt\"") != std::string::npos);
     assert(stdout_txt.find("\"status\":\"extracted\"") != std::string::npos);
