@@ -1145,8 +1145,19 @@ def _cv_run_and_verify(openrar, unrar, src, payloads, tag, src_args=''):
     return True
 
 
+def _oracle_or_skip(unrar, track):
+    # CI legs run the interop gate WITHOUT UnRAR (no rar.exe in CI): the
+    # oracle-dependent tracks skip with a marker, like every shipped stage.
+    if unrar is None:
+        print(f'  SKIP: no UnRAR oracle on this leg ({track})')
+        return False
+    return True
+
+
 def test_track11_cv_zip(openrar, unrar, rar):
     print('[Track 11] cv: ZIP -> RAR5, UnRAR-readable, byte-identical...', flush=True)
+    if not _oracle_or_skip(unrar, 'Track 11'):
+        return True
     with tempfile.TemporaryDirectory() as td:
         src, payloads = _cv_build_zip(pathlib.Path(td))
         if not _cv_run_and_verify(openrar, unrar, src, payloads, 'zip'):
@@ -1157,6 +1168,8 @@ def test_track11_cv_zip(openrar, unrar, rar):
 
 def test_track12_cv_tar(openrar, unrar, rar):
     print('[Track 12] cv: TAR -> RAR5, UnRAR-readable, byte-identical...', flush=True)
+    if not _oracle_or_skip(unrar, 'Track 12'):
+        return True
     with tempfile.TemporaryDirectory() as td:
         src, payloads = _cv_build_tar(pathlib.Path(td))
         if not _cv_run_and_verify(openrar, unrar, src, payloads, 'tar'):
@@ -1167,6 +1180,8 @@ def test_track12_cv_tar(openrar, unrar, rar):
 
 def test_track13_cv_gzip(openrar, unrar, rar):
     print('[Track 13] cv: GZIP -> RAR5, UnRAR-readable, byte-identical...', flush=True)
+    if not _oracle_or_skip(unrar, 'Track 13'):
+        return True
     with tempfile.TemporaryDirectory() as td:
         src, payloads = _cv_build_gz(pathlib.Path(td))
         if not _cv_run_and_verify(openrar, unrar, src, payloads, 'gz'):
@@ -1205,6 +1220,8 @@ def test_track14_cv_hostile_zip(openrar, unrar, rar):
 def test_track15_cv_7z(openrar, unrar, rar):
     # Availability-gated: 7z readability of emitted archives where 7-Zip
     # is installed (the RAR5 codec ships with modern 7-Zip).
+    if not _oracle_or_skip(unrar, 'Track 15'):
+        return True
     import shutil
     seven = shutil.which('7z')
     if seven is None:
