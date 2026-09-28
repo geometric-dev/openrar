@@ -1162,7 +1162,18 @@ void Compressor50::init_match_params() {
     // finder measured the same session (77.5 s for 1.8% better ratio), so
     // the tree was descoped per the pre-agreed fallback. M3 sweeps the
     // depth knee (128 vs 256) and the m4/m5 ladder.
-    static const core::uint32 chains[6] = {0, 4, 8, 32, 128, 128};
+    // M3 sweep outcome (canonical corpus 9458aa2a9f47, medians of 3, sizes
+    // deterministic): m5 depth knee confirmed at 128 — d192 costs +43% time
+    // for -0.18% size, d256 +81% for -0.22%. m4 dropped 128 -> 64: -38%
+    // time (26.3 -> 16.2 s) at +0.89% size, restoring the m3 -> m4 -> m5
+    // ladder (8.3 s/54.14 MB -> 16.2 s/53.41 MB -> 28.4 s/52.93 MB) that
+    // M2's m5 change had collapsed. m1 swept per the plan grid (chains
+    // 4/8/16 x nice 256/512 x lazy 0/1): best candidate bought -1.63%
+    // size for +25% time; nothing met the <= current runtime constraint,
+    // and the residual ~15-17% ratio gap to WinRAR m1 is structural (their
+    // parse strategy, not chain depth) — recorded for a future arc. m1/m2/
+    // m3 parameters are unchanged from v1.30.
+    static const core::uint32 chains[6] = {0, 4, 8, 32, 64, 128};
     static const core::uint32 nices[6] = {0, 256, 512, 1024, 2048, 4096};
     static const core::uint32 lazies[6] = {0, 0, 0, 1, 1, 1};
     max_chain_ = chains[method_];
