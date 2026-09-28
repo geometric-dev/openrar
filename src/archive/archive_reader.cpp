@@ -875,6 +875,11 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                     size_t qp = 0;
                                     std::vector<ArchiveEntry> qo_entries;
                                     core::uint64 last_orig_pos = 0;
+                                    // QO-chain contiguity cursor: the next cached
+                                    // header must start exactly here (validated
+                                    // per entry below; a gap = partial QO cache
+                                    // = fall back to the linear scan).
+                                    core::uint64 qo_expect_pos = curr_pos;
                                     bool qo_ok = true;
 
                                     while (qp < qo_buf.size()) {
@@ -1008,16 +1013,34 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                             entry_data_size < avail ? entry_data_size : avail;
                                         e.data_size = admit;
                                         e.extents.push_back({vpath, e.data_offset, admit});
+                                        // QO-chain contiguity validation (v1.30.0):
+                                        // the cached header must start EXACTLY where
+                                        // the previous cached header ended (header +
+                                        // data are physically contiguous in the
+                                        // archive). WinRAR 7.20's QO record for
+                                        // -mt4 archives omits middle entries (e.g.
+                                        // zero-compressed files) — a gap means the
+                                        // QO cache is a PARTIAL index and the
+                                        // authoritative linear scan must run
+                                        // instead, or entries would silently
+                                        // vanish from listings and extraction.
+                                        if (e.header_offset != qo_expect_pos) {
+                                            qo_ok = false;
+                                            break;
+                                        }
+                                        qo_expect_pos =
+                                            e.header_offset + e.header_size + e.data_size;
                                         qo_entries.push_back(std::move(e));
 
                                         qp = struct_end;
                                     }
 
                                     if (qo_ok && !qo_entries.empty()) {
-                                        // If the first cached entry starts after curr_pos, QO is only a partial cache
-                                        // (e.g. WinRAR archives created with -qo caching only large files, like hello5_p.rar).
-                                        // In that case fall back to sequential scan so no preceding files are lost.
-                                        if (qo_entries.front().header_offset > curr_pos) {
+                                        // Contiguity subsumes the earlier
+                                        // front-gap check: the first cached header
+                                        // must start where the linear walk stands
+                                        // (right after the main header block).
+                                        if (qo_entries.front().header_offset != curr_pos) {
                                             qo_ok = false;
                                         }
                                     }
