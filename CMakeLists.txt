@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.16)
 # wasm/js/package.json and CHANGELOG.md are synced at release time.
 # C is enabled for tests/unit/abi_header_c_compat.c — the C-mode compile proof
 # of the frozen public C ABI (docs/abi-freeze.md); no production source is C.
-project(openrar VERSION 1.30.0 LANGUAGES C CXX)
+project(openrar VERSION 1.30.4 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
