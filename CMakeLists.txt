@@ -664,6 +664,15 @@ if(NOT EMSCRIPTEN)
     # re-run in CI with per-case guarantee assertions.
     add_openrar_test(attack_corpus_tests tests/unit/attack_corpus_tests.cpp)
 
+    # QO partial-cache fallback regression (v1.30.0): a QuickOpen record that
+    # omits middle entries must fall back to the linear scan.
+    add_openrar_test(qo_gap_fallback_tests tests/unit/qo_gap_fallback_tests.cpp)
+
+    # Walk diagnostic probe (not a test): prints read_block_raw results.
+    add_executable(walk_probe tests/unit/walk_probe.cpp)
+    target_link_libraries(walk_probe PRIVATE openrar_core)
+    target_include_directories(walk_probe PRIVATE ${OPENRAR_INCLUDES})
+
     # The sandboxed worker process (v1.30.0 M3): drives the SAME
     # ArchiveReader engine over the IPC protocol, holds no paths, writes
     # nothing. The per-OS privilege models (AppContainer / seccomp /
