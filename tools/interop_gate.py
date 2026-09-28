@@ -1300,6 +1300,70 @@ def test_track16_differential_7z(openrar, unrar, rar):
         print('  OK differential extraction parity (3 methods x 3 files)')
         return True
 
+
+# ---------------------------------------------------------------------------
+# v1.31 Track 17: slot-257 long-match streams. The encoder's run-collapse
+# token (LD symbol 257) is wire-legal per docs/spec/03-compression-m1-m5.md
+# (the "Encoder contract: repeat-last-length" section); this stage is the
+# permanent cross-engine legality proof: archives with 257-dominated streams
+# must decode byte-identically under UnRAR and WinRAR.
+# ---------------------------------------------------------------------------
+def test_track17_long_match(openrar, unrar, rar):
+    print('[Track 17] slot-257 long-match streams: zeros/runs m1+m3+m5 '
+          'cross-decode...', flush=True)
+    if not _oracle_or_skip(unrar, 'Track 17'):
+        return True
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+
+        # 64 MiB pure zeros (the extreme run case) and 16 MiB periodic runs
+        # (non-trivial continuation distance), each at the two effort
+        # extremes m1 and m5 (runs corpus also m3).
+        zeros = td / 'zeros64.bin'
+        with open(zeros, 'wb') as f:
+            f.truncate(64 * 1024 * 1024)
+        runs = td / 'runs16.bin'
+        period = bytes(range(0xA0, 0xA8))
+        with open(runs, 'wb') as f:
+            for _ in range((16 * 1024 * 1024) // len(period)):
+                f.write(period)
+
+        cases = [(zeros, 1), (zeros, 5), (runs, 1), (runs, 3), (runs, 5)]
+        for src, m in cases:
+            h0 = sha256(src)
+            arc = td / f'lm_{src.stem}_m{m}.rar'
+            rc, out, err = run([openrar, 'a', '-q', f'-m{m}', str(arc), str(src)], cwd=str(td))
+            if rc != 0:
+                print(f'  FAIL: openrar a -m{m} {src.name} rc={rc}' + chr(10) + out + err)
+                return False
+            for tag, exe, xargs in (('self', openrar, ['x', '-y', '-q']),
+                                    ('unrar', unrar, ['x', '-y']),
+                                    ('winrar', rar, ['x', '-y', '-inul'])):
+                ex = td / f'x_{src.stem}_m{m}_{tag}'
+                ex.mkdir()
+                try:
+                    cmd = [exe] + xargs + [str(arc), str(ex) + os.sep]
+                    if tag == 'winrar' and exe is None:
+                        continue
+                    rc, out, err = run(cmd, cwd=str(td))
+                    if rc != 0:
+                        print(f'  FAIL: {tag} x {src.name} -m{m} rc={rc}' + chr(10) + out + err)
+                        return False
+                    got = find_extracted(ex, src.name)
+                    if got is None:
+                        print(f'  FAIL: {tag} did not produce {src.name} (-m{m})')
+                        return False
+                    if sha256(got) != h0:
+                        print(f'  FAIL: {tag} hash mismatch {src.name} -m{m}')
+                        return False
+                finally:
+                    # free the extraction promptly: the corpora here are tens
+                    # of MB and legs with small disks thank us
+                    shutil.rmtree(ex, ignore_errors=True)
+        print('  OK slot-257 long-match streams decode byte-identically '
+              '(self + UnRAR + WinRAR)')
+        return True
+
 def main():
     import time
     t0 = time.time()
@@ -1336,6 +1400,7 @@ def main():
         (test_track14_cv_hostile_zip, (openrar, unrar, rar)),
         (test_track15_cv_7z, (openrar, unrar, rar)),
         (test_track16_differential_7z, (openrar, unrar, rar)),
+        (test_track17_long_match, (openrar, unrar, rar)),
     ]
 
     for fn, args in stages:
