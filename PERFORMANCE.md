@@ -146,13 +146,20 @@ one is a tuning candidate:
   9.7x m3→m5 effort slope (vs WinRAR's 2.3x) says the chain walk cost
   dominates at high depth — the known fix is a binary-tree/suffix-structure
   match finder, a self-contained codec project (decoder unaffected).
-- **m1/zeros ratio: match-length encoding cap.** OpenRAR's encoder caps
-  match tokens at 4097 bytes; RAR5's length field allows ~64 KB, which is
-  how WinRAR collapses a 512 MB zero file to 0.02 MB (≈7,800 long-match
-  tokens vs our ≈125,000). Extending the encoder to long-length encoding
-  changes every emitted archive's bitstream and needs a format-legality
-  review (Gate 0) — the decoder already handles such streams (WinRAR's
-  zeros archive extracts correctly). Candidate for a future compression arc.
+- **m1/zeros ratio: the missing slot-257 repeat token (root cause
+  corrected in v1.31).** The earlier write-up here claimed WinRAR emits
+  "~64 KB" match tokens; that is impossible — the RAR5 length alphabet
+  (44 length slots) caps a single match token at 4097 bytes plus up to 3
+  distance-dependent increments = 4100. An instrumented decode of a
+  freshly generated WinRAR 7.20 m1 zeros archive (docs/v1.31-pre-analysis.md
+  §1.1, M0 evidence) shows the actual mechanism: after one 4096-byte
+  match, WinRAR emits **LD slot 257 ("repeat last length") tokens — one
+  Huffman symbol, zero extra bits — per further 4096 bytes** (15,871 of
+  them for 64 MiB), while our encoder emits rep0 tokens at ~11 bits per
+  4097 bytes (LD code + RD code + 9 length extra bits) and has no 257
+  path at all (0 in our zeros output). That is the entire 8× gap. The
+  fix — slot-257 run-collapse emission, wire-legal, decoder-proven — is
+  the v1.31.0 arc's M1 milestone.
 - **m1 speed/ratio tuning:** `-m1` parameters (chain 4, nice 256) are
   greedier than WinRAR's fastest preset. Re-tuning is safe (no format
   change) but needs a full ratio/speed matrix re-run; deferred as minor.
