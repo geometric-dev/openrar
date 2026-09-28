@@ -127,6 +127,49 @@ int main() {
         assert(out.size() > member_size - 8192); // head-like: nothing matched
     }
 
+    // v1.31 M2: the binary-tree finder under the solid carry — m5 packs a
+    // two-member chain through the tree (the child arrays ride the KEEP set
+    // across pack_begin(true) exactly like head_/prev_); cross-file
+    // compression must still materialize and every byte must roundtrip.
+    {
+        const size_t m5_size = 256 * 1024;
+        const std::vector<core::byte> shared5 = make_noise(m5_size / 2, 21);
+        std::vector<core::byte> a = make_noise(m5_size / 2, 31);
+        a.insert(a.end(), shared5.begin(), shared5.end());
+        std::vector<core::byte> b = make_noise(m5_size / 2, 32);
+        b.insert(b.end(), shared5.begin(), shared5.end());
+
+        compress::SolidPacker packer5(5, 1 << 19);
+        std::vector<core::byte> pa, pb;
+        assert(packer5.pack_begin(false));
+        assert(packer5.pack_feed(a.data(), a.size()));
+        assert(packer5.pack_end(&pa));
+        assert(packer5.pack_begin(true));
+        assert(packer5.pack_feed(b.data(), b.size()));
+        assert(packer5.pack_end(&pb));
+        // carried member realizes cross-file compression through the tree
+        assert(pb.size() < m5_size / 2 + 8192);
+
+        compress::Decompressor50 dec5(1 << 19);
+        for (int which = 0; which < 2; ++which) {
+            const auto& src = which == 0 ? a : b;
+            const auto& pk = which == 0 ? pa : pb;
+            std::vector<core::byte> out(m5_size);
+            size_t written = 0;
+            bool finished = false;
+            auto sink = [&](const core::byte* data, size_t n) -> bool {
+                if (written + n > out.size()) return false;
+                std::memcpy(out.data() + written, data, n);
+                written += n;
+                return true;
+            };
+            assert(dec5.decompress(pk.data(), pk.size(), m5_size, which == 1, sink, &written,
+                                   &finished));
+            assert(written == m5_size);
+            assert(out == src);
+        }
+    }
+
     std::cout << "All solid_packer_tests passed.\n";
     return 0;
 }
