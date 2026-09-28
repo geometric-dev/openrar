@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openrar"
-version = "1.30.0"
+version = "1.30.4"
 description = "OpenRAR Python SDK — ctypes binding over the frozen OpenRAR C ABI (RAR 5.0 read/create/mutate)"
 readme = "README.md"
 requires-python = ">=3.8"
