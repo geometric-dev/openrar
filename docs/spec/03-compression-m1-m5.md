@@ -149,6 +149,14 @@ The wire format is identical for `m1..m5`; encoders differ only in effort:
 | `4` | `128` | `2048` | `1` | |
 | `5` | `512` | `4096` | `1` | Deep, exhaustive. |
 
+These values are reference-encoder heuristics, **not format**: any
+`MaxChain`/`NiceLen`/`Lazy` combination produces wire-legal streams for
+every method. OpenRAR's shipped table has been tuned against that
+freedom (v1.31 M3 sweep: `m4` depth `64`, `m5` depth `128`, `m1`–`m3` at
+the reference values; rationale and measurements in
+`docs/v1.31-implementation-plan.md` M3) — the authoritative shipped
+values live in `Compressor50::init_match_params()`.
+
 Additional encoder rule (integrity-preserving, not wire-visible): `FailCount` heuristic — after `0x100` consecutive positions where `FindMatch` yields `<MIN_MATCH (3)`, skip `3/4` of subsequent positions (`FailCount>0x100 → skip 3/4`, `>0x400 → 7/8`, `>0x800 → 15/16`, `>0x1000 → 31/32`). Reset `FailCount` when a match `len>=8` is found. This does not affect decodability; it trades ~0.0002 ratio for 2–3× speed.
 
 ### Encoder contract: repeat-last-length (slot 257) emission
