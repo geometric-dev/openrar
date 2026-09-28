@@ -1,4 +1,4 @@
-# 🗺️ OpenRAR Engineering Roadmap: v1.21.x → v1.30.0 (Tight Base → Enterprise & High-Throughput Era)
+# 🗺️ OpenRAR Engineering Roadmap: v1.21.x → v1.40 (Tight Base → Enterprise → Compression-Performance Era)
 
 > **Provenance & Supersession.** Third revision. The first revision inserted
 > the v1.21.1 stabilization gate after the v1.6.0 → v1.21.0 architect audit;
@@ -10,9 +10,15 @@
 > scoping, legacy-VM drop). It also carried one **OPEN P1** blocking the
 > v1.22.0 release gate — since fixed (see CLOSED P1 below).
 
-## Shipped Baseline (v1.21.x / ... / v1.29.0 / v1.30.0)
+## Shipped Baseline (v1.21.x / ... / v1.29.0 / v1.30.x)
 
-- **v1.30.0 (current):** OpenRAR 2.0 LTS shipped — the ABI-freeze arc
+- **v1.30.4 (current):** shipped tag @ 302e9a2 — QO partial-cache
+  contiguity fix (see CHANGELOG 1.30.4). The v1.30.0 LTS line beneath it:
+
+- **v1.31.0 (IN PROGRESS — Gate 0 cleared):** Encoder Match Engine —
+  full scope in the dedicated section below.
+
+- **v1.30.0:** OpenRAR 2.0 LTS shipped — the ABI-freeze arc
   (docs/v1.30-pre-analysis.md §0/§8: Gate 0 conditional approval +
   twelve directives; ZERO emitted RAR5 bytes, confirmed by diff-surface
   review + the 23-stage interop gate + golden bytes). Freeze
@@ -138,6 +144,102 @@
   (`simd-validation` job); cross-implementation bit-exactness gate; local
   preflight harness (`make preflight`) covering every CI leg that can run
   locally.
+
+---
+
+## v1.31.0 — Encoder Match Engine: Run-Collapse Emission + Binary-Tree Finder (IN PROGRESS)
+
+The compression-quality arc that came out of the v1.30 performance
+investigation. Blocking constraint: **the m3 lead (1.4–1.9x vs WinRAR
+7.20, ratios within ~3%) must not regress** — it gates every milestone.
+
+**Gate 0 pre-analysis (docs/v1.31-pre-analysis.md, conditional approval +
+ten directives) corrected the arc's founding premise:** RAR5 cannot encode
+a single match longer than 4100 bytes — the LD alphabet is fixed at
+NC=306 (44 length slots, max 4097 + ≤3 distance increment), confirmed
+three ways (our spec, our decoder, and the cross-extraction arithmetic on
+WinRAR's 0.021 MB zeros archive, which cannot contain 125K full match
+tokens at ≥10+11 extra bits each). PERFORMANCE.md's "~64 KB match length"
+hypothesis was wrong and is corrected in M0. **The real zeros root cause:**
+WinRAR emits slot-257 repeat-last-length tokens (~1 bit per ~4 KB) where
+our encoder — which never emits 257 — pays ~12 bits per ~4 KB on rep0
+chains with 10 length extra bits. Our decoder has always supported 257.
+
+Scope (plan: docs/v1.31-implementation-plan.md — FMM + ten named negative
+tests per the Gate-0 directives):
+
+- **M0 (no encoder code):** WinRAR-zeros token census via an instrumented
+  decoder (prediction: 257-dominant, all lengths ≤ 4100 — recorded as
+  evidence); PERFORMANCE.md root-cause correction; spec 03 gains the
+  4100 single-token maximum note + the 257 emission invariants.
+- **M1:** slot-257 run-collapse emission, all methods — decoder-shadow-
+  faithful, byte-verified (the decoder copies 257 unconditionally, so the
+  encoder verifies the bytes itself), filter-clamp-aware, solid-carry
+  aware. Targets the 8x zeros ratio loss (0.18 MB → ≤ 0.05 MB) and part
+  of the m1 14% gap.
+- **M2:** binary-tree match finder for m4/m5 on windows ≤ 64 MiB
+  (memory-bounded: +1 window-sized array; chains stay for m1/m2/m3, WASM,
+  and oversize/OOM fallback). Targets the 9.7x m3→m5 effort slope / m5
+  2.3x loss (gate: m5 ≥ 2x vs v1.30.4; tuned-chains fallback pre-approved).
+  WASM size gate (block codec ≤ 500 KiB) runs here.
+- **M3:** m1/m5 parameter re-tune validated on the full matrix (targets
+  m1 ratio ≤ 5% behind WinRAR from 14%); spec 03's heuristics table
+  updated with winners.
+- **M4:** deliberate golden re-baseline (UnRAR + WinRAR verify the new
+  bytes), PERFORMANCE.md + README perf rows + CHANGELOG, MINOR bump
+  v1.31.0 (PATCH counter reset; version-consistency set moves together).
+
+Emitted bytes change for m1..m5; m0 store is bit-identical. The 23-stage
+interop gate (UnRAR + WinRAR decoding our new streams) is the legality
+proof, re-run on every emission-touching commit. Definition of Done in the
+plan §7.
+
+---
+
+## Indicative Path: v1.32 → v1.40 (provisional, Gate 0 per arc)
+
+Overall objective: compress RAR5 **faster and more securely than the
+official tool with equivalent compression**. v1.31 starts closing the
+ratio/effort gaps; the arcs below are sequenced from the evidence we have
+today and are expected to shift as v1.31–v1.33 surface new findings — each
+gets its own Gate 0, FMM, and named negative tests, and every arc keeps
+the perf-vs-WinRAR matrix honest (m3 non-regression remains the standing
+gate until dethroned by evidence).
+
+- **v1.32.0 — Ratio parity (optimal parse).** Replace the greedy/lazy
+  token choice with a cost-model decision over {literal, match, rep0..3,
+  257} (rate-distortion, windowed dynamic programming within a block).
+  Builds directly on v1.31's shadow/token machinery. Target: ratio parity
+  or better vs WinRAR at m1/m3 while keeping the speed lead; the m1 gap
+  not closed by tuning moves here.
+- **v1.33.0 — Throughput scaling.** MT encoder scaling (WinRAR scales 2.0x
+  ST→MT vs our 1.53x): parallel match search / window partitioning with a
+  documented bit-exactness story, MT solid, m5 MT. Target: 2x ST→MT
+  scaling and MT leads widened.
+- **v1.34.0 — Extraction throughput inside the v1.24 contract.** Batched
+  durability (fewer flushes without weakening the ordering/journal
+  guarantees), pipelined verification, QO/scan wins. Any weakening of the
+  fsync contract is an explicit security-architecture decision with its
+  own Gate 0 (PERFORMANCE.md's standing note), default-on only if the
+  contract holds.
+- **v1.35.0 — RAR 7.x parity ledger.** RR vintage 0x11D + single-erasure
+  repair (deferred from v1.26), resource forks + FinderInfo (deferred
+  from v1.27 to "2.1" — pulled here if the perf arcs land early).
+- **v1.36.0 — Migration completeness.** cv link migration (needs its own
+  Gate 0 — `prepare_add_symlink_from_memory`), cv output-shaping switches
+  (`-s`/`-v`/`-ts*`), FILECOPY default-materialization policy decision
+  (deferred from v1.27).
+- **v1.37 – v1.40 — discovery pool (unsequenced).** Parallel CDC
+  fingerprint pass, multi-volume no-data-area entries, WASM streaming
+  encode, MSan/fuzz depth growth, dictionary auto-sizing, and whatever
+  the v1.31–v1.33 arcs surface. Deliberately uncommitted: new findings
+  outrank this list.
+
+Standing inputs to re-triage at each arc boundary: the deferred ledgers in
+this document (v1.26/v1.27 rollover items), README "Not yet" rows, the
+Risk Register, and PERFORMANCE.md "Where the remaining gaps live".
+
+---
 
 ## CLOSED P1 (was blocking v1.22.0) — FIXED
 
@@ -509,6 +611,7 @@ C# NuGet (`OpenRAR.NET`).
 | **v1.28.0** | TUI + benchmark ✅ | §7.1 terminal-injection gate ✅ | Non-TTY degradation ✅; reproducibility protocol ✅ |
 | **v1.29.0** | Transcoder (ZIP/TAR/GZIP) | ZIP CD/LF hardening; legacy-VM drop; name escaping | Bit-for-bit equivalence |
 | **v1.30.0** | 2.0 LTS + SDKs | §5.1 sandboxed worker; §7.2 assurance; supply chain | Freeze prerequisites 1–7 ✅ |
+| **v1.31.0** | Encoder match engine (run-collapse + binary tree) | Emitted-byte legality gate; interop as proof | m3 non-regression (noise-band gate) |
 
 ## ⚠️ Risk Register (top items)
 
