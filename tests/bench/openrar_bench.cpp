@@ -43,6 +43,7 @@
 #include "../../src/compress/cdc_chunker.hpp"
 #include "../../src/compress/cdc_planner.hpp"
 #include "../../src/compress/compress_plan.hpp"
+#include "../../src/compress/compressor50.hpp"
 #include "../../src/compress/solid_packer.hpp"
 #include "../../src/core/cpu.hpp"
 #include "../../src/format/header_writer.hpp"
@@ -421,6 +422,54 @@ double pass_cdc_fingerprint() {
     return sec > 0 ? bytes / sec / (1024.0 * 1024.0) : 0.0;
 }
 
+// v1.31 M2: the m5 match finder's end-to-end kernel number — one-shot
+// compression of a deterministic mixed corpus (periodic text-like, zero
+// runs, long-range repeats, incompressible tail) at m5 with a 2 MiB window
+// (chains at the M2 decision-point depth 128). The same corpus and protocol
+// ran against the v1.30.4 binary (chains depth 512) for the finder gate.
+double pass_compress_m5() {
+    static const std::vector<core::byte> payload = [] {
+        std::vector<core::byte> v;
+        v.reserve(8u << 20);
+        core::uint32 s = 20260928u;
+        auto rnd = [&s] {
+            s = s * 1664525u + 1013904223u;
+            return static_cast<core::byte>(s >> 16);
+        };
+        for (int line = 0; line < 65536; ++line) { // text-like redundancy
+            for (int w = 0; w < 12; ++w) v.push_back(static_cast<core::byte>('a' + (rnd() % 26)));
+            v.push_back(static_cast<core::byte>(0x0A));
+        }
+        v.insert(v.end(), 2u << 20, core::byte(0)); // zero runs
+        const std::vector<core::byte> block = [] {
+            std::vector<core::byte> b;
+            core::uint32 s2 = 777u;
+            for (int i = 0; i < 64 * 1024; ++i) {
+                s2 = s2 * 1103515245u + 12345u;
+                b.push_back(static_cast<core::byte>(s2 >> 16));
+            }
+            return b;
+        }();
+        while (v.size() < (6u << 20)) { // long-range repeats with drift
+            v.insert(v.end(), block.begin(), block.end());
+            for (int i = 0; i < 16; ++i) v.push_back(rnd());
+        }
+        while (v.size() < (8u << 20)) v.push_back(rnd()); // incompressible tail
+        return v;
+    }();
+
+    std::vector<core::byte> dest;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!compress::Compressor50::compress_buffer(payload.data(), payload.size(), dest, 5,
+                                                 2 * 1024 * 1024, {})) {
+        return -1.0;
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    g_sink += dest.size();
+    const double sec = std::chrono::duration<double>(t1 - t0).count();
+    return sec > 0 ? static_cast<double>(payload.size()) / sec / (1024.0 * 1024.0) : 0.0;
+}
+
 // Packs the engineered corpus ONE WAY via the same batch pipeline the CLI
 // uses (CompressPlan -> prepare_add_file -> write_batch_add) — per-file
 // add_file_to_archive calls are separate pack passes and never carry a solid
@@ -694,6 +743,8 @@ int main(int argc, char** argv) {
 
     suites.push_back({"match_length_scalar", "scalar", "compute", "MiB/s",
                       [](int) { return pass_match(arch::match_length_scalar); }, true, ""});
+    suites.push_back({"compress_m5_matchfinder", "chains-128", "compute", "MiB/s",
+                      [](int) { return pass_compress_m5(); }, true, ""});
 #if defined(OPENRAR_HAS_X86_SIMD)
     if (cpu.sse2)
         suites.push_back({"match_length_SSE2", "SSE2", "compute", "MiB/s",

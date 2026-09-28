@@ -1156,7 +1156,13 @@ bool Compressor50::write_block(bool last_block) {
 }
 
 void Compressor50::init_match_params() {
-    static const core::uint32 chains[6] = {0, 4, 8, 32, 128, 512};
+    // m5 depth 128 — the v1.31 M2 decision (pre-analysis R4, exercised):
+    // the 512-deep walk WAS the m5 cost (85.2 s canonical); depth 128 runs
+    // 3.2x faster at +0.3% archive size and dominated the binary-tree
+    // finder measured the same session (77.5 s for 1.8% better ratio), so
+    // the tree was descoped per the pre-agreed fallback. M3 sweeps the
+    // depth knee (128 vs 256) and the m4/m5 ladder.
+    static const core::uint32 chains[6] = {0, 4, 8, 32, 128, 128};
     static const core::uint32 nices[6] = {0, 256, 512, 1024, 2048, 4096};
     static const core::uint32 lazies[6] = {0, 0, 0, 1, 1, 1};
     max_chain_ = chains[method_];
