@@ -79,3 +79,7 @@ pin-tool-log.txt
 
 # Scratch cross-validation build
 build_cv/
+
+# Perf harness local artifacts (corpora + archives; results.json IS committed)
+tools/perf/data/
+tools/perf/out/
