@@ -36,6 +36,7 @@
 #endif
 
 using namespace openrar;
+using namespace openrar::test;
 using namespace openrar::archive;
 using namespace openrar::sandbox;
 namespace fs = std::filesystem;
@@ -52,11 +53,7 @@ static int fails = 0;
 namespace {
 
 fs::path make_dir(const char* name) {
-    fs::path dir = fs::temp_directory_path() / (std::string("openrar_wk2e_") + name);
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
-    return dir;
+    return openrar::test::make_scratch_dir(std::string("openrar_") + name);
 }
 
 fs::path build_two_entry_archive(const fs::path& dir) {

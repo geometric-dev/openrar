@@ -22,6 +22,7 @@
 #include "test_support.hpp"
 
 #include <cstddef>
+#include <utility>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -302,7 +303,7 @@ FieldActual field_of(const char* name, Member T::* /*tag*/, long long offset_of,
 #define ABI_F(T, member)                                                                           \
     FieldActual {                                                                                  \
         #member, static_cast<long long>(offsetof(T, member)),                                      \
-            static_cast<long long>(sizeof(((T*)0)->member))                                        \
+            static_cast<long long>(sizeof(std::declval<T&>().member))                              \
     }
 
 void check_entry_t(const StructGolden& s) {
