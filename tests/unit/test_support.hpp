@@ -37,7 +37,9 @@
 // and parallel ctest -j were broken. All file artifacts must now live in
 // a per-suite sandbox under the system temp directory: independent of the
 // working directory, of other suites, and safe under -j.
+#include <cassert>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 namespace openrar::test {
@@ -56,6 +58,35 @@ inline std::filesystem::path scratch_dir(const std::string& suite) {
     std::filesystem::remove_all(dir, ec);
     std::filesystem::create_directories(dir);
     return dir;
+}
+
+// 3. Shared file/tree helpers. Several suites carried byte-identical local
+// copies of these (make_dir + rm + write_file + read_file); new suites
+// should use these instead of adding another copy. Older suites migrate
+// incrementally — the local variants remain valid where their directory
+// prefix scheme differs.
+inline std::filesystem::path make_scratch_dir(const std::string& unique_name) {
+    std::filesystem::path dir = scratch_root() / unique_name;
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+
+inline void remove_tree(const std::filesystem::path& p) {
+    std::error_code ec;
+    std::filesystem::remove_all(p, ec);
+}
+
+inline void write_text_file(const std::filesystem::path& p, const std::string& data) {
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    f.write(data.data(), static_cast<std::streamsize>(data.size()));
+    assert(f.good());
+}
+
+inline std::string read_text_file(const std::filesystem::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
 } // namespace openrar::test

@@ -5,6 +5,27 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.1] - 2026-09-28
+
+### Fixed
+
+- **WinRAR-created archives could list and extract incompletely**: the
+  streaming scanner's QuickOpen fast-path (v1.8.0) trusted the archive's
+  QO locator chain for entry enumeration; WinRAR 7.20's QO record for
+  `-mt4` archives omits middle entries (all six zero-compressed files
+  vanished from a 37-entry corpus). The chain is now validated for
+  contiguity — each cached header must start exactly where the previous
+  one ended — and any gap falls back to the authoritative linear scan
+  (`qo_gap_fallback_tests` pins the fallback deterministically).
+  Found by the new cross-extraction performance harness.
+
+### Changed
+
+- Sandboxed-worker hardening follow-ups: the Linux seccomp allowlist now
+  permits `close` (FileStream dtors were getting EPERM on dup'd fds), and
+  the Windows AppContainer worker runs under a kill-on-close Job Object
+  with a 4 GiB memory cap (the v1.23 SFX containment pattern).
+
 ## [1.30.0] - 2026-09-27
 
 OpenRAR 2.0 LTS: Enterprise Stability, Sandboxing & Universal SDKs — the

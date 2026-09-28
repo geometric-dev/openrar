@@ -1,8 +1,8 @@
 // Diagnostic probe: walk an archive with format::HeaderReader::read_block_raw
 // (the same primitive the scanner uses) and print every block — used to
 // root-cause the WinRAR-7.20 zero-compressed-entry walk drop.
-#include "../../src/format/header_reader.hpp"
-#include "../../src/io/file_stream.hpp"
+#include "../src/format/header_reader.hpp"
+#include "../src/io/file_stream.hpp"
 
 #include <cstring>
 #include <iostream>
