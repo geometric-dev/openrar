@@ -737,6 +737,9 @@ void Compressor50::add_match(size_t length, size_t distance) {
     token_seq_.push_back(1);
     match_tokens_.push_back(tok);
     insert_old_dist(distance);
+    // Decoder mirror: last_length_ stores the full decoded length
+    // INCLUDING the distance-dependent increment (decompressor50.cpp:878).
+    last_length_ = length;
 }
 
 void Compressor50::add_rep(core::uint32 index, size_t length) {
@@ -756,6 +759,18 @@ void Compressor50::add_rep(core::uint32 index, size_t length) {
     size_t distance = old_dist_[index];
     for (core::uint32 i = index; i > 0; i--) old_dist_[i] = old_dist_[i - 1];
     old_dist_[0] = distance;
+    // Decoder mirror: rep matches store the length WITHOUT the distance
+    // increment (decompressor50.cpp:903).
+    last_length_ = length;
+}
+
+void Compressor50::add_last_len() {
+    Compressor50Token tok{};
+    tok.set_type(Compressor50Token::TokenType::LastLen);
+    if (freq_ld_[257] < 0xfffe) freq_ld_[257]++;
+    token_seq_.push_back(1);
+    match_tokens_.push_back(tok);
+    // The decoder's 257 path changes neither last_length_ nor OldDist.
 }
 
 bool Compressor50::need_flush() {
@@ -916,6 +931,14 @@ void Compressor50::emit_tokens(BitOutput& local_out) {
         }
         const Compressor50Token& tok = match_tokens_[mi++];
         switch (tok.get_type()) {
+        case Compressor50Token::TokenType::LastLen: {
+            // Slot 257: one LD Huffman symbol, no extra bits. Must not fall
+            // into the rep default branch below (its index arithmetic would
+            // map type 6 to main slot 262).
+            assert(len_ld_[257] > 0 && "Encoder emitted 257 with 0-length code");
+            local_out.put_bits(code_ld_[257], len_ld_[257]);
+            break;
+        }
         case Compressor50Token::TokenType::Match: {
             core::uint32 len_slot = tok.get_len_slot();
             core::uint32 dist_slot = tok.get_dist_slot();
@@ -1363,6 +1386,7 @@ int Compressor50::process_available(bool final) {
 
         bool have_match = false;
         bool is_rep = false;
+        bool emit_last_len = false;
         size_t len = 0;
         size_t dist = 0;
 
@@ -1370,6 +1394,32 @@ int Compressor50::process_available(bool final) {
             have_match = true;
             is_rep = true;
             len = rep_best_len;
+            // Slot 257 (repeat last length): a cheaper encoding of a rep0
+            // thread the existing rule already won — one LD Huffman symbol,
+            // no extra bits, no OldDist rotation. Fires only on an EXACT
+            // continuation of the (old_dist_[0], last_length_) pair:
+            //   (a) last_length_ != 0 — a 257 before any match is illegal
+            //       (the decoder fails the stream on the unset rep sentinel);
+            //   (b) rep_best_len == last_length_ — the rep scan verified by
+            //       byte comparison that old_dist_[0] repeats for exactly
+            //       the shadow length. Strict equality, not ">=": a 257
+            //       with last_length_ < rep_best_len would advance fewer
+            //       bytes than the verified span and re-run the full match
+            //       search at every intermediate position (measured as a
+            //       +53% solid-mode regression before the equality rule).
+            //       When the span is longer, rep0 wins and re-anchors a
+            //       longer last_length_, so exact continuations follow.
+            //   (c) rep_best_len <= cur_max_lz (the rep scan's own cap, so
+            //       the copied span fits the current filter region — the
+            //       copied length equals rep_best_len equals last_length_);
+            //   (d) rep_idx == 0 — 257 reads old_dist_[0] only; rep1-3
+            //       threads keep the rep-token path.
+            // Coverage is exactly last_length_ bytes; the next position
+            // re-decides.
+            if (!lastlen_suppressed_ && rep_idx == 0 && last_length_ != 0 &&
+                rep_best_len == last_length_) {
+                emit_last_len = true;
+            }
         } else if (best.length >= MIN_MATCH) {
             have_match = true;
             len = best.length;
@@ -1417,7 +1467,15 @@ int Compressor50::process_available(bool final) {
             }
 
             if (is_rep) {
-                add_rep(static_cast<core::uint32>(rep_idx), len);
+                if (emit_last_len) {
+                    add_last_len();
+                    // Advance by exactly the 257 span (last_length_), not
+                    // the full rep0 span: the remainder re-decides and is
+                    // likely another 257.
+                    len = last_length_;
+                } else {
+                    add_rep(static_cast<core::uint32>(rep_idx), len);
+                }
             } else {
                 add_match(len, dist);
             }

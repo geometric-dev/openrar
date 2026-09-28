@@ -5,6 +5,8 @@
 #include "../../src/compress/stream_encoder.hpp"
 #include "../../src/compress/stream_decoder.hpp"
 #include "../../src/compress/arch/match_simd.hpp"
+#include "../../src/crypto/sha256.hpp"
+#include "test_support.hpp"
 
 #include <cassert>
 #include <cstring>
@@ -1129,6 +1131,24 @@ public:
         c.pos_base_ = pos_base;
         c.src_loaded_ = src_loaded;
     }
+
+    // v1.31 M1 slot-257 test surface
+    static void set_lastlen_suppressed(Compressor50& c, bool v) { c.lastlen_suppressed_ = v; }
+    static const std::vector<Compressor50Token>& match_tokens(const Compressor50& c) {
+        return c.match_tokens_;
+    }
+    // write_block() clears the token storage, so token-inspecting tests
+    // drive the loop and the block writer separately.
+    static bool process_available(Compressor50& c, bool final) {
+        return c.process_available(final) >= 0;
+    }
+    static bool write_block(Compressor50& c, bool last_block) { return c.write_block(last_block); }
+    static core::uint64 packed_total(const Compressor50& c) { return c.packed_total_; }
+    static void init_match_params(Compressor50& c) { c.init_match_params(); }
+    static size_t last_length(const Compressor50& c) { return c.last_length_; }
+    static core::uint32 len_slot(const Compressor50Token& t) { return t.get_len_slot(); }
+    static core::uint16 len_extra(const Compressor50Token& t) { return t.len_extra; }
+    static const std::vector<core::byte>& token_seq(const Compressor50& c) { return c.token_seq_; }
 };
 } // namespace openrar::compress
 
@@ -2003,6 +2023,413 @@ void test_match_length_bit_exactness() {
     std::cout << ") identical over " << checked << " cases: OK" << std::endl;
 }
 
+// ─── v1.31 M1: slot-257 repeat-last-length emission (T1-T4, T9) ──────────
+// Semantics under test (docs/v1.31-implementation-plan.md §1 M1): 257 rides
+// inside the rep-win branch, copies exactly last_length_ bytes from
+// old_dist_[0], and requires real byte verification bounded by the filter
+// region remainder. The shadow mirror targets decompressor50.cpp:813-911.
+
+namespace {
+
+// Compress with the 257 path suppressed, mirroring compress_buffer()'s
+// no-filter small-input branch exactly (each T9 corpus asserts FilterType
+// detection == None and src_size <= comp_win + 0x400000). Byte output must
+// equal the pre-M1 (v1.30.4) capture.
+bool compress_buffer_no257(const std::vector<core::byte>& src, std::vector<core::byte>& dest,
+                           int method) {
+    const size_t win = 0x200000;
+    size_t comp_win_size = win;
+    if (src.size() > 0 && src.size() < win) {
+        size_t pow2_sz = 0x20000;
+        while (pow2_sz < src.size() && pow2_sz < win) pow2_sz <<= 1;
+        comp_win_size = std::min(win, pow2_sz);
+    }
+    Compressor50 packer;
+    packer.begin_archive(nullptr, method, comp_win_size);
+    packer.set_external_buffer(src.data(), src.size());
+    Compressor50TestAccess::set_lastlen_suppressed(packer, true);
+    packer.set_memory_dest(&dest);
+    return packer.compress() >= 0 && !dest.empty();
+}
+
+void assert_roundtrip_2mib(const std::vector<core::byte>& packed,
+                           const std::vector<core::byte>& src) {
+    Decompressor50 dec(0x200000);
+    std::vector<core::byte> out;
+    assert(dec.decompress_to_vector(packed.data(), packed.size(), out));
+    assert(out.size() == src.size());
+    assert(std::memcmp(out.data(), src.data(), src.size()) == 0);
+}
+
+size_t count_lastlen(const std::vector<Compressor50Token>& toks) {
+    size_t n = 0;
+    for (const auto& t : toks)
+        if (t.get_type() == Compressor50Token::TokenType::LastLen) n++;
+    return n;
+}
+
+// T9 corpus generators — MUST stay identical to the pre-M1 capture program
+// (docs/v1.31-implementation-plan.md T9): the expected hashes below were
+// recorded from v1.30.4 emission code before the 257 path existed.
+core::uint32 t9_lcg(core::uint32 s) {
+    return s * 1664525u + 1013904223u;
+}
+
+std::vector<core::byte> t9_text(size_t n) {
+    const char* words[] = {"the",   "open",  "rar",  "archive", "compress",
+                           "token", "match", "slot", "length",  "window"};
+    std::vector<core::byte> v;
+    v.reserve(n);
+    core::uint32 s = 12345;
+    while (v.size() < n) {
+        s = t9_lcg(s);
+        const char* w = words[(s >> 8) % 10];
+        for (const char* p = w; *p && v.size() < n; ++p) v.push_back(static_cast<core::byte>(*p));
+        v.push_back(static_cast<core::byte>(' '));
+    }
+    v.resize(n);
+    return v;
+}
+
+std::vector<core::byte> t9_rand(size_t n, core::uint32 seed) {
+    std::vector<core::byte> v(n);
+    core::uint32 s = seed;
+    for (size_t i = 0; i < n; ++i) {
+        s = t9_lcg(s);
+        v[i] = static_cast<core::byte>(s >> 16);
+    }
+    return v;
+}
+
+std::vector<core::byte> t9_mixed() {
+    std::vector<core::byte> v;
+    std::vector<core::byte> block = t9_rand(4096, 777);
+    for (int i = 0; i < 24; ++i) {
+        v.insert(v.end(), block.begin(), block.end());
+        v.insert(v.end(), block.begin(), block.begin() + 100 + i * 37);
+        v.push_back(static_cast<core::byte>(i));
+        v.insert(v.end(), 512, static_cast<core::byte>(i * 7 + 1));
+    }
+    return v;
+}
+
+void sha256_hex(const std::vector<core::byte>& d, char* out /* 65 bytes */) {
+    core::byte dig[32];
+    crypto::Sha256::compute(d.data(), d.size(), dig);
+    for (int i = 0; i < 32; ++i) std::sprintf(out + i * 2, "%02x", dig[i]);
+    out[64] = 0;
+}
+
+} // namespace
+
+// T2: no 257 before any match; run collapse emits a fresh match then a 257
+// chain; stream roundtrips byte-exact.
+void test_slot257_run_collapse() {
+    std::vector<core::byte> data(256 * 1024, core::byte(0)); // single block input
+    Compressor50 packer;
+    packer.begin_archive(nullptr, 1, 0x200000);
+    packer.set_external_buffer(data.data(), data.size());
+    std::vector<core::byte> packed;
+    packer.set_memory_dest(&packed);
+    // compress() runs this first; process_available() alone does not.
+    Compressor50TestAccess::init_match_params(packer);
+    assert(Compressor50TestAccess::process_available(packer, true));
+    // Inspect before write_block() clears the token storage.
+
+    const auto& toks = Compressor50TestAccess::match_tokens(packer);
+    assert(toks.size() > 10);
+    assert(toks[0].get_type() == Compressor50Token::TokenType::Match &&
+           "first match token must be a fresh Match, never LastLen");
+    const size_t lastlen = count_lastlen(toks);
+    assert(lastlen >= 60 && "257 chain must dominate a zero run");
+    assert(Compressor50TestAccess::write_block(packer, true));
+    assert_roundtrip_2mib(packed, data);
+
+    // Suppressed rebuild: same decision path, rep0 chain instead of 257.
+    std::vector<core::byte> packed2;
+    assert(compress_buffer_no257(data, packed2, 1));
+    assert_roundtrip_2mib(packed2, data);
+    assert(packed2.size() > packed.size() && "257 chain must be strictly cheaper than rep0");
+    std::cout << "[PASS] slot257 run collapse + first-token rule (T2)\n";
+}
+
+// T1: the shadow state suggesting a continuation is NOT sufficient — the
+// bytes must verify. A period break mid-run forces the rep scan short; a
+// naive shadow-only 257 there would copy wrong bytes and the roundtrip
+// would fail.
+void test_slot257_byte_verification() {
+    std::vector<core::byte> data;
+    for (int i = 0; i < 130; ++i)
+        for (int b = 0; b < 32; ++b) data.push_back(core::byte(b));
+    const size_t break_at = data.size();
+    for (int b = 0; b < 32; ++b) data.push_back(core::byte(b));
+    data[break_at + 5] = core::byte(0xFF); // break the period after 5 bytes
+    for (int i = 0; i < 40; ++i)
+        for (int b = 0; b < 32; ++b) data.push_back(core::byte(b));
+
+    for (int method = 1; method <= 5; ++method) {
+        std::vector<core::byte> packed;
+        assert(
+            Compressor50::compress_buffer(data.data(), data.size(), packed, method, 0x200000, {}));
+        assert_roundtrip_2mib(packed, data);
+    }
+    // Same corpus through the suppressed path must roundtrip too.
+    std::vector<core::byte> packed;
+    assert(compress_buffer_no257(data, packed, 3));
+    assert_roundtrip_2mib(packed, data);
+    std::cout << "[PASS] slot257 byte verification at period break (T1)\n";
+}
+
+// T3: 257 chains must respect filter-region ends on BOTH transform paths
+// (challenge directive 5): the compress_buffer() pretransform path here,
+// the in-loop transform via StreamEncoder below. The corpus plants a CALL
+// across the 64 KiB region boundary (the fuzz-727 class).
+void test_slot257_filter_region_boundary() {
+    const size_t kSize = 70000;
+    std::vector<core::byte> data(kSize, 0);
+    fill_pe_header(data);
+    plant_call(data, 65534);
+    fill_pattern(data, 0x90);
+
+    // Pretransform path (compress_buffer detects and pre-transforms).
+    std::vector<core::byte> packed;
+    assert(Compressor50::compress_buffer(data.data(), data.size(), packed));
+    assert_roundtrip_2mib(packed, data);
+
+    // In-loop transform path (StreamEncoder + filter config).
+    compress::FilterConfig cfg;
+    StreamEncoder enc(3, 0x200000, cfg);
+    std::vector<core::byte> streamed;
+    const size_t chunk = 4096;
+    for (size_t off = 0; off < data.size(); off += chunk) {
+        const size_t n = std::min(chunk, data.size() - off);
+        assert(enc.feed(data.data() + off, n));
+    }
+    assert(enc.finish(streamed));
+    assert_roundtrip_2mib(streamed, data);
+
+    // Single-region rebuild through the pretransform contract exactly the
+    // way compress_buffer() does it: pre-transform the buffer for the
+    // packer's actual chunking, THEN declare pretransformed=true (feeding
+    // raw bytes with that flag would double-transform on decode). The
+    // decoded output must equal the UN-transformed bytes.
+    std::vector<core::byte> head_region(data.begin(), data.begin() + 60000); // < 64 KiB region
+    const std::vector<core::byte> expected_raw = head_region;
+    Filters50::encode_e8(head_region.data(), head_region.size(), 0, false);
+    Compressor50 packer;
+    packer.begin_archive(nullptr, 3, 0x200000);
+    packer.set_filter_config(cfg);
+    core::uint8 channels = 1;
+    packer.set_active_filter(Filters50::detect_filter(data.data(), data.size(), channels, cfg),
+                             channels, /*pretransformed=*/true);
+    packer.set_external_buffer(head_region.data(), head_region.size());
+    std::vector<core::byte> packed_region;
+    packer.set_memory_dest(&packed_region);
+    assert(packer.compress() >= 0);
+    {
+        Decompressor50 dec(0x200000);
+        std::vector<core::byte> out;
+        assert(dec.decompress_to_vector(packed_region.data(), packed_region.size(), out));
+        assert(out.size() == expected_raw.size());
+        assert(std::memcmp(out.data(), expected_raw.data(), expected_raw.size()) == 0);
+    }
+    std::cout << "[PASS] slot257 filter region boundary, both transform paths (T3)\n";
+}
+
+// T4: distances within the written prefix (first-window rule) and a tail
+// cut mid-repeat (the decoder keeps last_length_ pre-clamp; the encoder
+// never emits past the source end).
+void test_slot257_window_prefix_and_tail() {
+    // (a) run starts at offset 5 — dist 5 <= written prefix.
+    std::vector<core::byte> data;
+    for (int i = 0; i < 400; ++i) data.push_back(core::byte(i & 0xFF));
+    data.insert(data.end(), 64, core::byte(0x41));
+    for (int i = 0; i < 300; ++i) data.push_back(core::byte((i * 13) & 0xFF));
+    data.insert(data.end(), 512, core::byte(0x41));
+
+    // (b) partial tail: 3 trailing bytes of a 4-byte pattern.
+    std::vector<core::byte> tail;
+    for (int i = 0; i < 100; ++i) {
+        tail.push_back(core::byte('A'));
+        tail.push_back(core::byte('B'));
+        tail.push_back(core::byte('C'));
+        tail.push_back(core::byte('D'));
+    }
+    tail.push_back(core::byte('A'));
+    tail.push_back(core::byte('B'));
+    tail.push_back(core::byte('C'));
+
+    for (const auto& src : {data, tail}) {
+        for (int method = 1; method <= 5; ++method) {
+            std::vector<core::byte> packed;
+            assert(Compressor50::compress_buffer(src.data(), src.size(), packed, method, 0x200000,
+                                                 {}));
+            assert_roundtrip_2mib(packed, src);
+        }
+    }
+    std::cout << "[PASS] slot257 window prefix + partial tail (T4)\n";
+}
+
+// T9: with 257 emission suppressed the encoder is byte-identical to
+// v1.30.4 (pure-addition property). Expected hashes captured from the
+// pre-M1 build (v1.30.4 code) — see docs/v1.31-implementation-plan.md T9.
+void test_slot257_pure_addition_suppressed() {
+    struct Corpus {
+        const char* name;
+        std::vector<core::byte> data;
+    } corpora[] = {
+        {"text64k", t9_text(64 * 1024)},
+        {"rand256k", t9_rand(256 * 1024, 42)},
+        {"zeros1m", std::vector<core::byte>(1024 * 1024, core::byte(0))},
+        {"mixed", t9_mixed()},
+    };
+    struct Expected {
+        const char* corpus;
+        int method;
+        const char* sha;
+    } expected[] = {
+        {"text64k", 1, "d34113c83d0b46137b98a0b269b764515c8c1e42f8509a4494534edec84bd27c"},
+        {"text64k", 3, "44495a7543dd7af0afba4a054b1a7032166d43fc969ae9715c0c8678fe005db0"},
+        {"text64k", 5, "ba7755564a384562e51319c077d5818ffb8bef6af6dc1770663c5a511e6ec3a1"},
+        {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
+        {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
+        {"rand256k", 5, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
+        {"zeros1m", 1, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
+        {"zeros1m", 3, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
+        {"zeros1m", 5, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
+        {"mixed", 1, "15a4179c3715d7cd0d4e98a1b6c9f5d668e5fe646003371b172f5946c6d7f6b3"},
+        {"mixed", 3, "32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b"},
+        {"mixed", 5, "32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b"},
+    };
+
+    for (const auto& c : corpora) {
+        // The helper mirrors compress_buffer()'s no-filter branch; pin that
+        // assumption so a detection change cannot silently invalidate T9.
+        core::uint8 channels = 1;
+        assert(Filters50::detect_filter(c.data.data(), c.data.size(), channels, {}) ==
+                   FilterType::None &&
+               "T9 corpus must stay filter-free; re-capture reference hashes if this fires");
+        for (int method = 1; method <= 5; method += 2) {
+            std::vector<core::byte> packed;
+            assert(compress_buffer_no257(c.data, packed, method));
+            char hex[65];
+            sha256_hex(packed, hex);
+            for (const auto& e : expected) {
+                if (std::strcmp(e.corpus, c.name) == 0 && e.method == method) {
+                    assert(std::strcmp(hex, e.sha) == 0 &&
+                           "suppressed-257 output drifted from v1.30.4 reference bytes");
+                }
+            }
+            assert_roundtrip_2mib(packed, c.data);
+        }
+    }
+    std::cout << "[PASS] slot257 pure-addition when suppressed (T9, v1.30.4 reference bytes)\n";
+}
+
+// T5: the slot-257 shadow carries across the solid file boundary — the
+// decoder keeps last_length_ for solid members (decompressor50.cpp resets
+// it only in the non-solid branch). Member 1's zero tail is aligned to the
+// 4097-byte token span so its final token is a 257 (last_length_ = 4097 at
+// the boundary); member 2 continues the run, so under the exact-continuation
+// rule member 2 must open with a 257 — a reset shadow would emit a literal
+// first.
+void test_slot257_solid_carry() {
+    std::filesystem::path dir = openrar::test::make_scratch_dir("slot257_solid_carry");
+    // Member 1: zero-free noise (no 4-zero hash runs ahead of the tail) then
+    // a zero run. Member 2 is built AFTER packing member 1, with length
+    // exactly equal to member 1's final `last_length_` — so member 2's first
+    // decision satisfies the exact-continuation rule IFF the shadow carried
+    // across the solid boundary (a reset shadow would emit a literal +
+    // rep0/fresh first). This makes the discrimination phase-independent of
+    // member 1's internal token layout.
+    std::vector<core::byte> m1;
+    {
+        core::uint32 s = 99;
+        for (size_t i = 0; i < 64 * 1024; ++i) {
+            s = t9_lcg(s);
+            m1.push_back(static_cast<core::byte>((s >> 16) % 255 + 1)); // 0x01..0xFF
+        }
+    }
+    m1.insert(m1.end(), 4098 + 31 * 4097, core::byte(0));
+
+    std::vector<core::byte> packed;
+    size_t m1_packed = 0, m2_packed = 0;
+    size_t m2_len = 0;
+    std::vector<core::byte> m2;
+    {
+        std::filesystem::path f1 = dir / "m1.bin";
+        std::filesystem::path f2 = dir / "m2.bin";
+        {
+            io::FileStream out;
+            assert(out.open(f1, io::FileMode::CreateAlways));
+            assert(out.write(m1.data(), m1.size()) == m1.size());
+            out.close();
+        }
+        Compressor50 packer;
+        packer.begin_archive(nullptr, 1, 0x200000);
+        packer.set_memory_dest(&packed);
+        Compressor50TestAccess::init_match_params(packer);
+        io::FileStream in1;
+        assert(in1.open(f1, io::FileMode::ReadOnly));
+        packer.start_file(&in1, m1.size(), /*continue_window=*/false);
+        assert(Compressor50TestAccess::process_available(packer, true));
+        m2_len = Compressor50TestAccess::last_length(packer);
+        assert(m2_len != 0 && "member 1 must end inside its zero run");
+        // Member 2 continues the run with exactly the carried shadow length.
+        m2.assign(m2_len, core::byte(0));
+        {
+            io::FileStream out;
+            assert(out.open(f2, io::FileMode::CreateAlways));
+            assert(out.write(m2.data(), m2.size()) == m2.size());
+            out.close();
+        }
+        assert(Compressor50TestAccess::write_block(packer, false));
+        const core::uint64 packed1 = Compressor50TestAccess::packed_total(packer);
+        in1.close();
+        io::FileStream in2;
+        assert(in2.open(f2, io::FileMode::ReadOnly));
+        packer.start_file(&in2, m2.size(), /*continue_window=*/true);
+        assert(Compressor50TestAccess::process_available(packer, true));
+        // Inspect member 2's tokens BEFORE write_block clears them: the
+        // carried shadow must open the continuation with a 257.
+        const auto& toks = Compressor50TestAccess::match_tokens(packer);
+        assert(!toks.empty());
+        assert(toks[0].get_type() == Compressor50Token::TokenType::LastLen &&
+               "carried shadow must open member 2 with a 257 continuation");
+        assert(Compressor50TestAccess::write_block(packer, true));
+        const core::uint64 packed2 = Compressor50TestAccess::packed_total(packer);
+        in2.close();
+        m1_packed = static_cast<size_t>(packed1);
+        m2_packed = static_cast<size_t>(packed2 - packed1);
+    }
+    // Roundtrip: member 1 resets the window; member 2 continues as a solid
+    // member on the SAME decoder instance (mirrors the decoder's carry).
+    {
+        assert(packed.size() == m1_packed + m2_packed);
+        Decompressor50 dec(0x200000);
+        std::vector<core::byte> out1, out2;
+        size_t written = 0;
+        bool finished = false;
+        assert(dec.decompress(
+            packed.data(), m1_packed, m1.size(), false,
+            [&out1](const core::byte* d, size_t n) {
+                out1.insert(out1.end(), d, d + n);
+                return true;
+            },
+            &written, &finished));
+        assert(out1.size() == m1.size() && std::memcmp(out1.data(), m1.data(), m1.size()) == 0);
+        assert(dec.decompress(
+            packed.data() + m1_packed, m2_packed, m2.size(), true,
+            [&out2](const core::byte* d, size_t n) {
+                out2.insert(out2.end(), d, d + n);
+                return true;
+            },
+            &written, &finished));
+        assert(out2.size() == m2.size() && std::memcmp(out2.data(), m2.data(), m2.size()) == 0);
+    }
+    std::cout << "[PASS] slot257 solid carry opens member 2 with a 257 (T5)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -2100,6 +2527,18 @@ int main() {
     test_detect_filter_hostile_pe_offset();
     std::cout << std::flush;
     test_stream_encoder_decoder_filter_roundtrip();
+    std::cout << std::flush;
+    test_slot257_run_collapse();
+    std::cout << std::flush;
+    test_slot257_byte_verification();
+    std::cout << std::flush;
+    test_slot257_filter_region_boundary();
+    std::cout << std::flush;
+    test_slot257_window_prefix_and_tail();
+    std::cout << std::flush;
+    test_slot257_pure_addition_suppressed();
+    std::cout << std::flush;
+    test_slot257_solid_carry();
     std::cout << std::flush;
     test_stream_decoder_defense();
     std::cout << std::flush;

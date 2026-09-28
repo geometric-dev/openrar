@@ -181,6 +181,21 @@ def tree_hash(base: Path, files=None) -> str:
     return h.hexdigest()[:16]
 
 
+def corpus_fingerprints() -> dict:
+    # The corpora are regenerated per host and `code.cpp` embeds the repo's
+    # src tree, so sizes/times from different runs are only comparable within
+    # the same corpus era. Fingerprint every corpus into results.json so
+    # cross-run diffs can detect drift instead of misreading it as a
+    # regression (v1.31 M1 lesson: the solid/volumes "size jump" was corpus
+    # drift, not encoder behavior).
+    fps = {}
+    for name in ("canonical", "mixed", "zeros512", "big"):
+        base = DATA / name
+        if base.exists():
+            fps[name] = tree_hash(base)
+    return fps
+
+
 def extract_and_hash(arc, engine, workdir):
     ex = workdir / ("x_" + Path(arc).stem + "_" + engine)
     if ex.exists():
@@ -290,6 +305,7 @@ def main():
     print(f"tools: {HOST['openrar']} | {HOST['winrar']} | {HOST['unrar']}")
 
     rows = []
+    CORPORA_FPS = corpus_fingerprints()
     t_start = time.perf_counter()
 
     def cfg(engine, corpus, files, label, openrar_args, verify=("openrar", "unrar")):
@@ -309,7 +325,7 @@ def main():
         row["corpus"] = corpus
         row["input_mb"] = round(dir_size(dir_of(corpus)) / MB, 1)
         rows.append(row)
-        json.dump({"host": HOST, "quick": QUICK, "rows": rows},
+        json.dump({"host": HOST, "quick": QUICK, "corpora": CORPORA_FPS, "rows": rows},
                   open(PERF / "results.json", "w"), indent=1)
         return row
 
@@ -363,11 +379,11 @@ def main():
         ex_rows.append({"engine": engine, "label": f"extract_m3_{engine}", "runs": runs,
                         "median": statistics.median(runs), "min": min(runs),
                         "size": 0, "corpus": "canonical"})
-        json.dump({"host": HOST, "quick": QUICK, "rows": rows + ex_rows},
+        json.dump({"host": HOST, "quick": QUICK, "corpora": CORPORA_FPS, "rows": rows + ex_rows},
                   open(PERF / "results.json", "w"), indent=1)
     rows = rows + ex_rows
 
-    json.dump({"host": HOST, "quick": QUICK, "rows": rows},
+    json.dump({"host": HOST, "quick": QUICK, "corpora": CORPORA_FPS, "rows": rows},
               open(PERF / "results.json", "w"), indent=1)
     print(f"done in {(time.perf_counter() - t_start) / 60:.1f} min; "
           f"{len(rows)} configs -> tools/perf/results.json")
