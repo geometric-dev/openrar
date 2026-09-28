@@ -115,6 +115,15 @@ Tokens are Huffman-coded via `LD` (and `RD`/`DD`/`LDD` as secondary):
 * `slot < 8`: `length = 2+slot`.
 * Otherwise `LBits = slot/4 -1`, `length = (4 | (slot&3)) << LBits` plus `LBits` extra bits (from stream). Final length `+2`. So `slot 8` with `LBits=1` and extra `0` → `8`; with extra `1` → `9`, etc. Maximum `MAX_LZ_MATCH = 0x1001` (4097). If `length>MAX_LZ_MATCH`, clamp. For matches with `distance>0x100`, `distance>0x2000`, `distance>0x40000`, the decoder adds `1` per threshold to the base length (distance-dependent increment) — encoder must subtract the same increment before slot encoding (`base = len - inc`, clamp to `2..MAX`).
 
+**Single-token maximum (normative).** The LD alphabet has 44 length
+slots (main slots `262..305`). Slot 43 encodes base `3586..4097`
+(`LBits=9`). The distance-dependent increment applies **only** on the
+fresh-match path (`257` and `258..261` carry no increment and no
+distance), so the largest length a single token can express is
+`4097 + 3 = 4100` bytes. There is no wire mechanism for a longer single
+match — arbitrarily long matches are expressed as one fresh token
+followed by slot-`257` continuations (see the encoder contract below).
+
 ### Distance encoding
 
 `DistSlot` → distance:
@@ -141,6 +150,34 @@ The wire format is identical for `m1..m5`; encoders differ only in effort:
 | `5` | `512` | `4096` | `1` | Deep, exhaustive. |
 
 Additional encoder rule (integrity-preserving, not wire-visible): `FailCount` heuristic — after `0x100` consecutive positions where `FindMatch` yields `<MIN_MATCH (3)`, skip `3/4` of subsequent positions (`FailCount>0x100 → skip 3/4`, `>0x400 → 7/8`, `>0x800 → 15/16`, `>0x1000 → 31/32`). Reset `FailCount` when a match `len>=8` is found. This does not affect decodability; it trades ~0.0002 ratio for 2–3× speed.
+
+### Encoder contract: repeat-last-length (slot 257) emission
+
+Slot `257` re-emits exactly `(OldDist[0], LastLength)` at the cost of one
+Huffman symbol — no extra bits. It is the format's mechanism for
+collapsing long runs (a fresh match followed by 257 continuations
+expresses an arbitrarily long logical match; reference encoders use it
+this way — 15,871 × 257 after 512 fresh matches in WinRAR 7.20's m1
+encoding of 64 MiB of zeros). An encoder that emits `257` must mirror
+the decoder's state machine exactly:
+
+1. **Byte verification:** the decoder copies unconditionally; the
+   encoder emits `257` only when the bytes at `OldDist[0]` are verified
+   by comparison to match the current position for the full
+   `LastLength`. Shadow-state equality alone is never sufficient.
+2. **Coverage is exactly `LastLength`:** there is no "257 with extra
+   length"; a longer repetition re-decides at the next position.
+3. **Distance thread:** `257` reads `OldDist[0]` and does NOT rotate
+   `OldDist`; continuations of `OldDist[1..3]` use the rep-token path.
+4. **`LastLength` lifecycle:** set on fresh matches INCLUDING the
+   distance increment; set on rep matches WITHOUT it; unchanged by
+   literals, filters, and `257` itself; carried across solid members;
+   reset per non-solid file (a `257` before any match is illegal — the
+   decoder fails the stream on the unset `OldDist[0]` sentinel).
+5. **Region bounds:** the copied span must respect the same limits as
+   any match — distance within the written prefix/window, and (for
+   filter-chunked encoders) the copied length must not cross a filter
+   region end.
 
 ---
 
