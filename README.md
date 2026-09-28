@@ -189,19 +189,28 @@ Runs full regression test suite covering:
 
 ## Performance
 
-OpenRAR is heavily optimized and often outperforms the official WinRAR engine in single-threaded workloads. The following benchmarks compare OpenRAR to WinRAR (`rar.exe -m3 -mt1`) on canonical compression workloads:
+Fresh protocol-backed comparison vs WinRAR 7.20 (full matrix, methodology,
+and the honest losses in **[PERFORMANCE.md](PERFORMANCE.md)**):
+deterministic seeded corpora, warm-up + median-of-3, every archive verified
+by both engines' extractors hash-identically. Host: i7-7500U laptop,
+Windows 11, WinRAR 7.20 x64.
 
-**50 MB Canonical Payload (Mixed Text, Code, Binary)**
-- **OpenRAR (`-m3`)**: 2.32s (16.02 MB)
-- **WinRAR (`-m3`)**: 5.22s (16.03 MB)
-*(OpenRAR is ~2.25x faster)*
+| Workload (128.9 MB canonical = text + code + binary) | OpenRAR | WinRAR 7.20 |
+|---|---:|---:|
+| `-m3` single-thread | **8.8 s** (14.7 MB/s) | 16.5 s (7.8 MB/s) |
+| `-m3` `-mt4` | **5.8 s** (22.4 MB/s) | 8.2 s (15.7 MB/s) |
+| `-m0` store | **0.13 s** | 0.23 s |
+| solid `-m3` | **9.3 s** | 17.4 s |
+| multivolume `-m3 -v32m` | **6.9 s** | 16.5 s |
+| 1 GB `-m3 -mt4` | **47.8 s** | 70.6 s |
 
-**1 GB Canonical Payload (1/3 Text, 1/3 Random, 1/3 Zeros)**
-- **OpenRAR (`-m3`)**: 44.56s (341.74 MB)
-- **WinRAR (`-m3`)**: 180.40s (342.01 MB)
-*(OpenRAR is ~4x faster)*
-
-Both archives achieve seamless cross-extraction interop, validating exact mathematical compression bounds.
+- **Compression at the default `-m3`: 1.4–1.9x faster than WinRAR**, ratios
+  within ~3%.
+- `-cdc` dedup produced a **33% smaller archive** on a duplicate-heavy
+  corpus (no WinRAR equivalent).
+- **Honest losses:** WinRAR's `-m5` is ~2.3x faster with a slightly tighter
+  ratio; WinRAR's `-m1` is slightly faster and 14% tighter; extraction
+  trails UnRAR/WinRAR by ~1.6x on this workload.
 
 **Measurement protocol (v1.28).** Machine-collected numbers come from the
 `openrar_bench` tool: every suite runs 1 untimed warm-up pass plus 7 timed
@@ -214,6 +223,9 @@ power plan); I/O-bound suites (listing, extract/add throughput) are labeled
 (schema version 1) is the CI-trend artifact; `--strict` turns a compute
 suite spread above `--spread-threshold-pct` (default 5) into exit 1 for
 hosts that want the gate. The tool is informational by default (exit 0).
+The CLI-vs-CLI matrix above uses the sibling protocol from
+`tools/perf_vs_winrar.py` (warm-up + median-of-3, cross-extraction
+verification); raw data in `tools/perf/results.json`.
 
 ---
 
