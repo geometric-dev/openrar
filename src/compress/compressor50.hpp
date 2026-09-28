@@ -128,7 +128,10 @@ struct Compressor50Token {
         Rep0 = 2,
         Rep1 = 3,
         Rep2 = 4,
-        Rep3 = 5
+        Rep3 = 5,
+        // LD symbol 257: repeat (OldDist[0], LastLength) — one Huffman
+        // symbol, no extra bits. Carries no length/distance slot data.
+        LastLen = 6
     };
     // uint64: RAR7 extra-distance slots need up to 38 raw bits for distances
     // inside windows above 16 GiB; a 32-bit field silently truncated the top
@@ -268,6 +271,19 @@ private:
     core::uint32 cur_table_size_{TABLE_SIZE};
 
     size_t old_dist_[4];
+    // Encoder-side shadow of the decoder's last_length_ (the slot-257
+    // continuation length): set to the full emitted length on fresh matches
+    // (INCLUDING the distance-dependent increment) and on rep matches
+    // (WITHOUT it); unchanged by literals, filters, and 257 tokens; reset
+    // with the rep distances per non-solid file. Mirrors
+    // decompressor50.cpp's last_length_ lifecycle exactly — the 257
+    // emission rule in process_available() is only legal while this shadow
+    // and the decoder's state agree.
+    size_t last_length_{0};
+    // Test-only: suppress 257 emission to pin the pure-addition property
+    // (T9: suppressed output must be byte-identical to v1.30.4). Always
+    // false in production paths.
+    bool lastlen_suppressed_{false};
 
     crypto::Crc32 hash_crc32_;
     crypto::Blake2sp hash_blake2_;
@@ -283,6 +299,10 @@ private:
     void init_freq();
     void reset_old_dist() {
         for (core::uint32 i = 0; i < 4; i++) old_dist_[i] = static_cast<size_t>(-1);
+        // The decoder resets last_length_ on every non-solid file start
+        // alongside the rep-distance sentinel — the shadow resets at the
+        // same sites so a 257 can never precede the first match of a file.
+        last_length_ = 0;
     }
     // Restore every scalar/pointer member to its post-default-construction
     // state. Call from the constructor and from any entry-point that begins
@@ -338,6 +358,9 @@ private:
     void add_literal(core::byte b);
     void add_match(size_t length, size_t distance);
     void add_rep(core::uint32 index, size_t length);
+    // Emit the slot-257 repeat-last-length token: one LD Huffman symbol,
+    // no extra bits, no OldDist rotation, no shadow change.
+    void add_last_len();
 
     bool need_flush();
     // Shared streaming/one-shot loop: slides the window, loads input (no-op
