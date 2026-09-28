@@ -135,4 +135,51 @@ foreach ($r in $existingRars) {
 }
 
 Remove-Item -Recurse -Force $scratch
+
+# ── Cross-engine decode verification (v1.31.0 Gate 0 §2d) ────────────────────
+# Every golden archive must extract hash-exact under the reference decoders
+# before the new bytes are committed. Emitted bytes change whenever the
+# encoder changes; UnRAR/WinRAR acceptance is the format-legality proof for
+# the re-baseline. Skipped (with a loud marker) when the tools are absent.
+Write-Host "`n=== Cross-Engine Decode Verification (UnRAR + WinRAR) ===" -ForegroundColor Cyan
+$unrar = "C:\Program Files\WinRAR\UnRAR.exe"
+$rar   = "C:\Program Files\WinRAR\rar.exe"
+$goldenRars = Get-ChildItem -Path "$fixturesDir\golden" -Filter "*.rar" -Recurse
+$verifyRoot = "$root\build\golden_scratch_verify"
+New-Item -ItemType Directory -Force -Path $verifyRoot | Out-Null
+$verFailed = 0
+foreach ($file in $goldenRars) {
+    # Extract with openrar first to learn the entry set, then require a
+    # byte-identical extracted tree from both reference engines.
+    $selfOut = "$verifyRoot\self"
+    if (Test-Path $selfOut) { Remove-Item -Recurse -Force $selfOut }
+    New-Item -ItemType Directory -Force -Path $selfOut | Out-Null
+    & $openrar x -y -q $file.FullName $selfOut | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] openrar cannot decode $file" -ForegroundColor Red; $verFailed++; continue }
+    $refFailed = $false
+    foreach ($engine in @(@("UnRAR", $unrar, @("x", "-y")), @("WinRAR", $rar, @("x", "-y", "-inul")))) {
+        if (-not (Test-Path $engine[1])) {
+            Write-Host "[SKIP] $($engine[0]) not installed - cross-engine verification incomplete for this run" -ForegroundColor Yellow
+            continue
+        }
+        $outDir = "$verifyRoot\$($engine[0])"
+        if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
+        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+        & $engine[1] $engine[2][0] $engine[2][1] $engine[2][2] $file.FullName "$outDir\" | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] $($engine[0]) rejected $($file.Name)" -ForegroundColor Red; $refFailed = $true; continue }
+        $selfHash = (Get-ChildItem $selfOut -Recurse -File | Sort-Object FullName |
+            ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash + ":" + $_.Name }) -join "`n"
+        $refHash = (Get-ChildItem $outDir -Recurse -File | Sort-Object FullName |
+            ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash + ":" + $_.Name }) -join "`n"
+        if ($selfHash -ne $refHash) {
+            Write-Host "[FAIL] $($engine[0]) tree differs for $($file.Name)" -ForegroundColor Red
+            $refFailed = $true
+        }
+    }
+    if (-not $refFailed) { Write-Host "[OK] $($file.Name) decodes identically" -ForegroundColor Green } else { $verFailed++ }
+}
+Remove-Item -Recurse -Force $verifyRoot -ErrorAction SilentlyContinue
+if ($verFailed -gt 0) { throw "$verFailed golden archive(s) failed cross-engine verification" }
+Write-Host "Cross-engine verification complete." -ForegroundColor Green
+
 Write-Host "`nAll golden fixtures generated successfully." -ForegroundColor Green

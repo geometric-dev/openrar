@@ -119,6 +119,50 @@ void test_empty_stream() {
     CHECK(got.empty());
 }
 
+// v1.31 M1 (plan T5/T8 extension): run-heavy corpora exercise the slot-257
+// continuation path across feed boundaries. The 257 decision consumes only
+// already-emitted state (last_length_, old_dist_[0]) plus the current
+// position's rep scan, so feed-boundary chunking must stay byte-identical
+// to one-shot — including chunk sizes that land mid-chain.
+void test_byte_identical_chunking_runs(int method, size_t win,
+                                       const std::vector<size_t>& chunk_sizes) {
+    // Zeros with a noise head/tail: forces a fresh match + 257 chain, plus
+    // re-anchoring decisions at the tail.
+    std::vector<uint8_t> src;
+    for (size_t i = 0; i < 4096; ++i) src.push_back(static_cast<uint8_t>((i * 31 + 7) & 0xFF));
+    src.insert(src.end(), 384 * 1024, 0x00);
+    for (size_t i = 0; i < 4096; ++i) src.push_back(static_cast<uint8_t>((i * 17 + 3) & 0xFF));
+    // Period-8 pattern run: 257 chains on a non-trivial distance.
+    for (int r = 0; r < 96 * 1024 / 8; ++r)
+        for (uint8_t b = 0; b < 8; ++b) src.push_back(static_cast<uint8_t>(0xA0 + b));
+
+    const std::vector<uint8_t> expected = one_shot(src, method, win);
+    CHECK(!expected.empty());
+
+    for (const size_t chunk : chunk_sizes) {
+        openrar::compress::StreamEncoder enc(method, win);
+        std::vector<uint8_t> got;
+        for (size_t off = 0; off < src.size(); off += chunk) {
+            const size_t n = std::min(chunk, src.size() - off);
+            if (!enc.feed(src.data() + off, n)) {
+                FAIL("feed failed");
+                return;
+            }
+        }
+        if (!enc.finish(got)) {
+            FAIL("finish failed");
+            return;
+        }
+        CHECK(got.size() == expected.size());
+        if (got != expected) {
+            std::fprintf(stderr, "  runs byte-identical mismatch: method=%d win=%zu chunk=%zu\n",
+                         method, win, chunk);
+            return;
+        }
+        CHECK(round_trip(got, src));
+    }
+}
+
 void test_cancel_and_progress() {
     openrar::compress::StreamEncoder enc(3, 1024 * 1024);
     int cancel_polls = 0;
@@ -349,6 +393,10 @@ int main() {
         for (const size_t win : {128 * 1024, 1024 * 1024}) {
             test_byte_identical_chunking(method, win, odd_chunks);
         }
+    }
+    const std::vector<size_t> run_chunks = {1, 3, 4097, 65536, 524289};
+    for (const int method : {1, 3, 5}) {
+        test_byte_identical_chunking_runs(method, 1024 * 1024, run_chunks);
     }
     test_iteration3_regression();
     test_empty_stream();
