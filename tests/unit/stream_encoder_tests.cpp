@@ -389,13 +389,13 @@ int main() {
 #endif
 
     const std::vector<size_t> odd_chunks = {1, 7, 13, 64 * 1024, 1 << 20};
-    for (const int method : {1, 3, 5}) {
+    for (const int method : {1, 3, 4, 5}) {
         for (const size_t win : {128 * 1024, 1024 * 1024}) {
             test_byte_identical_chunking(method, win, odd_chunks);
         }
     }
     const std::vector<size_t> run_chunks = {1, 3, 4097, 65536, 524289};
-    for (const int method : {1, 3, 5}) {
+    for (const int method : {1, 3, 4, 5}) {
         test_byte_identical_chunking_runs(method, 1024 * 1024, run_chunks);
     }
     test_iteration3_regression();

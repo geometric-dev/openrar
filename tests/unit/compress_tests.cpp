@@ -1146,9 +1146,6 @@ public:
     static core::uint64 packed_total(const Compressor50& c) { return c.packed_total_; }
     static void init_match_params(Compressor50& c) { c.init_match_params(); }
     static size_t last_length(const Compressor50& c) { return c.last_length_; }
-    static core::uint32 len_slot(const Compressor50Token& t) { return t.get_len_slot(); }
-    static core::uint16 len_extra(const Compressor50Token& t) { return t.len_extra; }
-    static const std::vector<core::byte>& token_seq(const Compressor50& c) { return c.token_seq_; }
 };
 } // namespace openrar::compress
 
@@ -2288,18 +2285,19 @@ void test_slot257_pure_addition_suppressed() {
         int method;
         const char* sha;
     } expected[] = {
+        // m1/m3 only: those methods keep the v1.30 hash-chain finder, so the
+        // pure-addition property (257 suppression == v1.30.4 bytes) holds.
+        // m5 intentionally diverges from v1.30.4 starting with M2 — the
+        // binary-tree finder changes match selection by design, so no
+        // v1.30.4 byte identity is asserted there.
         {"text64k", 1, "d34113c83d0b46137b98a0b269b764515c8c1e42f8509a4494534edec84bd27c"},
         {"text64k", 3, "44495a7543dd7af0afba4a054b1a7032166d43fc969ae9715c0c8678fe005db0"},
-        {"text64k", 5, "ba7755564a384562e51319c077d5818ffb8bef6af6dc1770663c5a511e6ec3a1"},
         {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
-        {"rand256k", 5, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"zeros1m", 1, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
         {"zeros1m", 3, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
-        {"zeros1m", 5, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
         {"mixed", 1, "15a4179c3715d7cd0d4e98a1b6c9f5d668e5fe646003371b172f5946c6d7f6b3"},
         {"mixed", 3, "32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b"},
-        {"mixed", 5, "32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b"},
     };
 
     for (const auto& c : corpora) {
@@ -2309,7 +2307,7 @@ void test_slot257_pure_addition_suppressed() {
         assert(Filters50::detect_filter(c.data.data(), c.data.size(), channels, {}) ==
                    FilterType::None &&
                "T9 corpus must stay filter-free; re-capture reference hashes if this fires");
-        for (int method = 1; method <= 5; method += 2) {
+        for (int method = 1; method <= 3; method += 2) {
             std::vector<core::byte> packed;
             assert(compress_buffer_no257(c.data, packed, method));
             char hex[65];
@@ -2430,6 +2428,7 @@ void test_slot257_solid_carry() {
     std::cout << "[PASS] slot257 solid carry opens member 2 with a 257 (T5)\n";
 }
 
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -2539,6 +2538,9 @@ int main() {
     test_slot257_pure_addition_suppressed();
     std::cout << std::flush;
     test_slot257_solid_carry();
+    std::cout << std::flush;
+
+    std::cout << std::flush;
     std::cout << std::flush;
     test_stream_decoder_defense();
     std::cout << std::flush;
