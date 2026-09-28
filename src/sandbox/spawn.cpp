@@ -146,6 +146,29 @@ bool spawn_worker_process(const std::string& exe, const std::vector<std::string>
         return false;
     }
     CloseHandle(pi.hThread);
+
+    // Defense-in-depth for the sandboxed profile (the v1.23 SFX pattern):
+    // kill-on-close Job Object + memory cap. The AppContainer token is the
+    // privilege boundary; the Job caps resource burn if the worker is
+    // compromised WITHIN its token.
+    if (profile == SpawnProfile::PlatformSandboxed) {
+        HANDLE job = CreateJobObjectW(nullptr, nullptr);
+        if (job != nullptr) {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+            limits.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+            limits.ProcessMemoryLimit = 4ull * 1024 * 1024 * 1024; // 4 GiB
+            if (SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits,
+                                        sizeof(limits))) {
+                AssignProcessToJobObject(job, pi.hProcess);
+                // Intentionally not closed: kill-on-close tears the worker down
+                // with the broker process; the handle dies with us.
+            } else {
+                CloseHandle(job); // caps unavailable: the token still bounds it
+            }
+        }
+    }
+
     *proc_out = pi.hProcess;
     return true;
 }
@@ -250,7 +273,8 @@ void install_linux_seccomp() {
     add_allow(f, SYS_pread64);
     add_allow(f, SYS_lseek);
     add_allow(f, SYS_fstat);
-    add_allow(f, SYS_dup); // private read handle per extent (L16 discipline)
+    add_allow(f, SYS_close); // fd lifecycle: FileStream dtors close dups
+    add_allow(f, SYS_dup);   // private read handle per extent (L16 discipline)
     // Memory management — MANDATORY (a sandbox that kills malloc kills the
     // worker; Gate 0 directive 3) — with PROT_EXEC argument-filtered out.
     add_allow_arg_nomask(f, SYS_mmap, 2, PROT_EXEC);

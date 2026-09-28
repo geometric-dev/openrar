@@ -669,7 +669,7 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(qo_gap_fallback_tests tests/unit/qo_gap_fallback_tests.cpp)
 
     # Walk diagnostic probe (not a test): prints read_block_raw results.
-    add_executable(walk_probe tests/unit/walk_probe.cpp)
+    add_executable(walk_probe tools/walk_probe.cpp)
     target_link_libraries(walk_probe PRIVATE openrar_core)
     target_include_directories(walk_probe PRIVATE ${OPENRAR_INCLUDES})
 

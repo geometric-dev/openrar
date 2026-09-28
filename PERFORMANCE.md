@@ -126,6 +126,37 @@ interop gate).
   producing hash-identical trees — speed differences never trade away
   interop.
 
+## Where the remaining gaps live (root-caused)
+
+Each loss above was investigated; three are deliberate or architectural,
+one is a tuning candidate:
+
+- **Extraction (~1.6x vs UnRAR): the crash-safety contract.** Every
+  extracted file is written to a temp file, `FlushFileBuffers`-ed, journaled
+  (the journal record itself fsynced before the temp exists), and atomically
+  renamed — the v1.24 containment/durability architecture. UnRAR and WinRAR
+  do none of that (write + close). Attribution measured: extracting 3×43 MB
+  takes 0.55 s with the contract and ~0.07 s for 37 smaller files whose
+  flushes stay in the NVMe cache; UnRAR does the same 129 MB in 0.035 s by
+  never syncing. We keep the durability guarantee; an opt-in fast path
+  would be a security-architecture decision, not a perf tweak.
+- **m5 (~2.3x vs WinRAR): match-finder architecture.** OpenRAR uses hash
+  chains with per-method depth (m5 = 512-deep + lazy evaluation). WinRAR's
+  high-effort encoder keeps more candidate structure per position. The
+  9.7x m3→m5 effort slope (vs WinRAR's 2.3x) says the chain walk cost
+  dominates at high depth — the known fix is a binary-tree/suffix-structure
+  match finder, a self-contained codec project (decoder unaffected).
+- **m1/zeros ratio: match-length encoding cap.** OpenRAR's encoder caps
+  match tokens at 4097 bytes; RAR5's length field allows ~64 KB, which is
+  how WinRAR collapses a 512 MB zero file to 0.02 MB (≈7,800 long-match
+  tokens vs our ≈125,000). Extending the encoder to long-length encoding
+  changes every emitted archive's bitstream and needs a format-legality
+  review (Gate 0) — the decoder already handles such streams (WinRAR's
+  zeros archive extracts correctly). Candidate for a future compression arc.
+- **m1 speed/ratio tuning:** `-m1` parameters (chain 4, nice 256) are
+  greedier than WinRAR's fastest preset. Re-tuning is safe (no format
+  change) but needs a full ratio/speed matrix re-run; deferred as minor.
+
 ## Reproducing
 
 ```

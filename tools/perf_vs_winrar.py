@@ -314,7 +314,6 @@ def main():
         return row
 
     CANON = ["text.txt", "code.cpp", "random.bin"]
-    INPUT_MB = {"canonical": 128.0, "mixed": 130.0, "zeros512": 512.0, "big": 1024.0}
 
     # A. method sweep, ST
     for m in (0, 1, 3, 5):

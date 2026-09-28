@@ -30,6 +30,7 @@
 #include <vector>
 
 using namespace openrar;
+using namespace openrar::test;
 using namespace openrar::archive;
 namespace fs = std::filesystem;
 
@@ -45,17 +46,11 @@ static int fails = 0;
 namespace {
 
 fs::path make_dir(const char* name) {
-    fs::path dir = fs::temp_directory_path() / (std::string("openrar_qo_") + name);
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
-    return dir;
+    return openrar::test::make_scratch_dir(std::string("openrar_") + name);
 }
 
 void write_file(const fs::path& p, const std::string& data) {
-    std::ofstream f(p, std::ios::binary | std::ios::trunc);
-    f.write(data.data(), static_cast<std::streamsize>(data.size()));
-    assert(f.good());
+    openrar::test::write_text_file(p, data);
 }
 
 std::vector<std::string> listed_names(const fs::path& arc) {
@@ -129,7 +124,6 @@ int main() {
         size_t p = start;
         int structs = 0;
         size_t second_struct_at = 0, second_struct_end = 0;
-        bool ok = true;
         while (p + 5 <= raw.size() && structs < 8) {
             const core::uint32 crc =
                 core::read_le32(reinterpret_cast<const core::byte*>(raw.data()) + p);

@@ -74,6 +74,7 @@ static void unset_env(const char* name) {
 #endif
 
 using namespace openrar;
+using namespace openrar::test;
 namespace fs = std::filesystem;
 
 // The floors are constants: no API, flag, or environment reaches them.
@@ -94,11 +95,7 @@ static int fails = 0;
 namespace {
 
 fs::path make_dir(const char* name) {
-    fs::path dir = fs::temp_directory_path() / (std::string("openrar_lm_") + name);
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
-    return dir;
+    return openrar::test::make_scratch_dir(std::string("openrar_") + name);
 }
 
 // Minimal single-entry STORED archive: signature + main + file block + data
