@@ -195,22 +195,25 @@ deterministic seeded corpora, warm-up + median-of-3, every archive verified
 by both engines' extractors hash-identically. Host: i7-7500U laptop,
 Windows 11, WinRAR 7.20 x64.
 
-| Workload (128.9 MB canonical = text + code + binary) | OpenRAR | WinRAR 7.20 |
+| Workload (135.5 MB canonical = text + code + binary) | OpenRAR | WinRAR 7.20 |
 |---|---:|---:|
-| `-m3` single-thread | **8.8 s** (14.7 MB/s) | 16.5 s (7.8 MB/s) |
-| `-m3` `-mt4` | **5.8 s** (22.4 MB/s) | 8.2 s (15.7 MB/s) |
-| `-m0` store | **0.13 s** | 0.23 s |
-| solid `-m3` | **9.3 s** | 17.4 s |
-| multivolume `-m3 -v32m` | **6.9 s** | 16.5 s |
-| 1 GB `-m3 -mt4` | **47.8 s** | 70.6 s |
+| `-m3` single-thread | **8.4 s** (16.1 MB/s) | 16.5 s (8.2 MB/s) |
+| `-m3` `-mt4` | **5.7 s** (23.7 MB/s) | 7.4 s (18.2 MB/s) |
+| `-m0` store | **0.11 s** | 0.22 s |
+| `-m5` single-thread | **27.6 s** (4.9 MB/s) | 38.1 s (3.6 MB/s) |
+| solid `-m3` | **8.7 s** | 17.7 s |
+| multivolume `-m3 -v32m` | **10.6 s** | 16.6 s |
+| 1 GB `-m3 -mt4` | **47.8 s** | 69.3 s |
 
-- **Compression at the default `-m3`: 1.4–1.9x faster than WinRAR**, ratios
-  within ~3%.
-- `-cdc` dedup produced a **33% smaller archive** on a duplicate-heavy
+- **Compression at the default `-m3`: 1.3–2.0x faster than WinRAR**, ratios
+  within ~3%. **`-m5` is now faster than WinRAR too (1.4x)** — v1.30 was
+  2.3x slower (match-finder walk depth, see PERFORMANCE.md).
+- `-cdc` dedup produced a **32% smaller archive** on a duplicate-heavy
   corpus (no WinRAR equivalent).
-- **Honest losses:** WinRAR's `-m5` is ~2.3x faster with a slightly tighter
-  ratio; WinRAR's `-m1` is slightly faster and 14% tighter; extraction
-  trails UnRAR/WinRAR by ~1.6x on this workload.
+- **Honest losses:** WinRAR's `-m1` is slightly faster and ~18% tighter
+  (structural — swept the full effort grid in v1.31); our `-m5` ratio is
+  ~3% looser; extraction trails UnRAR/WinRAR by ~2.3x on this workload
+  (the crash-safety contract, below).
 
 **Measurement protocol (v1.28).** Machine-collected numbers come from the
 `openrar_bench` tool: every suite runs 1 untimed warm-up pass plus 7 timed

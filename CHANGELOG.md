@@ -5,6 +5,62 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.0] - 2026-09-29
+
+Encoder Match Engine: the compression-quality arc. Two long-documented
+performance losses are fixed, one is honestly characterized. Emitted
+bytes change for `-m1`–`-m5` (wire format untouched; every stream
+cross-verified by UnRAR 7.20 + WinRAR 7.20 — interop gate extended to 24
+stages including a permanent slot-257 long-match legality track).
+Gate 0 + decision records: docs/v1.31-pre-analysis.md,
+docs/v1.31-implementation-plan.md.
+
+### Added
+
+- **Slot-257 run-collapse emission** (`src/compress/compressor50.cpp`):
+  the encoder now emits LD symbol 257 (repeat-last-length) on exact
+  continuations of the `(OldDist[0], LastLength)` thread — one Huffman
+  symbol, zero extra bits. Zero-run/RLE-heavy data: **64 MiB of zeros
+  packs 23,989 -> 3,514 bytes (-85.4%)**; the 8x zeros-ratio gap vs
+  WinRAR collapses to 1.23x. Guarded by byte verification, exact-
+  continuation (strict-equality) selection inside the existing rep-win
+  branch, and the filter-region emission bound (T1-T5, T9 in
+  tests/unit/compress_tests.cpp; streaming identity in
+  tests/unit/stream_encoder_tests.cpp).
+- **`compress_m5_matchfinder` bench suite** (tests/bench/openrar_bench.cpp):
+  the m5 match finder's end-to-end kernel number, median-of-7 protocol.
+- **Corpus fingerprints in perf results** (tools/perf_vs_winrar.py): the
+  canonical corpus embeds the repo `src/` tree, so results.json now
+  records per-corpus hashes — cross-era size comparisons are detectable
+  instead of misleading.
+
+### Changed
+
+- **`-m5` match-finder walk depth 512 -> 128: 3.2x faster** (canonical
+  85.2 -> 26.9 s) at +0.3% archive size. The full binary-tree finder was
+  built, measured, and descoped per its pre-agreed gate (best variant:
+  -8.9% time at 2.9x the cost of the depth cut) — the decision record,
+  including the two measured finder corrections (body-insertion capping,
+  best-length-capped probes), is docs/v1.31-implementation-plan.md M2.
+  **`-m5` is now 1.38x faster than WinRAR 7.20** (v1.30: 2.3x slower);
+  the m3 -> m5 effort slope drops from 9.7x to 3.3x.
+- **`-m4` match-finder walk depth 128 -> 64: 1.6x faster** at +0.89%
+  size, restoring the `-m3` -> `-m4` -> `-m5` effort ladder (8.4 s/54.14
+  MB -> 16.2 s/53.41 MB -> 27.6 s/52.93 MB canonical) that the `-m5`
+  change had collapsed.
+- spec 03's encoder-heuristics table now notes that MaxChain/NiceLen/
+  Lazy are reference-encoder values, not format; OpenRAR's shipped table
+  lives in `Compressor50::init_match_params()`.
+
+### Unchanged (honestly characterized)
+
+- **`-m1` ratio (~17.6% behind WinRAR): structural.** The full sweep
+  (chains 4/8/16 x nice 256/512 x lazy 0/1) found no candidate meeting
+  "ratio gain at <= current runtime" — best: -1.63% size for +25% time.
+  WinRAR's m1 advantage is its parse strategy, not effort; future-arc
+  candidates recorded. `-m1`/`-m2`/`-m3` parameters and emitted bytes are
+  unchanged from v1.30.4.
+
 ## [1.30.4] - 2026-09-28
 
 ### Fixed
