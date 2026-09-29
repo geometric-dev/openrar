@@ -275,6 +275,27 @@ static std::vector<core::byte> generate_e8_dense(size_t size) {
     return data;
 }
 
+// Filter-free content with LZ structure but nothing a filter would catch:
+// word-like text drawn from a large vocabulary, so no E8/Delta signature and
+// no long-range redundancy either.
+static std::vector<core::byte> generate_text_like(size_t size) {
+    std::vector<std::string> words;
+    for (int i = 0; i < 4000; ++i) words.push_back("tok" + std::to_string(i));
+    std::mt19937_64 rng(0x5EED1234ull);
+    std::vector<core::byte> data;
+    data.reserve(size + 128);
+    while (data.size() < size) {
+        for (int w = 0; w < 12; ++w) {
+            if (w) data.push_back(' ');
+            const std::string& word = words[rng() % words.size()];
+            data.insert(data.end(), word.begin(), word.end());
+        }
+        data.push_back('\n');
+    }
+    data.resize(size);
+    return data;
+}
+
 // Filter parity (v1.21.1): for content whose detection triggers a filter, the
 // chunked pipeline must fall back to the sequential path so the filter is
 // honored — and the output must be byte-identical to a plain compress_buffer
@@ -302,6 +323,54 @@ static void test_parallel_filter_parity() {
     std::cout << "    - Filter parity across -mt2/-mt4/-mt8: OK" << std::endl;
 }
 
+// T-M2: pin the MT path-selection decision for BOTH branches.
+//
+// This test exists because the decision used to be an inverted inline
+// condition inside ArchiveMutator::prepare_add_file. With the default
+// FilterMode::Auto it evaluated to `use_parallel = (detected != None)`,
+// which meant MT engaged only on filter-triggering input - and then ran with
+// the filter it had just detected discarded, because the MT pipeline forces
+// filters off - while all filter-free input (text, code, most data) silently
+// fell back to the sequential path and got no MT at all. Every other test in
+// this file exercises the pipeline directly, so none of them could see it.
+static void test_parallel_path_selection() {
+    std::cout << "[+] test_parallel_path_selection: MT engages only when no filter would fire"
+              << std::endl;
+
+    FilterConfig auto_cfg; // default: Auto
+    assert(auto_cfg.mode == FilterMode::Auto && "default must be Auto for this test to mean "
+                                                "anything");
+
+    FilterConfig off_cfg;
+    off_cfg.mode = FilterMode::DisableAll;
+
+    // Filter-free content: MT must be allowed.
+    {
+        auto data = generate_text_like(256 * 1024);
+        assert(mt_should_use_parallel(auto_cfg, data.data(), data.size()) &&
+               "filter-free input must take the MT path (it used to fall back to sequential)");
+    }
+    // E8-dense content: a filter WOULD fire, so MT must be declined so the
+    // sequential path honors -mc.
+    {
+        auto data = generate_e8_dense(256 * 1024);
+        assert(!mt_should_use_parallel(auto_cfg, data.data(), data.size()) &&
+               "filter-triggering input must take the sequential path to preserve -mc parity");
+    }
+    // Filters explicitly off: chunking loses nothing, so MT is allowed even
+    // for content a filter would otherwise have caught.
+    {
+        auto data = generate_e8_dense(256 * 1024);
+        assert(mt_should_use_parallel(off_cfg, data.data(), data.size()) &&
+               "with filters disabled, MT must be allowed unconditionally");
+    }
+    // No sample available (read failed / empty): take MT, do not silently
+    // fall back to sequential.
+    assert(mt_should_use_parallel(auto_cfg, nullptr, 0) &&
+           "no sample must not silently disable MT");
+    std::cout << "    - Both selection branches + no-sample fallback: OK" << std::endl;
+}
+
 int main() {
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -316,6 +385,7 @@ int main() {
     test_parallel_pipeline_cancellation();
     test_small_file_bypass();
     test_parallel_filter_parity();
+    test_parallel_path_selection();
     std::cout << "All Parallel Compression Tests PASSED!" << std::endl;
     return 0;
 }
