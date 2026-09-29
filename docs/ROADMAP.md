@@ -205,6 +205,83 @@ plan §7.
 
 ---
 
+## Descoped: v1.32.0 optimal parse (cost-model token selection) — BUILT, TESTED, FAILED THE GATES, REMOVED
+
+**Do not re-tackle this as a parse replacement.** It was built in full,
+measured, and removed. Read this before proposing any "optimal parse" work
+again.
+
+The rolling forward DP over `{literal, match, rep0..3, 257}` (Design P-A in
+`docs/v1.32-pre-analysis.md`) was implemented end to end: price tables from
+the previous block, forward relax, packed back-pointer edges, back-walk
+emission through the existing emitters with live re-verification. It is
+**functionally correct** — `compress_buffer` → `Decompressor50` roundtrips
+byte-exact on every corpus, including multi-block filter cases.
+
+**Gate result: FAILED.** Release build, m3, canonical corpus:
+
+| | DP | greedy | verdict |
+|---|---:|---:|---|
+| code (708 KB) | 136,945 | 139,628 | **-1.9%** (T5 passes) |
+| text (756 KB) | 244,508 | 247,564 | -1.2% (T5 passes) |
+| random (4 MB) | 4,195,968 | 4,196,140 | tie |
+| zeros (8 MB) | 540 | 422 | **+28%** (T1 fails) |
+| time (code) | 1.44 s | 0.37 s | **3.9x** (T6 fails, budget 1.42x) |
+
+At 3.9x, m3 would go from 1.95x-faster-than-WinRAR to roughly 2x *slower*
+(≈33 s vs WinRAR's 16.47 s) — it would surrender the speed lead the whole
+project is positioned on, to buy ~2% ratio. A chain-depth sweep (4/8/16/32)
+does not clear either gate: the ratio win shrinks toward zero as the chain
+shrinks, and the runs regression is depth-independent.
+
+**The structural finding — this is the part worth keeping.** A cost-model
+parse over this match finder must relax an edge out of *every* position, so
+it spends ~4x the finder budget that greedy/lazy parsing spends. Greedy is
+not merely a cheaper approximation of an optimal parse: it is *finder-frugal*,
+searching only at token starts because a match skips its own body. That
+frugality is a large part of why it performs well on a fixed chain budget,
+and the tax is inherent, not a bug. The consequence is that **the time gate,
+not the ratio gate, is the binding constraint** for any future parse work —
+the reverse of what the arc assumed when it was scoped. This is the same
+shape as v1.31-M2's binary tree (correct, more time, worse ratio) and it now
+stands as two independent measurements that the m1/m3 ratio gap is
+**structural in the finder**, not in the parse. If this is ever revisited,
+attack the candidate source first (a match cache shared with the greedy
+scan, or restricting the relax to token-start candidates) and re-measure
+time before ratio.
+
+**Three latent encoder bugs surfaced along the way.** These are not DP-specific
+and are real hazards for any future token-selection work:
+
+1. `add_match` clamps `base = len - inc` into `[2, MAX_LZ_MATCH]` and the
+   decoder rebuilds `base + inc`, so an out-of-range `(len, dist)` pair
+   silently decodes to a **different length** than recorded — a one-byte
+   desync, not a rejection. The greedy loop guards it
+   (`len < inc + 2 -> reject`); no other caller did.
+2. The LDD low-bits distance symbol is on the wire only when the distance has
+   **≥ 4 raw extra bits** (`add_match` gates `freq_ldd_` on `raw_bits >= 4`;
+   the decoder reads it under `d_bits >= 4`). Pricing that gates on
+   `dslot >= 4` charges a phantom symbol to mid-range distances.
+3. A rep-state used for pricing must be **captured at write time**. Reading
+   it back from the edge arrays is wrong: a longer match from a later position
+   overwrites the entry after the earlier position relaxed, so the state
+   advanced is not the state the back-walk replays.
+
+Also worth recording, because it is a trap rather than a finding: a
+**zero-length Huffman code length means "symbol unused", not "symbol free"**.
+The warm-up block for run-heavy input emits no literals, so `len_ld_[0] == 0`
+for the data byte; reading that as a 0-bit price collapsed every price in the
+window to 0 and the first writer won every slot, taking 8 MiB of zeros from
+422 B to 184,685 B.
+
+**Disposition:** the engine is parked for inspection on branch
+`arc/v1.32.0-optimal-parse-parked` (see `PARKED-v1.32-optimal-parse.md` on
+that branch). It is **not for merge** and the snapshot is the known-broken
+intermediate — the later corrections were never committed. The v1.32.0
+version number was re-purposed for MT encoder scaling.
+
+---
+
 ## Indicative Path: v1.32 → v1.40 (provisional, Gate 0 per arc)
 
 Overall objective: compress RAR5 **faster and more securely than the
@@ -215,30 +292,25 @@ gets its own Gate 0, FMM, and named negative tests, and every arc keeps
 the perf-vs-WinRAR matrix honest (m3 non-regression remains the standing
 gate until dethroned by evidence).
 
-- **v1.32.0 — Ratio parity (optimal parse).** Replace the greedy/lazy
-  token choice with a cost-model decision over {literal, match, rep0..3,
-  257} (rate-distortion, windowed dynamic programming within a block).
-  Builds directly on v1.31's shadow/token machinery. Target: ratio parity
-  or better vs WinRAR at m1/m3 while keeping the speed lead; the m1 gap
-  not closed by tuning moves here.
-- **v1.33.0 — Throughput scaling.** MT encoder scaling (WinRAR scales 2.0x
-  ST→MT vs our 1.53x): parallel match search / window partitioning with a
-  documented bit-exactness story, MT solid, m5 MT. Target: 2x ST→MT
-  scaling and MT leads widened.
-- **v1.34.0 — Extraction throughput inside the v1.24 contract.** Batched
+- **v1.32.0 — Throughput scaling (MT encoder).** Parallel match search /
+  window partitioning with a documented bit-exactness story, MT solid, m5
+  MT. WinRAR scales 2.0x ST→MT vs our 1.53x; target 2x ST→MT scaling and
+  widened MT leads. *(Re-purposed from "ratio parity (optimal parse)", which
+  was built, measured and removed — see the descoped section above.)*
+- **v1.33.0 — Extraction throughput inside the v1.24 contract.** Batched
   durability (fewer flushes without weakening the ordering/journal
   guarantees), pipelined verification, QO/scan wins. Any weakening of the
   fsync contract is an explicit security-architecture decision with its
   own Gate 0 (PERFORMANCE.md's standing note), default-on only if the
   contract holds.
-- **v1.35.0 — RAR 7.x parity ledger.** RR vintage 0x11D + single-erasure
+- **v1.34.0 — RAR 7.x parity ledger.** RR vintage 0x11D + single-erasure
   repair (deferred from v1.26), resource forks + FinderInfo (deferred
   from v1.27 to "2.1" — pulled here if the perf arcs land early).
-- **v1.36.0 — Migration completeness.** cv link migration (needs its own
+- **v1.35.0 — Migration completeness.** cv link migration (needs its own
   Gate 0 — `prepare_add_symlink_from_memory`), cv output-shaping switches
   (`-s`/`-v`/`-ts*`), FILECOPY default-materialization policy decision
   (deferred from v1.27).
-- **v1.37 – v1.40 — discovery pool (unsequenced).** Parallel CDC
+- **v1.36 – v1.40 — discovery pool (unsequenced).** Parallel CDC
   fingerprint pass, multi-volume no-data-area entries, WASM streaming
   encode, MSan/fuzz depth growth, dictionary auto-sizing, and whatever
   the v1.31–v1.33 arcs surface. Deliberately uncommitted: new findings
