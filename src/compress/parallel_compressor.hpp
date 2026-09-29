@@ -35,6 +35,24 @@ struct ParallelCompressConfig {
     void* cancel_user{nullptr};
 };
 
+// Whether the file-spool encoder should take the MT path for this input.
+//
+// The MT pipeline chunks input and FORCES FILTERS OFF (a filter region must
+// not straddle a chunk boundary), so MT is only safe when no filter would
+// have been selected - otherwise `-mc` parity is silently lost. This is a
+// free function, not an inline decision inside the spool encoder, because
+// that decision was previously made deep inside a ~700-line function where
+// it was inverted AND untested: with the default FilterMode::Auto the
+// condition assigned `use_parallel = (detected != None)`, which meant MT
+// engaged only on filter-triggering input (and then ran without the filter)
+// while all filter-free input - text, code, most data - silently fell back
+// to sequential and got no MT at all. Pinned by test_parallel_path_selection.
+//
+// `sample` is a leading prefix of the input (the spool encoder reads the
+// first 64 KiB); pass an empty sample to skip detection and take MT.
+bool mt_should_use_parallel(const FilterConfig& filter_cfg, const core::byte* sample,
+                            size_t sample_len);
+
 class ParallelBlockPipeline {
 public:
     explicit ParallelBlockPipeline(const ParallelCompressConfig& cfg);

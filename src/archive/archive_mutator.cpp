@@ -1405,14 +1405,18 @@ bool ArchiveMutator::prepare_add_file(
                     // the same data.
                     bool use_parallel = eff_threads > 1 && !solid_packer;
                     if (use_parallel && filter_cfg.mode != compress::FilterMode::DisableAll) {
+                        // The parallel path chunks input and forces filters
+                        // OFF, so MT is only safe when no filter would fire.
+                        // See compress::mt_should_use_parallel for why this is
+                        // a named function (it was previously an inverted
+                        // inline condition that silently disabled MT for all
+                        // filter-free input).
                         std::vector<core::byte> sample(
                             static_cast<size_t>(std::min<core::uint64>(file_sz, 65536)));
                         if (!sample.empty() &&
                             src.read(sample.data(), sample.size()) == sample.size()) {
-                            core::uint8 det_channels = 1;
-                            use_parallel = compress::Filters50::detect_filter(
-                                               sample.data(), sample.size(), det_channels,
-                                               filter_cfg) != compress::FilterType::None;
+                            use_parallel = compress::mt_should_use_parallel(
+                                filter_cfg, sample.data(), sample.size());
                         }
                         src.seek(0, io::SeekOrigin::Begin);
                     }
