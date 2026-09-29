@@ -212,7 +212,7 @@ measured, and removed. Read this before proposing any "optimal parse" work
 again.
 
 The rolling forward DP over `{literal, match, rep0..3, 257}` (Design P-A in
-`docs/v1.32-pre-analysis.md`) was implemented end to end: price tables from
+`docs/optimal-parse-descoped-analysis.md`) was implemented end to end: price tables from
 the previous block, forward relax, packed back-pointer edges, back-walk
 emission through the existing emitters with live re-verification. It is
 **functionally correct** — `compress_buffer` → `Decompressor50` roundtrips

@@ -1,0 +1,331 @@
+<!-- DESCOPED. This is the v1.32.0-optimal-parse Gate 0 record, preserved
+     because its analysis is still partly valid and because the arc's
+     negative result must not be re-derived from scratch. The arc was
+     BUILT, MEASURED, FAILED T5/T6/T1 and REMOVED; the v1.32.0 version
+     number was re-purposed for MT encoder scaling. See the "Descoped" 
+     section of docs/ROADMAP.md for the outcome, the measured gate
+     numbers, and the structural finding, and branch
+     arc/v1.32.0-optimal-parse-parked for the parked engine (not for
+     merge). Do not treat anything below as the v1.32.0 scope. -->
+
+# v1.32.0 Pre-Analysis — Ratio Parity: Optimal Token Parse (Gate 0 Review)
+
+Arc: "Ratio parity — cost-model token selection over {literal, match,
+rep0..3, 257}". Base: v1.31.0 (tag `v1.31.0` @ 5f6b717). Worktree
+`C:\Users\Matt\dev\openrar-v1.32`, branch
+`arc/v1.32.0-optimal-parse`. Clean-room basis unchanged: docs/spec +
+RAR5-FORMAT.md for the format; the parse algorithms are implemented from
+the published general concept (rate-distortion LZ parsing / shortest-path
+token selection), not from any reference source.
+
+---
+
+## 0. Gate 0 statement
+
+**Claim:** emitted bytes change for every method where the optimal parse
+is enabled (scope decision in §3; the roadmap names m1/m3 as the ratio
+targets). The wire format is untouched — the DP selects among tokens the
+encoder already emits, all of which the decoder has always decoded. m0
+store is bit-identical; the decoder is untouched. **Conditional approval
+expected**, same class as v1.31: cross-engine decode (UnRAR 7.20 + WinRAR
+7.20 via the 24-stage interop gate) is the legality proof; the m3
+non-regression bound remains the standing blocking constraint, now joined
+by a **v1.31-regression bound**: the m5 speed lead (1.38x) and the zeros
+win must not regress.
+
+**The arc's thesis:** v1.31's remaining ratio gaps are PARSE gaps, not
+finder gaps. M3 proved chain depth and nice_len are not the lever for m1
+(−1.63% size max, +25% time); the M3 record names the suspected mechanism
+(WinRAR's m1 parses rep-matches aggressively). Greedy/lazy selection with
+a +1 lookahead cannot see that a literal NOW unlocks a 257 chain or a
+rep run LATER — a cost-model parse can.
+
+---
+
+## 1. Current-state facts (verified this session, citations)
+
+### 1.1 The decision loop is greedy + 1-step lazy
+
+`process_available` (`compressor50.cpp:1382-1523` post-v1.31) decides per
+position: find_match (chains, per-method depth) + the rep scan
+(`old_dist_[0..3]`), rep wins at `rep_best_len + 1 > best.length`, 257
+fires inside the rep-win branch on exact continuation
+(`rep_best_len == last_length_`), and the lazy branch (methods m3+,
+`lazy_tests_`) re-searches `cur_+1` and steals one position when the next
+match beats the current by `> 1`. There is no lookahead beyond +1 and no
+notion of token COST — selection is by match length ordering only.
+
+### 1.2 The token vocabulary and its state machine
+
+Five token classes, three of which mutate carried state:
+- **Literal** — no state change.
+- **Match** (LD slot + DD/LDD distance) — rotates `old_dist_`, sets
+  `last_length_` (post-increment value).
+- **Rep0..3** (LD symbol + RD length slot) — rotates `old_dist_` (moving
+  slot i to front), sets `last_length_`.
+- **257 repeat-last-length** — changes NOTHING (copies
+  `(old_dist_[0], last_length_)`); fires only on exact continuation. This
+  is the v1.31 addition, and it is the parse's cheapest edge (~1-2 bits)
+  — a parser that can SEE 257 chains converts runs at near-zero cost;
+  greedy already handles pure runs, but the DP can choose to ENTER them
+  deliberately (e.g., emit a cheap match that lands the state on a
+  257-able configuration).
+- **Filter** (slot 256) — orthogonal (region descriptors, not parse
+  choices).
+
+The state tuple carried across decisions: `(old_dist_[4], last_length_)`.
+The decoder's mirror rules are pinned by v1.31's T1-T5
+(`compressor50.cpp` shadow contract comment; decompressor50.cpp:813-911).
+
+### 1.3 The price problem (chicken-and-egg)
+
+Exact token cost needs the per-block Huffman codes; the codes are built
+from the token frequencies (`make_tables` from `freq_ld_/freq_dd_/
+freq_ldd_/freq_rd_`, reset per block in `write_block`) — and the parse
+determines the frequencies. Standard resolution (rate-distortion LZ
+parsers generally): price from the PREVIOUS block's accumulated
+frequencies (rolling), or two-pass per block (greedy stats → priced
+re-parse → emit). Both are wire-invisible heuristics. v1.31's block
+quantum: `need_flush()` at 32768 tokens OR 512 KiB input
+(`compressor50.cpp:1059`) — the natural DP window (≤ 512 KiB positions
+per block).
+
+### 1.4 Speed budgets (canonical corpus 3d7434a8, v1.31.0 matrix)
+
+| method | ours | WinRAR | headroom for parse cost |
+|---|---:|---:|---|
+| m1 | 3.16 s | 2.99 s | **NONE** (already 5.7% behind) |
+| m3 | 8.43 s | 16.47 s | ~2x (the default method, standing gate) |
+| m5 | 27.63 s | 38.06 s | ~1.38x |
+
+The m1 problem in one sentence: the method with the biggest ratio gap
+(17.6% behind WinRAR) has the least time budget. Any m1 optimal-parse
+design must be depth-lean (m1's chain-4 candidates are few — the DP
+overhead is the price machinery itself, not the search).
+
+### 1.5 What the parse can and cannot fix
+
+- **m1 (17.6% behind WinRAR):** M3 recorded the suspected mechanisms:
+  rep-match parsing at every literal position and (lower-probability)
+  2-byte matches. The DP prices rep edges exactly where greedy commits
+  literals — this is the arc's primary ratio experiment.
+- **m3 (2.8% behind WinRAR):** greedy + lazy on chain-32 candidates;
+  optimal parse typically recovers 1-3% on mixed data. Parity (52.7-53.0
+  MB vs WinRAR's 52.68 MB) is plausible; the speed lead (2x) absorbs the
+  DP cost.
+- **m5 (3.0% behind WinRAR, 1.38x faster):** the tree-era measurements
+  showed candidate QUALITY has diminishing returns at depth 128 (the
+  tree's −1.5% ratio came at 2.9× time). DP at m5 would spend the speed
+  lead for maybe −1%. Lean NO for m5 in this arc; revisit with m3 data.
+- **Zeros/runs:** already near-optimal via 257 chains (M1); the DP will
+  not improve them and must not slow them (the run-collapse fast path
+  must survive).
+
+---
+
+## 2. Candidate designs, argued honestly
+
+### 2.1 Parse strategy
+
+**Design P-A — rolling forward DP per block (PROPOSED).** Price array
+over the block's positions (`price[i]` = min bits to reach i, plus
+back-pointer to the chosen edge). Per position i, relax edges:
+literal (i→i+1), the chain-found match at its length and the rep0-3
+matches at theirs (i→i+len), each priced from the ROLLING frequency
+tables (previous block's code lengths, updated as tokens are committed).
+Emit by walking back-pointers from the block end. Single-track state
+approximation: the rep-state used for pricing position i is the one the
+current best path produced (the standard practical treatment; exact
+multi-state DP explodes and buys little in measured literature-family
+results).
+- For: targets exactly the arc thesis; bounded cost (one match-finder
+  call + O(edges) price evals per position); the block quantum bounds
+  memory (price array ≈ 512 KiB entries × few bytes).
+- Against: the price-feedback lag (first block prices from cold tables —
+  mitigated by seeding tables from a short greedy warm-up); single-track
+  rep-state can misprice rep edges after branchy regions (bounded by the
+  back-pointer walk being exact within the window).
+
+**Design P-B — lazy-K (extend lazy lookahead from +1 to +K with price
+comparison).** Minimal machinery (reuse the lazy branch), no price
+tables (compare raw lengths).
+- For: tiny diff; some of the win (the lazy family's evidence).
+- Against: cannot see multi-step structure (257-chain entries, rep
+  sequences); K² search growth; the +1 evidence (m3/m4/m5 lazy=1 vs 0 in
+  M3's grid: sizes differed by <0.1%) suggests small returns.
+
+**Design P-C — two-pass per block (greedy stats → priced re-parse).**
+- For: freshest price tables (same-block stats), no cold-start.
+- Against: 2x the search work per block (the greedy pass is thrown
+  away); blocks are the wrong re-parse granularity vs P-A's rolling
+  tables (which amortize). P-A with seeded tables subsumes it.
+
+**Verdict: P-A**, with P-B preserved as the fallback if the DP's speed
+tax at m3 breaks the 2x-headroom budget (gate below). P-C is dominated.
+
+### 2.2 Price model
+
+Rolling per-symbol prices derived from the PREVIOUS block's Huffman code
+lengths (`len_ld_/len_dd_/len_ldd_/len_rd_` — already computed per block)
+plus extra-bit costs at their fixed widths. Seed block: greedy warm-up
+(first block parsed greedily while tables build — the standard cold
+start). Literal prices from `len_ld_`; match/rep/257 prices composed from
+their symbol chains. Prices as u32 approximations (bits × 256, integer)
+— no floats in the hot loop.
+
+### 2.3 Method enablement (decision point)
+
+- **m3: YES** (primary target, 2x headroom, the default method — wins
+  ship to everyone).
+- **m1: CONDITIONAL.** Zero time headroom. Two sub-options: (i) a lean
+  m1 DP (chain-4 candidates are few; the cost is the price machinery —
+  measure and gate); (ii) keep m1 greedy this arc and let m3's results
+  decide in a follow-up. The arc's roadmap text names m1 — so m1 is IN
+  scope, gated by its own speed bound (m1 must stay ≤ ~3.5 s canonical,
+  i.e., within ~10% of today; beyond that the m1 speed loss becomes its
+  own honest regression).
+- **m5: NO** (this arc). The 1.38x lead is thin; candidate quality has
+  measured diminishing returns at depth 128. Revisit after m3 data.
+- **m2/m0: NO** (m2 unused territory, m0 has no parse).
+
+### 2.4 Known interaction surfaces (each a named test)
+
+1. **257 chains inside the DP:** the exact-continuation rule means a 257
+   edge exists only while `rep_best_len == last_length_`; the DP must
+   evaluate 257 edges against the CURRENT best-path state, and run ends
+   must fall back to rep0 (the M1 equality rule). Wrong 257 pricing would
+   regress the zeros win (the 3,514-byte artifact must not grow).
+2. **Filter regions:** `cur_max_lz` clamps per position (the v1.21.25
+   class); DP edges must respect the clamp exactly as the greedy loop
+   does (T3's boundary corpus re-runs).
+3. **Solid carry:** the state entering a solid member is the carrie's
+   `(old_dist_, last_length_)`; the DP's first window must seed prices
+   and state from the carry (T5 re-runs).
+4. **Streaming identity:** the rolling tables + block-quantum DP must
+   produce byte-identical output for feed() chunking (the 512 KiB
+   look-ahead invariant stays); stream_encoder_tests extensions.
+5. **FailCount:** the greedy loop's skip heuristic interacts with
+   candidate gathering — under the DP, candidate gathering keeps the
+   FailCount fast path (m1's zero-headroom budget depends on it).
+
+---
+
+## 3. Proposed v1.32.0 scope (post-Gate-0, pending challenge)
+
+- **M0 (no behavior change):** price-machinery unit scaffolding (a
+  testable `token_price()` composition over the four tables), plus the
+  golden/interop re-verification baseline (nothing moves — sanity).
+- **M1 — rolling DP engine behind a method gate (m3 only):** forward DP
+  over the block quantum, back-pointer emission, price tables seeded
+  greedy-first-block then rolling; greedy path retained verbatim as the
+  fallback (per-method switch). Named tests: T1 257-chain pricing (zeros
+  artifact does not regress), T2 filter-boundary DP, T3 streaming
+  identity at adversarial feeds, T4 solid-carry seed, T5 DP-vs-greedy
+  A/B (ratio must improve or tie on {canonical, mixed, text-heavy},
+  never regress), T6 m3 speed bound (≤ 12 s canonical, i.e., the 2x
+  headroom minus margin).
+- **M2 — m1 conditional enablement (decision point):** the lean m1 DP;
+  gate: m1 ratio improves ≥ 2% AND m1 time ≤ 3.5 s canonical; else m1
+  stays greedy and the gap note moves to a future arc with the measured
+  reason.
+- **M3 — matrix + tuning:** DP depth/price-knob sweep on the full matrix;
+  pick per-method finals; the m5 question re-opened ONLY if m3's ratio
+  gain exceeds 2% (evidence-gated scope creep).
+- **M4 — docs + release v1.32.0** (PERFORMANCE.md ratio rows, spec 03
+  parser note if heuristics change, CHANGELOG, version consistency set).
+
+## 4. Failure-Mode Matrix (arc phases)
+
+| Phase \ Class | parse picks a legal-but-bad token | state mirror diverges | dispatch divergence | resource |
+| :--- | :--- | :--- | :--- | :--- |
+| rolling DP | mispriced edges → ratio REGRESSION (not corruption — all tokens are verified matches): T5 A/B gates per corpus; greedy fallback switch is the release valve | rep-state/last_length_ used for pricing ≠ the state the emitted path produced → the emitted stream is still DECODABLE (tokens verified) but lengths drift from intent: T1-T4 pin the state discipline | one-shot vs streaming vs parallel vs solid: the DP runs inside `process_available` (the shared loop) — the block quantum is input-derived, so feed() chunking must not change block boundaries: T3 | price array ≈ window-sized (512 KiB positions × ~10 B) — bounded; m1's lean mode bounds try counts |
+| fallback switch | greedy fallback must reproduce v1.31.0 bytes EXACTLY (the switch is the release valve): T7 pins byte-identity with the gate off | — | same flag consumed by all engines (one decision function) | — |
+
+## 5. Named negative tests (preview; full registry in the plan)
+
+1. `dp_zeros_no_regression` — the 64 MiB zeros artifact (3,514 B) does
+   not grow under the DP.
+2. `dp_filter_region_boundary` — the T3 E8 corpus through the DP.
+3. `dp_streaming_identity` — adversarial feed sizes byte-identical
+   (extends stream_encoder_tests).
+4. `dp_solid_carry_seed` — solid chain through the DP (T5 re-run).
+5. `dp_vs_greedy_ratio_gate` — per-corpus A/B: DP ≤ greedy size, else
+   the method's gate flips to greedy.
+6. `dp_m3_speed_bound` — m3 ≤ 12 s canonical.
+7. `dp_m1_speed_bound` (M2) — m1 ≤ 3.5 s canonical.
+8. `greedy_fallback_byte_identity` — gate off == v1.31.0 bytes at every
+   method (the release valve, pinned).
+9. `dp_cross_interop` — every DP-emitted stream decodes under UnRAR +
+   WinRAR (Track 17 pattern, extended).
+10. `dp_parallel_identity` — parallel chunk path with the DP is
+    deterministic per chunk geometry.
+
+## 6. Risks
+
+- **R1 — the DP improves ratio < noise (<0.5%) while costing 30-50%
+  time at m3:** the honest outcome would be descoping per the gate
+  (greedy stays; the arc ships the negative result documented — same
+  discipline as M2's tree).
+- **R2 — price-feedback oscillation** (parse ↔ tables): mitigated by
+  rolling tables + the greedy first block; T5's size determinism catches
+  oscillation.
+- **R3 — m1 time blowup:** the lean mode + hard speed bound; fallback to
+  greedy is one table value.
+- **R4 — interaction with M1's 257 equality rule:** the DP must NEVER
+  price a 257 edge whose verification would fail at emission (the
+  emission code re-verifies; a mispriced 257 degrades to the rep path —
+  T1).
+- **R5 — scope creep into m5:** evidence-gated (M3 above), pre-agreed.
+
+## 7. Gate 0 verdict position (pre-challenge)
+
+**Conditional approval sought** for: rolling forward DP (P-A) behind a
+per-method gate, m3 first-class, m1 conditional on its own speed bound,
+m5/m2/m0 out of scope; greedy retained verbatim as the byte-identical
+release valve; the m3 non-regression bound extended with the
+v1.31-regression bounds (m5 speed lead, zeros artifact). The challenge
+is invited specifically on: (i) single-track rep-state pricing vs the
+risk of mispriced rep edges; (ii) the m1 lean-DP feasibility under a
+zero-headroom budget; (iii) the block-quantum DP window vs the 512 KiB
+look-ahead invariant; (iv) whether the greedy-fallback release valve
+should be a table value or a hard method property.
+
+---
+
+## 8. Challenge Verdict (Gate 0 review)
+
+🟡 **CONDITIONAL APPROVAL — six directives, none structural.** The
+load-bearing wall holds: single-track rep-state pricing is a QUALITY
+approximation, never a correctness risk — emission replays exactly the
+edges recorded in the forward pass, and the state at each position
+re-derives identically (a deterministic function of the initial state
+plus the same edge sequence), so M1's 257 invariants (which the emitter
+re-verifies) hold by construction. Directives, all applied to the plan:
+
+1. **WASM treatment named:** the DP compiles into the block codec; the
+   ≤500 KiB size gate re-runs this arc; a material delta defaults wasm
+   to greedy via the compile-time pattern, documented (plan M1).
+2. **m1 pre-commitment:** m1's DP is an EXPERIMENT whose likely outcome
+   is "stays greedy" — the price-array L3-traffic arithmetic (~30-100
+   cycles/byte) lands m1 at ~4.1-4.4 s against the 3.5 s bound. The M2
+   gate decides on measurement; the honest-negative branch ships the
+   reason (v1.31-M3 discipline).
+3. **Price-update rule:** rolling replace, with a pre-agreed λ=0.5 blend
+   fallback if T5 shows cross-corpus instability; determinism holds
+   either way.
+4. **Valve mechanics:** per-method DP enablement is a table value in
+   `init_match_params()` (the one decision function, consumed by every
+   engine); T8 pins gate-off == v1.31.0 for all blocks including the
+   greedy warm-up block.
+5. **Memory budget stated:** ~4 MB per block window (u32 price + u32
+   packed-edge arrays over ≤512 KiB positions), bounded by the dual
+   flush (positions ≤ input bytes per block — `input_since_block_`
+   counts match lengths).
+6. **State note:** a 257 edge's target state equals its source state
+   (257 mutates nothing); edge relaxation order is fixed (literal →
+   rep0..3 → match) for deterministic tie-breaks.
+
+Pillar-7 screen: FMM + negative tests present; engine divergence clean
+structurally (the DP lives in the shared `process_available` loop; the
+parallel chunk path inherits it deterministically — T10); the wasm item
+was the one HIT (directive 1).
