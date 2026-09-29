@@ -1,8 +1,20 @@
 #include "parallel_compressor.hpp"
+#include "filters50.hpp"
 #include <algorithm>
 #include <deque>
 
 namespace openrar::compress {
+
+bool mt_should_use_parallel(const FilterConfig& filter_cfg, const core::byte* sample,
+                            size_t sample_len) {
+    // Filters explicitly disabled: nothing would be lost by chunking.
+    if (filter_cfg.mode == FilterMode::DisableAll) return true;
+    // No sample to judge with: take MT (the caller's sample read failed).
+    if (sample == nullptr || sample_len == 0) return true;
+    core::uint8 channels = 1;
+    const FilterType detected = Filters50::detect_filter(sample, sample_len, channels, filter_cfg);
+    return detected == FilterType::None;
+}
 
 ParallelBlockPipeline::ParallelBlockPipeline(const ParallelCompressConfig& cfg) : cfg_(cfg) {
     eff_threads_ = cfg_.threads == 0 ? core::hardware_thread_hint() : cfg_.threads;
