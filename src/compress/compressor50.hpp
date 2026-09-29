@@ -251,6 +251,40 @@ private:
     std::vector<core::byte> lit_bytes_;           // literal byte values
     std::vector<Compressor50Token> match_tokens_; // match/rep data
     std::vector<FilterToken> filter_tokens_;      // filter descriptors (slot 256)
+    // ── v1.32 optimal parse (rolling DP, m3 gate) ───────────────────────
+    // Per-block shortest-path token selection; see process_available_dp.
+    // Working set sized once per session to the 512 KiB block quantum +
+    // MAX_LZ_MATCH slack.
+    std::vector<core::uint32> dp_price_;
+    // Sentinel for "no edge reaches this position yet". Chosen so that
+    // base + cost can never wrap into a plausible price for any legal window
+    // (max ~512K positions x ~30 bits x 256 stays far below 2^31).
+    static const core::uint32 DP_INF = 0x7F000000u;
+    std::vector<core::uint32> dp_edge_meta_; // type 3 b | len 13 b
+    std::vector<core::uint32> dp_edge_dist_; // match distance or rep slot
+    // Rep-state AFTER the edge recorded at each window index. Captured at
+    // write time, not read back from the edge arrays: a longer match from a
+    // LATER position overwrites dp_edge_meta_[i] after position i relaxed,
+    // so reading the arrays back yields a state the walk never reproduces
+    // (measured: 2384 of 24K edges degraded at emission).
+    struct DpState {
+        size_t d[4];
+        size_t last_len;
+    };
+    std::vector<DpState> dp_state_;
+    std::vector<std::pair<core::uint64, FilterToken>> dp_pending_;
+    size_t dp_win_start_{0};
+    // Position cap for the current DP window, adapted from the previous
+    // window's bytes-per-token ratio so the window lands near the
+    // 32768-token block quantum (see dp_emit_window).
+    size_t dp_win_cap_{0x80000};
+    bool dp_seeded_{false};
+    bool dp_enabled_{false};
+    bool dp_prices_valid_{false};
+    bool dp_win_open_{false};
+    // running rep-state along the in-order relax (mirror of
+    // old_dist_/last_length_)
+    size_t dp_sd0_{0}, dp_sd1_{0}, dp_sd2_{0}, dp_sd3_{0}, dp_sll_{0};
     FilterConfig filter_config_{};
     FilterType active_filter_{FilterType::None};
     core::uint8 filter_channels_{1};
@@ -368,6 +402,25 @@ private:
     // cur_ consumes everything loaded; when !final it stops early at
     // cur_+4 > src_loaded_ so pending match decisions wait for more input.
     int process_available(bool final);
+    int process_available_dp(bool final);
+    void dp_relax_position(size_t idx, core::uint64 pos);
+    void dp_emit_window();
+    void dp_emit_literals(core::uint64 from, size_t len);
+    void dp_capture_state(size_t at);
+    bool dp_match_encodes_exact(size_t len, size_t dist) const;
+    // ── v1.32 optimal parse (rolling DP, m3 gate) ───────────────────────────
+    // Per-block shortest-path token selection: price_[i] = minimum bits*256
+    // to reach window position i, edge_meta_[i] = the token ending at i
+    // (type 3 b | len 13 b), edge_dist_[i] = match distance or rep slot.
+    // Prices come from the previous block's Huffman code lengths
+    // (len_ld_/len_dd_/len_ldd_/len_rd_ — rolling, seeded by a greedy
+    // warm-up block); the rep-state (old_dist_/last_length_ equivalent) is
+    // carried as running members along the in-order relax — a single-track
+    // approximation that emission replays exactly (deterministic re-derive,
+    // so M1's 257 invariants hold by construction; a mispriced edge is a
+    // quality loss, never a decoder risk). Enabled per method by the
+    // dp_parse_ table (M1: m3 only); the greedy path is untouched and is
+    // the byte-identical release valve (T8).
     void slide_window();
     void init_match_params();
     // Emit one RAR5 compressed block. Returns false when the encoded block

@@ -249,6 +249,16 @@ void Compressor50::reset_state() {
     prev_.clear();
     head64_.clear();
     prev64_.clear();
+    dp_price_.clear();
+    dp_edge_meta_.clear();
+    dp_state_.clear();
+    dp_edge_dist_.clear();
+    dp_pending_.clear();
+    dp_win_start_ = 0;
+    dp_win_cap_ = 0x80000;
+    dp_seeded_ = false;
+    dp_enabled_ = false;
+    dp_prices_valid_ = false;
     reset_old_dist();
     hash_crc32_.reset();
     hash_blake2_.reset();
@@ -302,6 +312,22 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
         prev64_.clear();
         head_.assign(HASH_SIZE, static_cast<core::uint32>(-1));
         prev_.assign(win_size_, static_cast<core::uint32>(-1));
+    }
+
+    // the flag is derived here too (init_match_params runs after this in
+    // some flows — the stale reset_state value must not gate the sizing)
+    dp_enabled_ = (method_ == 3);
+    if (dp_enabled_) {
+        const size_t dp_cap = 0x80000 + MAX_LZ_MATCH + 16;
+        dp_price_.assign(dp_cap, 0);
+        dp_edge_meta_.assign(dp_cap, 0);
+        dp_state_.assign(dp_cap, DpState{{0, 0, 0, 0}, 0});
+        dp_edge_dist_.assign(dp_cap, 0);
+    } else {
+        dp_price_.clear();
+        dp_edge_meta_.clear();
+        dp_state_.clear();
+        dp_edge_dist_.clear();
     }
 
     cur_ = 0;
@@ -594,6 +620,490 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
     return best;
 }
 
+// ── v1.32 optimal parse: rolling forward DP per block ────────────────────
+// process_available_dp twins the greedy loop's scan skeleton (load / L13 /
+// slide / filter transform / catch-up hashing / streaming defer) but
+// replaces per-position token commitment with edge relaxation into the
+// window arrays; when the window closes (512 KiB input positions, EOF, or
+// the streaming defer boundary) the back-pointer walk collects the chosen
+// edges and a forward replay emits them through the existing token
+// emitters — which own the shadow state (old_dist_/last_length_) and
+// re-verify every M1 invariant, so a mispriced edge is a quality loss,
+// never a decoder risk. The greedy path is untouched (T8 release valve).
+
+static size_t filter_max_chunk(size_t win_size);
+
+int Compressor50::process_available_dp(bool final) {
+    // The greedy warm-up may have consumed input before the tables went
+    // warm (dp_prices_valid_ flips inside the first write_block) — the DP
+    // opens its first window AT the handoff position, never behind it.
+    if (!dp_win_open_) {
+        dp_win_start_ = cur_;
+        // fresh prices: 0 at the window start, infinity beyond it. Without
+        // this the arrays hold the previous window's final prices (or the
+        // session-open zeros) and no edge ever "improves" — the walk then
+        // hits unwritten (len=0) entries.
+        dp_price_[0] = 0;
+        std::fill(dp_price_.begin() + 1, dp_price_.end(), DP_INF);
+        dp_sd0_ = old_dist_[0];
+        dp_sd1_ = old_dist_[1];
+        dp_sd2_ = old_dist_[2];
+        dp_sd3_ = old_dist_[3];
+        dp_sll_ = last_length_;
+        dp_win_open_ = true;
+    }
+    while (true) {
+        load_data(cur_ + 0x80000);
+
+        // L13 (mirrors greedy): source ended before the declared size.
+        if (src_eof_ && src_loaded_ < src_size_) return -1;
+
+        if (cur_ >= src_loaded_) break;
+        if (!external_buf_ && cur_ >= pos_base_ + buf_size_ - READ_CHUNK) slide_window();
+
+        // filter transform + pending filter record: the token itself is
+        // emitted by the replay at this exact stream position. Matches
+        // never cross a region start (cur_max_lz clamps to the remainder
+        // at every source position), so a filter always lands on a token
+        // boundary of the chosen parse.
+        if (active_filter_ != FilterType::None && filter_emitted_until_ <= cur_ &&
+            filter_emitted_until_ < src_size_) {
+            size_t max_chunk = filter_max_chunk(win_size_);
+            core::uint32 chunk_len = static_cast<core::uint32>(
+                std::min<core::uint64>(src_size_ - filter_emitted_until_, max_chunk));
+            if (chunk_len > 0) {
+                if (!external_buf_ && !filter_pretransformed_ &&
+                    filter_emitted_until_ >= pos_base_) {
+                    size_t buf_off = static_cast<size_t>(filter_emitted_until_ - pos_base_);
+                    size_t avail_in_buf =
+                        (src_loaded_ > filter_emitted_until_)
+                            ? static_cast<size_t>(src_loaded_ - filter_emitted_until_)
+                            : 0;
+                    size_t trans_len = std::min<size_t>(chunk_len, avail_in_buf);
+                    if (trans_len > 0) {
+                        core::uint64 file_rel_offset = filter_emitted_until_ - file_start_pos_;
+                        if (active_filter_ == FilterType::E8) {
+                            Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset,
+                                                 false);
+                        } else if (active_filter_ == FilterType::E8E9) {
+                            Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset,
+                                                 true);
+                        } else if (active_filter_ == FilterType::Arm) {
+                            Filters50::encode_arm(buf_.data() + buf_off, trans_len,
+                                                  file_rel_offset);
+                        } else if (active_filter_ == FilterType::Delta) {
+                            std::vector<core::byte> tmp(trans_len);
+                            Filters50::encode_delta(buf_.data() + buf_off, tmp.data(), trans_len,
+                                                    filter_channels_);
+                            std::memcpy(buf_.data() + buf_off, tmp.data(), trans_len);
+                        }
+                    }
+                }
+                FilterToken ft;
+                ft.block_start = 0;
+                ft.block_length = chunk_len;
+                ft.type = static_cast<core::uint8>(active_filter_);
+                ft.channels = filter_channels_;
+                dp_pending_.emplace_back(cur_, ft);
+                filter_emitted_until_ += chunk_len;
+            }
+        }
+
+        // streaming defer (identical boundary to greedy: both engines see
+        // the same 512 KiB look-ahead, so window boundaries match)
+        if (streaming_ && !final && cur_ + STREAM_LOOKAHEAD > src_loaded_) return 0;
+
+        // Window close. TWO boundaries, mirroring need_flush()'s two terms:
+        //   - a position cap (starts at 512 KiB), and
+        //   - the 32768-token quantum.
+        // The token term is load-bearing: without it a window runs to 512 KiB
+        // of positions and emits one ~80K-token block where greedy emits
+        // ~32K-token blocks. The oversized block is priced by ONE stale
+        // Huffman table and loses badly (measured 3.0 vs 1.7 bits/byte).
+        // The token count is only known AFTER the walk, so the cap is adapted
+        // from the previous window's observed bytes-per-token ratio, which
+        // converges to ~32K tokens per window after the first.
+        if (cur_ - dp_win_start_ >= dp_win_cap_) {
+            dp_emit_window();
+            // One window == one block: the DP prices a whole window with the
+            // PREVIOUS block's tables, so carrying tokens across a window
+            // boundary lets the tables drift further from the tokens they
+            // price. Flushing here keeps the price feedback tight.
+            consume_source(unhashed_pos_, cur_);
+            unhashed_pos_ = cur_;
+            if (!write_block(false)) return -1;
+            continue;
+        }
+
+        // catch-up hash insertion (mirrors greedy; the DP scan is linear so
+        // every position is hashed exactly once — match bodies included)
+        while (!is_large_window_ && unhashed_pos_ + 7 <= cur_ && unhashed_pos_ + 7 <= src_loaded_) {
+            core::uint64 q;
+            std::memcpy(&q, &buf_data_[static_cast<size_t>(unhashed_pos_ - pos_base_)], 8);
+            core::uint32 h0 = ((static_cast<core::uint32>(q)) * 0x9e3779b1u) >> (32 - HASH_BITS);
+            core::uint32 h1 =
+                ((static_cast<core::uint32>(q >> 8)) * 0x9e3779b1u) >> (32 - HASH_BITS);
+            core::uint32 h2 =
+                ((static_cast<core::uint32>(q >> 16)) * 0x9e3779b1u) >> (32 - HASH_BITS);
+            core::uint32 h3 =
+                ((static_cast<core::uint32>(q >> 24)) * 0x9e3779b1u) >> (32 - HASH_BITS);
+            prev_[static_cast<size_t>(unhashed_pos_ & (win_size_ - 1))] = head_[h0];
+            head_[h0] = static_cast<core::uint32>(unhashed_pos_ & 0xffffffff);
+            prev_[static_cast<size_t>((unhashed_pos_ + 1) & (win_size_ - 1))] = head_[h1];
+            head_[h1] = static_cast<core::uint32>((unhashed_pos_ + 1) & 0xffffffff);
+            prev_[static_cast<size_t>((unhashed_pos_ + 2) & (win_size_ - 1))] = head_[h2];
+            head_[h2] = static_cast<core::uint32>((unhashed_pos_ + 2) & 0xffffffff);
+            prev_[static_cast<size_t>((unhashed_pos_ + 3) & (win_size_ - 1))] = head_[h3];
+            head_[h3] = static_cast<core::uint32>((unhashed_pos_ + 3) & 0xffffffff);
+            unhashed_pos_ += 4;
+        }
+        while (unhashed_pos_ < cur_ && unhashed_pos_ + 4 <= src_loaded_) {
+            insert_position(unhashed_pos_);
+            unhashed_pos_++;
+        }
+
+        dp_relax_position(static_cast<size_t>(cur_ - dp_win_start_), cur_);
+        cur_++;
+        unhashed_pos_ = cur_;
+    }
+
+    // EOF: close the final window (empty when the last iteration closed it)
+    dp_emit_window();
+    return 0;
+}
+
+// Relax every parse edge out of position pos (window index idx): literal,
+// rep0..3 from the running state, 257 on exact continuation, and the
+// chain-found match at its full length. Prices are bits*256 composed from
+// the previous block's Huffman code lengths. Deterministic edge order
+// (literal, rep0..3, 257, match) with strict-improvement writes — later
+// edges win ties, so a match beats a literal at equal price. Matches never
+// cross a filter region start: cur_max_lz carries the region remainder
+// exactly as in greedy. The running rep-state advances after the relax
+// (single-track: it is the state along the recorded best path, which the
+// emission replays — and re-verifies, so a divergence is a quality loss).
+void Compressor50::dp_relax_position(size_t idx, core::uint64 pos) {
+    const core::byte* buf_pos = &buf_data_[static_cast<size_t>(pos - pos_base_)];
+    const core::uint32 base = dp_price_[idx];
+    // A position no edge reached yet holds DP_INF. Relaxing from it would
+    // compute base + cost, which WRAPS u32 to a tiny value and beats every
+    // real price — the walk then follows a garbage-cheap path (measured: 40%
+    // size regression, match bytes halved). Unreachable positions contribute
+    // no edges; their price is set when an earlier position's edge lands.
+    if (base == DP_INF) return;
+    size_t limit = avail_at(pos);
+    if (limit > MAX_LZ_MATCH) limit = MAX_LZ_MATCH;
+    // Matches may never run past the loaded input (the decoder has no bytes
+    // beyond src_size_ to copy from).
+    size_t cur_max_lz = limit;
+    core::uint32 cur_nice_len = nice_len_;
+    if (cur_nice_len > cur_max_lz) cur_nice_len = static_cast<core::uint32>(cur_max_lz);
+    if (active_filter_ != FilterType::None && filter_emitted_until_ > pos) {
+        size_t rem = static_cast<size_t>(filter_emitted_until_ - pos);
+        if (rem < 2) {
+            // region end within reach: literal only (mirrors greedy)
+            const core::uint32 c = base + static_cast<core::uint32>(len_ld_[buf_pos[0]]) * 256;
+            if (c < dp_price_[idx + 1]) {
+                dp_price_[idx + 1] = c;
+                dp_edge_meta_[idx + 1] = (1u << 3);
+                dp_edge_dist_[idx + 1] = 0;
+            }
+            fail_count_++;
+            return;
+        }
+        if (rem < cur_nice_len) cur_nice_len = static_cast<core::uint32>(rem);
+        if (rem < cur_max_lz) cur_max_lz = rem;
+    }
+
+    // FailCount bookkeeping mirrors the greedy loop: it tracks whether a
+    // match was FOUND at this position, NOT whether the edge won the
+    // relaxation. Gating the reset on "the edge improved the price" starves
+    // the finder — a position whose match is real but not cheaper leaves
+    // fail_count_ climbing until search_chain hits 0 and the chain search is
+    // skipped outright.
+    bool found_match = false;
+    size_t dp_best_len_ = 0;
+
+    // literal
+    {
+        const core::uint32 lit = base + static_cast<core::uint32>(len_ld_[buf_pos[0]]) * 256;
+        if (lit < dp_price_[idx + 1]) {
+            dp_price_[idx + 1] = lit;
+            dp_edge_meta_[idx + 1] = (1u << 3);
+            dp_edge_dist_[idx + 1] = 0;
+            dp_capture_state(idx + 1);
+        }
+    }
+
+    // rep0..3 from the running state
+    const size_t state_d[4] = {dp_sd0_, dp_sd1_, dp_sd2_, dp_sd3_};
+    for (core::uint32 i = 0; i < 4; ++i) {
+        const size_t d = state_d[i];
+        if (d == static_cast<size_t>(-1) || d == 0 || d > pos - pos_base_ || d > max_dist_)
+            continue;
+        if (buf_pos[0] != buf_pos[-static_cast<core::int64>(d)]) continue;
+        const size_t len = rep_length(pos, d, cur_max_lz);
+        if (len < MIN_MATCH) continue;
+        found_match = true;
+        if (len > dp_best_len_) dp_best_len_ = len;
+        // Relax every encodable length of this rep thread (same rationale as
+        // the chain match: a shorter rep can leave a cheaper continuation).
+        for (size_t l = MIN_MATCH; l <= len; ++l) {
+            core::uint32 slot, extra, bits;
+            length_to_slot(static_cast<core::uint32>(l), slot, extra, bits);
+            const core::uint32 cost = base + (static_cast<core::uint32>(len_ld_[258 + i]) +
+                                              static_cast<core::uint32>(len_rd_[slot]) + bits) *
+                                                 256;
+            const core::uint32 t = idx + static_cast<core::uint32>(l);
+            if (t < dp_price_.size() && cost < dp_price_[t]) {
+                dp_price_[t] = cost;
+                dp_edge_meta_[t] = (2u + i) | (static_cast<core::uint32>(l) << 3);
+                dp_edge_dist_[t] = static_cast<core::uint32>(d);
+                // rep i moves slot i to the front
+                size_t nd[4] = {dp_sd0_, dp_sd1_, dp_sd2_, dp_sd3_};
+                for (size_t j = i; j > 0; --j) nd[j] = nd[j - 1];
+                nd[0] = d;
+                dp_state_[t] = DpState{{nd[0], nd[1], nd[2], nd[3]}, l};
+            }
+        }
+    }
+
+    // 257 exact continuation (target state == source state)
+    if (dp_sll_ != 0 && dp_sll_ <= cur_max_lz) {
+        const size_t d = dp_sd0_;
+        if (d != static_cast<size_t>(-1) && d != 0 && d <= pos - pos_base_ && d <= max_dist_ &&
+            rep_length(pos, d, dp_sll_) >= dp_sll_) {
+            found_match = true;
+            if (dp_sll_ > dp_best_len_) dp_best_len_ = dp_sll_;
+            const core::uint32 cost = base + static_cast<core::uint32>(len_ld_[257]) * 256;
+            const core::uint32 t = idx + static_cast<core::uint32>(dp_sll_);
+            if (t < dp_price_.size() && cost < dp_price_[t]) {
+                dp_price_[t] = cost;
+                dp_edge_meta_[t] = 6u | (static_cast<core::uint32>(dp_sll_) << 3);
+                dp_edge_dist_[t] = static_cast<core::uint32>(d);
+                // 257 mutates nothing: target state == source state
+                dp_state_[t] = DpState{{dp_sd0_, dp_sd1_, dp_sd2_, dp_sd3_}, dp_sll_};
+            }
+        }
+    }
+
+    // chain match (FailCount skip mirrors greedy)
+    core::uint32 search_chain = max_chain_;
+    if (fail_count_ > 0x100) {
+        core::uint32 skip_mask = 3;
+        if (fail_count_ > 0x400) skip_mask = 7;
+        if (fail_count_ > 0x800) skip_mask = 15;
+        if (fail_count_ > 0x1000) skip_mask = 31;
+        if ((fail_count_ & skip_mask) != 0) search_chain = 0;
+    }
+    if (search_chain > 0) {
+        MatchInfo best = find_match(pos, search_chain, cur_nice_len);
+        if (best.length > cur_max_lz) best.length = cur_max_lz;
+        if (best.length >= MIN_MATCH) {
+            const size_t max_len = best.length;
+            const size_t dist =
+                static_cast<size_t>(pos - static_cast<core::uint64>(best.candidate));
+            found_match = true;
+            if (max_len > dp_best_len_) dp_best_len_ = max_len;
+            const core::uint32 inc = length_increment(dist);
+            core::uint32 dslot, raw;
+            core::uint64 dextra;
+            distance_to_slot(dist, dslot, dextra, raw);
+            const core::uint32 dfixed =
+                static_cast<core::uint32>(len_dd_[dslot]) +
+                ((dslot >= 4) ? static_cast<core::uint32>(len_ldd_[dextra & 0xF]) : 0) + raw;
+            // Relax EVERY encodable length of this (len, dist), not just the
+            // maximum: the shortest-path search needs the option to stop the
+            // match early (a shorter match can leave the state on a cheaper
+            // rep/257 continuation). Pricing only the max pins the parse to
+            // greedy's lengths and loses that choice entirely.
+            for (size_t len = MIN_MATCH; len <= max_len; ++len) {
+                if (!dp_match_encodes_exact(len, dist)) continue;
+                core::uint32 slot, extra, bits;
+                length_to_slot(static_cast<core::uint32>(len - inc), slot, extra, bits);
+                const core::uint32 cost =
+                    base + (static_cast<core::uint32>(len_ld_[262 + slot]) + bits + dfixed) * 256;
+                const core::uint32 t = idx + static_cast<core::uint32>(len);
+                if (t < dp_price_.size() && cost < dp_price_[t]) {
+                    dp_price_[t] = cost;
+                    dp_edge_meta_[t] = 1u | (static_cast<core::uint32>(len) << 3);
+                    dp_edge_dist_[t] = static_cast<core::uint32>(dist);
+                    // match rotates the distance to the front
+                    dp_state_[t] = DpState{{dist, dp_sd0_, dp_sd1_, dp_sd2_}, len};
+                }
+            }
+        }
+    }
+    if (!found_match) {
+        fail_count_++;
+    } else if (dp_best_len_ >= 8) {
+        fail_count_ = 0;
+    }
+
+    // Advance the running state to the state recorded for position idx+1
+    // (captured when that edge was written — see dp_state_).
+    {
+        const DpState& st = dp_state_[idx + 1];
+        dp_sd0_ = st.d[0];
+        dp_sd1_ = st.d[1];
+        dp_sd2_ = st.d[2];
+        dp_sd3_ = st.d[3];
+        dp_sll_ = st.last_len;
+    }
+}
+
+// Capture the post-edge rep-state for window index `at`: a literal changes
+// nothing, so it inherits the running state.
+void Compressor50::dp_capture_state(size_t at) {
+    dp_state_[at] = DpState{{dp_sd0_, dp_sd1_, dp_sd2_, dp_sd3_}, dp_sll_};
+}
+
+// Back-pointer walk to the window end, then a forward replay through the
+// existing token emitters. Every state-dependent edge (rep0..3, 257) is
+// re-verified against the LIVE state at replay: the relax tracks a single
+// best-path state which the recorded path may not reproduce exactly, so a
+// relative-slot token is only legal when the live slot still holds the
+// relax-time distance. A failed check degrades to an explicit-distance match
+// (or literals) — a quality loss, never a decode mismatch.
+void Compressor50::dp_emit_window() {
+    const size_t win_len = static_cast<size_t>(cur_ - dp_win_start_);
+    if (win_len == 0) {
+        dp_win_open_ = false;
+        return;
+    }
+    assert(win_len < dp_price_.size());
+
+    static thread_local std::vector<size_t> path;
+    path.clear();
+    size_t t = win_len;
+    while (t > 0) {
+        assert(t < dp_edge_meta_.size());
+        const core::uint32 meta = dp_edge_meta_[t];
+        const core::uint32 len = meta >> 3;
+        // Every position in [1, win_len] was relaxed, so it carries an edge
+        // with len >= 1; a zero here means the arrays were not reachable
+        // (unreachable target) and the walk cannot continue.
+        assert(len >= 1 && len <= t);
+        path.push_back(t);
+        t -= len;
+    }
+
+    size_t pend = 0;
+    for (size_t k = path.size(); k-- > 0;) {
+        const size_t end = path[k];
+        const core::uint32 meta = dp_edge_meta_[end];
+        const core::uint32 type = meta & 7;
+        const size_t len = meta >> 3;
+        const core::uint64 tok_start = dp_win_start_ + (end - len);
+        while (pend < dp_pending_.size() && dp_pending_[pend].first <= tok_start) {
+            add_filter(dp_pending_[pend].second);
+            ++pend;
+        }
+        const core::uint32 dist = dp_edge_dist_[end];
+        cur_ = tok_start;
+        switch (type) {
+        case 0: // literal
+            add_literal(buf_data_[static_cast<size_t>(tok_start - pos_base_)]);
+            input_since_block_ += 1;
+            break;
+        case 1: // match: the distance is explicit on the wire, so this is
+            // self-verifying — but confirm it against the source anyway
+            // (defense; the relax already validated it at this position)
+            if (dp_match_encodes_exact(len, dist) && dist <= tok_start - pos_base_ &&
+                rep_length(tok_start, dist, len) >= len) {
+                add_match(len, dist);
+                input_since_block_ += len;
+            } else {
+                dp_emit_literals(tok_start, len);
+            }
+            break;
+        case 2:
+        case 3:
+        case 4:
+        case 5: { // rep0..3 — the named distance is a RELATIVE slot, so it
+                  // only means anything if the live state still holds the
+                  // relax-time distance there. Verify; otherwise fall back to
+                  // an explicit-distance match at the relax-time distance
+                  // (also recorded in dp_edge_dist_), which is always legal.
+            const core::uint32 i = type - 2;
+            if (i < 4 && old_dist_[i] == dist && dist != 0 && dist <= max_dist_ &&
+                dist <= tok_start - pos_base_ && rep_length(tok_start, dist, len) >= len) {
+                add_rep(i, len);
+                input_since_block_ += len;
+            } else if (dp_match_encodes_exact(len, dist) && dist <= tok_start - pos_base_ &&
+                       rep_length(tok_start, dist, len) >= len) {
+                add_match(len, dist);
+                input_since_block_ += len;
+            } else {
+                dp_emit_literals(tok_start, len);
+            }
+            break;
+        }
+        default: { // 257: no distance on the wire — the decoder reuses
+                   // (old_dist_[0], last_length_), so BOTH must match the
+                   // relax-time state or the stream would decode differently.
+                   // Any mismatch degrades to an explicit-distance match.
+            const size_t d0 = old_dist_[0];
+            const bool ok = last_length_ == len && d0 != static_cast<size_t>(-1) && d0 != 0 &&
+                            d0 <= max_dist_ && rep_length(tok_start, d0, len) >= len;
+            if (ok) {
+                add_last_len();
+                input_since_block_ += len;
+            } else if (dp_match_encodes_exact(len, dist) && dist <= tok_start - pos_base_ &&
+                       rep_length(tok_start, dist, len) >= len) {
+                add_match(len, dist);
+                input_since_block_ += len;
+            } else {
+                dp_emit_literals(tok_start, len);
+            }
+            break;
+        }
+        }
+        cur_ = dp_win_start_ + end;
+    }
+    dp_pending_.clear();
+    consume_source(unhashed_pos_, cur_);
+    // Adapt the next window's position cap from the bytes-per-token ratio
+    // just observed, so the following window lands near the 32768-token
+    // quantum instead of the 512 KiB position cap.
+    if (path.size() > 0) {
+        const size_t per_tok = std::max<size_t>(1, win_len / path.size());
+        size_t cap = 32768 * per_tok;
+        if (cap < 0x8000) cap = 0x8000;
+        if (cap > 0x80000) cap = 0x80000;
+        dp_win_cap_ = cap;
+    }
+    dp_win_start_ = cur_;
+    dp_win_open_ = false;
+    unhashed_pos_ = cur_;
+}
+
+// True when a match token of (len, dist) round-trips to EXACTLY len bytes.
+// add_match() encodes base = len - inc but clamps base into [2, MAX_LZ_MATCH];
+// the decoder reconstructs base + inc, so an out-of-range pair silently
+// decodes to a DIFFERENT length than recorded (len=3, inc=2 -> base clamps to
+// 2 -> the decoder emits 4). Greedy rejects such matches outright (the
+// `len < inc + 2` test); every DP emission path must apply the same guard,
+// including the degrade fallbacks.
+bool Compressor50::dp_match_encodes_exact(size_t len, size_t dist) const {
+    if (dist == 0 || dist > max_dist_) return false;
+    const core::uint32 inc = length_increment(dist);
+    if (len < static_cast<size_t>(inc) + 2) return false;
+    if (len - inc > MAX_LZ_MATCH) return false;
+    return true;
+}
+
+// Last-resort emission for an edge that fails live re-verification: the
+// span becomes literals. Always decodable (a literal is its own
+// verification), and the input span is unchanged so the rest of the
+// recorded path stays aligned. Costs ratio, never correctness.
+void Compressor50::dp_emit_literals(core::uint64 from, size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        add_literal(buf_data_[static_cast<size_t>(from + i - pos_base_)]);
+    }
+    input_since_block_ += len;
+}
+
 size_t Compressor50::rep_length(core::uint64 pos, size_t dist, size_t cap) {
     if (dist == static_cast<size_t>(-1) || dist == 0 || dist > pos - pos_base_ || dist > max_dist_)
         return 0;
@@ -795,6 +1305,7 @@ void Compressor50::make_tables() {
     HuffmanBuilder::build_codes(len_ldd_, LDC, code_ldd_);
     HuffmanBuilder::build_codes(len_rd_, RC, code_rd_);
 
+    dp_prices_valid_ = true; // rolling price tables are warm (v1.32 DP)
     std::memcpy(table_bits_, len_ld_, NC);
     std::memcpy(table_bits_ + NC, len_dd_, cur_dc);
     std::memcpy(table_bits_ + NC + cur_dc, len_ldd_, LDC);
@@ -1179,6 +1690,11 @@ void Compressor50::init_match_params() {
     max_chain_ = chains[method_];
     nice_len_ = nices[method_];
     lazy_tests_ = lazies[method_];
+    // v1.32 M1: the optimal parse gates to m3 (2x time headroom vs WinRAR;
+    // the default method ships the ratio win). m1 stays greedy this arc
+    // (zero time headroom — its own gate in a follow-up), m5 keeps the
+    // depth-128 speed lead out of this arc's scope.
+    dp_enabled_ = (method_ == 3);
 }
 
 void Compressor50::slide_window() {
@@ -1222,6 +1738,11 @@ static size_t filter_max_chunk(size_t win_size) {
 // which streaming maintains with the same invariants (src_size_ ==
 // src_loaded_ from the first feed; final=true only after src_eof_).
 int Compressor50::process_available(bool final) {
+    // v1.32 optimal parse: the DP serves m3 once its price tables are warm
+    // (the first block parses greedily — the rolling tables' seed). The
+    // greedy path below is untouched and is the byte-identical release
+    // valve (T8).
+    if (dp_enabled_ && dp_prices_valid_) return process_available_dp(final);
     while (true) {
         load_data(cur_ + 0x80000);
 
@@ -1301,9 +1822,28 @@ int Compressor50::process_available(bool final) {
         }
 
         if (need_flush()) {
+            // Seed the DP's first window cap from the warm-up block just
+            // emitted: its token count and input span are exactly the ratio
+            // the DP windows must reproduce. Without this the first DP window
+            // runs the full 512 KiB and emits an ~80K-token block priced by
+            // one stale table (measured 2.53 vs greedy's 1.71 bits/byte).
+            if (dp_enabled_ && !dp_seeded_ && token_seq_.size() > 0) {
+                const size_t per_tok = std::max<size_t>(1, input_since_block_ / token_seq_.size());
+                size_t cap = 32768 * per_tok;
+                if (cap < 0x8000) cap = 0x8000;
+                if (cap > 0x80000) cap = 0x80000;
+                dp_win_cap_ = cap;
+                dp_seeded_ = true;
+            }
             consume_source(unhashed_pos_, cur_);
             unhashed_pos_ = cur_;
             if (!write_block(false)) return -1;
+            // v1.32 handoff: write_block() built the rolling price tables, so
+            // the warm-up block is done. The gate on entry can only be read
+            // once, but the one-shot loop consumes the whole file in a single
+            // call — hand the rest of the stream to the DP here. cur_ is the
+            // first unconsumed position, so the DP opens its window there.
+            if (dp_enabled_ && dp_prices_valid_) return process_available_dp(final);
         }
 
         if (streaming_ && !final && cur_ + STREAM_LOOKAHEAD > src_loaded_) {
