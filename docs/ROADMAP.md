@@ -147,7 +147,7 @@
 
 ---
 
-## v1.31.0 — Encoder Match Engine: Run-Collapse Emission + Binary-Tree Finder (IN PROGRESS)
+## v1.31.0 — Encoder Match Engine: Run-Collapse Emission + Finder Decision (SHIPPED)
 
 The compression-quality arc that came out of the v1.30 performance
 investigation. Blocking constraint: **the m3 lead (1.4–1.9x vs WinRAR
@@ -165,29 +165,38 @@ WinRAR emits slot-257 repeat-last-length tokens (~1 bit per ~4 KB) where
 our encoder — which never emits 257 — pays ~12 bits per ~4 KB on rep0
 chains with 10 length extra bits. Our decoder has always supported 257.
 
-Scope (plan: docs/v1.31-implementation-plan.md — FMM + ten named negative
-tests per the Gate-0 directives):
+Shipped (plan: docs/v1.31-implementation-plan.md — M0-M3 LANDED with
+measurements, every milestone's gates green; commit chain 40d5aed ->
+6e4c0ad, tag v1.31.0):
 
-- **M0 (no encoder code):** WinRAR-zeros token census via an instrumented
-  decoder (prediction: 257-dominant, all lengths ≤ 4100 — recorded as
-  evidence); PERFORMANCE.md root-cause correction; spec 03 gains the
-  4100 single-token maximum note + the 257 emission invariants.
-- **M1:** slot-257 run-collapse emission, all methods — decoder-shadow-
-  faithful, byte-verified (the decoder copies 257 unconditionally, so the
-  encoder verifies the bytes itself), filter-clamp-aware, solid-carry
-  aware. Targets the 8x zeros ratio loss (0.18 MB → ≤ 0.05 MB) and part
-  of the m1 14% gap.
-- **M2:** binary-tree match finder for m4/m5 on windows ≤ 64 MiB
-  (memory-bounded: +1 window-sized array; chains stay for m1/m2/m3, WASM,
-  and oversize/OOM fallback). Targets the 9.7x m3→m5 effort slope / m5
-  2.3x loss (gate: m5 ≥ 2x vs v1.30.4; tuned-chains fallback pre-approved).
-  WASM size gate (block codec ≤ 500 KiB) runs here.
-- **M3:** m1/m5 parameter re-tune validated on the full matrix (targets
-  m1 ratio ≤ 5% behind WinRAR from 14%); spec 03's heuristics table
-  updated with winners.
-- **M4:** deliberate golden re-baseline (UnRAR + WinRAR verify the new
-  bytes), PERFORMANCE.md + README perf rows + CHANGELOG, MINOR bump
-  v1.31.0 (PATCH counter reset; version-consistency set moves together).
+- **M0:** WinRAR-zeros token census via an instrumented decoder CONFIRMED
+  the corrected root cause (512 fresh matches + 15,871 slot-257 tokens,
+  max length 4096 — no long single matches anywhere); PERFORMANCE.md's
+  "~64 KB" premise retracted; spec 03 gained the 4100 single-token maximum
+  and the slot-257 encoder contract.
+- **M1 (slot-257 run-collapse, all methods):** zeros 64 MiB 23,989 -> 3,514
+  bytes (-85.4%); the 8x zeros-ratio loss is now 1.23x. Strict-equality
+  emission inside the existing rep-win branch (the >=-shaped first cut
+  measured a +53% solid-mode regression — fragmentation — and was fixed
+  before commit). T1-T5, T9; streaming identity; goldens re-baselined with
+  UnRAR+WinRAR verification baked into the generator.
+- **M2 (finder decision — the arc's honest plot twist):** the binary-tree
+  finder was built to this scope, iterated to credibility (insertion
+  capping, best-length-capped probes: 4x slower -> -8.9%), and MISSED its
+  pre-agreed >= 2x gate. The same measurements found the real lever: walk
+  DEPTH. m5 = chains at depth 128 = 3.2x faster at +0.3% size, dominating
+  the tree (2.9x the time for 1.8% better ratio); the tree was descoped
+  per the pre-approved R4 fallback. m5 flipped from 2.3x slower than
+  WinRAR to 1.38x faster.
+- **M3:** m5 depth knee confirmed at 128; m4 128 -> 64 (-38% time, +0.89%
+  size) restoring the m3 -> m4 -> m5 effort ladder; the m1 grid (all eight
+  cells) was honestly negative — the ~17.6% ratio gap to WinRAR m1 is
+  structural (their parse strategy, not effort) and moves to v1.32's
+  optimal-parse scope.
+- **M4:** release v1.31.0 with the fingerprinted perf matrix
+  (results.json now records per-corpus hashes — the canonical corpus
+  embeds the repo src tree, so cross-era sizes mislead; discovered and
+  fixed this arc).
 
 Emitted bytes change for m1..m5; m0 store is bit-identical. The 23-stage
 interop gate (UnRAR + WinRAR decoding our new streams) is the legality
@@ -611,7 +620,7 @@ C# NuGet (`OpenRAR.NET`).
 | **v1.28.0** | TUI + benchmark ✅ | §7.1 terminal-injection gate ✅ | Non-TTY degradation ✅; reproducibility protocol ✅ |
 | **v1.29.0** | Transcoder (ZIP/TAR/GZIP) | ZIP CD/LF hardening; legacy-VM drop; name escaping | Bit-for-bit equivalence |
 | **v1.30.0** | 2.0 LTS + SDKs | §5.1 sandboxed worker; §7.2 assurance; supply chain | Freeze prerequisites 1–7 ✅ |
-| **v1.31.0** | Encoder match engine (run-collapse + binary tree) | Emitted-byte legality gate; interop as proof | m3 non-regression (noise-band gate) |
+| **v1.31.0** | Encoder match engine (run-collapse + finder depth) ✅ | Emitted-byte legality gate ✅ (24-stage interop incl. Track 17); goldens re-baselined cross-engine | m3 non-regression ✅ (every A/B row faster or flat) |
 
 ## ⚠️ Risk Register (top items)
 
