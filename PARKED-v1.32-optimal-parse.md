@@ -1,65 +1,100 @@
-docs(v1.32.0-optimal-parse-parked): PARKED — engine does NOT meet the T5/T6 gates
+# PARKED — v1.32.0 optimal parse (cost-model token selection)
 
-This branch parks the v1.32 optimal-parse (rolling DP) engine. It is NOT
-production code and must not be merged as-is. It is kept for inspection only.
+**Not for merge.** This branch is an inspection artifact for an arc that was
+built, measured, failed its gates, and was removed from the main line. The
+v1.32.0 version number was re-purposed for MT encoder scaling.
 
-Read docs/ROADMAP.md ("v1.32.0 — optimal parse, descoped") for the full
-outcome record. Summary:
+Read the "Descoped" section of `docs/ROADMAP.md` for the full outcome record
+and the structural finding. Do not treat anything here as v1.32.0 scope.
 
-GATE RESULT: FAILED. The engine compresses correctly (roundtrip-verified on
-every corpus) and beats the greedy parse on real data, but it costs ~3.9x the
-match-finder time against a 1.42x budget (T6), and it regresses run-heavy
-input by ~28% (T1). The v1.32.0 version number was re-purposed for MT
-encoder scaling; the DP ships nowhere.
+## What this is
 
-IMPORTANT — this snapshot is the KNOWN-BROKEN intermediate. It is the state
-as of the first T5 measurement (+50% size) and it still contains the
-following defects, which were diagnosed and fixed afterwards but whose fixes
-were never committed:
+A rolling forward dynamic program over the token vocabulary
+`{literal, match, rep0..3, 257}` (Design P-A in the preserved Gate 0 docs):
+price tables carried from the previous block, a forward relax over window
+positions, packed back-pointer edges, and a back-walk emission through the
+existing token emitters with live re-verification of every state-dependent
+token.
 
-  1. The DP scan never inserts positions into the match hash: `unhashed_pos_
-     = cur_` at the end of the scan body makes both catch-up loops
-     permanently false. Decodable, but find_match only ever sees warm-up-era
-     candidates. THIS WAS THE ENTIRE RATIO FAILURE — fixing it turned +50%
-     into -1.9%.
-  2. A zero-length Huffman code length is read as a zero-bit price. A
-     0-length code means the symbol was UNUSED in the previous block, not
-     free; when the tables are rebuilt the symbol gets a near-maximum code.
-     On 8 MiB of zeros (warm-up emits no literals, so len_ld_[0] == 0) every
-     price collapsed to 0 and the artifact went 422 B -> 184,685 B.
-  3. Relaxing EVERY match length is O(n * MAX_LZ_MATCH): 8 MiB of zeros took
-     22 minutes. Needs a length ladder.
-  4. Conflating the DP window with the RAR block doubled the block count on
-     run-heavy data (extra Huffman tables per block): 8 MiB of zeros 716 B
-     vs greedy's 422 B.
+The DP is gated to m3 by `dp_should_enable()` — one table value, consumed by
+both `begin_archive` (sizing) and `init_match_params` (the flag).
 
-Also present in this snapshot and already understood: the window-reopen block
-sat at function entry instead of inside the scan loop, so a mid-loop window
-close never reopened (stale prices) and a span relaxed after a close but
-before a streaming-defer return was dropped.
+## State: fixes applied, correctness partly unverified
 
-BUGS THIS WORK FOUND IN THE EXISTING ENCODER (these are real hazards for any
-future token-selection work, and they are NOT DP-specific):
+The defects listed in the earlier parked commit have been **fixed** in this
+branch's history:
 
-  A. add_match() clamps `base = len - inc` into [2, MAX_LZ_MATCH] and the
-     decoder rebuilds `base + inc`, so an out-of-range (len, dist) pair
-     silently decodes to a DIFFERENT length than recorded — a one-byte
-     desync, not a rejection. The greedy loop guards it with
-     `len < inc + 2 -> reject`; no other caller did. Centralise this.
-  B. The LDD low-bits distance symbol is on the wire only when the distance
-     has >= 4 raw extra bits (add_match gates freq_ldd_ on raw_bits >= 4;
-     the decoder reads it under d_bits >= 4). Any pricing that gates on
-     dslot >= 4 instead charges a phantom symbol to mid-range distances.
-  C. The rep-state used for pricing must be CAPTURED AT WRITE TIME. Reading
-     it back from the edge arrays is wrong: a longer match from a later
-     position overwrites dp_edge_meta_[i] after position i relaxed, so the
-     state advanced is not the state the back-walk replays.
+- window reopen moved inside the scan loop (a mid-loop close, or a close
+  followed by a streaming-defer return, previously never reopened);
+- the DP scan now inserts positions into the match hash (this was the entire
+  ratio failure);
+- `dp_sym_bits()` prices a zero-length Huffman code as the table maximum —
+  a 0-length code means *symbol unused*, not *free*;
+- `dp_len_ladder()` replaces the O(n · MAX_LZ_MATCH) every-length relax
+  (8 MiB of zeros: 22 min → ~30 s), strictly increasing so it cannot cycle;
+- the LDD distance symbol is gated on `raw_bits >= 4`, not `dslot >= 4`;
+- a DP window is no longer a RAR block (this doubled the block count, and the
+  Huffman tables, on run-heavy input);
+- `dp_win_cap_` is clamped to `min(DP_MAX_WIN, win_size_)`;
+- `dp_win_open_` is cleared in `reset_state`;
+- `dp_state_` is `u32` (20 B/entry, not 40) with a `max_dist_ <= 2^32-1`
+  enablement guard.
 
-THE STRUCTURAL FINDING, which is the arc's real result: a cost-model parse
-over this match finder must evaluate an edge out of EVERY position, and so
-spends ~4x the finder budget that greedy/lazy parsing spends (greedy only
-searches at token starts, because a match skips its own body). That tax is
-inherent, not a bug — and the ratio it buys is only ~2%. Any future attempt
-should attack the candidate source (a shared match cache, or restricting the
-relax to token-start candidates) BEFORE re-deriving the parse, and should
-assume the time gate is the binding constraint, not the ratio gate.
+**Verified:** the four gate corpora roundtrip byte-exact and reproduce the
+measured numbers (code -1.95%, text -1.39%, random tie, runs +28%). The
+filter multi-block roundtrip (`test_filter_multi_token_multiblock_roundtrip`
+reproduction, 1228800 B → 1153 B) passes with the DP on.
+
+**NOT verified:** the full `ctest 45/45`. `compress_tests` reported a failure
+that is *not* the filter case above, and it was not isolated — the host was
+under load and the suite is ~40 min. **Anyone reviving this must isolate that
+failure first.** It is the one open question about this branch's correctness.
+
+## Why it still ships nowhere
+
+Release build, m3, against greedy:
+
+| | DP | greedy | gate |
+|---|---:|---:|---|
+| code | -1.95% | — | T5 passes |
+| text | -1.39% | — | T5 passes |
+| runs/zeros | +28% | — | **T1 fails** |
+| time | ~3.9x | — | **T6 fails** (budget 1.42x) |
+
+A chain-depth sweep (4/8/16/32) clears neither failing gate: the ratio win
+shrinks toward zero as the chain shrinks, and the runs regression is
+depth-independent.
+
+## The finding worth keeping
+
+A cost-model parse over this match finder must relax an edge out of **every**
+position, so it spends ~4x the finder budget that greedy/lazy parsing spends.
+Greedy is not merely a cheaper approximation of an optimal parse — it is
+*finder-frugal*, searching only at token starts because a match skips its own
+body. That frugality is a large part of why it performs well on a fixed chain
+budget, and the tax is inherent rather than a bug.
+
+So **the time gate, not the ratio gate, is the binding constraint** for any
+future parse work — the reverse of what this arc assumed when it was scoped.
+This is the second independent measurement (with v1.31-M2's binary tree)
+that the m1/m3 ratio gap is structural in the **finder**, not the parse. If
+this is ever revisited, attack the candidate source first (a match cache
+shared with the greedy scan, or restricting the relax to token-start
+candidates) and measure time before ratio.
+
+## Latent encoder bugs this work surfaced (not DP-specific)
+
+Real hazards for any future token-selection work:
+
+1. `add_match` clamps `base = len - inc` into `[2, MAX_LZ_MATCH]` and the
+   decoder rebuilds `base + inc`, so an out-of-range `(len, dist)` pair
+   silently decodes to a **different length** than recorded — a one-byte
+   desync, not a rejection. The greedy loop guards it
+   (`len < inc + 2 → reject`); no other caller did.
+2. The LDD low-bits distance symbol is on the wire only when the distance has
+   **≥ 4 raw extra bits**. Pricing that gates on `dslot >= 4` charges a
+   phantom symbol to mid-range distances.
+3. A rep-state used for pricing must be **captured at write time**. Reading
+   it back from the edge arrays is wrong: a longer match from a later position
+   overwrites the entry after the earlier position relaxed, so the state
+   advanced is not the state the back-walk replays.

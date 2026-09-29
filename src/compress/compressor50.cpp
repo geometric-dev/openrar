@@ -255,7 +255,8 @@ void Compressor50::reset_state() {
     dp_edge_dist_.clear();
     dp_pending_.clear();
     dp_win_start_ = 0;
-    dp_win_cap_ = 0x80000;
+    dp_win_cap_ = DP_MAX_WIN;
+    dp_win_open_ = false;
     dp_seeded_ = false;
     dp_enabled_ = false;
     dp_prices_valid_ = false;
@@ -314,11 +315,13 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
         prev_.assign(win_size_, static_cast<core::uint32>(-1));
     }
 
-    // the flag is derived here too (init_match_params runs after this in
-    // some flows — the stale reset_state value must not gate the sizing)
-    dp_enabled_ = (method_ == 3);
+    // Size the DP working set from the SAME decision function
+    // init_match_params uses (challenge directive 4). init_match_params runs
+    // after this in some flows, so the stale reset_state value must not gate
+    // the sizing.
+    dp_enabled_ = dp_should_enable();
     if (dp_enabled_) {
-        const size_t dp_cap = 0x80000 + MAX_LZ_MATCH + 16;
+        const size_t dp_cap = DP_MAX_WIN + MAX_LZ_MATCH + 16;
         dp_price_.assign(dp_cap, 0);
         dp_edge_meta_.assign(dp_cap, 0);
         dp_state_.assign(dp_cap, DpState{{0, 0, 0, 0}, 0});
@@ -634,24 +637,6 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
 static size_t filter_max_chunk(size_t win_size);
 
 int Compressor50::process_available_dp(bool final) {
-    // The greedy warm-up may have consumed input before the tables went
-    // warm (dp_prices_valid_ flips inside the first write_block) — the DP
-    // opens its first window AT the handoff position, never behind it.
-    if (!dp_win_open_) {
-        dp_win_start_ = cur_;
-        // fresh prices: 0 at the window start, infinity beyond it. Without
-        // this the arrays hold the previous window's final prices (or the
-        // session-open zeros) and no edge ever "improves" — the walk then
-        // hits unwritten (len=0) entries.
-        dp_price_[0] = 0;
-        std::fill(dp_price_.begin() + 1, dp_price_.end(), DP_INF);
-        dp_sd0_ = old_dist_[0];
-        dp_sd1_ = old_dist_[1];
-        dp_sd2_ = old_dist_[2];
-        dp_sd3_ = old_dist_[3];
-        dp_sll_ = last_length_;
-        dp_win_open_ = true;
-    }
     while (true) {
         load_data(cur_ + 0x80000);
 
@@ -660,6 +645,29 @@ int Compressor50::process_available_dp(bool final) {
 
         if (cur_ >= src_loaded_) break;
         if (!external_buf_ && cur_ >= pos_base_ + buf_size_ - READ_CHUNK) slide_window();
+
+        // Window open. This lives INSIDE the loop on purpose. A mid-loop
+        // window close sets dp_win_open_ = false and continues, and a
+        // streaming defer can return between a close and the next relax.
+        // With the reopen at function entry, neither path ever reopened:
+        // later windows relaxed over the previous window's stale prices and
+        // edges, and a span relaxed after a close but before a defer was
+        // dropped outright (measured: exactly one 512 KiB window lost).
+        if (!dp_win_open_) {
+            dp_win_start_ = cur_;
+            // Fresh prices: 0 at the window start, unreachable beyond it.
+            // Without this the arrays hold the previous window's final prices
+            // and no edge ever "improves" — the walk then hits unwritten
+            // (len=0) entries.
+            dp_price_[0] = 0;
+            std::fill(dp_price_.begin() + 1, dp_price_.end(), DP_INF);
+            dp_sd0_ = old_dist_[0];
+            dp_sd1_ = old_dist_[1];
+            dp_sd2_ = old_dist_[2];
+            dp_sd3_ = old_dist_[3];
+            dp_sll_ = last_length_;
+            dp_win_open_ = true;
+        }
 
         // filter transform + pending filter record: the token itself is
         // emitted by the replay at this exact stream position. Matches
@@ -725,18 +733,32 @@ int Compressor50::process_available_dp(bool final) {
         // converges to ~32K tokens per window after the first.
         if (cur_ - dp_win_start_ >= dp_win_cap_) {
             dp_emit_window();
-            // One window == one block: the DP prices a whole window with the
-            // PREVIOUS block's tables, so carrying tokens across a window
-            // boundary lets the tables drift further from the tokens they
-            // price. Flushing here keeps the price feedback tight.
-            consume_source(unhashed_pos_, cur_);
-            unhashed_pos_ = cur_;
-            if (!write_block(false)) return -1;
+            // A WINDOW is not a BLOCK. The window bounds the DP arrays; the
+            // block follows greedy's own quantum (need_flush). Forcing a
+            // flush here doubled the block count on run-heavy data — 8 MiB of
+            // zeros emitted twice the Huffman tables and regressed 422 B ->
+            // 716 B against greedy (T1). The window cap is already sized to
+            // land near the token quantum, so letting greedy's flush decide
+            // keeps the block structure identical to v1.31.0.
+            if (need_flush()) {
+                consume_source(unhashed_pos_, cur_);
+                unhashed_pos_ = cur_;
+                if (!write_block(false)) return -1;
+            }
             continue;
         }
 
-        // catch-up hash insertion (mirrors greedy; the DP scan is linear so
-        // every position is hashed exactly once — match bodies included)
+        // Catch-up hash insertion. The invariant is greedy's: every hashable
+        // position p < cur_ is inserted exactly once before cur_ is relaxed.
+        //
+        // Do NOT sync unhashed_pos_ to cur_ at the bottom of this body. That
+        // made both loops below permanently false (the first tests
+        // unhashed_pos_ + 7 <= cur_, the second unhashed_pos_ < cur_), so
+        // the DP inserted NOTHING into the match hash and find_match only
+        // ever saw warm-up-era candidates. Decodable, but the candidate set
+        // froze: past the first block the miss rate climbed and average
+        // match length decayed. This was the entire ratio failure — fixing it
+        // turned +50% size into -1.9%.
         while (!is_large_window_ && unhashed_pos_ + 7 <= cur_ && unhashed_pos_ + 7 <= src_loaded_) {
             core::uint64 q;
             std::memcpy(&q, &buf_data_[static_cast<size_t>(unhashed_pos_ - pos_base_)], 8);
@@ -764,7 +786,9 @@ int Compressor50::process_available_dp(bool final) {
 
         dp_relax_position(static_cast<size_t>(cur_ - dp_win_start_), cur_);
         cur_++;
-        unhashed_pos_ = cur_;
+        // unhashed_pos_ deliberately trails cur_ by one: the next iteration's
+        // catch-up inserts the position just relaxed, preserving greedy's
+        // "all p < cur_ inserted" invariant across the whole window.
     }
 
     // EOF: close the final window (empty when the last iteration closed it)
@@ -782,6 +806,57 @@ int Compressor50::process_available_dp(bool final) {
 // exactly as in greedy. The running rep-state advances after the relax
 // (single-track: it is the state along the recorded best path, which the
 // emission replays — and re-verifies, so a divergence is a quality loss).
+// Price one Huffman symbol from the previous block's code lengths.
+//
+// A code length of 0 means the symbol was UNUSED in that block — it is not a
+// free symbol. When this block's tables are rebuilt the symbol is assigned a
+// near-maximum-length code, so charging it 0 bits makes the parse fill the
+// window with tokens the cost model has never actually paid for. Measured on
+// 8 MiB of zeros, where the greedy warm-up block emits no literals at all and
+// therefore leaves len_ld_[0x00] == 0: every price collapsed to 0, the first
+// writer won every slot, and the artifact went 422 B -> 184,685 B. Price an
+// unused symbol at the table maximum instead.
+static inline core::uint32 dp_sym_bits(core::uint8 code_len) {
+    return code_len ? static_cast<core::uint32>(code_len) : 15u;
+}
+
+// The ladder of match/rep lengths a relax offers for a found match of
+// `max_len`, walked with `after` as the previous value (0 to start). Returns
+// the next length to relax, or 0 when the ladder is exhausted.
+//
+// Short lengths are dense (3..8) because those dominate real parses, then
+// the step grows by 1.5x so the ladder reaches any length in ~22 entries
+// instead of ~4100. The last entry is always `max_len` itself, so the
+// greedy-equivalent choice is never lost.
+//
+// The sequence is STRICTLY INCREASING and never exceeds max_len — both are
+// load-bearing. Relaxing every length is O(n * MAX_LZ_MATCH) and pathological
+// exactly where matches are long (8 MiB of zeros took 22 minutes), while a
+// ladder that can repeat or overshoot cycles forever on short matches
+// (3 -> 4 -> ... -> 8 -> 12 -> 3 -> ...), which hangs the encoder.
+size_t Compressor50::dp_len_ladder(size_t max_len, size_t after) {
+    if (max_len < MIN_MATCH) return 0;
+    static const size_t kSmall[6] = {3, 4, 5, 6, 7, 8};
+    size_t next;
+    if (after == 0) {
+        next = (max_len <= kSmall[5]) ? max_len : kSmall[0];
+    } else if (after < kSmall[5]) {
+        next = 0;
+        for (size_t k = 0; k < 6; ++k) {
+            if (kSmall[k] == after) {
+                next = (k + 1 < 6) ? kSmall[k + 1] : kSmall[5] + 4;
+                break;
+            }
+        }
+        if (next == 0) next = max_len; // unreachable for a valid walk
+    } else {
+        next = after + (after + 1) / 2;
+    }
+    if (next >= max_len) next = max_len;
+    if (next <= after) return 0; // exhausted (also covers next == max_len == after)
+    return next;
+}
+
 void Compressor50::dp_relax_position(size_t idx, core::uint64 pos) {
     const core::byte* buf_pos = &buf_data_[static_cast<size_t>(pos - pos_base_)];
     const core::uint32 base = dp_price_[idx];
@@ -802,7 +877,7 @@ void Compressor50::dp_relax_position(size_t idx, core::uint64 pos) {
         size_t rem = static_cast<size_t>(filter_emitted_until_ - pos);
         if (rem < 2) {
             // region end within reach: literal only (mirrors greedy)
-            const core::uint32 c = base + static_cast<core::uint32>(len_ld_[buf_pos[0]]) * 256;
+            const core::uint32 c = base + dp_sym_bits(len_ld_[buf_pos[0]]) * 256;
             if (c < dp_price_[idx + 1]) {
                 dp_price_[idx + 1] = c;
                 dp_edge_meta_[idx + 1] = (1u << 3);
@@ -826,7 +901,7 @@ void Compressor50::dp_relax_position(size_t idx, core::uint64 pos) {
 
     // literal
     {
-        const core::uint32 lit = base + static_cast<core::uint32>(len_ld_[buf_pos[0]]) * 256;
+        const core::uint32 lit = base + dp_sym_bits(len_ld_[buf_pos[0]]) * 256;
         if (lit < dp_price_[idx + 1]) {
             dp_price_[idx + 1] = lit;
             dp_edge_meta_[idx + 1] = (1u << 3);
@@ -846,14 +921,13 @@ void Compressor50::dp_relax_position(size_t idx, core::uint64 pos) {
         if (len < MIN_MATCH) continue;
         found_match = true;
         if (len > dp_best_len_) dp_best_len_ = len;
-        // Relax every encodable length of this rep thread (same rationale as
+        // Relax a ladder of lengths of this rep thread (same rationale as
         // the chain match: a shorter rep can leave a cheaper continuation).
-        for (size_t l = MIN_MATCH; l <= len; ++l) {
+        for (size_t l = dp_len_ladder(len, 0); l != 0; l = dp_len_ladder(len, l)) {
             core::uint32 slot, extra, bits;
             length_to_slot(static_cast<core::uint32>(l), slot, extra, bits);
-            const core::uint32 cost = base + (static_cast<core::uint32>(len_ld_[258 + i]) +
-                                              static_cast<core::uint32>(len_rd_[slot]) + bits) *
-                                                 256;
+            const core::uint32 cost =
+                base + (dp_sym_bits(len_ld_[258 + i]) + dp_sym_bits(len_rd_[slot]) + bits) * 256;
             const core::uint32 t = idx + static_cast<core::uint32>(l);
             if (t < dp_price_.size() && cost < dp_price_[t]) {
                 dp_price_[t] = cost;
@@ -863,7 +937,10 @@ void Compressor50::dp_relax_position(size_t idx, core::uint64 pos) {
                 size_t nd[4] = {dp_sd0_, dp_sd1_, dp_sd2_, dp_sd3_};
                 for (size_t j = i; j > 0; --j) nd[j] = nd[j - 1];
                 nd[0] = d;
-                dp_state_[t] = DpState{{nd[0], nd[1], nd[2], nd[3]}, l};
+                dp_state_[t] =
+                    DpState{{static_cast<core::uint32>(nd[0]), static_cast<core::uint32>(nd[1]),
+                             static_cast<core::uint32>(nd[2]), static_cast<core::uint32>(nd[3])},
+                            static_cast<core::uint32>(l)};
             }
         }
     }
@@ -875,14 +952,17 @@ void Compressor50::dp_relax_position(size_t idx, core::uint64 pos) {
             rep_length(pos, d, dp_sll_) >= dp_sll_) {
             found_match = true;
             if (dp_sll_ > dp_best_len_) dp_best_len_ = dp_sll_;
-            const core::uint32 cost = base + static_cast<core::uint32>(len_ld_[257]) * 256;
+            const core::uint32 cost = base + dp_sym_bits(len_ld_[257]) * 256;
             const core::uint32 t = idx + static_cast<core::uint32>(dp_sll_);
             if (t < dp_price_.size() && cost < dp_price_[t]) {
                 dp_price_[t] = cost;
                 dp_edge_meta_[t] = 6u | (static_cast<core::uint32>(dp_sll_) << 3);
                 dp_edge_dist_[t] = static_cast<core::uint32>(d);
                 // 257 mutates nothing: target state == source state
-                dp_state_[t] = DpState{{dp_sd0_, dp_sd1_, dp_sd2_, dp_sd3_}, dp_sll_};
+                dp_state_[t] = DpState{
+                    {static_cast<core::uint32>(dp_sd0_), static_cast<core::uint32>(dp_sd1_),
+                     static_cast<core::uint32>(dp_sd2_), static_cast<core::uint32>(dp_sd3_)},
+                    static_cast<core::uint32>(dp_sll_)};
             }
         }
     }
@@ -909,27 +989,37 @@ void Compressor50::dp_relax_position(size_t idx, core::uint64 pos) {
             core::uint32 dslot, raw;
             core::uint64 dextra;
             distance_to_slot(dist, dslot, dextra, raw);
+            // The LDD low-bits symbol is on the wire only when the distance
+            // has >= 4 raw extra bits (add_match gates freq_ldd_ on
+            // raw_bits >= 4, and the decoder reads it under d_bits >= 4).
+            // Gating on dslot >= 4 instead charges a phantom LDD symbol to
+            // every mid-range distance, biasing the parse AWAY from exactly
+            // the near matches an optimal parse should favour.
             const core::uint32 dfixed =
                 static_cast<core::uint32>(len_dd_[dslot]) +
-                ((dslot >= 4) ? static_cast<core::uint32>(len_ldd_[dextra & 0xF]) : 0) + raw;
+                ((raw >= 4) ? static_cast<core::uint32>(len_ldd_[dextra & 0xF]) : 0) + raw;
             // Relax EVERY encodable length of this (len, dist), not just the
             // maximum: the shortest-path search needs the option to stop the
             // match early (a shorter match can leave the state on a cheaper
             // rep/257 continuation). Pricing only the max pins the parse to
             // greedy's lengths and loses that choice entirely.
-            for (size_t len = MIN_MATCH; len <= max_len; ++len) {
+            for (size_t len = dp_len_ladder(max_len, 0); len != 0;
+                 len = dp_len_ladder(max_len, len)) {
                 if (!dp_match_encodes_exact(len, dist)) continue;
                 core::uint32 slot, extra, bits;
                 length_to_slot(static_cast<core::uint32>(len - inc), slot, extra, bits);
                 const core::uint32 cost =
-                    base + (static_cast<core::uint32>(len_ld_[262 + slot]) + bits + dfixed) * 256;
+                    base + (dp_sym_bits(len_ld_[262 + slot]) + bits + dfixed) * 256;
                 const core::uint32 t = idx + static_cast<core::uint32>(len);
                 if (t < dp_price_.size() && cost < dp_price_[t]) {
                     dp_price_[t] = cost;
                     dp_edge_meta_[t] = 1u | (static_cast<core::uint32>(len) << 3);
                     dp_edge_dist_[t] = static_cast<core::uint32>(dist);
                     // match rotates the distance to the front
-                    dp_state_[t] = DpState{{dist, dp_sd0_, dp_sd1_, dp_sd2_}, len};
+                    dp_state_[t] = DpState{
+                        {static_cast<core::uint32>(dist), static_cast<core::uint32>(dp_sd0_),
+                         static_cast<core::uint32>(dp_sd1_), static_cast<core::uint32>(dp_sd2_)},
+                        static_cast<core::uint32>(len)};
                 }
             }
         }
@@ -955,7 +1045,10 @@ void Compressor50::dp_relax_position(size_t idx, core::uint64 pos) {
 // Capture the post-edge rep-state for window index `at`: a literal changes
 // nothing, so it inherits the running state.
 void Compressor50::dp_capture_state(size_t at) {
-    dp_state_[at] = DpState{{dp_sd0_, dp_sd1_, dp_sd2_, dp_sd3_}, dp_sll_};
+    dp_state_[at] =
+        DpState{{static_cast<core::uint32>(dp_sd0_), static_cast<core::uint32>(dp_sd1_),
+                 static_cast<core::uint32>(dp_sd2_), static_cast<core::uint32>(dp_sd3_)},
+                static_cast<core::uint32>(dp_sll_)};
 }
 
 // Back-pointer walk to the window end, then a forward replay through the
@@ -1070,7 +1163,7 @@ void Compressor50::dp_emit_window() {
         const size_t per_tok = std::max<size_t>(1, win_len / path.size());
         size_t cap = 32768 * per_tok;
         if (cap < 0x8000) cap = 0x8000;
-        if (cap > 0x80000) cap = 0x80000;
+        if (cap > dp_cap_limit()) cap = dp_cap_limit();
         dp_win_cap_ = cap;
     }
     dp_win_start_ = cur_;
@@ -1690,11 +1783,33 @@ void Compressor50::init_match_params() {
     max_chain_ = chains[method_];
     nice_len_ = nices[method_];
     lazy_tests_ = lazies[method_];
-    // v1.32 M1: the optimal parse gates to m3 (2x time headroom vs WinRAR;
-    // the default method ships the ratio win). m1 stays greedy this arc
-    // (zero time headroom — its own gate in a follow-up), m5 keeps the
-    // depth-128 speed lead out of this arc's scope.
-    dp_enabled_ = (method_ == 3);
+    // v1.32: per-method optimal-parse enablement. m3 is the ratio target and
+    // has ~2x time headroom against WinRAR. m1 has zero headroom (already 5.7%
+    // behind) and m5's 1.38x speed lead is thin, so both stay greedy.
+    //
+    // The max_dist_ guard: dp_state_ stores distances as u32 (20 B/entry
+    // instead of 40, which is what keeps the per-session working set near
+    // budget), so a >4 GiB dictionary cannot be represented and the DP stays
+    // off there.
+    dp_enabled_ = dp_should_enable();
+}
+
+bool Compressor50::dp_should_enable() const {
+    static const bool dp_parse[6] = {false, false, false, true, false, false};
+    if (method_ < 0 || method_ > 5) return false;
+    if (!dp_parse[method_]) return false;
+    return max_dist_ <= 0xFFFFFFFFull;
+}
+
+// Upper bound on the DP window, in positions. Two hard limits:
+//   - DP_MAX_WIN, which sizes the per-session arrays (a window indexing past
+//     them would be an OOB read/write), and
+//   - win_size_, because a window longer than the dictionary slides its own
+//     start out from under pos_base_ and every source read goes negative.
+// slide_window() only advances pos_base_ once cur_ is a full window plus the
+// 4 MiB staging margin ahead, so min(DP_MAX_WIN, win_size_) is safe.
+size_t Compressor50::dp_cap_limit() const {
+    return win_size_ < DP_MAX_WIN ? win_size_ : DP_MAX_WIN;
 }
 
 void Compressor50::slide_window() {
@@ -1831,7 +1946,7 @@ int Compressor50::process_available(bool final) {
                 const size_t per_tok = std::max<size_t>(1, input_since_block_ / token_seq_.size());
                 size_t cap = 32768 * per_tok;
                 if (cap < 0x8000) cap = 0x8000;
-                if (cap > 0x80000) cap = 0x80000;
+                if (cap > dp_cap_limit()) cap = dp_cap_limit();
                 dp_win_cap_ = cap;
                 dp_seeded_ = true;
             }

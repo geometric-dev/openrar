@@ -268,8 +268,11 @@ private:
     // so reading the arrays back yields a state the walk never reproduces
     // (measured: 2384 of 24K edges degraded at emission).
     struct DpState {
-        size_t d[4];
-        size_t last_len;
+        // u32, not size_t: the DP is only enabled when max_dist_ fits in 32
+        // bits (see dp_should_enable), which keeps this 20 B/entry instead
+        // of 40 and roughly halves the per-session working set.
+        core::uint32 d[4];
+        core::uint32 last_len;
     };
     std::vector<DpState> dp_state_;
     std::vector<std::pair<core::uint64, FilterToken>> dp_pending_;
@@ -277,11 +280,14 @@ private:
     // Position cap for the current DP window, adapted from the previous
     // window's bytes-per-token ratio so the window lands near the
     // 32768-token block quantum (see dp_emit_window).
-    size_t dp_win_cap_{0x80000};
+    size_t dp_win_cap_{DP_MAX_WIN};
     bool dp_seeded_{false};
     bool dp_enabled_{false};
     bool dp_prices_valid_{false};
     bool dp_win_open_{false};
+    // Largest DP window, in input positions. Bounds the per-session working
+    // set; the adapted cap never needs more (it converges to ~256 KiB).
+    static const size_t DP_MAX_WIN = 0x40000;
     // running rep-state along the in-order relax (mirror of
     // old_dist_/last_length_)
     size_t dp_sd0_{0}, dp_sd1_{0}, dp_sd2_{0}, dp_sd3_{0}, dp_sll_{0};
@@ -407,6 +413,14 @@ private:
     void dp_emit_window();
     void dp_emit_literals(core::uint64 from, size_t len);
     void dp_capture_state(size_t at);
+    // Next length to relax for a found match of `max_len` (see the .cpp).
+    static size_t dp_len_ladder(size_t max_len, size_t after);
+    // Per-method optimal-parse enablement — challenge directive 4's ONE table
+    // value, consumed by every engine (begin_archive sizes from it,
+    // init_match_params sets it).
+    bool dp_should_enable() const;
+    // Hard upper bound on the DP window, in positions.
+    size_t dp_cap_limit() const;
     bool dp_match_encodes_exact(size_t len, size_t dist) const;
     // ── v1.32 optimal parse (rolling DP, m3 gate) ───────────────────────────
     // Per-block shortest-path token selection: price_[i] = minimum bits*256
