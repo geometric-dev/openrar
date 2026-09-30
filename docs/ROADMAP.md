@@ -297,6 +297,19 @@ gate until dethroned by evidence).
   MT. WinRAR scales 2.0x ST→MT vs our 1.53x; target 2x ST→MT scaling and
   widened MT leads. *(Re-purposed from "ratio parity (optimal parse)", which
   was built, measured and removed — see the descoped section above.)*
+- **v1.32.1 — MT seeding cost.** Performance-only, no emitted-byte change, so
+  it stays on the 1.32 line rather than taking a MINOR slot. v1.32.0 made the
+  MT dictionary member-scoped (a conformance fix — RAR5 scopes the LZ
+  dictionary to the member and blocks are framing boundaries only), which
+  removed a 9x ratio cliff but costs time, because every context re-indexes
+  `min(dictionary_size, member_offset) - 1` bytes of history per chunk.
+  Measured on a quiet host (i7-7500U, 2 physical cores): clean-data scaling
+  2.0x → 1.71x, and on highly compressible input MT becomes a net loss
+  (0.69x) where WinRAR holds 1.54x. Candidate: let a worker that handles
+  consecutive chunks keep its context instead of re-seeding, turning
+  O(seed) into O(new bytes); or seed only as far back as matches actually
+  reach. A larger chunk cap was measured and rejected — it does not help the
+  pathological case and doubles per-worker memory.
 - **v1.33.0 — Extraction throughput inside the v1.24 contract.** Batched
   durability (fewer flushes without weakening the ordering/journal
   guarantees), pipelined verification, QO/scan wins. Any weakening of the

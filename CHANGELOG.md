@@ -54,18 +54,19 @@ failed its gates and was removed; see ROADMAP.md "Descoped".
   against WinRAR's +0.005%. Bounded for corpus-shaped input by a redundancy
   probe, but not completely: `test_parallel_probe_known_gap` pins the residual
   with its measurement.
-  Root cause, measured by sweeping chunk size and nothing else: the loss is
+Root cause, measured by sweeping chunk size and nothing else: the loss was
   exactly proportional to the number of chunk boundaries (2 MiB chunks +800%,
-  8 MiB +200%, a single chunk 0%). RAR5 scopes the LZ dictionary to the
-  **member** — blocks are framing and entropy-coding boundaries only, and the
-  format has no field expressing a block-independent dictionary — so resetting
-  the window at a chunk boundary is a **conformance bug, not a tuning
-  choice**. The decoder is correct: a WinRAR `-mt4` archive extracts
-  byte-exact, so the fault is confined to the encoder. Fixing it is v1.33.0 —
-  per-thread contexts each owning a window *and* hash tables, seeded from the
-  predecessor with `min(dictionary_size, member_offset) - 1` bytes of its
-  tail and re-indexed position by position, with the prefill taken from the
-  predecessor's post-filter window.
+  8 MiB +200%, a single chunk 0%). **Fixed in this release.** Each MT context
+  is now seeded with the member bytes preceding its chunk
+  (`min(dictionary_size, member_offset) - 1`), indexed into the hash but
+  never emitted, with the rep state unset so no block opens with a
+  rep-distance or 257. `-mt4` on the benchmark's code third went from
+  3,855,663 B to 428,447 B (+0.05% over `-mt1`), and MT output on the
+  canonical corpus is now byte-identical to `-mt1`. Our decoder was verified
+  correct throughout (a WinRAR `-mt4` archive extracts byte-exact).
+  - Known follow-up (v1.32.1): seeding is O(seed) per chunk, which costs
+    clean-data scaling (2.0x → 1.71x) and makes MT a net loss on highly
+    compressible input (0.69x on the code third, where WinRAR holds 1.54x).
 - The canonical benchmark corpus cannot measure MT scaling, because the probe
   correctly declines it. See PERFORMANCE.md for the split measurement.
 
