@@ -106,18 +106,19 @@ ST 428,242 B, WinRAR `-mt4` 396,331 B):
 | 16 MiB | 856,975 | +100% |
 | 24 MiB (one chunk) | 428,228 | 0% |
 
-The loss is exactly proportional to the number of chunk boundaries: our MT
-resets the LZ dictionary at each one. RAR5 scopes that dictionary to the
-**member** — blocks are framing and entropy-coding boundaries only, and the
-format has no field expressing a block-independent dictionary — so this is a
-conformance bug rather than a tuning choice. Our decoder is correct (a WinRAR
-`-mt4` archive extracts byte-exact); the fault is confined to the encoder.
+The loss was exactly proportional to the number of chunk boundaries, and is
+now fixed: each MT context is seeded with the member bytes preceding its chunk
+(`min(dictionary_size, member_offset) - 1`), indexed into the hash but never
+emitted. On the code third, `-mt4` went from 3,855,663 B (+800% vs `-mt1`)
+to 428,447 B (+0.05%); on the canonical corpus MT output is now
+byte-identical to `-mt1`, because chunk boundaries (4 MiB) are a multiple of
+the 512 KiB block flush, so each chunk reproduces sequential's blocks exactly.
 
-Larger chunks mask it but cost parallelism, so the real fix is v1.33.0:
-per-thread contexts each owning a window *and* hash tables, seeded from the
-predecessor with `min(dictionary_size, member_offset) - 1` bytes of its tail,
-re-indexed position by position, prefilled from the predecessor's post-filter
-window. Target: WinRAR's number, ~396,331, not zero.
+The scaling cost is real and is tracked as v1.32.1: re-indexing the seed is
+O(seed) per chunk, so clean-data scaling moved 2.0x → 1.71x, and on highly
+compressible input MT is now a net loss (0.69x on the code third) where
+WinRAR holds 1.54x. We still lead WinRAR on wall clock in every configuration
+(1.35x ST, 1.11x MT on the corpus).
 
 ## Solid, multivolume (canonical, m3 ST)
 
