@@ -26,7 +26,13 @@ for root, _, files in os.walk("src"):
             except OSError:
                 pass
 blob = "\n".join(src) if src else "int main() { return 0; }\n"
-with open(os.path.join(out_dir, "code.cpp"), "w") as f:
+# encoding="utf-8" is required, not cosmetic: the source files are read with
+# errors="replace" so they can hold any byte, and writing them back through
+# the platform's default codec (cp1252 on Windows) raises UnicodeEncodeError
+# on the first non-Latin-1 character, which made the payload un-generatable
+# on Windows. Deterministic either way - the corpus is byte-identical across
+# platforms because the read side is already fixed to utf-8/replace.
+with open(os.path.join(out_dir, "code.cpp"), "w", encoding="utf-8", newline="\n") as f:
     while f.tell() < 17 * 1024 * 1024:
         f.write(blob)
 

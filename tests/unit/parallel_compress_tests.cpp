@@ -431,6 +431,40 @@ static void test_parallel_chunking_probe() {
               << std::endl;
 }
 
+// KNOWN GAP, pinned so it cannot regress silently.
+//
+// The probe detects repeated 64 KiB regions and cross-boundary redundancy it
+// can afford to measure by compression. It CANNOT see long-range matches that
+// span chunk boundaries in input that contains no repeated 64 KiB window and
+// is too small for the compression probe to be worth running.
+//
+// Measured on the benchmark payload's code third alone (18 MB, 4 MiB chunks):
+// 290 distinct 64 KiB windows, zero duplicates, and 428,242 B sequential vs
+// 3,855,663 B chunked — 9x. Compressed as part of the whole 50 MB corpus the
+// probe does decline it, so the corpus row is safe; the single-file case is
+// not.
+//
+// The real fix is not more detection: it is to stop losing the matches, by
+// giving each chunk a dictionary-only prefix of its predecessor. That changes
+// emitted bytes and is scoped to a follow-up arc. This test documents the
+// limit so the next person sees it as a known, measured gap rather than
+// discovering it from a user's archive.
+static void test_parallel_probe_known_gap() {
+    std::cout << "[+] test_parallel_probe_known_gap: documents the undetectable case" << std::endl;
+    // Distinct windows, so signal 1 cannot fire.
+    auto data = generate_text_like(6 * 1024 * 1024);
+    for (size_t i = 0; i + 65536 <= data.size(); i += 65536) {
+        data[i] = static_cast<core::byte>(i / 65536); // break any window equality
+    }
+    const size_t kChunk = 4 * 1024 * 1024;
+    // Signal 1 must not fire on genuinely distinct content.
+    assert(!mt_chunking_costs_ratio(data.data(), data.size(), kChunk) &&
+           "probe false-positived on non-repeating input");
+    std::cout << "    - Non-repeating input still engages MT (gap is detection, not a "
+                 "false positive)"
+              << std::endl;
+}
+
 int main() {
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -447,6 +481,7 @@ int main() {
     test_parallel_filter_parity();
     test_parallel_path_selection();
     test_parallel_chunking_probe();
+    test_parallel_probe_known_gap();
     std::cout << "All Parallel Compression Tests PASSED!" << std::endl;
     return 0;
 }
