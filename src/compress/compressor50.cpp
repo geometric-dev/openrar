@@ -1,6 +1,5 @@
 #include "compressor50.hpp"
 #include "arch/match_simd.hpp"
-#include "mt_probe.hpp"
 #include "../core/thread_pool.hpp"
 #include <algorithm>
 #include <cstring>
@@ -1676,17 +1675,6 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
         return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
     }
 
-    // Redundancy that spans a chunk boundary is lost to chunking, and the
-    // loss is unbounded (measured up to +698% on repeated regions, where MT
-    // also became ~3x slower because the sequential path matches the repeats
-    // nearly free). Declining MT here leaves the emitted bytes equivalent to
-    // the sequential path, so it is a pure optimization decision — see
-    // compress::mt_chunking_costs_ratio.
-    if (mt_chunking_costs_ratio(src, src_size, chunk_size)) {
-        return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
-    }
-
-    size_t chunk_win = std::min(win_size, chunk_size);
     FilterConfig no_filters;
     no_filters.mode = FilterMode::DisableAll;
 
@@ -1698,10 +1686,17 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
         size_t off = i * chunk_size;
         size_t len = std::min(chunk_size, src_size - off);
         bool is_last = (i == num_chunks - 1);
+        // Seed the chunk with the member bytes that precede it, so matches
+        // reach back across the chunk boundary exactly as a single-threaded
+        // encoder would. The dictionary is member-scoped (see
+        // set_seeded_external_buffer); the reachable span is bounded by
+        // seed + chunk, which also bounds the per-worker hash allocation.
+        const size_t seed_len = (off == 0) ? 0 : std::min(win_size, off) - 1;
+        const size_t worker_win = std::max<size_t>(1, std::min<size_t>(win_size, seed_len + len));
         Compressor50 packer;
-        packer.begin_archive(nullptr, method, chunk_win);
+        packer.begin_archive(nullptr, method, worker_win);
         packer.set_filter_config(no_filters);
-        packer.set_external_buffer(src + off, len);
+        packer.set_seeded_external_buffer(src + off - seed_len, seed_len, len);
         packer.set_memory_dest(&chunk_outputs[i]);
         core::int64 r = packer.compress(is_last);
         if (r >= 0) chunk_ok[i] = 1;
