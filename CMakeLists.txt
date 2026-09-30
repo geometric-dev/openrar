@@ -7,6 +7,32 @@ cmake_minimum_required(VERSION 3.16)
 # of the frozen public C ABI (docs/abi-freeze.md); no production source is C.
 project(openrar VERSION 1.31.0 LANGUAGES C CXX)
 
+# Where the Windows CLI/SFX/worker binaries are written.
+#
+# CMAKE_SOURCE_DIR is the TOP-LEVEL source dir, so it resolves to a
+# FetchContent/add_subdirectory CONSUMER's checkout, not ours: a subproject
+# build used to drop openrar.exe (plus PDBs) into the consumer's source tree.
+# See issue #2.
+#
+# The split is deliberate. Under a subproject we use CMAKE_BINARY_DIR, which
+# is always a binary tree. Standalone we keep the historical
+# <source>/build/openrar64, because that path is baked into the repo's own
+# tooling — tools/gate.ps1, tools/interop_gate.py, tools/perf_matrix.py and
+# ~10 more scripts locate the binary there, and CI configures with
+# `cmake -B build` so CMAKE_BINARY_DIR would happen to match. A bare swap to
+# CMAKE_BINARY_DIR would therefore be a silent regression for anyone building
+# via a preset: the windows-msvc preset's binaryDir is build/msvc and the
+# release preset's is build/release, so the exe would move out from under
+# every one of those scripts. Overridable for anyone who wants the binary-tree
+# layout unconditionally.
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(OPENRAR_OUTPUT_ROOT "${CMAKE_SOURCE_DIR}/build/openrar64"
+        CACHE PATH "Root directory for the Windows openrar binaries")
+else()
+    set(OPENRAR_OUTPUT_ROOT "${CMAKE_BINARY_DIR}/openrar64"
+        CACHE PATH "Root directory for the Windows openrar binaries")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -317,10 +343,10 @@ if(NOT EMSCRIPTEN)
 
     if(WIN32)
         set_target_properties(openrar Default.SFX PROPERTIES
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/openrar64"
-            RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/build/openrar64/Debug"
-            RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/build/openrar64/Release"
-            RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/build/openrar64/RelWithDebInfo"
+            RUNTIME_OUTPUT_DIRECTORY "${OPENRAR_OUTPUT_ROOT}"
+            RUNTIME_OUTPUT_DIRECTORY_DEBUG "${OPENRAR_OUTPUT_ROOT}/Debug"
+            RUNTIME_OUTPUT_DIRECTORY_RELEASE "${OPENRAR_OUTPUT_ROOT}/Release"
+            RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${OPENRAR_OUTPUT_ROOT}/RelWithDebInfo"
         )
     else()
         set_target_properties(openrar Default.SFX PROPERTIES
@@ -486,7 +512,7 @@ if(NOT EMSCRIPTEN)
     # produced by this codebase (see tests/unit/golden_fixtures_tests.cpp).
     add_openrar_test(golden_fixtures_tests tests/unit/golden_fixtures_tests.cpp)
     target_compile_definitions(golden_fixtures_tests PRIVATE
-        OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+        OPENRAR_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     # BufferArchive symbols are available in both configurations — compiled
     # directly into this test when the lean build excludes them from core, or
     # provided by openrar_core when ON. The macro gates the golden test's own
@@ -503,7 +529,7 @@ if(NOT EMSCRIPTEN)
     # cli_tests shells out to the built CLI. It used to guess the location from
     # a list of CWD-relative candidates, which silently missed whenever the
     # build directory wasn't the default `build/` (the exe output path is
-    # pinned to ${CMAKE_SOURCE_DIR}/build/openrar64/<cfg>), then fell through
+    # pinned to a fixed <source>/build/openrar64/<cfg>), then fell through
     # to a hard-coded Debug path and failed. Hand it the real path instead.
     target_compile_definitions(cli_tests PRIVATE
         OPENRAR_CLI_EXE="$<TARGET_FILE:openrar>")
@@ -532,7 +558,7 @@ if(NOT EMSCRIPTEN)
         # The suite reads the checked-in fixtures under tests/ (hello5_hp.rar,
         # hello5_p.rar) for the encrypted-listing coverage.
         target_compile_definitions(buffer_archive_tests PRIVATE
-            OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+            OPENRAR_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     endif()
 
     # Foreign-format reader tests (v1.29): gated by OPENRAR_FOREIGN_FORMATS
@@ -576,7 +602,7 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(dll_tests PRIVATE openrar_dll)
     target_include_directories(dll_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
     # Encrypted-listing coverage reads the fixtures under tests/.
-    target_compile_definitions(dll_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(dll_tests PRIVATE OPENRAR_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     openrar_enable_test_asserts(dll_tests)
     add_test(NAME dll_tests COMMAND dll_tests)
 
@@ -589,7 +615,7 @@ if(NOT EMSCRIPTEN)
         target_link_libraries(file_handle_tests PRIVATE psapi) # GetProcessMemoryInfo
     endif()
     target_include_directories(file_handle_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
-    target_compile_definitions(file_handle_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(file_handle_tests PRIVATE OPENRAR_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     openrar_enable_test_asserts(file_handle_tests)
     add_test(NAME file_handle_tests COMMAND file_handle_tests)
 
@@ -601,7 +627,7 @@ if(NOT EMSCRIPTEN)
     add_executable(mutation_tests tests/unit/mutation_tests.cpp)
     target_link_libraries(mutation_tests PRIVATE openrar_dll openrar_core)
     target_include_directories(mutation_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
-    target_compile_definitions(mutation_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(mutation_tests PRIVATE OPENRAR_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     openrar_enable_test_asserts(mutation_tests)
     add_test(NAME mutation_tests COMMAND mutation_tests)
 
@@ -613,7 +639,7 @@ if(NOT EMSCRIPTEN)
     add_executable(metadata_tests tests/unit/metadata_tests.cpp)
     target_link_libraries(metadata_tests PRIVATE openrar_dll openrar_core)
     target_include_directories(metadata_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
-    target_compile_definitions(metadata_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(metadata_tests PRIVATE OPENRAR_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     openrar_enable_test_asserts(metadata_tests)
     add_test(NAME metadata_tests COMMAND metadata_tests)
 
@@ -621,7 +647,7 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(dll_cpp_tests PRIVATE openrar_dll)
     target_include_directories(dll_cpp_tests PRIVATE ${OPENRAR_INCLUDES} src/dll include)
     # Password-listing coverage reads the fixtures under tests/.
-    target_compile_definitions(dll_cpp_tests PRIVATE OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(dll_cpp_tests PRIVATE OPENRAR_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     openrar_enable_test_asserts(dll_cpp_tests)
     add_test(NAME dll_cpp_tests COMMAND dll_cpp_tests)
 
@@ -637,7 +663,7 @@ if(NOT EMSCRIPTEN)
     target_include_directories(abi_layout_tests PRIVATE
         ${OPENRAR_INCLUDES} src/dll include)
     target_compile_definitions(abi_layout_tests PRIVATE
-        OPENRAR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+        OPENRAR_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     openrar_enable_test_asserts(abi_layout_tests)
     add_test(NAME abi_layout_tests COMMAND abi_layout_tests)
 
@@ -685,10 +711,10 @@ if(NOT EMSCRIPTEN)
     # there) — same output dirs as the openrar target, set AFTER it exists.
     if(WIN32)
         set_target_properties(openrar_worker PROPERTIES
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/openrar64"
-            RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/build/openrar64/Debug"
-            RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/build/openrar64/Release"
-            RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/build/openrar64/RelWithDebInfo"
+            RUNTIME_OUTPUT_DIRECTORY "${OPENRAR_OUTPUT_ROOT}"
+            RUNTIME_OUTPUT_DIRECTORY_DEBUG "${OPENRAR_OUTPUT_ROOT}/Debug"
+            RUNTIME_OUTPUT_DIRECTORY_RELEASE "${OPENRAR_OUTPUT_ROOT}/Release"
+            RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${OPENRAR_OUTPUT_ROOT}/RelWithDebInfo"
         )
     endif()
     if(WIN32)
@@ -733,25 +759,25 @@ if(NOT EMSCRIPTEN)
         # [SKIP]) on hosts with no symbol tool (dumpbin/llvm-nm/nm); CI
         # wiring lands with the post-rebase workflow changes.
         add_test(NAME abi_export_parity
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/abi_exports.py
+            COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/abi_exports.py
                     --check $<TARGET_FILE:openrar_dll>)
 
         # JS mirror parity: wasm JS CODE_MAP + RarErrorCode union must equal
         # the C RarError enum (the wasm binding defect class, gated).
         # Registered only where the wasm JS surface exists (the lean CLI
         # build tree may not carry wasm/js).
-        if(EXISTS "${CMAKE_SOURCE_DIR}/wasm/js/openrar-archive.js"
-           AND EXISTS "${CMAKE_SOURCE_DIR}/wasm/js/openrar-archive.d.ts")
+        if(EXISTS "${PROJECT_SOURCE_DIR}/wasm/js/openrar-archive.js"
+           AND EXISTS "${PROJECT_SOURCE_DIR}/wasm/js/openrar-archive.d.ts")
             add_test(NAME js_error_mirror_parity
                 COMMAND ${Python3_EXECUTABLE}
-                        ${CMAKE_SOURCE_DIR}/tools/check_js_error_mirror.py)
+                        ${PROJECT_SOURCE_DIR}/tools/check_js_error_mirror.py)
         endif()
 
         # Python SDK conformance gate (v1.30 M4, freeze prereq 3): the
         # normative cross-binding case list against the freshly built DLL.
         add_test(NAME python_conformance
             COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_SOURCE_DIR}/bindings/python/tests/conformance_test.py
+                    ${PROJECT_SOURCE_DIR}/bindings/python/tests/conformance_test.py
                     $<TARGET_FILE:openrar_dll>)
     endif()
 
