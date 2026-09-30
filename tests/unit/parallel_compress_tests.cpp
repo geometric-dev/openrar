@@ -371,6 +371,66 @@ static void test_parallel_path_selection() {
     std::cout << "    - Both selection branches + no-sample fallback: OK" << std::endl;
 }
 
+// T-M3: the chunking probe must DECLINE MT on input whose redundancy spans
+// chunk boundaries, and must NOT decline it on clean input.
+//
+// The hazard being bounded: MT compresses fixed-size chunks independently, so
+// cross-chunk redundancy is lost, and the loss is unbounded. Measured on a
+// 4 MiB region repeated N times, MT's archive grew by almost exactly N
+// relative to sequential (8x = +698%) while also getting ~3x slower. Two
+// distinct shapes have to be caught, and neither probe alone catches both:
+//   - repeated CHUNKS (the region lines up with the chunk grid) — a head-only
+//     redundancy probe is blind to this, because the first chunks are
+//     self-consistent and the copies only collide across the file;
+//   - a repeat whose period is NOT a multiple of the chunk size, so no two
+//     chunks are identical but every boundary still lands mid-copy.
+static void test_parallel_chunking_probe() {
+    std::cout << "[+] test_parallel_chunking_probe: declines MT on cross-chunk redundancy"
+              << std::endl;
+    // A small chunk keeps the probe's own compression cheap enough for a unit
+    // test: the probe only runs when size >= 8 * chunk, so 256 KiB chunks let
+    // the shapes below be exercised with a few MiB of data instead of tens.
+    const size_t kChunk = 256 * 1024;
+
+    // A self-consistent region with no repetition: MT is safe.
+    {
+        auto clean = generate_text_like(24 * kChunk);
+        assert(!mt_chunking_costs_ratio(clean.data(), clean.size(), kChunk) &&
+               "probe declined MT on non-redundant input");
+    }
+    // Incompressible input has no redundancy to lose either.
+    {
+        std::vector<core::byte> noise(24 * kChunk);
+        std::mt19937 rng(1234);
+        for (auto& b : noise) b = static_cast<core::byte>(rng());
+        assert(!mt_chunking_costs_ratio(noise.data(), noise.size(), kChunk) &&
+               "probe declined MT on incompressible input");
+    }
+    // Shape 1: the region is an exact multiple of the chunk size, so chunks
+    // repeat verbatim.
+    {
+        auto unit = generate_text_like(4 * kChunk);
+        std::vector<core::byte> repeated;
+        for (int i = 0; i < 4; ++i) repeated.insert(repeated.end(), unit.begin(), unit.end());
+        assert(mt_chunking_costs_ratio(repeated.data(), repeated.size(), kChunk) &&
+               "probe missed repeated chunks (region aligned to the chunk grid)");
+    }
+    // Shape 2: deliberately NOT chunk-aligned, so no two chunks are equal but
+    // every boundary lands inside a copy.
+    {
+        const size_t region = 100 * 1024 + 37; // coprime-ish to the 256 KiB chunk
+        auto unit = generate_text_like(region);
+        std::vector<core::byte> repeated;
+        while (repeated.size() < 24 * kChunk) {
+            repeated.insert(repeated.end(), unit.begin(), unit.end());
+        }
+        assert(mt_chunking_costs_ratio(repeated.data(), repeated.size(), kChunk) &&
+               "probe missed cross-boundary redundancy at a non-chunk-aligned period");
+    }
+    std::cout << "    - Both duplication shapes declined, clean/incompressible kept: OK"
+              << std::endl;
+}
+
 int main() {
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -386,6 +446,7 @@ int main() {
     test_small_file_bypass();
     test_parallel_filter_parity();
     test_parallel_path_selection();
+    test_parallel_chunking_probe();
     std::cout << "All Parallel Compression Tests PASSED!" << std::endl;
     return 0;
 }

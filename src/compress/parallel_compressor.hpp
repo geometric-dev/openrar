@@ -6,6 +6,7 @@
 #include "../crypto/crc32.hpp"
 #include "../io/file_stream.hpp"
 #include "compressor50.hpp"
+#include "mt_probe.hpp"
 #include "stream_encoder.hpp"
 
 #include <cstddef>
@@ -52,6 +53,7 @@ struct ParallelCompressConfig {
 // first 64 KiB); pass an empty sample to skip detection and take MT.
 bool mt_should_use_parallel(const FilterConfig& filter_cfg, const core::byte* sample,
                             size_t sample_len);
+
 
 class ParallelBlockPipeline {
 public:
