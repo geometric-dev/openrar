@@ -433,6 +433,37 @@ public:
         unhashed_pos_ = 0;
     }
 
+    // Compress `data_len` bytes at `history`, where the first `seed_len` bytes
+    // of that buffer are HISTORY that precedes the data in the member.
+    //
+    // RAR5 scopes the LZ dictionary to the member, not the block: blocks are
+    // framing and entropy-coding boundaries only, and the format has no field
+    // expressing a block-independent dictionary. A multi-threaded encoder
+    // therefore seeds each chunk's context with the bytes that precede it, so
+    // its match finder sees exactly the history a single-threaded encoder
+    // would have had at that member offset.
+    //
+    // The seed is indexed into the hash (process_available's catch-up inserts
+    // every position below cur_) but never emitted, and the rep state starts
+    // unset so no block can open with a rep-distance or 257.
+    //
+    // `history` MUST be the `seed_len` bytes immediately preceding the data
+    // in the member, contiguous with it. That is the member's POST-FILTER
+    // byte stream. The MT paths force filters off, so source bytes and
+    // post-filter bytes coincide; if filters are ever enabled here this must
+    // become the predecessor's filtered window, not a re-read of the file.
+    void set_seeded_external_buffer(const core::byte* history, size_t seed_len, size_t data_len) {
+        external_buf_ = true;
+        buf_data_ = history;
+        buf_size_ = seed_len + data_len;
+        src_size_ = seed_len + data_len;
+        src_loaded_ = seed_len + data_len;
+        src_eof_ = true;
+        pos_base_ = 0;
+        cur_ = seed_len;
+        unhashed_pos_ = 0;
+    }
+
     core::int64 compress(bool last_block = true);
 
     static bool compress_buffer(const core::byte* src, size_t src_size,
