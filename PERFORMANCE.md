@@ -56,35 +56,43 @@ effectively disabled — an inverted enablement condition meant every
 filter-free input, which is all of it, fell through to the sequential
 encoder. The numbers below are from the fixed build.
 
-### Canonical corpus, 4 logical cores
+### Canonical corpus, 2 physical cores / 4 logical
+
+i7-7500U, Windows 11, min of 5 runs. This corpus's code third is deliberately
+repetitive ("repeated to exercise long-range matches"), so it is the case that
+used to break MT.
 
 | Config | Best | Archive | Note |
 |---|---:|---:|---|
-| OpenRAR `-m3 -mt1` | 3.40 s | 20,794,925 | sequential |
-| OpenRAR `-m3 -mt8` | 2.26 s | 20,794,925 | **byte-identical to `-mt1`** |
-| WinRAR `-m3 -mt1` | 5.21 s | 20,272,021 | |
-| WinRAR `-m3 -mt4` | 2.47 s | 20,272,039 | |
+| OpenRAR `-m3 -mt1` | 3.24 s | 20,794,925 | sequential |
+| OpenRAR `-m3 -mt4` | 2.19 s | 20,794,925 | **1.48x**, byte-identical to `-mt1` |
+| WinRAR `-m3 -mt1` | 4.90 s | 20,272,021 | |
+| WinRAR `-m3 -mt4` | 2.43 s | 20,272,039 | 2.02x |
 
-**The OpenRAR row above is not a parallel-scaling measurement.** Its
-`-mt8` output is byte-identical to `-mt1`, which means MT did not chunk: the
-redundancy probe declined it, and the 1.5x is the sequential fallback being
-faster than the `-mt1` path. The corpus is deliberately hostile to chunking
-— its code third is "repeated to exercise long-range matches" — and OpenRAR
-detects that and declines, where WinRAR chunk-parallelises safely because its
-MT encoder does not lose the cross-boundary matches.
+**MT output being byte-identical to `-mt1` is the intended result, not a
+fallback.** With a member-scoped dictionary each chunk reproduces sequential's
+blocks exactly, because chunk boundaries (4 MiB) are a multiple of the 512 KiB
+block flush. So MT costs nothing in ratio here. The earlier "1.5x, not
+parallel" reading was the redundancy probe declining MT, which the dictionary
+fix made unnecessary.
 
-### Where MT does scale
+### Where MT scales, and where it does not
 
-On input with no long-range redundancy, OpenRAR's MT is a real 2.0x at
-+0.08% size:
+| Input | `-mt1` | `-mt4` | Speedup | WinRAR `-mt4` | WinRAR speedup |
+|---|---:|---:|---:|---:|---:|
+| text third, 17 MB, no redundancy | 1.06 s | 0.62 s | 1.71x | 0.85 s | 1.99x |
+| code third, 18 MB, highly compressible | 0.24 s | **0.35 s** | **0.69x** | 0.56 s | 1.54x |
 
-| Input | `-mt1` | `-mt4` | Speedup | Size |
-|---|---:|---:|---:|---:|
-| `text.txt` third alone, 17 MB | 1.08 s / 3,589,437 | 0.54 s / 3,592,185 | **2.0x** | +0.08% |
+We lead WinRAR on wall clock in every configuration (1.35x ST, 1.11x MT on
+the corpus), but scale less well than it (1.48x vs 2.02x), and on highly
+compressible input MT is a net loss — seeding costs more than the compression
+it replaces there.
 
-So the honest summary is: **2.0x on clean data, 1.5x on the canonical
-corpus without parallelising at all, and a 9x ratio regression on redundant
-input that we decline in the corpus case but not in the single-file case.**
+An optimisation to carry the match index across a worker's consecutive chunks
+was built and measured, and recovered no measurable time. `docs/v1.32-pre-analysis.md`
+section 8.8 records the numbers, the two reasons it did not pay, and the open
+question of whether seeding is even the scaling limiter. Nothing is scheduled
+for it.
 
 ### The known gap
 
@@ -114,11 +122,13 @@ to 428,447 B (+0.05%); on the canonical corpus MT output is now
 byte-identical to `-mt1`, because chunk boundaries (4 MiB) are a multiple of
 the 512 KiB block flush, so each chunk reproduces sequential's blocks exactly.
 
-The scaling cost is real and is tracked as v1.32.1: re-indexing the seed is
-O(seed) per chunk, so clean-data scaling moved 2.0x → 1.71x, and on highly
-compressible input MT is now a net loss (0.69x on the code third) where
-WinRAR holds 1.54x. We still lead WinRAR on wall clock in every configuration
-(1.35x ST, 1.11x MT on the corpus).
+The scaling cost is real: re-indexing the seed is O(seed) per chunk, so
+clean-data scaling is 1.71x and on highly compressible input MT is a net loss
+(0.69x on the code third) where WinRAR holds 1.54x. Two attempts to remove
+that cost both failed to move the number, so whether seeding is even the
+limiter is an open question — see `docs/v1.32-pre-analysis.md` section 8.8.
+We still lead WinRAR on wall clock in every configuration (1.35x ST, 1.11x
+MT on the corpus).
 
 ## Solid, multivolume (canonical, m3 ST)
 
