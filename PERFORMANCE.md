@@ -48,15 +48,76 @@ invoked with `-inul -y`, OpenRAR with `-q`; identical switch names map
 - **m1: WinRAR wins on both axes** — slightly faster and 17.6% tighter
   (structural; see the gap notes below).
 
-## Multi-threaded (m3, `-mt4` = all 4 logical cores)
+## Multi-threaded (m3)
 
-| Config | Median | Throughput | Archive |
-|---|---:|---:|---:|
-| OpenRAR `-m3 -mt4` | **5.72 s** | **23.7 MB/s** | 54.14 MB |
-| WinRAR `-m3 -mt4` | 7.43 s | 18.2 MB/s | 52.68 MB |
+**v1.32.0 re-measured this row, and the previous one was wrong.** The
+v1.31.0 figures (5.72 s / 1.48x) were recorded while the MT path was
+effectively disabled — an inverted enablement condition meant every
+filter-free input, which is all of it, fell through to the sequential
+encoder. The numbers below are from the fixed build.
 
-OpenRAR scales 1.48x from ST→MT here; WinRAR scales 2.2x but from a slower
-base. **OpenRAR is ~1.30x faster MT.**
+### Canonical corpus, 4 logical cores
+
+| Config | Best | Archive | Note |
+|---|---:|---:|---|
+| OpenRAR `-m3 -mt1` | 3.40 s | 20,794,925 | sequential |
+| OpenRAR `-m3 -mt8` | 2.26 s | 20,794,925 | **byte-identical to `-mt1`** |
+| WinRAR `-m3 -mt1` | 5.21 s | 20,272,021 | |
+| WinRAR `-m3 -mt4` | 2.47 s | 20,272,039 | |
+
+**The OpenRAR row above is not a parallel-scaling measurement.** Its
+`-mt8` output is byte-identical to `-mt1`, which means MT did not chunk: the
+redundancy probe declined it, and the 1.5x is the sequential fallback being
+faster than the `-mt1` path. The corpus is deliberately hostile to chunking
+— its code third is "repeated to exercise long-range matches" — and OpenRAR
+detects that and declines, where WinRAR chunk-parallelises safely because its
+MT encoder does not lose the cross-boundary matches.
+
+### Where MT does scale
+
+On input with no long-range redundancy, OpenRAR's MT is a real 2.0x at
++0.08% size:
+
+| Input | `-mt1` | `-mt4` | Speedup | Size |
+|---|---:|---:|---:|---:|
+| `text.txt` third alone, 17 MB | 1.08 s / 3,589,437 | 0.54 s / 3,592,185 | **2.0x** | +0.08% |
+
+So the honest summary is: **2.0x on clean data, 1.5x on the canonical
+corpus without parallelising at all, and a 9x ratio regression on redundant
+input that we decline in the corpus case but not in the single-file case.**
+
+### The known gap
+
+On redundant input our MT loses matches that WinRAR's keeps — 428,242 B vs
+3,855,663 B on the code third compressed alone, a 9x regression, against
+WinRAR's +0.005%. This is a defect in our chunking, not an inherent RAR5
+property. Bounded for corpus-shaped input by a redundancy probe, but not
+completely; `test_parallel_probe_known_gap` pins the residual with its
+measurement.
+
+Root cause, measured by sweeping chunk size and nothing else (code third,
+ST 428,242 B, WinRAR `-mt4` 396,331 B):
+
+| our chunk size | our `-mt4` | vs our ST |
+|---|---:|---:|
+| 2 MiB (current cap) | 3,855,663 | +800% |
+| 4 MiB | 2,139,969 | +400% |
+| 8 MiB | 1,284,227 | +200% |
+| 16 MiB | 856,975 | +100% |
+| 24 MiB (one chunk) | 428,228 | 0% |
+
+The loss is exactly proportional to the number of chunk boundaries: our MT
+resets the LZ dictionary at each one. RAR5 scopes that dictionary to the
+**member** — blocks are framing and entropy-coding boundaries only, and the
+format has no field expressing a block-independent dictionary — so this is a
+conformance bug rather than a tuning choice. Our decoder is correct (a WinRAR
+`-mt4` archive extracts byte-exact); the fault is confined to the encoder.
+
+Larger chunks mask it but cost parallelism, so the real fix is v1.33.0:
+per-thread contexts each owning a window *and* hash tables, seeded from the
+predecessor with `min(dictionary_size, member_offset) - 1` bytes of its tail,
+re-indexed position by position, prefilled from the predecessor's post-filter
+window. Target: WinRAR's number, ~396,331, not zero.
 
 ## Solid, multivolume (canonical, m3 ST)
 
