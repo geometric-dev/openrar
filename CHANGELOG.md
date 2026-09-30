@@ -5,6 +5,70 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.0] - 2026-09-30
+
+Throughput scaling: the MT encoder is switched back on, and the reason it was
+off is documented. Emitted bytes for `-mt>1` **change** (the wire format is
+untouched; every stream still decodes under UnRAR and WinRAR, 24/24 interop
+stages). Single-threaded output is unchanged.
+
+The version number was re-purposed: v1.32.0 was first scoped as an
+optimal-parse (cost-model token selection) arc. That was built, measured,
+failed its gates and was removed; see ROADMAP.md "Descoped".
+
+### Fixed
+
+- **MT never ran for filter-free input.** `prepare_add_file` selected the
+  parallel path with an inverted condition, and since the default filter mode
+  is `Auto` the result was a double inversion: no filter detected meant
+  *sequential*, and a filter detected meant *MT with the filter discarded*.
+  Text, source and most data therefore got no multi-threading at all, while
+  `-mc` parity was silently lost on the data that did. The comment above the
+  code stated the opposite intent. The decision is now a named, directly
+  testable function, and `test_parallel_path_selection` pins both branches —
+  every previous test drove the pipeline directly, which is why this shipped.
+- **The sequential fallback was not sequential.** The spool path built its
+  fallback encoder with the *chunk* window instead of the full window, so
+  "fall back" still lost every match spanning a chunk boundary.
+- **Unbounded MT ratio loss, now bounded where it is detectable.** MT
+  compresses chunks independently, so cross-chunk redundancy is lost and the
+  loss is unbounded: a 4 MiB region repeated 8x costs **+698%** and runs 3x
+  slower. MT is now declined on input that would pay it, which leaves the
+  emitted bytes equivalent to sequential.
+- **`tools/make_bench_payload.py` could not run on Windows.** It read sources
+  with `errors="replace"` and wrote them back through the platform codec, so
+  the canonical payload failed to generate outside a UTF-8 locale.
+- **`${CMAKE_SOURCE_DIR}` broke FetchContent/add_subdirectory consumers**
+  (issue #2). It resolves to the *consumer's* source tree: binaries landed in
+  their checkout, two Python gates failed with `[Errno 2]`, and
+  `js_error_mirror_parity` was silently never registered. Source paths now use
+  `${PROJECT_SOURCE_DIR}`; the output root is a cache variable that is
+  `${CMAKE_BINARY_DIR}/openrar64` under a subproject and unchanged
+  standalone, because ~12 tools and CI hardcode `build/openrar64` and a bare
+  swap would have moved the binary out from under preset builds.
+
+### Known issues
+
+- **Our MT loses matches that WinRAR's keeps.** On redundant input, 428,242 B
+  vs 3,855,663 B on the benchmark payload's code third — a 9x regression
+  against WinRAR's +0.005%. Bounded for corpus-shaped input by a redundancy
+  probe, but not completely: `test_parallel_probe_known_gap` pins the residual
+  with its measurement.
+  Root cause, measured by sweeping chunk size and nothing else: the loss is
+  exactly proportional to the number of chunk boundaries (2 MiB chunks +800%,
+  8 MiB +200%, a single chunk 0%). RAR5 scopes the LZ dictionary to the
+  **member** — blocks are framing and entropy-coding boundaries only, and the
+  format has no field expressing a block-independent dictionary — so resetting
+  the window at a chunk boundary is a **conformance bug, not a tuning
+  choice**. The decoder is correct: a WinRAR `-mt4` archive extracts
+  byte-exact, so the fault is confined to the encoder. Fixing it is v1.33.0 —
+  per-thread contexts each owning a window *and* hash tables, seeded from the
+  predecessor with `min(dictionary_size, member_offset) - 1` bytes of its
+  tail and re-indexed position by position, with the prefill taken from the
+  predecessor's post-filter window.
+- The canonical benchmark corpus cannot measure MT scaling, because the probe
+  correctly declines it. See PERFORMANCE.md for the split measurement.
+
 ## [1.31.0] - 2026-09-29
 
 Encoder Match Engine: the compression-quality arc. Two long-documented
