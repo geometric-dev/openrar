@@ -1,5 +1,6 @@
 #include "compressor50.hpp"
 #include "arch/match_simd.hpp"
+#include "mt_probe.hpp"
 #include "../core/thread_pool.hpp"
 #include <algorithm>
 #include <cstring>
@@ -1672,6 +1673,16 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
         1024 * 1024, std::min<size_t>(4 * 1024 * 1024, (src_size + eff_threads - 1) / eff_threads));
     size_t num_chunks = (src_size + chunk_size - 1) / chunk_size;
     if (num_chunks <= 1) {
+        return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
+    }
+
+    // Redundancy that spans a chunk boundary is lost to chunking, and the
+    // loss is unbounded (measured up to +698% on repeated regions, where MT
+    // also became ~3x slower because the sequential path matches the repeats
+    // nearly free). Declining MT here leaves the emitted bytes equivalent to
+    // the sequential path, so it is a pure optimization decision — see
+    // compress::mt_chunking_costs_ratio.
+    if (mt_chunking_costs_ratio(src, src_size, chunk_size)) {
         return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
     }
 

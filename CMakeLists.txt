@@ -54,6 +54,7 @@ set(OPENRAR_CORE_SOURCES
     src/compress/cdc_planner.cpp
     src/compress/solid_packer.cpp
     src/compress/compressor50.cpp
+    src/compress/mt_probe.cpp
     src/compress/decompressor50.cpp
     src/compress/stream_encoder.cpp
     src/compress/stream_decoder.cpp

@@ -1,5 +1,7 @@
 #include "parallel_compressor.hpp"
 #include "filters50.hpp"
+#include "mt_probe.hpp"
+
 #include <algorithm>
 #include <deque>
 
@@ -44,9 +46,23 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
     FilterConfig no_filters;
     no_filters.mode = FilterMode::DisableAll;
 
-    // Sequential fallback for 1 thread or tiny files
-    if (eff_threads_ <= 1 || file_size <= chunk_size) {
-        StreamEncoder encoder(cfg_.method, chunk_win, no_filters);
+    // Sequential fallback for 1 thread, tiny files, or input whose redundancy
+    // spans chunk boundaries. The last case is not a nicety: chunking loses
+    // cross-chunk matches, and the loss is unbounded (measured up to +698%
+    // on repeated regions, where MT also became 3x SLOWER because the
+    // sequential path matches the repeats nearly free). Declining MT here
+    // leaves the emitted bytes exactly equal to the sequential path, so this
+    // is a pure optimization decision — see mt_has_exact_duplication().
+    const bool duplicated = mt_chunking_costs_ratio(src_stream, file_size, chunk_size);
+    if (eff_threads_ <= 1 || file_size <= chunk_size || duplicated) {
+        // The FULL window, not chunk_win. Declining MT has to be a no-op with
+        // respect to the emitted bytes: chunk_win (= min(win_size, chunk_size))
+        // would silently cap this encoder's dictionary at the chunk size, so
+        // "sequential" here would still lose every match that spans a chunk
+        // boundary — which is precisely the loss we are declining to accept
+        // (measured: a 4 MiB-period repeat stayed at +698% even on the
+        // fallback, because the fallback kept the 2 MiB window).
+        StreamEncoder encoder(cfg_.method, cfg_.win_size, no_filters);
         struct FlushSinkCtx {
             const ParallelSinkFn* sink;
             core::uint64* packed_count;
