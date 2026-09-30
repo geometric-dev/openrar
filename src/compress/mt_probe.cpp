@@ -2,7 +2,6 @@
 
 #include "compressor50.hpp"
 
-#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -11,30 +10,88 @@ namespace openrar::compress {
 // How much worse chunking may be, relative to compressing the same bytes as
 // one block, before MT is declined. Amortised over several chunks, so the
 // constant "one table emission instead of two" cost is small — measured 0.999
-// on non-redundant input — while measured duplication runs 2x-8x.
+// on non-redundant input — while measured duplication runs 2x-9x.
 const double kMtProbeDeclineRatio = 1.10;
 
 namespace {
 
-// Bytes of input the compression probe actually compresses, and the rule for
-// when it is worth running at all.
+// ── Signal 1: repeated region, via CONTENT-DEFINED sample points ───────────
 //
-// The probe costs ~2x its budget in compression (once whole, once chunked).
-// At a 16 MiB budget that was ~100% overhead on a 25 MB file — the probe
-// alone dominated and MT measured SLOWER than sequential on clean input. So
-// cap the budget at 8 MiB and only run when that is a small fraction of the
-// file: budget = min(8 MiB, size/8), which needs size >= 16 * chunk to fire
-// (budget must hold at least two whole chunks). Worst case is ~25% overhead
-// on the smallest file that probes; well under 1% on large ones. Files too
-// small to probe keep MT, where the absolute downside is correspondingly
-// small — the repeated-chunk signal below still covers them.
+// A fixed grid only detects a repeat whose period divides the stride. That
+// killed two earlier designs in turn: chunk-aligned sampling missed the
+// benchmark payload's 4.25 MiB blob against 4 MiB chunks (9x size loss), and
+// no practical power-of-two grid catches a period with a large odd factor.
+//
+// Content-defined boundaries fix it. A gear rolling hash emits a sample where
+// the CONTENT matches a mask, so a copied region yields sample points at the
+// same offsets in both copies whatever the period is — the trick
+// deduplication tools use. One sequential pass, no compression.
+//
+// Not complete (a copy whose surroundings differ at the boundary can hide),
+// but alignment-independent, which is the property that matters.
+constexpr size_t kWindow = 64 * 1024;
+constexpr size_t kMaxSamples = 512;
+// Sample roughly 1 window in 4. A stricter mask (1 in 4096, as a dedup
+// default with ~8 KiB chunks) yields ~0 samples over a 64 KiB-window scan of
+// an 18 MB file, which is exactly the file that has to be caught.
+constexpr core::uint64 kSampleMask = 3;
+
+const std::vector<core::uint64>& gear_table() {
+    static thread_local std::vector<core::uint64> gear;
+    if (gear.empty()) {
+        gear.resize(256);
+        // Deterministic splitmix64 fill: the probe must reach the same verdict
+        // for the same bytes on every run and every platform.
+        core::uint64 s = 0x243F6A8885A308D3ull;
+        for (auto& g : gear) {
+            s += 0x9E3779B97F4A7C15ull;
+            core::uint64 z = s;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+            g = z ^ (z >> 31);
+        }
+    }
+    return gear;
+}
+
+// `read_block(offset, dst, kWindow)` must fill dst or return false. Walks the
+// input in kWindow steps, sampling where the gear hash says so.
+template <typename ReadBlock> bool repeated_region(core::uint64 size, ReadBlock read_block) {
+    const std::vector<core::uint64>& gear = gear_table();
+    std::vector<core::byte> window(kWindow);
+    std::vector<core::uint64> hashes;
+    hashes.reserve(kMaxSamples);
+    for (core::uint64 off = 0; off + kWindow <= size; off += kWindow) {
+        if (!read_block(off, window.data(), kWindow)) return false;
+        // Hash THIS window only. A running hash would depend on every byte
+        // before it, so two copies of a region would take different sample
+        // decisions and never line up — the copies must decide from their own
+        // content alone. That is what makes the sampling content-defined
+        // rather than merely content-filtered.
+        core::uint64 h = 0;
+        for (size_t k = 0; k < kWindow; ++k) {
+            h = ((h << 1) + gear[window[k]]) & 0xFFFFFFFFFFFFull;
+        }
+        if ((h & kSampleMask) != 0) continue;
+        core::uint64 fh = 0xcbf29ce484222325ull; // FNV-1a over the window
+        for (size_t k = 0; k < kWindow; ++k) {
+            fh ^= window[k];
+            fh *= 0x100000001b3ull;
+        }
+        for (core::uint64 seen : hashes) {
+            if (seen == fh) return true;
+        }
+        if (hashes.size() >= kMaxSamples) return false;
+        hashes.push_back(fh);
+    }
+    return false;
+}
+
+// ── Signal 2: cross-boundary redundancy, measured by compression ──────────
+//
+// Compress a multi-chunk region whole and again as chunks. Both sides use
+// the same encoder on the same bytes, so the only thing measured is chunking.
 constexpr size_t kProbeBudgetCap = 8u * 1024 * 1024;
-
-// Leading bytes of each chunk fingerprinted by the repeat test.
-constexpr size_t kFingerprintWindow = 64 * 1024;
-
-// Chunks fingerprinted. Bounded so the scan is O(1) in file size.
-constexpr size_t kMaxFingerprintChunks = 512;
 
 size_t probe_budget(size_t size, size_t chunk) {
     const size_t eighth = size / 8;
@@ -50,7 +107,6 @@ size_t packed_size_of(const core::byte* data, size_t len, size_t win) {
     return out.size();
 }
 
-// Compress `len` bytes the way MT would: as independent `chunk`-sized pieces.
 size_t packed_size_chunked(const core::byte* data, size_t len, size_t chunk) {
     size_t total = 0;
     for (size_t off = 0; off < len; off += chunk) {
@@ -62,51 +118,27 @@ size_t packed_size_chunked(const core::byte* data, size_t len, size_t chunk) {
     return total;
 }
 
-// Signal 2: does splitting a multi-chunk region cost real ratio? Both sides
-// compress the SAME bytes with the SAME encoder, so the only thing measured
-// is chunking itself.
 bool region_costs_ratio(const core::byte* data, size_t len, size_t chunk) {
     if (chunk == 0 || len < 2 * chunk) return false;
     const size_t whole = packed_size_of(data, len, len);
     if (whole == 0) return false;
     const size_t chunked = packed_size_chunked(data, len, chunk);
     if (chunked == 0) return false;
-    const double ratio = static_cast<double>(chunked) / static_cast<double>(whole);
-    return ratio > kMtProbeDeclineRatio;
-}
-
-// Signal 1: are any two chunks byte-identical? If so, MT re-compresses the
-// same data N times while sequential matches it for free. This catches a file
-// built by repeating a region — which a head-only redundancy probe is BLIND
-// to, because the first chunks are perfectly self-consistent and the copies
-// only collide across the file.
-bool chunks_repeat(const core::byte* data, size_t size, size_t chunk) {
-    std::vector<core::uint64> hashes;
-    hashes.reserve(kMaxFingerprintChunks);
-    const size_t win = chunk < kFingerprintWindow ? chunk : kFingerprintWindow;
-    std::vector<core::byte> window(win);
-    for (size_t i = 0; i < kMaxFingerprintChunks; ++i) {
-        const size_t off = i * chunk;
-        if (off + win > size) break;
-        std::memcpy(window.data(), data + off, win);
-        core::uint64 h = 0xcbf29ce484222325ull; // FNV-1a 64
-        for (size_t k = 0; k < win; ++k) {
-            h ^= window[k];
-            h *= 0x100000001b3ull;
-        }
-        for (core::uint64 seen : hashes) {
-            if (seen == h) return true;
-        }
-        hashes.push_back(h);
-    }
-    return false;
+    return static_cast<double>(chunked) > static_cast<double>(whole) * kMtProbeDeclineRatio;
 }
 
 } // namespace
 
 bool mt_chunking_costs_ratio(const core::byte* data, size_t size, size_t chunk_size) {
     if (data == nullptr || chunk_size == 0) return false;
-    if (chunks_repeat(data, size, chunk_size)) return true;
+    if (repeated_region(static_cast<core::uint64>(size),
+                        [&](core::uint64 off, core::byte* dst, size_t len) {
+                            if (off + len > size) return false;
+                            std::memcpy(dst, data + off, len);
+                            return true;
+                        })) {
+        return true;
+    }
     const size_t len = probe_budget(size, chunk_size);
     if (len == 0) return false;
     return region_costs_ratio(data, len, chunk_size);
@@ -116,34 +148,16 @@ bool mt_chunking_costs_ratio(io::FileStream& src, core::uint64 file_size, size_t
     if (chunk_size == 0) return false;
     if (static_cast<core::uint64>(chunk_size) > file_size) return false;
 
-    // Fingerprint the chunk heads first: it needs only a small read per chunk
-    // and catches the repeated-region case outright.
     const core::uint64 saved = src.tell();
-    const size_t win = chunk_size < kFingerprintWindow ? chunk_size : kFingerprintWindow;
-    std::vector<core::byte> window(win);
-    std::vector<core::uint64> hashes;
-    hashes.reserve(kMaxFingerprintChunks);
-    bool repeat = false;
-    for (size_t i = 0; i < kMaxFingerprintChunks && !repeat; ++i) {
-        const core::uint64 off = static_cast<core::uint64>(i) * chunk_size;
-        if (off + win > file_size) break;
-        if (!src.seek(off, io::SeekOrigin::Begin) || src.read(window.data(), win) != win) break;
-        core::uint64 h = 0xcbf29ce484222325ull;
-        for (size_t k = 0; k < win; ++k) {
-            h ^= window[k];
-            h *= 0x100000001b3ull;
+    if (src.seek(0, io::SeekOrigin::Begin)) {
+        const bool repeat =
+            repeated_region(file_size, [&](core::uint64 off, core::byte* dst, size_t len) {
+                return src.seek(off, io::SeekOrigin::Begin) && src.read(dst, len) == len;
+            });
+        if (repeat) {
+            src.seek(saved, io::SeekOrigin::Begin);
+            return true;
         }
-        for (core::uint64 seen : hashes) {
-            if (seen == h) {
-                repeat = true;
-                break;
-            }
-        }
-        hashes.push_back(h);
-    }
-    if (repeat) {
-        src.seek(saved, io::SeekOrigin::Begin);
-        return true;
     }
 
     const size_t len = probe_budget(static_cast<size_t>(file_size), chunk_size);
