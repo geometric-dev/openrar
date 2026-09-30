@@ -1,6 +1,5 @@
 #include "parallel_compressor.hpp"
 #include "filters50.hpp"
-#include "mt_probe.hpp"
 
 #include <algorithm>
 #include <deque>
@@ -42,26 +41,11 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
     if (chunk_size < 1024 * 1024) chunk_size = 1024 * 1024;
     if (chunk_size > 4 * 1024 * 1024) chunk_size = 4 * 1024 * 1024;
 
-    size_t chunk_win = std::min(cfg_.win_size, chunk_size);
     FilterConfig no_filters;
     no_filters.mode = FilterMode::DisableAll;
 
-    // Sequential fallback for 1 thread, tiny files, or input whose redundancy
-    // spans chunk boundaries. The last case is not a nicety: chunking loses
-    // cross-chunk matches, and the loss is unbounded (measured up to +698%
-    // on repeated regions, where MT also became 3x SLOWER because the
-    // sequential path matches the repeats nearly free). Declining MT here
-    // leaves the emitted bytes exactly equal to the sequential path, so this
-    // is a pure optimization decision — see mt_has_exact_duplication().
-    const bool duplicated = mt_chunking_costs_ratio(src_stream, file_size, chunk_size);
-    if (eff_threads_ <= 1 || file_size <= chunk_size || duplicated) {
-        // The FULL window, not chunk_win. Declining MT has to be a no-op with
-        // respect to the emitted bytes: chunk_win (= min(win_size, chunk_size))
-        // would silently cap this encoder's dictionary at the chunk size, so
-        // "sequential" here would still lose every match that spans a chunk
-        // boundary — which is precisely the loss we are declining to accept
-        // (measured: a 4 MiB-period repeat stayed at +698% even on the
-        // fallback, because the fallback kept the 2 MiB window).
+    // Sequential fallback for 1 thread or tiny files.
+    if (eff_threads_ <= 1 || file_size <= chunk_size) {
         StreamEncoder encoder(cfg_.method, cfg_.win_size, no_filters);
         struct FlushSinkCtx {
             const ParallelSinkFn* sink;
@@ -115,10 +99,13 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
     struct ChunkJob {
         core::uint64 index{0};
         bool is_last{false};
+        size_t seed_len{0}; // leading history bytes, indexed but not emitted
         std::vector<core::byte> uncompressed;
         std::vector<core::byte> compressed;
         bool ready{false};
         bool failed{false};
+
+        size_t data_len() const { return uncompressed.size() - seed_len; }
     };
 
     std::deque<std::shared_ptr<ChunkJob>> in_flight;
@@ -216,13 +203,37 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
 
         core::uint64 off = next_chunk_to_read * chunk_size;
         size_t len = static_cast<size_t>(std::min<core::uint64>(chunk_size, file_size - off));
-        job->uncompressed.resize(len);
+        // Seed the chunk with the member bytes that precede it. RAR5 scopes the
+        // LZ dictionary to the member, so a chunk may match backwards across
+        // its boundary; seeding each context reproduces what a
+        // single-threaded encoder would see at that offset. Read here (not
+        // from the predecessor's context) because the MT path disables
+        // filters, so source bytes ARE the post-filter bytes - which keeps
+        // chunks independent and the pipeline fully parallel. No ordering
+        // dependency is introduced.
+        const size_t seed_len =
+            (off == 0) ? 0 : static_cast<size_t>(std::min<core::uint64>(cfg_.win_size, off) - 1);
+        job->seed_len = seed_len;
+        job->uncompressed.resize(seed_len + len);
 
-        if (src_stream.read(job->uncompressed.data(), len) != len) {
+        bool read_ok = true;
+        if (seed_len > 0) {
+            if (!src_stream.seek(off - seed_len, io::SeekOrigin::Begin) ||
+                src_stream.read(job->uncompressed.data(), seed_len) != seed_len) {
+                read_ok = false;
+            }
+        }
+        if (read_ok) {
+            if (!src_stream.seek(off, io::SeekOrigin::Begin) ||
+                src_stream.read(job->uncompressed.data() + seed_len, len) != len) {
+                read_ok = false;
+            }
+        }
+        if (!read_ok) {
             abort_flag = true;
             break;
         }
-        crc_calc.update(job->uncompressed.data(), len);
+        crc_calc.update(job->uncompressed.data() + seed_len, len);
         done_bytes += len;
 
         {
@@ -230,16 +241,19 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
             in_flight.push_back(job);
         }
 
-        pool.submit([job, this, chunk_win, no_filters, &mu, &cv_ready, &abort_flag, &captured_ex] {
+        pool.submit([job, this, no_filters, &mu, &cv_ready, &abort_flag, &captured_ex] {
             try {
                 if (abort_flag.load(std::memory_order_relaxed)) {
                     std::lock_guard<std::mutex> lk(mu);
                     job->failed = true;
                 } else {
                     Compressor50 packer;
-                    packer.begin_archive(nullptr, cfg_.method, chunk_win);
+                    const size_t worker_win = std::max<size_t>(
+                        1, std::min<size_t>(cfg_.win_size, job->seed_len + job->data_len()));
+                    packer.begin_archive(nullptr, cfg_.method, worker_win);
                     packer.set_filter_config(no_filters);
-                    packer.set_external_buffer(job->uncompressed.data(), job->uncompressed.size());
+                    packer.set_seeded_external_buffer(job->uncompressed.data(), job->seed_len,
+                                                      job->data_len());
                     packer.set_memory_dest(&job->compressed);
                     core::int64 r = packer.compress(job->is_last);
                     std::lock_guard<std::mutex> lk(mu);

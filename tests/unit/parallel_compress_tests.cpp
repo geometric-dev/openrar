@@ -371,98 +371,42 @@ static void test_parallel_path_selection() {
     std::cout << "    - Both selection branches + no-sample fallback: OK" << std::endl;
 }
 
-// T-M3: the chunking probe must DECLINE MT on input whose redundancy spans
-// chunk boundaries, and must NOT decline it on clean input.
+// T-M3: MT must not COST ratio when redundancy spans chunk boundaries.
 //
-// The hazard being bounded: MT compresses fixed-size chunks independently, so
-// cross-chunk redundancy is lost, and the loss is unbounded. Measured on a
-// 4 MiB region repeated N times, MT's archive grew by almost exactly N
-// relative to sequential (8x = +698%) while also getting ~3x slower. Two
-// distinct shapes have to be caught, and neither probe alone catches both:
-//   - repeated CHUNKS (the region lines up with the chunk grid) — a head-only
-//     redundancy probe is blind to this, because the first chunks are
-//     self-consistent and the copies only collide across the file;
-//   - a repeat whose period is NOT a multiple of the chunk size, so no two
-//     chunks are identical but every boundary still lands mid-copy.
-static void test_parallel_chunking_probe() {
-    std::cout << "[+] test_parallel_chunking_probe: declines MT on cross-chunk redundancy"
+// RAR5 scopes the LZ dictionary to the MEMBER - blocks are framing and
+// entropy-coding boundaries only, with no format field for a
+// block-independent dictionary. So a chunk may legally match backwards
+// across its boundary, and each MT context is seeded with the member bytes
+// that precede it (Compressor50::set_seeded_external_buffer).
+//
+// Before that seeding, MT lost exactly one redundancy period per chunk
+// boundary: on an 18 MB file repeating a 4.25 MiB region, -mt4 produced
+// 3,855,663 B against -mt1's 428,242 B (+800%). This pins the fix.
+static void test_parallel_mt_dictionary_is_member_scoped() {
+    std::cout << "[+] test_parallel_mt_dictionary_is_member_scoped: MT keeps cross-chunk matches"
               << std::endl;
-    // A small chunk keeps the probe's own compression cheap enough for a unit
-    // test: the probe only runs when size >= 8 * chunk, so 256 KiB chunks let
-    // the shapes below be exercised with a few MiB of data instead of tens.
-    const size_t kChunk = 256 * 1024;
+    // A region whose period deliberately straddles the chunk grid, so no two
+    // chunks are identical but every boundary lands inside a copy.
+    const size_t kPeriod = 700 * 1024 + 137;
+    auto unit = generate_text_like(kPeriod);
+    std::vector<core::byte> data;
+    while (data.size() < 12 * 1024 * 1024) {
+        data.insert(data.end(), unit.begin(), unit.end());
+    }
 
-    // A self-consistent region with no repetition: MT is safe.
-    {
-        auto clean = generate_text_like(24 * kChunk);
-        assert(!mt_chunking_costs_ratio(clean.data(), clean.size(), kChunk) &&
-               "probe declined MT on non-redundant input");
-    }
-    // Incompressible input has no redundancy to lose either.
-    {
-        std::vector<core::byte> noise(24 * kChunk);
-        std::mt19937 rng(1234);
-        for (auto& b : noise) b = static_cast<core::byte>(rng());
-        assert(!mt_chunking_costs_ratio(noise.data(), noise.size(), kChunk) &&
-               "probe declined MT on incompressible input");
-    }
-    // Shape 1: the region is an exact multiple of the chunk size, so chunks
-    // repeat verbatim.
-    {
-        auto unit = generate_text_like(4 * kChunk);
-        std::vector<core::byte> repeated;
-        for (int i = 0; i < 4; ++i) repeated.insert(repeated.end(), unit.begin(), unit.end());
-        assert(mt_chunking_costs_ratio(repeated.data(), repeated.size(), kChunk) &&
-               "probe missed repeated chunks (region aligned to the chunk grid)");
-    }
-    // Shape 2: deliberately NOT chunk-aligned, so no two chunks are equal but
-    // every boundary lands inside a copy.
-    {
-        const size_t region = 100 * 1024 + 37; // coprime-ish to the 256 KiB chunk
-        auto unit = generate_text_like(region);
-        std::vector<core::byte> repeated;
-        while (repeated.size() < 24 * kChunk) {
-            repeated.insert(repeated.end(), unit.begin(), unit.end());
-        }
-        assert(mt_chunking_costs_ratio(repeated.data(), repeated.size(), kChunk) &&
-               "probe missed cross-boundary redundancy at a non-chunk-aligned period");
-    }
-    std::cout << "    - Both duplication shapes declined, clean/incompressible kept: OK"
-              << std::endl;
-}
+    std::vector<core::byte> st, mt;
+    assert(Compressor50::compress_buffer(data.data(), data.size(), st, 3, 8 * 1024 * 1024));
+    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), mt, 3, 8 * 1024 * 1024,
+                                                  {}, 4));
+    // Within 5% of sequential. Pre-fix this was ~9x.
+    assert(mt.size() <= st.size() * 105 / 100 &&
+           "MT lost cross-chunk matches: the member-scoped dictionary seed regressed");
 
-// KNOWN GAP, pinned so it cannot regress silently.
-//
-// The probe detects repeated 64 KiB regions and cross-boundary redundancy it
-// can afford to measure by compression. It CANNOT see long-range matches that
-// span chunk boundaries in input that contains no repeated 64 KiB window and
-// is too small for the compression probe to be worth running.
-//
-// Measured on the benchmark payload's code third alone (18 MB, 4 MiB chunks):
-// 290 distinct 64 KiB windows, zero duplicates, and 428,242 B sequential vs
-// 3,855,663 B chunked — 9x. Compressed as part of the whole 50 MB corpus the
-// probe does decline it, so the corpus row is safe; the single-file case is
-// not.
-//
-// The real fix is not more detection: it is to stop losing the matches, by
-// giving each chunk a dictionary-only prefix of its predecessor. That changes
-// emitted bytes and is scoped to a follow-up arc. This test documents the
-// limit so the next person sees it as a known, measured gap rather than
-// discovering it from a user's archive.
-static void test_parallel_probe_known_gap() {
-    std::cout << "[+] test_parallel_probe_known_gap: documents the undetectable case" << std::endl;
-    // Distinct windows, so signal 1 cannot fire.
-    auto data = generate_text_like(6 * 1024 * 1024);
-    for (size_t i = 0; i + 65536 <= data.size(); i += 65536) {
-        data[i] = static_cast<core::byte>(i / 65536); // break any window equality
-    }
-    const size_t kChunk = 4 * 1024 * 1024;
-    // Signal 1 must not fire on genuinely distinct content.
-    assert(!mt_chunking_costs_ratio(data.data(), data.size(), kChunk) &&
-           "probe false-positived on non-repeating input");
-    std::cout << "    - Non-repeating input still engages MT (gap is detection, not a "
-                 "false positive)"
-              << std::endl;
+    std::vector<core::byte> back;
+    assert(decompress_buffer(mt, data.size(), 8 * 1024 * 1024, back));
+    assert(back == data && "MT roundtrip diverged after dictionary seeding");
+    std::cout << "    - MT within 5% of sequential and roundtrips: OK (" << st.size() << " vs "
+              << mt.size() << ")" << std::endl;
 }
 
 int main() {
@@ -480,8 +424,7 @@ int main() {
     test_small_file_bypass();
     test_parallel_filter_parity();
     test_parallel_path_selection();
-    test_parallel_chunking_probe();
-    test_parallel_probe_known_gap();
+    test_parallel_mt_dictionary_is_member_scoped();
     std::cout << "All Parallel Compression Tests PASSED!" << std::endl;
     return 0;
 }
