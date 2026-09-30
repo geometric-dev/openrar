@@ -208,6 +208,14 @@ Windows 11, WinRAR 7.20 x64.
 - **Compression at the default `-m3`: 1.3–2.0x faster than WinRAR**, ratios
   within ~3%. **`-m5` is now faster than WinRAR too (1.4x)** — v1.30 was
   2.3x slower (match-finder walk depth, see PERFORMANCE.md).
+- **Multi-threading (`-mtN`) was switched back on in v1.32.0** after an
+  inverted enablement condition left it disabled for all filter-free input —
+  so the `-mt4` figures above predate the fix and the published 1.48x
+  scaling was not real. Re-measured: **2.0x on data without long-range
+  redundancy, at +0.08% size.** On redundant input our chunking loses
+  cross-boundary matches that WinRAR's keeps (9x on the benchmark's code
+  third), which a redundancy probe bounds for corpus-shaped input but does
+  not eliminate. See PERFORMANCE.md and CHANGELOG "Known issues".
 - `-cdc` dedup produced a **32% smaller archive** on a duplicate-heavy
   corpus (no WinRAR equivalent).
 - **Honest losses:** WinRAR's `-m1` is slightly faster and ~18% tighter
