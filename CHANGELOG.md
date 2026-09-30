@@ -64,11 +64,15 @@ Root cause, measured by sweeping chunk size and nothing else: the loss was
   3,855,663 B to 428,447 B (+0.05% over `-mt1`), and MT output on the
   canonical corpus is now byte-identical to `-mt1`. Our decoder was verified
   correct throughout (a WinRAR `-mt4` archive extracts byte-exact).
-  - Known follow-up (v1.32.1): seeding is O(seed) per chunk, which costs
-    clean-data scaling (2.0x → 1.71x) and makes MT a net loss on highly
-    compressible input (0.69x on the code third, where WinRAR holds 1.54x).
-- The canonical benchmark corpus cannot measure MT scaling, because the probe
-  correctly declines it. See PERFORMANCE.md for the split measurement.
+- Known follow-up: seeding is O(seed) per chunk, which costs clean-data
+    scaling (2.0x → 1.71x) and makes MT a net loss on highly compressible
+    input (0.69x on the code third, where WinRAR holds 1.54x). An optimisation
+    to carry the match index across a worker's consecutive chunks was built
+    and measured, and recovered no measurable time — see
+    docs/v1.32-pre-analysis.md §8.8. Nothing is scheduled for it.
+- The canonical benchmark corpus now DOES measure MT scaling (the redundancy
+  probe that used to decline it was removed with the dictionary fix), and MT
+  output on it is byte-identical to `-mt1`. See PERFORMANCE.md.
 
 ## [1.31.0] - 2026-09-29
 
