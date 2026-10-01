@@ -315,19 +315,20 @@ gate until dethroned by evidence).
   MT. WinRAR scales 2.0x ST→MT vs our 1.53x; target 2x ST→MT scaling and
   widened MT leads. *(Re-purposed from "ratio parity (optimal parse)", which
   was built, measured and removed — see the descoped section above.)*
-- **v1.33.0 — Candidate source and block-table reuse (ratio, parse-independent).**
+- **v1.33.0 — Candidate source (ratio, parse-independent).**
   The descoped optimal-parse arc above established that the m1/m3 ratio gap is a
   **candidate-source** gap, not a parse gap. We cannot emit a 2-byte match
   (`MIN_MATCH = 3`, though length slot 0 is wire-legal), we run no sparse-context
-  probes, our lazy step pays a second full chain walk, and every block re-emits all
-  four Huffman tables (~26 B) although the block header's table-reuse bit (flags bit
-  7, already honoured by our decoder) costs 3–5 B. Sequencing: the `add_match`
-  length-clamp latent bug (reject, never clamp); block splitting with table reuse;
+  probes, and our lazy step pays a second full chain walk. Sequencing: the
+  `add_match` length-clamp latent bug (reject, never clamp — **shipped**); then
   length-2/3 match support; three sparse 1/2/4-byte context probes; a
-  length→distance ring replacing the second chain walk. The parse arc itself is
-  **re-scoped, not revived** — it is in scope only if the length-2/3 token count
-  shows m1 and m3 are structurally different parsers, and T9's pure-addition gate
-  must be revised first (any m3 token-selection change voids it by construction).
+  length→distance ring replacing the second chain walk. *Block table reuse
+  (header bit 7) was built, measured at −6.2% on 64 MiB of zeros, and removed:
+  both reference oracles mis-decode it on long runs ≥24 MB — see
+  `docs/v1.33-pre-analysis.md` §10.* The parse arc itself is **re-scoped, not
+  revived** — in scope only if the length-2/3 token count shows m1 and m3 are
+  structurally different parsers, and T9's pure-addition gate must be revised
+  first (any m3 token-selection change voids it by construction).
 - **v1.34.0 — Extraction throughput inside the v1.24 contract.** Batched
   durability (fewer flushes without weakening the ordering/journal
   guarantees), pipelined verification, QO/scan wins. Any weakening of the
