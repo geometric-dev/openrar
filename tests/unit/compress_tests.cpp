@@ -1146,6 +1146,13 @@ public:
     static core::uint64 packed_total(const Compressor50& c) { return c.packed_total_; }
     static void init_match_params(Compressor50& c) { c.init_match_params(); }
     static size_t last_length(const Compressor50& c) { return c.last_length_; }
+    // v1.33 item 1: direct access to the match emitter, so the admissibility
+    // floor and the truncation/report contract can be tested at the exact
+    // boundaries without needing the finder to produce a boundary pair.
+    static size_t add_match(Compressor50& c, size_t length, size_t distance) {
+        return c.add_match(length, distance);
+    }
+    static size_t match_token_count(const Compressor50& c) { return c.match_tokens_.size(); }
 };
 } // namespace openrar::compress
 
@@ -2428,6 +2435,111 @@ void test_slot257_solid_carry() {
     std::cout << "[PASS] slot257 solid carry opens member 2 with a 257 (T5)\n";
 }
 
+// T10: the match emitter's admissibility contract (v1.33 item 1).
+//
+// The decoder reconstructs a match length as base + increment(distance) and
+// performs NO range check on it (decompressor50.cpp:867-878), so a (len, dist)
+// pair whose base falls outside [2, MAX_LZ_MATCH] silently decodes to a
+// DIFFERENT length than the encoder recorded - a one-byte desync that surfaces
+// only at the CRC, not as a rejection. The invariant pinned here is that the
+// shadow last_length_ is derived from the ENCODED base and never from the
+// caller's `length`, and that an inadmissible pair is filtered rather than
+// clamped up into a legal-looking token.
+//
+// The assertion that pins the fix is `shadow_after == base + inc`. The
+// pre-v1.33 emitter set last_length_ = length unconditionally, so for the
+// over-ceiling cases below it left the shadow holding the pre-truncation
+// length (e.g. 5000 for a 5000/1 pair) while the decoder held 4097 - exactly
+// the desync. It also clamped an inadmissible pair up to base 2 and emitted it
+// anyway; those cases must now return 0 and emit nothing.
+void test_add_match_admissibility() {
+    const size_t kMaxLzMatch = 0x1001; // MAX_LZ_MATCH (compressor50.hpp)
+
+    auto increment_of = [](size_t d) -> core::uint32 {
+        core::uint32 inc = 0;
+        if (d > 0x100) inc++;
+        if (d > 0x2000) inc++;
+        if (d > 0x40000) inc++;
+        return inc;
+    };
+
+    struct Case {
+        size_t len;
+        size_t dist;
+        const char* note;
+    };
+    const Case cases[] = {
+        // --- legal, at and above the floor for each increment class ---
+        {2, 1, "inc 0, base 2 (length slot 0)"},
+        {3, 1, "inc 0, floor"},
+        {2, 0x100, "inc 0, last distance with no increment"},
+        {3, 0x101, "inc 1, floor"},
+        {4, 0x2001, "inc 2, floor"},
+        {5, 0x40001, "inc 3, floor"},
+        {64, 1, "ordinary"},
+        {64, 0x100, "ordinary at the increment boundary"},
+        {64, 0x101, "ordinary, inc 1"},
+        {64, 0x2001, "ordinary, inc 2"},
+        {64, 0x40001, "ordinary, inc 3"},
+        // --- exactly at the ceiling: no truncation ---
+        {kMaxLzMatch, 1, "base == MAX_LZ_MATCH"},
+        {kMaxLzMatch + 3, 0x40001, "base == MAX_LZ_MATCH with inc 3"},
+        // --- above the ceiling: truncate, and REPORT the truncated span ---
+        {kMaxLzMatch + 1, 1, "base 1 over the ceiling, inc 0"},
+        {5000, 1, "base far over the ceiling, inc 0"},
+        {5000, 0x40001, "base far over the ceiling, inc 3"},
+        // --- below the floor: FILTER, emit nothing, do not move the shadow ---
+        {1, 1, "inc 0, one byte short of the floor"},
+        {2, 0x101, "inc 1, one byte short of the floor"},
+        {3, 0x2001, "inc 2, one byte short of the floor"},
+        {4, 0x40001, "inc 3, one byte short of the floor"},
+    };
+
+    int filtered = 0, truncated = 0, plain = 0;
+    for (const auto& c : cases) {
+        Compressor50 packer;
+        packer.begin_archive(nullptr, 3, 0x200000);
+
+        const size_t shadow_before = Compressor50TestAccess::last_length(packer);
+        const size_t tokens_before = Compressor50TestAccess::match_token_count(packer);
+        const size_t covered = Compressor50TestAccess::add_match(packer, c.len, c.dist);
+        const size_t shadow_after = Compressor50TestAccess::last_length(packer);
+        const size_t tokens_after = Compressor50TestAccess::match_token_count(packer);
+
+        const core::uint32 inc = increment_of(c.dist);
+        const bool admissible = c.len >= static_cast<size_t>(inc) + 2;
+
+        if (!admissible) {
+            assert(covered == 0 && "inadmissible (len,dist) must be FILTERED, not clamped");
+            assert(shadow_after == shadow_before &&
+                   "a filtered match must not advance the shadow last_length_");
+            assert(tokens_after == tokens_before && "a filtered match must not emit a token");
+            ++filtered;
+            continue;
+        }
+
+        size_t base = c.len - inc;
+        const bool over = base > kMaxLzMatch;
+        if (over) base = kMaxLzMatch;
+
+        assert(tokens_after == tokens_before + 1 && "an admissible match emits exactly one token");
+        assert(covered == base + inc && "add_match must report the span the wire carries");
+        assert(shadow_after == base + inc &&
+               "shadow last_length_ must be base+increment, never the caller's length");
+        if (over) {
+            ++truncated;
+        } else {
+            assert(shadow_after == c.len && "a non-truncated match must cover its full length");
+            ++plain;
+        }
+    }
+
+    assert(filtered == 4 && truncated == 3 && plain == 13 &&
+           "case table drifted; update the counts with it");
+    std::cout
+        << "[PASS] match emitter filters inadmissible pairs and reports the encoded span (T10)\n";
+}
+
 
 int main() {
 #ifdef _MSC_VER
@@ -2538,6 +2650,7 @@ int main() {
     test_slot257_pure_addition_suppressed();
     std::cout << std::flush;
     test_slot257_solid_carry();
+    test_add_match_admissibility();
     std::cout << std::flush;
 
     std::cout << std::flush;
