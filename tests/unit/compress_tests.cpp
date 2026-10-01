@@ -2541,6 +2541,80 @@ void test_add_match_admissibility() {
 }
 
 
+// T12: length-2 match support (v1.33 Design B).
+//
+// RAR5 length slot 0 decodes to length 2 and is wire-legal; `MIN_MATCH = 3` was
+// the only thing making the class unreachable. This pins the two properties
+// that matter:
+//
+//   1. REACHABILITY - on a text-like corpus the shallow-finder methods really do
+//      emit slot-0 length tokens. Without this the constant change would be a
+//      silent no-op. Note WHO can produce them: the match finder hashes four
+//      bytes and only indexes positions with four bytes available
+//      (calc_hash/insert_position), so a chain walk can never return a length-2
+//      fresh match. The reachable form of this class is the REP token - the rep
+//      scan compares bytes directly with no length floor. Measured -1.49% at
+//      m1, -1.64% at m2 on a 64 MiB text corpus.
+//   2. THE m4/m5 BOUND - admitting short matches measured as a regression at m5
+//      (+0.05%), so those methods keep the previous minimum of 3 and must emit
+//      no slot-0 match at all. Their bytes are byte-identical to v1.32.
+//
+// Admissibility of a 2-byte match (legal only where increment(distance) == 0,
+// i.e. distance <= 0x100) is pinned by T10, which drives the emitter directly
+// with the boundary pairs; here we only assert the class is emitted and that
+// everything still round-trips.
+void test_length2_match_support() {
+    std::vector<core::byte> text;
+    for (int i = 0; i < 8192; ++i) {
+        std::string line = "fn handler_" + std::to_string(i) + "(req: &Request) -> Result { log(" +
+                           std::to_string(i % 97) + "); }\n";
+        text.insert(text.end(), line.begin(), line.end());
+    }
+    assert(text.size() > 256 * 1024 && "corpus must be big enough to fill a block");
+
+    struct Expect {
+        int method;
+        bool expect_slot0;
+    };
+    const Expect cases[] = {{1, true}, {2, true}, {3, true}, {4, false}, {5, false}};
+
+    for (const auto& c : cases) {
+        Compressor50 packer;
+        packer.begin_archive(nullptr, c.method, 0x200000);
+        packer.set_external_buffer(text.data(), text.size());
+        std::vector<core::byte> packed;
+        packer.set_memory_dest(&packed);
+        Compressor50TestAccess::init_match_params(packer);
+        assert(Compressor50TestAccess::process_available(packer, true));
+
+        size_t slot0 = 0, matches = 0;
+        for (const auto& t : Compressor50TestAccess::match_tokens(packer)) {
+            const auto ty = t.get_type();
+            const bool is_match = ty == Compressor50Token::TokenType::Match;
+            const bool is_rep = ty >= Compressor50Token::TokenType::Rep0 &&
+                                ty <= Compressor50Token::TokenType::Rep3;
+            if (!is_match && !is_rep) continue;
+            if (is_match) ++matches;
+            if (t.get_len_slot() == 0) ++slot0;
+        }
+        if (c.expect_slot0) {
+            assert(slot0 > 0 && "length-2 match class is unreachable - the change is a no-op");
+        } else {
+            assert(slot0 == 0 && "m4/m5 must keep the previous minimum of 3");
+        }
+        assert(matches > 0);
+
+        assert(Compressor50TestAccess::write_block(packer, true));
+        Decompressor50 dec(0x200000);
+        std::vector<core::byte> out;
+        assert(dec.decompress_to_vector(packed.data(), packed.size(), out));
+        assert(out.size() == text.size());
+        assert(std::memcmp(out.data(), text.data(), text.size()) == 0);
+    }
+    std::cout << "[PASS] length-2 matches reachable at m1-m3, suppressed at m4-m5 (T12)\n";
+}
+
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -2651,6 +2725,7 @@ int main() {
     std::cout << std::flush;
     test_slot257_solid_carry();
     test_add_match_admissibility();
+    test_length2_match_support();
     std::cout << std::flush;
 
     std::cout << std::flush;
