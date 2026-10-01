@@ -356,7 +356,22 @@ private:
     static core::uint32 length_increment(size_t distance);
 
     void add_literal(core::byte b);
-    void add_match(size_t length, size_t distance);
+    // Emit a fresh-match token and return the number of input bytes the emitted
+    // token ACTUALLY covers, which is `base + increment(distance)` and not
+    // necessarily `length`. The decoder reconstructs base + increment
+    // (decompressor50.cpp:867-878) and validates nothing about the length, so a
+    // (length, distance) pair whose base falls outside [2, MAX_LZ_MATCH] would
+    // silently decode to a DIFFERENT length than the caller intended - a
+    // one-byte desync, not a rejection. Therefore:
+    //   - below the range, the pair is FILTERED and nothing is emitted (0 is
+    //     returned); it is never clamped up into a legal-looking token;
+    //   - above the range the match is truncated to the longest legal token,
+    //     which is a genuine "emit a shorter match", and the covered count is
+    //     reported so the caller advances by what the wire carries;
+    //   - last_length_ is derived from the encoded base, so the shadow state
+    //     can never disagree with the decoder's copy of it.
+    // Callers must advance by the return value, not by `length`.
+    size_t add_match(size_t length, size_t distance);
     void add_rep(core::uint32 index, size_t length);
     // Emit the slot-257 repeat-last-length token: one LD Huffman symbol,
     // no extra bits, no OldDist rotation, no shadow change.
