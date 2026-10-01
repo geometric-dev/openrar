@@ -317,18 +317,32 @@ gate until dethroned by evidence).
   was built, measured and removed — see the descoped section above.)*
 - **v1.33.0 — Candidate source (ratio, parse-independent).**
   The descoped optimal-parse arc above established that the m1/m3 ratio gap is a
-  **candidate-source** gap, not a parse gap. We cannot emit a 2-byte match
-  (`MIN_MATCH = 3`, though length slot 0 is wire-legal), we run no sparse-context
-  probes, and our lazy step pays a second full chain walk. Sequencing: the
-  `add_match` length-clamp latent bug (reject, never clamp — **shipped**); then
-  length-2/3 match support; three sparse 1/2/4-byte context probes; a
-  length→distance ring replacing the second chain walk. *Block table reuse
-  (header bit 7) was built, measured at −6.2% on 64 MiB of zeros, and removed:
-  both reference oracles mis-decode it on long runs ≥24 MB — see
-  `docs/v1.33-pre-analysis.md` §10.* The parse arc itself is **re-scoped, not
-  revived** — in scope only if the length-2/3 token count shows m1 and m3 are
-  structurally different parsers, and T9's pure-addition gate must be revised
-  first (any m3 token-selection change voids it by construction).
+  **candidate-source** gap, not a parse gap. We could not emit a 2-byte match
+  (`MIN_MATCH = 3`, though length slot 0 is wire-legal), we ran no sparse-context
+  probes, and our lazy step paid a second full chain walk.
+  * **Shipped:** the `add_match` length-clamp latent bug (reject, never clamp);
+    length-2 matches at m1–m3 (m1 −1.49%, m2 −1.64%, m3 −0.04%, m4/m5
+    byte-identical — the minimum is per-method because admitting short matches
+    measured as a regression at m5's depth-128 walk).
+  * **Rejected, measured:** block table reuse (header bit 7) — a real −6.2% on
+    64 MiB of zeros, but UnRAR *and* WinRAR mis-decode it on long runs ≥24 MB;
+    and sparse 1/2-byte context probes — m1 **+0.67%**, because selection is by
+    length alone and an injected candidate cannot be priced.
+  * **Refuted without building:** the lazy length→distance ring, whose
+    information is subsumed by the existing `best` match.
+  * **Consequence:** the hypothesis is half-confirmed — the gap is *partly*
+    candidate-source (−1.5% at m1, ~8% of the 17.6%) — but Design C's failure is
+    direct evidence that the missing capability is **cost-aware selection**, not
+    candidates. That is a parse change and remains **Tier 3, not opened here**: it
+    needs its own Gate 0, the T9 pure-addition revision settled first (any m3
+    token-selection change voids it by construction), and the length-2/3 token
+    count against a reference m1/m3 stream, which §11 argues should now be run as
+    confirmation rather than as a gate.
+  * Follow-up, independent of the above: our decoder's bit-7-clear path has never
+    been validated against a third-party stream (RAR's writer appears never to
+    emit it), and reuse exposed a disagreement with both oracles that self-
+    roundtrip tests cannot see by construction. See `docs/v1.33-pre-analysis.md`
+    §10.
 - **v1.34.0 — Extraction throughput inside the v1.24 contract.** Batched
   durability (fewer flushes without weakening the ordering/journal
   guarantees), pipelined verification, QO/scan wins. Any weakening of the
