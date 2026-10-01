@@ -123,7 +123,11 @@ if command -v wsl >/dev/null 2>&1; then
             set -e
             mkdir -p ~/openrar-preflight
             cd ~/openrar-preflight
-            for d in cmake include src tests; do
+            # tools/ and bindings/ are required too: the walk_probe target
+            # builds tools/walk_probe.cpp, and python_conformance runs
+            # bindings/python/tests/conformance_test.py. Omitting either made
+            # this leg fail at configure/test time, not on the code.
+            for d in bindings cmake include src tests tools; do
                 mkdir -p \$d
                 cp -ru /mnt/c/Users/Matt/dev/openrar/\$d/. \$d/ 2>/dev/null || true
             done
