@@ -22,6 +22,17 @@ that keeps the history coherent.
 4. **License.** By contributing you agree your work is released under the
    project license (MIT, see `LICENSE`). Ported algorithms must be
    attributed in `THIRD_PARTY_NOTICES.md`.
+5. **Spec-first.** Before changing observable behavior, update the governing
+   document first and land the doc diff in the same PR: `docs/spec/` for the
+   wire format, `docs/EXTRACTION_CONTRACT.md` and `docs/invariants.md` for
+   engine contracts, `docs/versioning.md` for release/ABI policy. If the
+   code and the doc disagree, one of them is wrong — resolve it explicitly,
+   don't let the doc rot behind the code.
+6. **Honest verification.** Report verification as it actually ran: paste
+   real output in the `Gate:` footer, never report a pre-existing failure as
+   passing, and say so explicitly in the PR when a check was skipped or not
+   run. A green claim without a runnable command behind it is not
+   verification.
 
 ## Repository layout
 
@@ -132,6 +143,10 @@ Full suite, local:
   `python tools/interop_gate.py --quick` by hand.
 - **`node tools/run-tests.cjs`** — the node conformance layer (oracle
   assertions skip when WinRAR/UnRAR isn't installed).
+- **`python tools/layer_check.py`** — the layer-direction check
+  (ARCHITECTURE.md §2) exactly as CI's gate leg runs it; `--changed` scopes
+  to files modified vs HEAD. Accepted exceptions live in
+  `tools/layer_baseline.json` (shrinks by hand only, via `--update-baseline`).
 - Fuzz targets: configure with `-DOPENRAR_FUZZ=ON`, run `ctest -R fuzz`.
   The nightly workflow fuzzes with libFuzzer + sanitizers; a crash there
   becomes your bug.
@@ -178,9 +193,6 @@ Format: `type(scope): subject`
   Gate: build + ctest + interop passed.
   ```
 
-- **AI attribution**: if AI tooling authored substantive code in the commit,
-  add the trailer `Co-Authored-By: internal-model` to the trailer block.
-
 Example:
 
 ```
@@ -191,7 +203,6 @@ Chosen fix: ... (why this shape over alternatives)
 Tests: ... (what now covers it)
 
 Gate: build + ctest + interop passed.
-Co-Authored-By: internal-model
 ```
 
 ## Branches & history
@@ -212,10 +223,14 @@ One logical change per PR. Title = a conventional-commit subject as above.
   touched `src/format/`, `src/compress/`, or `src/crypto/`.
 - **CI gates**: the 5-leg matrix (linux gcc/clang, macOS, Windows x64/arm64)
   must pass — build, ctest, interop gate (authoritative in CI, no weak
-  fallback), CLI smoke test. The gate leg additionally fails on warnings and
-  checks formatting. The WASM job enforces the 500 KiB budget. The writer
-  conformance job is advisory (`continue-on-error`) while the known writer
-  drift is unresolved.
+  fallback), CLI smoke test. The gate leg additionally fails on warnings,
+  checks formatting, and runs the layer-direction check
+  (`tools/layer_check.py`, ARCHITECTURE.md §2; accepted exceptions in
+  `tools/layer_baseline.json`, a manual ratchet). The WASM job enforces the
+  500 KiB budget. The writer conformance job is blocking. The canonical
+  inventory of every verification leg is `docs/verification-legs.md` —
+  adding, removing, or retargeting a leg updates that page in the same
+  change.
 - **Merging**: squash-merge to keep history linear; the squashed title
   follows the commit-message rules above.
 
@@ -230,4 +245,7 @@ release procedure (`release: vX.Y.N` commit + tag + `CHANGELOG.md` entry).
 
 - Specs: `docs/spec/NN-topic.md` (zero-padded two-digit prefix).
 - Architecture and design: `ARCHITECTURE.md` and `docs/`.
+- Verification legs: `docs/verification-legs.md` inventories every automated
+  check (CI jobs/steps, nightly fuzz, local gate scripts, hooks); its
+  same-change rule is normative.
 - Issues and feature tracking: standard GitHub Issues and Pull Requests.
