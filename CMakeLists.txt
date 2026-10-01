@@ -862,6 +862,15 @@ if(NOT EMSCRIPTEN)
             target_compile_definitions(fuzz_file_handle PRIVATE OPENRAR_USE_LIBFUZZER)
             target_compile_options(fuzz_file_handle PRIVATE -fsanitize=fuzzer-no-link)
             target_link_options(fuzz_file_handle PRIVATE -fsanitize=fuzzer)
+            # fuzz_inflate was missing from this block, so it linked with
+            # neither the libFuzzer runtime nor a standalone main() and failed
+            # with "undefined reference to main". It now has both (see the
+            # #ifndef in the source), so it must be wired like the others.
+            if(TARGET fuzz_inflate)
+                target_compile_definitions(fuzz_inflate PRIVATE OPENRAR_USE_LIBFUZZER)
+                target_compile_options(fuzz_inflate PRIVATE -fsanitize=fuzzer-no-link)
+                target_link_options(fuzz_inflate PRIVATE -fsanitize=fuzzer)
+            endif()
         endif()
 
         # The sweeps are cheap deterministic loops. They are only built and
