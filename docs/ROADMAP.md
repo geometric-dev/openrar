@@ -1,4 +1,4 @@
-# 🗺️ OpenRAR Engineering Roadmap: v1.21.x → v1.40 (Tight Base → Enterprise → Compression-Performance Era)
+# 🗺️ OpenRAR Engineering Roadmap: v1.21.x → v1.41 (Tight Base → Enterprise → Compression-Performance Era)
 
 > **Provenance & Supersession.** Third revision. The first revision inserted
 > the v1.21.1 stabilization gate after the v1.6.0 → v1.21.0 architect audit;
@@ -276,18 +276,36 @@ window to 0 and the first writer won every slot, taking 8 MiB of zeros from
 
 **Disposition:** the engine is parked for inspection on branch
 `arc/v1.32.0-optimal-parse-parked` (see `PARKED-v1.32-optimal-parse.md` on
-that branch). It is **not for merge** and the snapshot is the known-broken
-intermediate — the later corrections were never committed. The v1.32.0
-version number was re-purposed for MT encoder scaling.
+that branch). It is **not for merge**. Its later corrections *were* committed
+(`04408fb`), but that build still fails `compress_tests` and its numbers
+should not be trusted until that is resolved. The v1.32.0 version number was
+re-purposed for MT encoder scaling.
+
+**Post-park isolation (v1.33.0 Gate 0 input).** The `compress_tests` failure
+is isolated: T9's pure-addition assertion (`tests/unit/compress_tests.cpp`,
+"suppressed-257 output drifted from v1.30.4 reference bytes"), on the
+**zeros1m corpus at m3 only** — text64k, rand256k and mixed match byte-exactly
+at both m1 and m3, and all eight cases decode byte-exact, so the DP output is
+valid RAR5 and nothing is corrupt. Cause: `dp_should_enable()` enables the DP
+for m3 unconditionally and the 257-suppression test helper does not disable it,
+so the DP rewrites token choice in a path whose invariant is "suppressing 257
+reproduces pre-M1 bytes exactly". **T9's premise is structurally incompatible
+with any m3 token-selection change** — this is a test-design consequence to
+settle before any new parse work lands, not a hash to refresh. Second, and
+independent: the single drifting corpus is the run-heavy one with 257
+suppressed, which is the runs-pricing failure appearing directly in a
+controlled A/B rather than being inferred. On the other three corpora the DP
+reproduced greedy's choices byte-for-byte, so the measured −1.95% / −1.39% wins
+did not come from these inputs.
 
 ---
 
-## Indicative Path: v1.32 → v1.40 (provisional, Gate 0 per arc)
+## Indicative Path: v1.32 → v1.41 (provisional, Gate 0 per arc)
 
 Overall objective: compress RAR5 **faster and more securely than the
 official tool with equivalent compression**. v1.31 starts closing the
 ratio/effort gaps; the arcs below are sequenced from the evidence we have
-today and are expected to shift as v1.31–v1.33 surface new findings — each
+today and are expected to shift as v1.31–v1.34 surface new findings — each
 gets its own Gate 0, FMM, and named negative tests, and every arc keeps
 the perf-vs-WinRAR matrix honest (m3 non-regression remains the standing
 gate until dethroned by evidence).
@@ -297,23 +315,36 @@ gate until dethroned by evidence).
   MT. WinRAR scales 2.0x ST→MT vs our 1.53x; target 2x ST→MT scaling and
   widened MT leads. *(Re-purposed from "ratio parity (optimal parse)", which
   was built, measured and removed — see the descoped section above.)*
-- **v1.33.0 — Extraction throughput inside the v1.24 contract.** Batched
+- **v1.33.0 — Candidate source and block-table reuse (ratio, parse-independent).**
+  The descoped optimal-parse arc above established that the m1/m3 ratio gap is a
+  **candidate-source** gap, not a parse gap. We cannot emit a 2-byte match
+  (`MIN_MATCH = 3`, though length slot 0 is wire-legal), we run no sparse-context
+  probes, our lazy step pays a second full chain walk, and every block re-emits all
+  four Huffman tables (~26 B) although the block header's table-reuse bit (flags bit
+  7, already honoured by our decoder) costs 3–5 B. Sequencing: the `add_match`
+  length-clamp latent bug (reject, never clamp); block splitting with table reuse;
+  length-2/3 match support; three sparse 1/2/4-byte context probes; a
+  length→distance ring replacing the second chain walk. The parse arc itself is
+  **re-scoped, not revived** — it is in scope only if the length-2/3 token count
+  shows m1 and m3 are structurally different parsers, and T9's pure-addition gate
+  must be revised first (any m3 token-selection change voids it by construction).
+- **v1.34.0 — Extraction throughput inside the v1.24 contract.** Batched
   durability (fewer flushes without weakening the ordering/journal
   guarantees), pipelined verification, QO/scan wins. Any weakening of the
   fsync contract is an explicit security-architecture decision with its
   own Gate 0 (PERFORMANCE.md's standing note), default-on only if the
   contract holds.
-- **v1.34.0 — RAR 7.x parity ledger.** RR vintage 0x11D + single-erasure
+- **v1.35.0 — RAR 7.x parity ledger.** RR vintage 0x11D + single-erasure
   repair (deferred from v1.26), resource forks + FinderInfo (deferred
   from v1.27 to "2.1" — pulled here if the perf arcs land early).
-- **v1.35.0 — Migration completeness.** cv link migration (needs its own
+- **v1.36.0 — Migration completeness.** cv link migration (needs its own
   Gate 0 — `prepare_add_symlink_from_memory`), cv output-shaping switches
   (`-s`/`-v`/`-ts*`), FILECOPY default-materialization policy decision
   (deferred from v1.27).
-- **v1.36 – v1.40 — discovery pool (unsequenced).** Parallel CDC
+- **v1.37 – v1.41 — discovery pool (unsequenced).** Parallel CDC
   fingerprint pass, multi-volume no-data-area entries, WASM streaming
   encode, MSan/fuzz depth growth, dictionary auto-sizing, and whatever
-  the v1.31–v1.33 arcs surface. Deliberately uncommitted: new findings
+  the v1.31–v1.34 arcs surface. Deliberately uncommitted: new findings
   outrank this list.
 
 Standing inputs to re-triage at each arc boundary: the deferred ledgers in
