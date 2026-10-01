@@ -6,9 +6,11 @@
 #   sh tools/preflight.sh              # all legs that are available locally
 #   sh tools/preflight.sh --quick      # skip the slow Windows ctest leg
 #
-# Legs (auto-detected):
+# Legs (auto-detected, canonical inventory in docs/verification-legs.md):
 #   [win]  MSVC Release build + full CTest           (native, slow)
 #   [fmt]  clang-format full tree (CI format leg)     (needs clang-format 18)
+#   [ver]  version consistency (CMake vs wasm/js package.json, CI gate leg)
+#   [lay]  layer-direction check (downward-only includes, CI gate leg)
 #   [wsl]  Ubuntu gcc -Werror build + full CTest      (needs WSL + gcc + cmake;
 #          mirrors the CI ubuntu-gcc gate leg, built on ext4 for speed)
 #   [sde]  GFNI/AVX-512 kernel gates under Intel SDE  (needs dev/sde-external-*)
@@ -80,6 +82,18 @@ if [ "$CMAKE_VER" = "$PKG_VER" ] && [ -n "$PKG_VER" ]; then
     leg_pass "version consistency ($CMAKE_VER)" ver
 else
     leg_fail "version consistency (CMake=$CMAKE_VER pkg=$PKG_VER)" ver
+fi
+
+# ── [lay] layer-direction check (ARCHITECTURE.md §2, CI gate leg) ────────────
+if command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then
+    PY=$(command -v python3 || command -v python)
+    if "$PY" tools/layer_check.py >/dev/null 2>&1; then
+        leg_pass "layer check (downward-only includes)" lay
+    else
+        leg_fail "layer check (downward-only includes)" lay
+    fi
+else
+    leg_skip "layer check (python not found)" lay
 fi
 
 # ── [win] MSVC Release build + full CTest ────────────────────────────────────
