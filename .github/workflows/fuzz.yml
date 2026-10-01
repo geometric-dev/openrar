@@ -62,9 +62,18 @@ jobs:
         # The -max_total_time flags below are libFuzzer flags; the standalone
         # main() fallback ignores them, so a silent fallback would burn the
         # nightly on a fixed 2000-iteration sweep while CI reported success.
+        #
+        # Count rather than `grep -q`: Actions runs bash with -eo pipefail, and
+        # `strings BIN | grep -q PAT` makes grep exit on first match, which
+        # SIGPIPEs strings and returns 141 — so the assertion failed even when
+        # libFuzzer was linked. `grep -c` consumes all input, so no SIGPIPE.
         run: |
-          for f in fuzz_decompress fuzz_archive fuzz_file_handle; do
-            if ! strings ./build_fuzz/$f | grep -q libFuzzer; then
+          for f in fuzz_decompress fuzz_archive fuzz_file_handle fuzz_inflate; do
+            if [ ! -x "./build_fuzz/$f" ]; then
+              echo "::error::$f was not built"
+              exit 1
+            fi
+            if [ "$(strings "./build_fuzz/$f" | grep -c libFuzzer)" -eq 0 ]; then
               echo "::error::$f was built without libFuzzer (standalone fallback — check the compiler wiring above)"
               exit 1
             fi
