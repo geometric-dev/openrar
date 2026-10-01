@@ -191,7 +191,20 @@ public:
     static const core::uint32 HASH_BITS = 17;
     static const core::uint32 HASH_SIZE = 1 << HASH_BITS;
 
-    static const size_t MIN_MATCH = 3;
+    // Minimum match length the encoder will emit. RAR5 length slot 0 decodes to
+    // length 2 and is fully wire-legal (spec/03: lengths are stored as
+    // `length - 2`, so slot 0 covers base 2), and both directions already
+    // handle it: length_to_slot(2) -> slot 0 and slot_to_length(0) -> 2
+    // (decompressor50.cpp:377-378). This constant was the only thing making the
+    // class unreachable.
+    //
+    // Admissibility still filters by distance: a 2-byte match is legal only
+    // where increment(distance) == 0, i.e. distance <= 0x100. That is enforced
+    // by the decision loop's `len < inc + 2` rejection (and again inside
+    // add_match), never by clamping. Rep lengths carry no increment on either
+    // side (decompressor50.cpp:901-903), so a 2-byte rep is legal at any
+    // in-window distance.
+    static const size_t MIN_MATCH = 2;
     static const core::uint32 MAX_LZ_MATCH = 0x1001;
 
 private:
@@ -269,6 +282,11 @@ private:
     core::byte table_bits_[TABLE_SIZEX];
     // Current table size in use (430 RAR5 or 446 RAR7 ExtraDist)
     core::uint32 cur_table_size_{TABLE_SIZE};
+
+    // Minimum emitted match length actually in force: MIN_MATCH (2) for the
+    // shallow-finder methods m1-m3, and 3 for m4/m5 where admitting 2-byte
+    // matches measured as a regression. Set by init_match_params().
+    size_t min_match_{MIN_MATCH};
 
     size_t old_dist_[4];
     // Encoder-side shadow of the decoder's last_length_ (the slot-257
