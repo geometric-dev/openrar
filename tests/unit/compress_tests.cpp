@@ -2274,9 +2274,25 @@ void test_slot257_window_prefix_and_tail() {
     std::cout << "[PASS] slot257 window prefix + partial tail (T4)\n";
 }
 
-// T9: with 257 emission suppressed the encoder is byte-identical to
-// v1.30.4 (pure-addition property). Expected hashes captured from the
-// pre-M1 build (v1.30.4 code) — see docs/v1.31-implementation-plan.md T9.
+// T9: with 257 emission suppressed the encoder is byte-identical to its
+// reference build (pure-addition property). The hashes were first captured from
+// the pre-M1 build (v1.30.4 code) — see docs/v1.31-implementation-plan.md T9 —
+// and re-captured since, so what they now guard is TOKEN SELECTION: any change
+// to which tokens the encoder picks (a parse, a candidate rule, MIN_MATCH)
+// moves these hashes, while a pure framing change must not.
+//
+// Re-capture history:
+//   v1.33.0 Design A (block table reuse): only rand256k moved, on both m1 and
+//   m3. That is the reuse rule firing where it should: random data hits the
+//   32768-TOKEN block quantum long before the 512 KiB input quantum, so it
+//   yields ~8 blocks whose token distributions repeat exactly, and the table
+//   description is omitted from all but the first. text64k/zeros1m/mixed are
+//   unchanged because their per-block statistics keep moving. Verified as a
+//   framing-only change by forcing the reuse predicate off and re-running: T9
+//   passes with the predicate disabled, so no token selection moved.
+//   NB the run corpus cannot show Design A's win here at all - T9 suppresses
+//   257, and without 257 a run's rep lengths differ every block, so the tables
+//   never stabilise. The run case is measured on the real (257-enabled) path.
 void test_slot257_pure_addition_suppressed() {
     struct Corpus {
         const char* name;
@@ -2299,8 +2315,8 @@ void test_slot257_pure_addition_suppressed() {
         // v1.30.4 byte identity is asserted there.
         {"text64k", 1, "d34113c83d0b46137b98a0b269b764515c8c1e42f8509a4494534edec84bd27c"},
         {"text64k", 3, "44495a7543dd7af0afba4a054b1a7032166d43fc969ae9715c0c8678fe005db0"},
-        {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
-        {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
+        {"rand256k", 1, "d140b01abba2da345f03df9a73021b8c6a7ce4d38b00264e61a6d30f39b4a799"},
+        {"rand256k", 3, "d140b01abba2da345f03df9a73021b8c6a7ce4d38b00264e61a6d30f39b4a799"},
         {"zeros1m", 1, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
         {"zeros1m", 3, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
         {"mixed", 1, "15a4179c3715d7cd0d4e98a1b6c9f5d668e5fe646003371b172f5946c6d7f6b3"},
@@ -2322,7 +2338,7 @@ void test_slot257_pure_addition_suppressed() {
             for (const auto& e : expected) {
                 if (std::strcmp(e.corpus, c.name) == 0 && e.method == method) {
                     assert(std::strcmp(hex, e.sha) == 0 &&
-                           "suppressed-257 output drifted from v1.30.4 reference bytes");
+                           "suppressed-257 output drifted from the reference bytes");
                 }
             }
             assert_roundtrip_2mib(packed, c.data);
@@ -2541,6 +2557,71 @@ void test_add_match_admissibility() {
 }
 
 
+// T11: block-header table reuse (v1.33 Design A). The invariant that matters is
+// not "reuse happens" but "reuse never happens on a block whose decoder has no
+// tables" - if that slips, the decoder reads tokens under a table it never
+// received (decompressor50.cpp:577 rejects it outright, but only after we have
+// already shipped a stream we cannot round-trip). So: walk the block headers and
+// assert that bit 7 is SET on the first block of every stream, may be clear
+// afterwards, and that every such stream still decodes byte-exact.
+void test_block_table_reuse() {
+    // Random data hits the 32768-TOKEN quantum long before the 512 KiB input
+    // quantum, so it yields many blocks whose statistics repeat exactly - the
+    // case reuse is designed for.
+    std::vector<core::byte> rnd = t9_rand(512 * 1024, 7);
+
+    struct Stream {
+        const char* name;
+        std::vector<core::byte> packed;
+    };
+    Stream streams[2];
+    streams[0].name = "m3";
+    streams[1].name = "m1";
+    int method[2] = {3, 1};
+
+    for (int s = 0; s < 2; ++s) {
+        std::vector<core::byte> packed;
+        {
+            Compressor50 packer;
+            packer.begin_archive(nullptr, method[s], 0x200000);
+            packer.set_external_buffer(rnd.data(), rnd.size());
+            packer.set_memory_dest(&packed);
+            assert(packer.compress() >= 0 && !packed.empty());
+        }
+        assert_roundtrip_2mib(packed, rnd);
+
+        // Walk the block headers: flags, checksum, size (1..3 bytes), payload.
+        size_t off = 0;
+        int block = 0, reused = 0;
+        while (off < packed.size()) {
+            assert(off + 2 <= packed.size() && "truncated block header");
+            const core::uint8 flags = packed[off];
+            const core::uint8 byte_cnt = static_cast<core::uint8>(((flags >> 3) & 3) + 1);
+            assert(byte_cnt >= 1 && byte_cnt <= 3);
+            assert(off + 2 + byte_cnt <= packed.size() && "truncated block size field");
+            core::uint32 bsize = 0;
+            for (core::uint8 i = 0; i < byte_cnt; ++i)
+                bsize |= static_cast<core::uint32>(packed[off + 2 + i]) << (8 * i);
+            const bool tables_present = (flags & 0x80) != 0;
+
+            if (block == 0) {
+                assert(tables_present &&
+                       "the first block of a stream MUST carry its tables - the decoder has none");
+            } else if (!tables_present) {
+                ++reused;
+            }
+            ++block;
+            off += 2 + byte_cnt + bsize;
+        }
+        assert(block > 1 && "expected a multi-block stream for this corpus");
+        assert(reused > 0 &&
+               "table reuse never fired; the rule is inert and this test proves nothing");
+        std::cout << "[PASS] block table reuse: " << streams[s].name << " " << block << " blocks, "
+                  << reused << " reused, first block carries tables (T11)\n";
+    }
+}
+
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -2651,6 +2732,7 @@ int main() {
     std::cout << std::flush;
     test_slot257_solid_carry();
     test_add_match_admissibility();
+    test_block_table_reuse();
     std::cout << std::flush;
 
     std::cout << std::flush;
