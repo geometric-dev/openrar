@@ -270,6 +270,17 @@ private:
     // Current table size in use (430 RAR5 or 446 RAR7 ExtraDist)
     core::uint32 cur_table_size_{TABLE_SIZE};
 
+    // Block-header table reuse (v1.33 Design A). A block whose freshly built
+    // Huffman code lengths are bit-identical to the ones the decoder already
+    // holds can clear bit 7 ("tables present") and omit the ~26 B table
+    // description. prev_tables_valid_ mirrors the decoder's tables_ready_,
+    // which is dropped at a non-solid file boundary
+    // (decompressor50.cpp:568) and at stream reset, so reuse is offered only
+    // where the decoder still has the tables in hand.
+    bool prev_tables_valid_{false};
+    core::uint32 prev_table_size_{0};
+    core::byte prev_len_ld_[NC], prev_len_dd_[DCX], prev_len_ldd_[LDC], prev_len_rd_[RC];
+
     size_t old_dist_[4];
     // Encoder-side shadow of the decoder's last_length_ (the slot-257
     // continuation length): set to the full emitted length on fresh matches
