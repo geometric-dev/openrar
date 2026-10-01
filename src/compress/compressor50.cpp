@@ -590,7 +590,7 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
         }
         cand = next_cand;
     }
-    if (best.length < MIN_MATCH) best.length = 0;
+    if (best.length < min_match_) best.length = 0;
     return best;
 }
 
@@ -1181,6 +1181,18 @@ void Compressor50::init_match_params() {
     max_chain_ = chains[method_];
     nice_len_ = nices[method_];
     lazy_tests_ = lazies[method_];
+
+    // Minimum emitted match length is method-dependent (v1.33 Design B).
+    // Measured on a 64 MiB text corpus, admitting 2-byte matches:
+    //   m1 -1.49%, m3 -0.04%, m5 +0.05% (a regression).
+    // The mechanism is the one this arc is about: a short match only wins where
+    // the finder is too shallow to offer a long one. m1 walks depth 4 and m5
+    // walks depth 128, so at m5 a 2-byte match almost never survives the
+    // length arbitration and only costs table pressure. Hence 2 for the shallow
+    // methods and the previous 3 for m4/m5, which keeps their bytes identical
+    // rather than accepting a regression to buy m1's win.
+    static const size_t min_matches[6] = {3, 2, 2, 2, 3, 3};
+    min_match_ = (method_ >= 0 && method_ <= 5) ? min_matches[method_] : MIN_MATCH;
 }
 
 void Compressor50::slide_window() {
@@ -1409,7 +1421,7 @@ int Compressor50::process_available(bool final) {
         size_t len = 0;
         size_t dist = 0;
 
-        if (rep_best_len >= MIN_MATCH && rep_best_len + 1 > best.length) {
+        if (rep_best_len >= min_match_ && rep_best_len + 1 > best.length) {
             have_match = true;
             is_rep = true;
             len = rep_best_len;
@@ -1439,7 +1451,7 @@ int Compressor50::process_available(bool final) {
                 rep_best_len == last_length_) {
                 emit_last_len = true;
             }
-        } else if (best.length >= MIN_MATCH) {
+        } else if (best.length >= min_match_) {
             have_match = true;
             len = best.length;
             dist = static_cast<size_t>(
