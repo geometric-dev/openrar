@@ -706,16 +706,16 @@ void Compressor50::add_literal(core::byte b) {
     if (freq_ld_[b] < 0xfffe) freq_ld_[b]++;
 }
 
-void Compressor50::add_match(size_t length, size_t distance) {
+size_t Compressor50::add_match(size_t length, size_t distance) {
     core::uint32 inc = length_increment(distance);
-    core::uint32 base;
-    if (length <= static_cast<size_t>(inc)) {
-        base = 2;
-    } else {
-        base = static_cast<core::uint32>(length - inc);
-        if (base < 2) base = 2;
-        if (base > MAX_LZ_MATCH) base = MAX_LZ_MATCH;
-    }
+
+    // Admissibility: increment(distance) + 2 <= length. Below the floor the pair
+    // cannot be encoded and is FILTERED, not clamped - clamping it up would emit
+    // a token covering more bytes than the caller verified.
+    if (length < static_cast<size_t>(inc) + 2) return 0;
+
+    core::uint32 base = static_cast<core::uint32>(length - inc);
+    if (base > MAX_LZ_MATCH) base = MAX_LZ_MATCH; // truncate to the longest legal token
 
     core::uint32 len_slot, len_extra, len_bits;
     length_to_slot(base, len_slot, len_extra, len_bits);
@@ -737,9 +737,11 @@ void Compressor50::add_match(size_t length, size_t distance) {
     token_seq_.push_back(1);
     match_tokens_.push_back(tok);
     insert_old_dist(distance);
-    // Decoder mirror: last_length_ stores the full decoded length
-    // INCLUDING the distance-dependent increment (decompressor50.cpp:878).
-    last_length_ = length;
+    // The decoder stores base + increment as last_length_. Derive the shadow from
+    // the ENCODED base rather than from the caller's `length`, so the two cannot
+    // diverge when the match was truncated above.
+    last_length_ = base + inc;
+    return last_length_;
 }
 
 void Compressor50::add_rep(core::uint32 index, size_t length) {
@@ -1442,11 +1444,12 @@ int Compressor50::process_available(bool final) {
             len = best.length;
             dist = static_cast<size_t>(
                 best.candidate >= 0 ? cur_ - static_cast<core::uint64>(best.candidate) : 0);
+            // Filter inadmissible pairs here. add_match owns the encode and
+            // reports the covered span, so `len` always equals what the wire
+            // carries - it may be shorter than the length the finder returned.
             core::uint32 inc = length_increment(dist);
             if (len < inc + 2) {
                 have_match = false;
-            } else if (static_cast<core::uint32>(len - inc) > MAX_LZ_MATCH) {
-                len = MAX_LZ_MATCH + inc;
             }
         }
 
@@ -1494,7 +1497,7 @@ int Compressor50::process_available(bool final) {
                     add_rep(static_cast<core::uint32>(rep_idx), len);
                 }
             } else {
-                add_match(len, dist);
+                len = add_match(len, dist);
             }
 
             // Catch-up already inserted every hashable p < old cur_.
