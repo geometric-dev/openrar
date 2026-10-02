@@ -343,20 +343,23 @@ gate until dethroned by evidence).
     emit it), and reuse exposed a disagreement with both oracles that self-
     roundtrip tests cannot see by construction. See `docs/v1.33-pre-analysis.md`
     §10.
-  * **MT encoder: one dictionary per member (conformance).** Surfaced by §10a.
-    `parallel_compressor.cpp:251` clamps each MT chunk's window to that chunk's
-    own size (`min(cfg_.win_size, seed_len + data_len)`), so the final, smaller
-    chunk compresses under a different dictionary than the single one its member
-    declares. Per the format there is no per-chunk dictionary: a member is one LZ
-    parse over one window, so per-chunk sizes are not expressible — separate
-    members are the only way to have more than one. Harmless today only because
-    distances never reach the difference and the `DD` alphabet size does not
-    change below 4 GiB, but it is a latent divergence and it makes every
-    table-dependent optimisation unsafe on the MT path. Fix: one window per
-    member, with the clamp moved to a memory-budget concern rather than a
-    dictionary one. Gate: MT output must stay byte-identical to the current
-    output for corpora where every chunk is full-size, and UnRAR/WinRAR
-    cross-decode must hold for corpora where the last chunk is short.
+  * **MT encoder: why table reuse breaks under MT (open, mechanism unknown).**
+    §10a established the empirical shape: reuse is safe single-threaded and
+    broken multi-threaded, MT on its own is fine, and the win exists only in the
+    broken configuration. The obvious explanation — per-chunk dictionary
+    variation at `parallel_compressor.cpp:251` — was checked and **refuted**:
+    every chunk's window is clamped to `min(cfg_.win_size, chunk size)`, so a
+    chunk is never larger than the dictionary its member declares, distances stay
+    in range, and the `DD` alphabet size is selected from the member's declared
+    dictionary on both sides (`decompressor50.cpp:238-239`). Two candidate
+    mechanisms from the external review were also refuted, one arithmetically.
+    So the mechanism is still unidentified. Cheapest next experiments: (i) count
+    reuse blocks per configuration and check whether failure tracks the *count*
+    (zeros fail, text — which rarely repeats tables — passes, at the same
+    thread count); (ii) dump the assembled chunk order to confirm blocks are
+    concatenated in stream order; (iii) force a single chunk (threads > 1 but one
+    chunk) to separate "multi-threaded" from "multiple chunks". Until this is
+    explained, no table-dependent optimisation may be enabled on the MT path.
 - **v1.34.0 — Extraction throughput inside the v1.24 contract.** Batched
   durability (fewer flushes without weakening the ordering/journal
   guarantees), pipelined verification, QO/scan wins. Any weakening of the
