@@ -26,6 +26,56 @@ import sys
 SIG = bytes([0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00])
 HFL_EXTRA = 0x0001
 HFL_DATA = 0x0002
+HFL_SPLITBEFORE = 0x0008
+HFL_SPLITAFTER = 0x0010
+
+# docs/spec/01-headers.md "File Header"
+FHFL_DIR = 0x0001
+FHFL_UTIME = 0x0002  # mtime uint32 present
+FHFL_CRC32 = 0x0004  # Data CRC32 uint32 present
+FHFL_UNPUNKNOWN = 0x0008
+
+
+def safe_name(raw):
+    """Names in real archives are UTF-8 and the console may be cp1252."""
+    return "".join(ch if 32 <= ord(ch) < 127 else "?" for ch in raw)
+
+
+def parse_file_header(data, pos):
+    """Parse a type-2 header body far enough to classify the entry.
+
+    Field order is fixed by docs/spec/01-headers.md and the presence of the
+    mtime and Data CRC32 fields depends on the file flags - get either wrong and
+    every subsequent field is misparsed. Returns a dict, or None if it does not
+    parse cleanly within the header.
+    """
+    try:
+        fflags, pos = read_vint(data, pos)
+        unp_size, pos = read_vint(data, pos)
+        attrs, pos = read_vint(data, pos)
+        if fflags & FHFL_UTIME:
+            pos += 4
+        if fflags & FHFL_CRC32:
+            pos += 4
+        comp, pos = read_vint(data, pos)
+        host_os, pos = read_vint(data, pos)
+        name_len, pos = read_vint(data, pos)
+        name = data[pos:pos + name_len]
+        pos += name_len
+        return {
+            "is_dir": bool(fflags & FHFL_DIR),
+            "unp_unknown": bool(fflags & FHFL_UNPUNKNOWN),
+            "unp_size": unp_size,
+            "version": comp & 0x3F,
+            "solid": bool(comp & 0x0040),
+            "method": (comp >> 7) & 0x7,
+            "dict_n": (comp >> 10) & 0x1F,
+            "host_os": host_os,
+            "name": name.decode("utf-8", "replace"),
+            "end": pos,
+        }
+    except (ValueError, IndexError):
+        return None
 
 
 def read_vint(buf, pos):
@@ -45,41 +95,50 @@ def read_vint(buf, pos):
     raise ValueError("vint overruns buffer")
 
 
-def scan_blocks(data, base, size, label, report):
-    """Walk compression blocks in [base, base+size). Returns (total, reused, aligned).
+def scan_blocks(data, base, size, allow_truncated_tail):
+    """Walk compression blocks in [base, base+size).
 
-    `aligned` is the real validator: a correct walk lands exactly on the end of
-    the data area. A walk that overruns or stops short is parsing noise (raw
-    stored bytes, or a data area that begins mid-block because a split file's
-    block straddles a volume boundary), and its reuse count must not be believed.
+    Every header must satisfy the 1-byte XOR checksum from
+    docs/spec/03-compression-m1-m5.md:
+        checksum == 0x5A ^ flags ^ bsize ^ (bsize >> 8) ^ (bsize >> 16)
+    This is the decisive guard for volume data areas that begin mid-block: a
+    multi-volume split is a byte-count cut with no block-alignment test, so in a
+    continuation volume the first "header" is an arbitrary payload byte and its
+    checksum will not verify.
+
+    Returns (total, reused, verdict):
+      "aligned"    - every header checksummed and the walk landed on the end;
+      "truncated"  - ended because a block was cut by the volume end (expected
+                      under HFL_SPLITAFTER); headers seen so far all checksummed;
+      "unreliable" - a header failed its checksum, or any other inconsistency.
     """
     off = base
     end = base + size
     total = 0
     reused = 0
-    terminator = False
     while off < end:
         if off + 2 > end:
-            break
+            return total, reused, ("truncated" if allow_truncated_tail else "unreliable")
         flags = data[off]
+        chk = data[off + 1]
         byte_cnt = ((flags >> 3) & 3) + 1
         if off + 2 + byte_cnt > end:
-            break
+            return total, reused, ("truncated" if allow_truncated_tail else "unreliable")
         bsize = 0
         for i in range(byte_cnt):
             bsize |= data[off + 2 + i] << (8 * i)
-        if bsize > (end - off):
-            break
-        tables_present = bool(flags & 0x80)
+        if byte_cnt == 4 or bsize > (end - off):
+            return total, reused, ("truncated" if allow_truncated_tail else "unreliable")
+        want = (0x5A ^ flags ^ bsize ^ (bsize >> 8) ^ (bsize >> 16)) & 0xFF
+        if chk != want:
+            return total, reused, "bad-checksum"
         total += 1
-        if not tables_present:
+        if not (flags & 0x80):
             reused += 1
         off += 2 + byte_cnt + bsize
         if bsize == 0:
-            terminator = True
-            break
-    aligned = (off == end)
-    return total, reused, (aligned, terminator)
+            return total, reused, ("aligned" if off == end else "unreliable")
+    return total, reused, ("aligned" if off == end else "unreliable")
 
 
 def main(paths):
@@ -112,26 +171,46 @@ def main(paths):
                 print(f"    header parse stopped: {exc}")
                 break
 
-            # Header size counts from the Header type field to end of extra area.
-            type_pos = hdr_start + 4 + (pos - (hdr_start + 4))
-            # recompute: position of the Header type vint
-            type_pos = hdr_start + 4
-            _, probe = read_vint(data, type_pos)
-            type_pos = probe
+            # Header size counts from the Header type field to end of extra area,
+            # so the data area starts there without parsing type-specific fields.
+            _, type_pos = read_vint(data, hdr_start + 4)
             header_end = type_pos + hsize
             data_start = header_end
             next_pos = header_end + data_size
+            body = pos  # first byte after the common framing
 
             if htype == 2 and data_size > 0:  # file header with a data area
                 files += 1
-                t, r, (aligned, term) = scan_blocks(data, data_start, data_size, f"file#{files}", report)
-                if aligned:
-                    grand_total += t
-                    grand_reused += r
-                    print(f"    file#{files}: WALK VALIDATED (lands exactly on data end)"
-                          f" - {t} blocks, {r} with tables omitted")
+                fh = parse_file_header(data, body)
+                if fh is None:
+                    print(f"    file#{files}: file header did not parse; ignored")
+                elif fh["is_dir"]:
+                    print(f"    file#{files}: directory; ignored")
+                elif fh["method"] == 0:
+                    print(f"    file#{files}: STORED (method 0) '{fh['name']}'"
+                          f" - no compression blocks, skipped")
                 else:
-                    print(f"    file#{files}: walk did NOT align - parse unreliable, ignored")
+                    split = bool(hflags & HFL_SPLITAFTER)
+                    t, r, verdict = scan_blocks(data, data_start, data_size, split)
+                    if verdict == "unreliable":
+                        print(f"    file#{files}: method {fh['method']} dict"
+                              f" {128 << fh['dict_n']}KiB '{safe_name(fh['name'])[:40]}'"
+                              f" - walk unreliable, ignored")
+                    elif verdict == "bad-checksum":
+                        print(f"    file#{files}: method {fh['method']} dict"
+                              f" {128 << fh['dict_n']}KiB '{safe_name(fh['name'])[:40]}'"
+                              f" - HEADER CHECKSUM FAILED after {t} blocks"
+                              f" ({r} looked reused) => data area starts mid-block,"
+                              f" hits are artefacts")
+                    else:
+                        grand_total += t
+                        grand_reused += r
+                        note = "lands exactly on data end" if verdict == "aligned" \
+                            else "ends at a volume split (block truncated)"
+                        print(f"    file#{files}: method {fh['method']} dict"
+                              f" {128 << fh['dict_n']}KiB '{(safe_name(fh['name']))[:40]}'"
+                              f"{' solid' if fh['solid'] else ''} - {t} blocks"
+                              f" [{note}], {r} with tables omitted")
             if htype == 5:
                 break
             if next_pos <= hdr_start:
