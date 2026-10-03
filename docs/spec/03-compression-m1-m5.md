@@ -190,7 +190,7 @@ the reference values; rationale and measurements in
 `docs/v1.31-implementation-plan.md` M3) — the authoritative shipped
 values live in `Compressor50::init_match_params()`.
 
-Additional encoder rule (integrity-preserving, not wire-visible): `FailCount` heuristic — after `0x100` consecutive positions where the finder yields no admissible match, skip `3/4` of subsequent positions (`FailCount>0x100 → skip 3/4`, `>0x400 → 7/8`, `>0x800 → 15/16`, `>0x1000 → 31/32`). Reset `FailCount` when a match `len>=8` is found. The admission floor is per-method since v1.33: length-2 matches are admissible at m1–m3, m4–m5 stay at 3. This does not affect decodability; it trades ~0.0002 ratio for 2–3× speed.
+Additional encoder rule (integrity-preserving, not wire-visible): `FailCount` heuristic — after `0x100` consecutive positions where the finder yields no admissible match, skip `3/4` of subsequent positions (`FailCount>0x100 → skip 3/4`, `>0x400 → 7/8`, `>0x800 → 15/16`, `>0x1000 → 31/32`). Reset `FailCount` when a match `len>=8` is found. The admission floor is 3 at every method since v1.33.1: the v1.33 experiment admitting length-2 matches at m1–m3 measured neutral on re-gate and suppressed table reuse at content boundaries, so the wire-legal slot-0 class is not emitted. This does not affect decodability; it trades ~0.0002 ratio for 2–3× speed.
 
 ### Encoder contract: repeat-last-length (slot 257) emission
 
