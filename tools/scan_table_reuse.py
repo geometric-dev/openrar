@@ -116,33 +116,37 @@ def scan_blocks(data, base, size, allow_truncated_tail):
     end = base + size
     total = 0
     reused = 0
+    bit_sizes = {}
     while off < end:
         if off + 2 > end:
-            return total, reused, ("truncated" if allow_truncated_tail else "unreliable")
+            return total, reused, ("truncated" if allow_truncated_tail else "unreliable"), bit_sizes
         flags = data[off]
         chk = data[off + 1]
         byte_cnt = ((flags >> 3) & 3) + 1
         if off + 2 + byte_cnt > end:
-            return total, reused, ("truncated" if allow_truncated_tail else "unreliable")
+            return total, reused, ("truncated" if allow_truncated_tail else "unreliable"), bit_sizes
         bsize = 0
         for i in range(byte_cnt):
             bsize |= data[off + 2 + i] << (8 * i)
         if byte_cnt == 4 or bsize > (end - off):
-            return total, reused, ("truncated" if allow_truncated_tail else "unreliable")
+            return total, reused, ("truncated" if allow_truncated_tail else "unreliable"), bit_sizes
         want = (0x5A ^ flags ^ bsize ^ (bsize >> 8) ^ (bsize >> 16)) & 0xFF
         if chk != want:
-            return total, reused, "bad-checksum"
+            return total, reused, "bad-checksum", bit_sizes
         total += 1
         if not (flags & 0x80):
             reused += 1
+        bits = (flags & 7) + 1
+        bit_sizes[bits] = bit_sizes.get(bits, 0) + 1
         off += 2 + byte_cnt + bsize
         if bsize == 0:
-            return total, reused, ("aligned" if off == end else "unreliable")
-    return total, reused, ("aligned" if off == end else "unreliable")
+            return total, reused, ("aligned" if off == end else "unreliable"), bit_sizes
+    return total, reused, ("aligned" if off == end else "unreliable"), bit_sizes
 
 
 def main(paths):
     grand_total = grand_reused = 0
+    grand_bits = {}
     for path in paths:
         print(f"=== {path}")
         with open(path, "rb") as fh:
@@ -191,7 +195,7 @@ def main(paths):
                           f" - no compression blocks, skipped")
                 else:
                     split = bool(hflags & HFL_SPLITAFTER)
-                    t, r, verdict = scan_blocks(data, data_start, data_size, split)
+                    t, r, verdict, bits = scan_blocks(data, data_start, data_size, split)
                     if verdict == "unreliable":
                         print(f"    file#{files}: method {fh['method']} dict"
                               f" {128 << fh['dict_n']}KiB '{safe_name(fh['name'])[:40]}'"
@@ -205,6 +209,8 @@ def main(paths):
                     else:
                         grand_total += t
                         grand_reused += r
+                        for k, v in bits.items():
+                            grand_bits[k] = grand_bits.get(k, 0) + v
                         note = "lands exactly on data end" if verdict == "aligned" \
                             else "ends at a volume split (block truncated)"
                         print(f"    file#{files}: method {fh['method']} dict"
@@ -221,6 +227,8 @@ def main(paths):
             print(line)
         print(f"    scanned {files} file header(s)")
     print(f"\nTOTAL compression blocks: {grand_total}, with tables OMITTED: {grand_reused}")
+    bits_line = ", ".join(f"bit_size {k}: {grand_bits[k]}" for k in sorted(grand_bits))
+    print(f"FINAL-BYTE bit count histogram (8 = byte-aligned tail): {bits_line or 'none'}")
 
 
 if __name__ == "__main__":
