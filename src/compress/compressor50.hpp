@@ -316,9 +316,11 @@ private:
     // Current table size in use (430 RAR5 or 446 RAR7 ExtraDist)
     core::uint32 cur_table_size_{TABLE_SIZE};
 
-    // Minimum emitted match length actually in force: MIN_MATCH (2) for the
-    // shallow-finder methods m1-m3, and 3 for m4/m5 where admitting 2-byte
-    // matches measured as a regression. Set by init_match_params().
+    // Minimum emitted match length actually in force: 3 at every method since
+    // v1.33.1 - the v1.33 Design B floor of 2 at m1-m3 measured neutral on
+    // re-gate and suppressed table reuse at content boundaries (see
+    // init_match_params()). MIN_MATCH itself remains the WIRE floor: length
+    // slot 0 decodes to 2 and is legal on the wire. Set by init_match_params().
     size_t min_match_{MIN_MATCH};
 
     // Block-header table reuse (v1.33 Design A). A block whose freshly built
