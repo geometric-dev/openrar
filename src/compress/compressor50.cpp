@@ -1241,16 +1241,16 @@ void Compressor50::init_match_params() {
     nice_len_ = nices[method_];
     lazy_tests_ = lazies[method_];
 
-    // Minimum emitted match length is method-dependent (v1.33 Design B).
-    // Measured on a 64 MiB text corpus, admitting 2-byte matches:
-    //   m1 -1.49%, m3 -0.04%, m5 +0.05% (a regression).
-    // The mechanism is the one this arc is about: a short match only wins where
-    // the finder is too shallow to offer a long one. m1 walks depth 4 and m5
-    // walks depth 128, so at m5 a 2-byte match almost never survives the
-    // length arbitration and only costs table pressure. Hence 2 for the shallow
-    // methods and the previous 3 for m4/m5, which keeps their bytes identical
-    // rather than accepting a regression to buy m1's win.
-    static const size_t min_matches[6] = {3, 2, 2, 2, 3, 3};
+    // Minimum emitted match length. v1.33 Design B admitted 2-byte matches at
+    // m1-m3 on a claimed m1 -1.49%; the v1.33.1 re-gate could not reproduce
+    // that win on any corpus available (canonical payload, two text
+    // constructions, code-like text, random, zeros - all +/-0.02%), and the
+    // floor measurably cost the zeros-to-random boundary case, where
+    // stale-distance 2-byte reps suppressed table reuse (-8.3 KB and +167
+    // reuse blocks recovered by floor 3 on a 32 MiB heterogeneous member).
+    // Floor is therefore 3 everywhere again. The per-method table is kept so a
+    // future per-method tuning does not need to re-plumb init_match_params().
+    static const size_t min_matches[6] = {3, 3, 3, 3, 3, 3};
     min_match_ = (method_ >= 0 && method_ <= 5) ? min_matches[method_] : MIN_MATCH;
 }
 

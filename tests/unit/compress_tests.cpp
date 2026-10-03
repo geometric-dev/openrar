@@ -2565,28 +2565,22 @@ void test_add_match_admissibility() {
 }
 
 
-// T12: length-2 match support (v1.33 Design B).
+// T12: the length-2 admission floor (v1.33 Design B, reverted v1.33.1).
 //
-// RAR5 length slot 0 decodes to length 2 and is wire-legal; `MIN_MATCH = 3` was
-// the only thing making the class unreachable. This pins the two properties
-// that matter:
+// RAR5 length slot 0 decodes to length 2 and is wire-legal, and the rep scan
+// can produce 2-byte matches with no length floor (the chain finder cannot: it
+// hashes four bytes, so a walk never returns a fresh match shorter than 4).
+// v1.33 shipped a floor of 2 at m1-m3 on a claimed m1 -1.49%; the v1.33.1
+// re-gate could not reproduce that win on any corpus available (canonical
+// payload, two text constructions, code-like text, random, zeros - all
+// +/-0.02%), and the floor measurably cost the zeros-to-random boundary case
+// by suppressing table reuse. The floor is 3 at every method again, and this
+// test now pins the suppression side: NO method emits a slot-0 length token,
+// at m1 through m5.
 //
-//   1. REACHABILITY - on a text-like corpus the shallow-finder methods really do
-//      emit slot-0 length tokens. Without this the constant change would be a
-//      silent no-op. Note WHO can produce them: the match finder hashes four
-//      bytes and only indexes positions with four bytes available
-//      (calc_hash/insert_position), so a chain walk can never return a length-2
-//      fresh match. The reachable form of this class is the REP token - the rep
-//      scan compares bytes directly with no length floor. Measured -1.49% at
-//      m1, -1.64% at m2 on a 64 MiB text corpus.
-//   2. THE m4/m5 BOUND - admitting short matches measured as a regression at m5
-//      (+0.05%), so those methods keep the previous minimum of 3 and must emit
-//      no slot-0 match at all. Their bytes are byte-identical to v1.32.
-//
-// Admissibility of a 2-byte match (legal only where increment(distance) == 0,
-// i.e. distance <= 0x100) is pinned by T10, which drives the emitter directly
-// with the boundary pairs; here we only assert the class is emitted and that
-// everything still round-trips.
+// The wire class itself stays pinned by T10, which drives the emitter
+// directly with the boundary pairs (a 2-byte match is admissible only where
+// increment(distance) == 0, i.e. distance <= 0x100).
 void test_length2_match_support() {
     std::vector<core::byte> text;
     for (int i = 0; i < 8192; ++i) {
@@ -2596,15 +2590,12 @@ void test_length2_match_support() {
     }
     assert(text.size() > 256 * 1024 && "corpus must be big enough to fill a block");
 
-    struct Expect {
-        int method;
-        bool expect_slot0;
-    };
-    const Expect cases[] = {{1, true}, {2, true}, {3, true}, {4, false}, {5, false}};
-
-    for (const auto& c : cases) {
+    // The corpus below is deliberately one where the v1.33 floor-2 build DID
+    // emit slot-0 tokens (T12 asserted slot0 > 0 at m1-m3 then), so a silent
+    // return of the floor-2 constant fails here rather than passing inertly.
+    for (int method = 1; method <= 5; ++method) {
         Compressor50 packer;
-        packer.begin_archive(nullptr, c.method, 0x200000);
+        packer.begin_archive(nullptr, method, 0x200000);
         packer.set_external_buffer(text.data(), text.size());
         std::vector<core::byte> packed;
         packer.set_memory_dest(&packed);
@@ -2621,11 +2612,8 @@ void test_length2_match_support() {
             if (is_match) ++matches;
             if (t.get_len_slot() == 0) ++slot0;
         }
-        if (c.expect_slot0) {
-            assert(slot0 > 0 && "length-2 match class is unreachable - the change is a no-op");
-        } else {
-            assert(slot0 == 0 && "m4/m5 must keep the previous minimum of 3");
-        }
+        assert(slot0 == 0 && "no method may emit a slot-0 length token - the "
+                             "admission floor is 3 at every method since v1.33.1");
         assert(matches > 0);
 
         assert(Compressor50TestAccess::write_block(packer, true));
@@ -2635,7 +2623,7 @@ void test_length2_match_support() {
         assert(out.size() == text.size());
         assert(std::memcmp(out.data(), text.data(), text.size()) == 0);
     }
-    std::cout << "[PASS] length-2 matches reachable at m1-m3, suppressed at m4-m5 (T12)\n";
+    std::cout << "[PASS] length-2 class wire-legal but unemitted at every method (T12)\n";
 }
 
 
