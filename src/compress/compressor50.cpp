@@ -310,6 +310,9 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
     src_eof_ = false;
     reset_old_dist();
     init_freq();
+    // A fresh archive starts with no tables in the decoder's hands.
+    prev_tables_valid_ = false;
+    seed_remaining_ = REUSE_SEED_BLOCKS;
 }
 
 // -- Streaming session (Path A) ----------------------------------------------
@@ -400,6 +403,14 @@ void Compressor50::start_file(io::FileStream* src, core::uint64 src_file_size,
     src_file_ = src;
     src_size_ = src_file_size;
     src_eof_ = false;
+    // A member's compressed stream must open with its own tables. Our decoder
+    // drops them at a non-solid start (decompressor50.cpp:568), but reference
+    // unrar rejects the solid-mixed interop track outright if we reuse across a
+    // SOLID boundary too - each member is its own block sequence as far as the
+    // format is concerned. Reuse is intra-file only; a member boundary costs at
+    // most one table description, so there is nothing to win by crossing it.
+    prev_tables_valid_ = false;
+    seed_remaining_ = REUSE_SEED_BLOCKS;
     token_seq_.clear();
     lit_bytes_.clear();
     match_tokens_.clear();
@@ -1047,8 +1058,44 @@ bool Compressor50::write_block(bool last_block) {
     local_out.set_memory(&block_mem_);
 
     make_tables();
-    emit_table(local_out);
+
+    // Table reuse. The tokens below are encoded with the tables make_tables()
+    // just produced, so we may only omit the table description when those
+    // tables are BIT-IDENTICAL to the ones the decoder is already holding -
+    // then reuse and re-emit encode the same bits. Exact equality is
+    // deliberate: an approximate "close enough" predicate would risk encoding
+    // tokens under a table the decoder does not hold, which is a corruption
+    // rather than a ratio loss.
+    //
+    // Measured effect (docs/question-log.md Entry 20): on 64 MiB of zeros
+    // (128 blocks) the seed covers 18 blocks and reuse fires on 110:
+    // 3,616 B -> 2,732 B, a 24% cut. It does NOT reach the ~85% an approximate
+    // predicate would suggest, because on run-heavy input the per-block tables
+    // really do keep moving (the rep lengths at each block boundary differ).
+    // Capturing the rest needs a content-adaptive block-size controller, not a
+    // looser equality test - see the v1.33 pre-analysis follow-up.
+    const core::uint32 cur_dc = (cur_table_size_ == TABLE_SIZEX) ? DCX : DCB;
+    const bool tables_identical = prev_tables_valid_ && prev_table_size_ == cur_table_size_ &&
+                                  std::memcmp(prev_len_ld_, len_ld_, NC) == 0 &&
+                                  std::memcmp(prev_len_dd_, len_dd_, cur_dc) == 0 &&
+                                  std::memcmp(prev_len_ldd_, len_ldd_, LDC) == 0 &&
+                                  std::memcmp(prev_len_rd_, len_rd_, RC) == 0;
+
+    // A table-set change is a re-seed event: it refreshes only the decoder slot
+    // it lands in, so every other slot must be covered again before reuse is
+    // safe. See the REUSE_SEED_BLOCKS comment in the header.
+    if (!tables_identical) seed_remaining_ = REUSE_SEED_BLOCKS;
+
+    const bool tables_reusable = tables_identical && seed_remaining_ == 0;
+    if (seed_remaining_ > 0) --seed_remaining_;
+
+    if (!tables_reusable) emit_table(local_out);
     emit_tokens(local_out);
+
+    // NB: what the decoder now holds is recorded at the END of write_block,
+    // after the empty-block early returns - those paths write no table (and
+    // sometimes no block at all), so the decoder's tables are unchanged there
+    // and prev_* must not be advanced.
 
     local_out.finish_block_data();
 
@@ -1125,8 +1172,11 @@ bool Compressor50::write_block(bool last_block) {
     if (block_bit_size > 8) block_bit_size = 8;
 
     core::uint32 byte_count = data_size < 0x100 ? 1 : (data_size < 0x10000 ? 2 : 3);
-    core::byte flags = static_cast<core::byte>(0x80 | (last_block ? 0x40 : 0) |
-                                               ((byte_count - 1) << 3) | (block_bit_size - 1));
+    // Flag bit 7 is "tables present" (spec/03 block header). Clear it exactly
+    // when the table description was omitted above.
+    core::byte flags =
+        static_cast<core::byte>((tables_reusable ? 0x00 : 0x80) | (last_block ? 0x40 : 0) |
+                                ((byte_count - 1) << 3) | (block_bit_size - 1));
     core::byte check_sum =
         static_cast<core::byte>(0x5a ^ flags ^ data_size ^ (data_size >> 8) ^ (data_size >> 16));
 
@@ -1147,6 +1197,15 @@ bool Compressor50::write_block(bool last_block) {
     }
 
     packed_total_ += 2 + byte_count + data_size;
+
+    // The block is on the wire: record the tables the decoder now holds. Placed
+    // here, after the empty-block early returns, because those write no table.
+    std::memcpy(prev_len_ld_, len_ld_, NC);
+    std::memcpy(prev_len_dd_, len_dd_, cur_dc);
+    std::memcpy(prev_len_ldd_, len_ldd_, LDC);
+    std::memcpy(prev_len_rd_, len_rd_, RC);
+    prev_table_size_ = cur_table_size_;
+    prev_tables_valid_ = true;
 
     token_seq_.clear();
     lit_bytes_.clear();
@@ -1683,6 +1742,11 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
         }
     }
 
+    // NOTE: this library entry point is NOT the path the CLI uses for
+    // ParallelBlockPipeline::compress_stream; that one lives in
+    // parallel_compressor.cpp and carries the table-reuse chunk floor. Keep the
+    // two clamps in step - see the floor note in parallel_compressor.cpp for why
+    // a chunk must be able to amortise a 16-block re-seed.
     size_t chunk_size = std::max<size_t>(
         1024 * 1024, std::min<size_t>(4 * 1024 * 1024, (src_size + eff_threads - 1) / eff_threads));
     size_t num_chunks = (src_size + chunk_size - 1) / chunk_size;
