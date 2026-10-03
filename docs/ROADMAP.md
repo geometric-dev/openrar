@@ -320,10 +320,16 @@ gate until dethroned by evidence).
   **candidate-source** gap, not a parse gap. We could not emit a 2-byte match
   (`MIN_MATCH = 3`, though length slot 0 is wire-legal), we ran no sparse-context
   probes, and our lazy step paid a second full chain walk.
-  * **Shipped:** the `add_match` length-clamp latent bug (reject, never clamp);
-    length-2 matches at m1–m3 (m1 −1.49%, m2 −1.64%, m3 −0.04%, m4/m5
-    byte-identical — the minimum is per-method because admitting short matches
-    measured as a regression at m5's depth-128 walk).
+  * **Shipped, then re-gated and reverted (v1.33.1):** the `add_match`
+    length-clamp latent bug (reject, never clamp) stands; length-2 matches at
+    m1–m3 do not. The v1.33 gate claimed m1 −1.49% / m2 −1.64% / m3 −0.04% on
+    a 64 MiB text corpus, but the v1.33.1 re-gate could not reproduce it on
+    any corpus available (canonical payload, two text constructions, code-like
+    text, random, zeros — all ±0.02%), and the floor measurably suppressed
+    table reuse at zeros-to-random boundaries (−8.3 KB and +167 reuse blocks
+    recovered by floor 3 on a 32 MiB heterogeneous member). The admission
+    floor is 3 at every method again; the wire-legal slot-0 class stays pinned
+    by T10/T12.
   * **Rejected, then root-caused and implemented:** block table reuse (header
     bit 7). The original rejection — a real −6.2% on 64 MiB of zeros, but UnRAR
     *and* WinRAR mis-decode long runs — was an encoder-side misdiagnosis: the
