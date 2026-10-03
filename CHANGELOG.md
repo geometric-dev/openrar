@@ -5,6 +5,44 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.0] - 2026-10-03
+
+Table reuse: the encoder now omits a compression block's Huffman table
+description when the decoder already holds exactly those tables, gated by
+the decoder-slot seed rule that makes it interoperable with multithreaded
+extractors. Emitted bytes change on run-heavy input (64 MiB of zeros:
+3,616 -> 2,748 B single-threaded, 3,612 -> 3,109 B at `-mt4`). The wire
+format is untouched: 30/30 oracle checks across UnRAR `-mt1/2/4/8` and
+WinRAR at every size that previously failed, including members that force
+a mid-member table change.
+
+### Added
+
+- Block-header table reuse with decoder-slot seeding: descriptions on the
+  first 16 blocks of a member and again after every table-set change;
+  reuse is unbounded between changes.
+- Length-2 match emission at the shallow-finder methods (m1-m3): m1
+  -1.49%, m2 -1.64%, m3 -0.04% on text; m4/m5 byte-identical.
+- MT chunk floor of 16 MiB (2 x the seed length in block quanta) so a
+  chunk amortises its re-seed: at `-mt4` zeros are ~14% smaller at 1.27x
+  single-thread-equivalent throughput (peak RSS 382 MB on 256 MiB zeros
+  vs 54 MB single-threaded).
+
+### Fixed
+
+- Match emitters reject unrepresentable (length, distance) pairs instead
+  of silently clamping the base length - the clamp decoded to a different
+  length than verified, a one-byte desync class.
+- The parallel pipeline's sequential fallback read the whole chunk in one
+  buffer; with the larger floor a small file was a single read and
+  cancellation could never be observed mid-run. Reads are bounded at one
+  block quantum.
+
+### Changed
+
+- Emitted bytes change for single-threaded run-heavy input and for all MT
+  output. Decoded output is byte-exact; the wire format is untouched.
+
 ## [1.32.0] - 2026-09-30
 
 Throughput scaling: the MT encoder is switched back on, and the reason it was
