@@ -5,6 +5,43 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.5] - 2026-10-03
+
+Close-out of the v1.33.1 threads: the length-3 admission floor is restored at
+every method after the v1.33 Design B gate failed to reproduce, and the two
+deferred investigation threads are resolved at the documentation level.
+
+### Fixed
+
+- **The length-2 admission floor is reverted.** The v1.33 gate claimed m1
+  -1.49% / m2 -1.64% for admitting 2-byte matches at the shallow-finder
+  methods; the re-gate measured +/-0.02% between floors on every corpus
+  available (canonical payload, two 64 MiB text constructions, code-like
+  text, random, zeros - byte-identical on random and zeros), and the floor
+  measurably suppressed table reuse at zeros-to-random boundaries: floor 3
+  recovers 8.3 KB and 167 reuse blocks on a 32 MiB heterogeneous member.
+  `MIN_MATCH` stays 2 as the wire floor (slot 0 is legal); T10 pins the
+  boundary admissibility and T12 now pins that no method emits the class.
+  Emitted bytes change only on text-like inputs (bounded by the measured
+  +/-0.02%) and improve on mixed-content members.
+
+### Documented
+
+- **Trailing-bits rule refined** (spec 06, question-log Entry 23): padding
+  bits corrupt a block only when they complete a code in that block's table.
+  Reference producers emit non-byte-aligned tails routinely (838 of 954
+  blocks in a WinRAR sweep); our decoder stopping at the declared bit count
+  is the conservative reader.
+- **MT seed inheritance scoped** (question-log Entry 23): sharing table
+  state across chunks is blocked by parallel chunk dispatch - inheritance
+  needs serialization or speculative table commit - for a bounded payoff of
+  ~361 B on zeros-format MT. Recorded as a scoped arc.
+- **MT memory budget measured**: peak RSS on 256 MiB zeros at m3 is ~54 MB
+  single-threaded and scales near-linearly with the 16 MiB chunk floor
+  (195 MB at `-mt2`, 382 MB at `-mt4`, 502 MB at `-mt8`).
+- `tools/scan_table_reuse.py` now reports the final-byte bit-count
+  histogram.
+
 ## [1.33.0] - 2026-10-03
 
 Table reuse: the encoder now omits a compression block's Huffman table
