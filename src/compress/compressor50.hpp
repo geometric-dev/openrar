@@ -207,6 +207,39 @@ public:
     static const size_t MIN_MATCH = 2;
     static const core::uint32 MAX_LZ_MATCH = 0x1001;
 
+    // Decoder-slot seeding for block-header table reuse (v1.33 Design A). A
+    // decoder's multithreaded driver does not keep one table state per member:
+    // it pre-scans the block headers, hands each block to a work item that
+    // owns a PRIVATE copy of the table state (initially empty), and assigns
+    // blocks to those slots round-robin in batches of 2 x threads. A block
+    // that carries a description seeds the slot it lands in; a bit-7-clear
+    // block inherits whatever that slot already accumulated. A reuse block
+    // landing in a slot that has never received a description therefore
+    // decodes against an EMPTY table set: symbol lookup degenerates, the
+    // block is exhausted after a few tokens, and the member silently comes
+    // out short. The model is behavioral, confirmed by black-box experiment
+    // against the extraction oracles (docs/question-log.md); no reference
+    // implementation source informs it.
+    //
+    // Two obligations follow for the encoder, and both are cheap:
+    //   1. Cover every slot before the first reuse. The slot count follows
+    //      the extractor's requested thread count; the worker pool is clamped
+    //      to MAX_DECODER_THREADS, so the period is at most
+    //      2 x MAX_DECODER_THREADS. Emitting REUSE_SEED_BLOCKS CONSECUTIVE
+    //      descriptions covers every residue class modulo any period up to
+    //      that bound.
+    //   2. Re-cover after every table-set change. A change refreshes exactly
+    //      the one slot it lands in, leaving the others holding a stale set,
+    //      so a change is treated as a fresh re-seed event.
+    //
+    // Between changes, reuse is unbounded. Cost is a fixed REUSE_SEED_BLOCKS
+    // descriptions per table change, independent of member size, so this
+    // keeps essentially the whole saving. The sequential path has no slot
+    // structure and is unaffected either way. Normative text:
+    // docs/spec/03-compression-m1-m5.md §Table lifecycle.
+    static constexpr unsigned MAX_DECODER_THREADS = 8;
+    static constexpr unsigned REUSE_SEED_BLOCKS = 2 * MAX_DECODER_THREADS;
+
 private:
     static const size_t READ_CHUNK = 0x100000;
 
@@ -287,6 +320,21 @@ private:
     // shallow-finder methods m1-m3, and 3 for m4/m5 where admitting 2-byte
     // matches measured as a regression. Set by init_match_params().
     size_t min_match_{MIN_MATCH};
+
+    // Block-header table reuse (v1.33 Design A). A block whose freshly built
+    // Huffman code lengths are bit-identical to the ones the decoder already
+    // holds can clear bit 7 ("tables present") and omit the ~26 B table
+    // description. prev_tables_valid_ mirrors the decoder's tables_ready_,
+    // which is dropped at a non-solid file boundary
+    // (decompressor50.cpp:568) and at stream reset, so reuse is offered only
+    // where the decoder still has the tables in hand. The decoder-slot model
+    // that dictates REUSE_SEED_BLOCKS and the re-seed-on-change rule is
+    // documented with those constants (public, beside the wire-contract
+    // constants) and in docs/spec/03-compression-m1-m5.md §Table lifecycle.
+    bool prev_tables_valid_{false};
+    core::uint32 prev_table_size_{0};
+    core::byte prev_len_ld_[NC], prev_len_dd_[DCX], prev_len_ldd_[LDC], prev_len_rd_[RC];
+    unsigned seed_remaining_{REUSE_SEED_BLOCKS};
 
     size_t old_dist_[4];
     // Encoder-side shadow of the decoder's last_length_ (the slot-257
