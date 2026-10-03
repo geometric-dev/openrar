@@ -324,10 +324,18 @@ gate until dethroned by evidence).
     length-2 matches at m1–m3 (m1 −1.49%, m2 −1.64%, m3 −0.04%, m4/m5
     byte-identical — the minimum is per-method because admitting short matches
     measured as a regression at m5's depth-128 walk).
-  * **Rejected, measured:** block table reuse (header bit 7) — a real −6.2% on
-    64 MiB of zeros, but UnRAR *and* WinRAR mis-decode it on long runs ≥24 MB;
-    and sparse 1/2-byte context probes — m1 **+0.67%**, because selection is by
-    length alone and an injected candidate cannot be priced.
+  * **Rejected, then root-caused and implemented:** block table reuse (header
+    bit 7). The original rejection — a real −6.2% on 64 MiB of zeros, but UnRAR
+    *and* WinRAR mis-decode long runs — was an encoder-side misdiagnosis: the
+    failure lives in a reference decoder's *multithreaded driver*, which seeds
+    each of `2 × decoder_threads` block slots with empty table state, so a
+    bit-7-clear block landing in a never-seeded slot decodes against no tables
+    (`docs/question-log.md`). Under the seed rule (describe the first 16 blocks
+    of a member and again after every table-set change) reuse is interoperable
+    at every decoder thread count — 32/32 oracle checks, −24% on 64 MiB of zeros
+    single-threaded and −14.4% under MT. Still rejected: sparse 1/2-byte context
+    probes — m1 **+0.67%**, because selection is by length alone and an injected
+    candidate cannot be priced.
   * **Refuted without building:** the lazy length→distance ring, whose
     information is subsumed by the existing `best` match.
   * **Consequence:** the hypothesis is half-confirmed — the gap is *partly*
@@ -342,24 +350,23 @@ gate until dethroned by evidence).
     been validated against a third-party stream (RAR's writer appears never to
     emit it), and reuse exposed a disagreement with both oracles that self-
     roundtrip tests cannot see by construction. See `docs/v1.33-pre-analysis.md`
-    §10.
-  * **MT encoder: why table reuse breaks under MT (open, mechanism unknown).**
-    §10a established the empirical shape: reuse is safe single-threaded and
-    broken multi-threaded, MT on its own is fine, and the win exists only in the
-    broken configuration. The obvious explanation — per-chunk dictionary
-    variation at `parallel_compressor.cpp:251` — was checked and **refuted**:
-    every chunk's window is clamped to `min(cfg_.win_size, chunk size)`, so a
-    chunk is never larger than the dictionary its member declares, distances stay
-    in range, and the `DD` alphabet size is selected from the member's declared
-    dictionary on both sides (`decompressor50.cpp:238-239`). Two candidate
-    mechanisms from the external review were also refuted, one arithmetically.
-    So the mechanism is still unidentified. Cheapest next experiments: (i) count
-    reuse blocks per configuration and check whether failure tracks the *count*
-    (zeros fail, text — which rarely repeats tables — passes, at the same
-    thread count); (ii) dump the assembled chunk order to confirm blocks are
-    concatenated in stream order; (iii) force a single chunk (threads > 1 but one
-    chunk) to separate "multi-threaded" from "multiple chunks". Until this is
-    explained, no table-dependent optimisation may be enabled on the MT path.
+    §10. Resolved — the disagreement was the reference MT decoder's slot
+    seeding, not our stream; see `docs/question-log.md` and §12.
+  * **MT encoder: why table reuse breaks under MT — RESOLVED (was: mechanism
+    unknown).** Not an encoder or dictionary effect: a reference decoder's
+    multithreaded driver pre-scans block headers and hands each block to a work
+    item owning a *private* copy of table state (initially empty), assigning
+    blocks round-robin in batches of `2 × decoder_threads`; a bit-7-clear block
+    in a never-seeded slot degenerates. Confirmed by `-mt1`/`-mt2` splits and
+    seeding experiments (period exactly 2 × threads). Encoder-side fix
+    implemented and validated on this branch: seed `2 × 8 = 16` blocks at member
+    start and after every table-set change (a periodic cap provably cannot cover
+    all slots), and an MT chunk floor of 16 MiB so a chunk amortises its re-seed
+    — MT on zeros went from 0.56× to 1.27× single-threaded throughput while
+    shrinking 14.4%. Full record: `docs/question-log.md`. The earlier refutation
+    of the per-chunk dictionary explanation stands. The gap that hid all of this
+    — our decoder is sequential-only and never exercised the slot model — is
+    recorded in `docs/v1.33-pre-analysis.md` §12.
 - **v1.34.0 — Extraction throughput inside the v1.24 contract.** Batched
   durability (fewer flushes without weakening the ordering/journal
   guarantees), pipelined verification, QO/scan wins. Any weakening of the
