@@ -54,9 +54,9 @@ CheckSum = 0x5A ^ Flags ^ BlockSize ^ (BlockSize>>8) ^ (BlockSize>>16)  (low 8 b
 
 ## Block Header Fields (Bit-Level)
 
-* `Flags` bits: `7` (`0x80`) table present, `6` (`0x40`) last block, `3..4` `(ByteCount-1)`, `0..2` `(BlockBitSize-1)`. `ByteCount==4` (`bits 3..4 == 3`) is invalid.
+* `Flags` bits: `7` (`0x80`) table present, `6` (`0x40`) last block, `3..4` `(ByteCount-1)`, `0..2` `(BlockBitSize-1)`. `ByteCount==4` (`bits 3..4 == 3`) is invalid. Flag `0x80` clear keeps the previous block's tables in force and consumes no description bits (see `03-compression-m1-m5.md` §Table lifecycle).
 * `BlockSize` is little-endian per byte: `sum GetBits(8) << (8*i)` for `i=0..ByteCount-1`. Max `0xFFFFFF` (16 MiB); larger streams use multiple blocks.
-* `BlockBitSize` `1..8` is the count of valid bits in the last payload byte; remaining low bits are zero padding and must be ignored. After `BlockBitSize` bits, the next block header is byte-aligned (skip `8-BlockBitSize` bits).
+* `BlockBitSize` `1..8` is the count of valid bits in the last payload byte; remaining low bits are zero padding. After the payload bytes, the next block header is byte-aligned (skip `8-BlockBitSize` bits). **`BlockBitSize` does not bound token decoding:** reference decoders consume the entire final payload byte as tokens and do not stop at the declared bit count, so a non-byte-aligned tail risks its padding bits decoding as additional tokens (measured: `docs/question-log.md` Entry 4). Encoders must emit byte-aligned block tails (`BlockBitSize` 8) and never rely on the bit count to truncate.
 * Bitstream order: MSB-first. `GetBits(n)` returns the next `n` bits from the byte stream, MSB first. `PeekBits(n)` does not consume. `AlignByte` skips to the next byte boundary after a block. Implementations may buffer up to 64 bits (`Acc`/`AccBits`).
 
 ---
