@@ -714,3 +714,44 @@ neither blocking:
    on this corpus set, so the size cost has not shown up — but peak RSS was not
    instrumented, and it should be before the floor is raised further.
 
+
+### Entry 23 — v1.33.1 close-out: the two deferred threads, pulled
+
+*(appended after the v1.33.0 release; both threads were opened by Entries 16
+and 4 and are now resolved at the documentation level.)*
+
+**Member-scoped seed across chunks (Entry 18 option 2, Entry 22 leftover 1):
+blocked by parallel dispatch, payoff bounded — deferred.** The idea: chunk
+encoders after the first inherit the member's last-emitted table state with
+`seed_remaining_ = 0`, so zeros-format MT stops paying a 16-description seed
+per chunk (the entire measured MT↔ST gap on 64 MiB zeros is ~361 B, i.e.
+almost exactly the per-chunk re-seed). The blocker is structural, not
+tuning: `parallel_compressor.cpp` keeps `max_in_flight = max(2, 2 x threads)`
+chunks in flight, so chunk *N+1*'s first table build happens before chunk *N*
+has produced its final table vectors. Inheriting therefore requires either
+serializing chunk starts (destroys the MT throughput win) or a speculative
+table commit with fixup (new failure modes). The design change is recorded as
+a scoped arc, not a tuning change — matching Entry 22's original assessment.
+
+**`BlockBitSize` / trailing bits (Entry 4): model refined, decoder change
+deferred.** Entry 4 concluded that a reference decoder "consumes the whole
+final byte as tokens". The v1.33.1 sweep refines this to a condition, not a
+universal rule: padding bits corrupt only when they complete a code in the
+block's table. Two measurements, one model:
+
+- Reference producers emit non-byte-aligned tails routinely: 838 of 954
+  compression blocks in a WinRAR m1/m3/m5 sweep over text/random/runs declare
+  `BlockBitSize` 1-7, and such archives decode everywhere.
+- Our own v1.33.0 archives ship 491 non-aligned of 672 blocks (every
+  description-carrying block ends mid-byte; only reuse blocks are
+  byte-aligned) — 24/24 interop gate stages and 36 oracle checks pass.
+
+So non-alignment alone is harmless; the corruption in Entry 4's experiment
+came from a sparse all-257 table in which every padding bit completed the
+1-bit code for symbol 257. Consequences as shipped: the encoder-side
+byte-aligned-tail rule for reuse blocks stands (that is exactly the sparse-
+table configuration where it matters); our decoder stops at the declared bit
+count (`decompressor50.cpp` `block_end_bit`) — the conservative reader, which
+differs from reference behavior only on foreign archives whose padding
+completes a code. `scan_table_reuse.py` now reports the final-byte bit-count
+histogram so this stays measurable.
