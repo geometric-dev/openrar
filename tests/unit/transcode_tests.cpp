@@ -11,6 +11,7 @@
 #include "../../src/archive/foreign_zip.hpp"
 #include "../../src/archive/foreign_tar.hpp"
 #include "../../src/archive/foreign_gzip.hpp"
+#include "../../src/archive/archive_reader.hpp"
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/compress/inflate.hpp"
 #include "../../src/crypto/blake2sp.hpp"
@@ -480,11 +481,81 @@ static void test_cv_cli_contracts() {
 }
 #endif
 
+// v1.36.0 (Gate 0 in docs/v1.36.0-pre-analysis.md): TAR symlink/hardlink
+// entries migrate to FHEXTRA_REDIR records. Targets migrate verbatim; the
+// extraction-time safety policy (absolute/escaping refusal, spec-07 skip) is
+// ArchiveReader's, unchanged. A hardlink whose master did not migrate cannot
+// resolve and is skipped with a report instead of emitting a dangling record.
+static void test_transcode_tar_links_migrate() {
+    std::cout << "[+] test_transcode_tar_links_migrate" << std::endl;
+    const auto dir = openrar::test::scratch_dir("transcode");
+
+    std::vector<TarMember> members;
+    TarMember f;
+    f.name = "real.txt";
+    f.data = std::vector<core::byte>(100, core::byte('L'));
+    members.push_back(f);
+    TarMember sym;
+    sym.name = "link.txt";
+    sym.typeflag = '2'; // symlink
+    sym.linkname = "real.txt";
+    members.push_back(sym);
+    TarMember hard;
+    hard.name = "alias.txt";
+    hard.typeflag = '1'; // hardlink to an earlier member
+    hard.linkname = "real.txt";
+    members.push_back(hard);
+    TarMember dangling;
+    dangling.name = "dangling.txt";
+    dangling.typeflag = '1';
+    dangling.linkname = "no-such-master.txt";
+    members.push_back(dangling);
+    const auto tar_src = dir / "src_links.tar";
+    write_bytes(tar_src, build_tar(members));
+
+    TranscodeOptions opts = base_opts();
+    TranscodeResult result;
+    ExtractionReport report;
+    const ForeignStatus st =
+        transcode(tar_src, dir / "links_out.rar", opts, result, report, ReaderHooks{});
+    assert(st == ForeignStatus::Ok && result.detail.c_str());
+    assert(result.migrated_files == 1);
+    assert(result.migrated_links == 2); // symlink + resolvable hardlink
+    assert(result.skipped == 1);        // the dangling hardlink, reported
+
+    // REDIR records on the wire: the symlink (redir_type 1 on POSIX / 2 on
+    // Windows, matching the `a` path) and the hardlink (redir_type 4), each
+    // carrying the verbatim target; the dangling entry is absent.
+    ArchiveReader reader;
+    assert(reader.open(dir / "links_out.rar"));
+    bool saw_sym = false, saw_hard = false;
+    for (const auto& e : reader.entries()) {
+        if (e.header.file_name == "link.txt") {
+            assert(e.header.redir_target == "real.txt");
+#ifdef _WIN32
+            assert(e.header.redir_type == 2);
+#else
+            assert(e.header.redir_type == 1);
+#endif
+            saw_sym = true;
+        }
+        if (e.header.file_name == "alias.txt") {
+            assert(e.header.redir_type == 4);
+            assert(e.header.redir_target == "real.txt");
+            saw_hard = true;
+        }
+        assert(e.header.file_name != "dangling.txt");
+    }
+    assert(saw_sym && saw_hard);
+    std::cout << "    - tar links -> REDIR records: 2 migrated, dangling skipped" << std::endl;
+}
+
 int main() {
     OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
     test_transcode_zip_identity();
     std::cout << std::flush;
     test_transcode_tar_gzip_identity();
+    test_transcode_tar_links_migrate();
     std::cout << std::flush;
     test_transcode_refusals_and_collisions();
     std::cout << std::flush;
