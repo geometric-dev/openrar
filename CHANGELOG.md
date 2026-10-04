@@ -5,6 +5,31 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.0] - 2026-10-04
+
+cv (foreign-format migration) now migrates symlink and hardlink entries to
+RAR5 FHEXTRA_REDIR records instead of skipping them. Targets migrate
+verbatim; extraction-time safety (absolute/escaping target refusal,
+symlink-parent scan, spec-07 skip semantics) is unchanged and enforced by
+the extractor. Hardlinks whose master did not migrate are skipped with a
+`link_target_missing` report rather than emitted dangling.
+
+Also carries the v1.34.0 extraction-throughput record (docs/): the measured
+baseline (extraction ~2x behind UnRAR; decode is 84% of it), the negative
+decode-micro-optimization result with the paired-delta/min-statistic
+protocols, and the scoped levers (v1.37.0 MT decode driver, v1.38.0 decode
+kernel rework, durability batching candidate in the pool).
+
+### Added
+
+- cv: symlink/hardlink migration with per-entry report rows and a new
+  `migrated_links` result counter and summary line.
+- Mutator: `prepare_add_symlink_from_memory` /
+  `prepare_add_hardlink_from_memory` staging variants (times from
+  caller-supplied foreign metadata; the unix HTIME fields are 32-bit).
+- Gate 0 documents: `docs/v1.36.0-pre-analysis.md`,
+  `docs/v1.34.0-pre-analysis.md`, `docs/v1.34.0-implementation-plan.md`.
+
 ## [1.33.5] - 2026-10-03
 
 Close-out of the v1.33.1 threads: the length-3 admission floor is restored at
