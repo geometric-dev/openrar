@@ -229,16 +229,17 @@ def analyze_classic_shards(data, start, size):
     shard_no = 0
     end = size
     geom = None
+    multi = False
     while off < end:
         shard_no += 1
         rel = start + off
         if off + 4 > end or data[rel:rel + 4] != SHARD_MAGIC:
             out.append(f"      shard {shard_no}: no {{RB}} magic at data+{off:#x} - "
                        f"chain broken ({end - off} byte(s) left)")
-            return out, False, geom
+            return out, False, geom, multi
         if off + 0x40 > end:
             out.append(f"      shard {shard_no}: truncated before fixed fields")
-            return out, False, geom
+            return out, False, geom, multi
         total_size = struct.unpack_from("<I", data, rel + 0x0C)[0]
         header_size = struct.unpack_from("<I", data, rel + 0x10)[0]
         ver_a = data[rel + 0x14]
@@ -253,21 +254,36 @@ def analyze_classic_shards(data, start, size):
         got = crc64xz(data[rel + 0x0C:rel + total_size]) if total_size <= end - off else None
         crc_stored = struct.unpack_from("<Q", data, rel + 0x04)[0]
         crc_ok = got is not None and got == crc_stored
-        geom_ok = (header_size == d_cnt * 8 + 0x48 and shard_size == header_size + group_count
-                   and total_size == shard_size)
+        # Shape-aware geometry: above D*64 KiB protected size the reference
+        # writer splits each logical parity shard into multiple PHYSICAL
+        # chunk-shards (unscaled D*8+0x48 headers, chunk_position advancing in
+        # 64 KiB steps, logical group/shard_size repeated in the fields), while
+        # this repo's writer emits one physical shard with a scaled header and
+        # the full group payload. Both are legal shapes; validate accordingly.
+        unscaled = d_cnt * 8 + 0x48
+        if header_size == unscaled:
+            exp_payload = min(0x10000, group_count - chunk_pos)
+            shape = "multi-piece" if (chunk_pos > 0 or total_size != header_size + group_count) \
+                else "single"
+            geom_ok = total_size == header_size + exp_payload
+        else:
+            shape = "single-scaled"
+            geom_ok = total_size == header_size + group_count
         out.append(
             f"      shard {shard_no}: D={d_cnt} NR={nr_cnt} idx={s_index} "
             f"group={group_count} hdr={header_size:#x} shard={shard_size} "
             f"prot={prot_size} ver={ver_a}.{ver_b} chunkpos={chunk_pos} "
-            f"crc64 {'OK' if crc_ok else 'FAIL'}"
+            f"crc64 {'OK' if crc_ok else 'FAIL'} [{shape}]"
             f"{'' if geom_ok else ' GEOMETRY-MISMATCH'}")
         if geom is None:
             geom = (d_cnt, nr_cnt, group_count, header_size, prot_size)
+        if chunk_pos > 0 or shard_size != header_size + group_count:
+            multi = True
         if total_size <= 0 or total_size > end - off:
             out.append(f"      shard {shard_no}: bad total_size {total_size}; stopping")
-            return out, False, geom
+            return out, False, geom, multi
         off += total_size
-    return out, off == end, geom
+    return out, off == end, geom, multi
 
 
 # ── unknown data-area layer ──────────────────────────────────────────────────
@@ -526,11 +542,16 @@ def walk(path):
             print("      (empty data area)")
             continue
         if data[data_start:data_start + 4] == SHARD_MAGIC:
-            lines, complete, geom = analyze_classic_shards(data, data_start, data_size)
+            lines, complete, geom, multi = analyze_classic_shards(data, data_start, data_size)
             for ln in lines:
                 print(ln)
             print(f"      classic shard walk {'complete' if complete else 'INCOMPLETE'}")
-            if MATRIX_FLAG and complete and geom:
+            if MATRIX_FLAG and complete and geom and not multi:
+                pass  # single-shape record: safe to recompute below
+            if MATRIX_FLAG and complete and geom and multi:
+                print("      matrix check skipped: multi-physical record "
+                      "(reassembly per logical shard required)")
+            if MATRIX_FLAG and complete and geom and not multi:
                 d_cnt, nr_cnt, group, header_size, prot = geom
                 if prot <= arc_file_size:
                     for ln in verify_matrix(data, data_start, d_cnt, nr_cnt,
