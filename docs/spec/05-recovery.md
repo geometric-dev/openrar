@@ -8,7 +8,7 @@ Recovery protects against volume loss or damage using Reed-Solomon (RS) codes. I
 
 | Aspect | Details |
 |--------|---------|
-| Code | Cauchy Reed-Solomon over `GF(2^8)` (`0x11D`) for RAR5 vintage, and over `GF(2^16)` (`0x1100B` — `x^16 + x^12 + x^3 + x + 1`) for RAR5 16-bit (current). Selection is implicit by `RR` version. |
+| Code | Cauchy Reed-Solomon over `GF(2^16)` (`0x1100B` — `x^16 + x^12 + x^3 + x + 1`). Proven against reference-writer output by byte-exact parity recomputation (`docs/v1.35.0-rr-probe.md` §2; Rar.exe 7.20 console, all probed configurations). The `GF(256)` `0x11D` codec below is RAR4-era background; it does not occur inside RAR5 containers. |
 | Layout | `RR` service header data area is the parity. `.rev` volumes are full file copies of `RR` parity split across volumes (one `RR` block per `RR` header). |
 | Protection | Typically `1..10%` of archive size, configurable via `-rr[n]` (`-rr` alone = ~3%). `n` is the number of RS sectors (up to `100%` with `-rr100%` or explicit count). |
 | Granularity | `512`-byte sectors (`0x200`), aligned. Parity is computed per 512-byte stripe across data volumes. |
@@ -30,7 +30,7 @@ Locator: main extra `Locator` with `0x0002` flag holds `Recovery offset` (distan
 
 ---
 
-## Reed-Solomon — GF(256) `0x11D` (vintage, 8-bit)
+## Reed-Solomon — GF(256) `0x11D` (RAR4-era background)
 
 * Irreducible polynomial: `x^8 + x^4 + x^3 + x^2 + 1` (`0x11D`).
 * Tables: `gfExp[512]` (duplicate wrap), `gfLog[256]`.
@@ -38,7 +38,7 @@ Locator: main extra `Locator` with `0x0002` flag holds `Recovery offset` (distan
 * Encoding: linear feedback shift register with taps `g(x)`. Input `Data[0..DataSize-1]` (sector bytes), output `Dest[0..N-1]` parity.
 * Decoding: syndrome `S[i] = sum_j Data[j] * a^{(i+1)*j}`, error locator via `Erasure` positions, then Vandermonde inversion.
 
-This codec is retained for RAR4 compatibility; RAR5 decoders may encounter it in older archives.
+This codec belongs to the RAR4-era scheme and never appears inside RAR5 containers (RAR4 archives are a distinct container this project refuses at dispatch). RAR5 inline records and RAR5 `.rev` volumes are always the `GF(2^16)` codec above — no version-based selection exists on the RAR5 wire (all observed records carry shard version 1.1).
 
 ---
 
@@ -96,7 +96,7 @@ Multivolume recovery with `.rev` files: the `r` command reads `*.part01.rar` + `
 
 ## Implementation Notes
 
-* RAR4 (`0x11D`) and RAR5 (`0x1100B`) codecs must coexist. Detect by `RR` version field or by archive version (`FCI_ALGO` bits). Writers always emit the current (`0x1100B`) unless compatibility flags force vintage.
+* RAR5 writers always emit the `GF(2^16)` `0x1100B` codec; the RAR4 `0x11D` codec exists only in the separate RAR4 container (out of scope — legacy RAR is refused at dispatch).
 * Performance: `GF(2^16)` multiplication is `gf_exp[gf_log[a]+gf_log[b]]`; use `gf_exp` duplication to avoid modulo. Cauchy matrix inversion is `O(NE^3)` per stripe — cache the inverted matrix per `valid_flags` pattern (only one inversion per repair, not per sector).
 * Threading: `rs16` update is data-parallel per stripe; writers use thread pool per `NR`.
 * Locator patching: `RR` offset is patched after parity is known, just like `QO` offset. Patching must also recompute the main header CRC.
