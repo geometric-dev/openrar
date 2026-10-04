@@ -393,10 +393,21 @@ gate until dethroned by evidence).
   Decoder ships byte-identical to v1.33.5. The remaining levers are versioned
   below (v1.37.0 / v1.38.0) plus the unversioned durability candidate in the
   discovery pool.
-- **v1.35.0 — RAR 7.x parity ledger.** RR multi-erasure repair + scale>1
-  record support (deferred-from-v1.26 single-erasure item, now measured),
-  resource forks + FinderInfo (deferred from v1.27 to "2.1" — pulled here
-  if the perf arcs land early).
+- **v1.35.0 — RAR 7.x parity ledger. ✅ SHIPPED** (RR multi-erasure repair +
+  entry-emission + multi-physical records + resource forks + FinderInfo;
+  Gate 0 `docs/v1.35.0-pre-analysis.md` 🟡 D1–D16; plan
+  `docs/v1.35.0-implementation-plan.md` with the verification record; probe
+  record `docs/v1.35.0-rr-probe.md`). Shipped scope: E1 the shard-header
+  state blob (per-chunk raw CRC-64 erasure locator + chunk_data_extent +
+  fixed zero seed — reproducible, reference validator/repairer fully accept
+  it), E2 chunk-granularity multi-erasure repair (any ≤ NR damaged chunks,
+  entry-localized; capacity refuses fail-closed; legacy zero-entry records
+  keep v1.33.5 tiers), E3 multi-physical record reassembly (reference
+  scale>1 packaging; writer keeps the scaled single-shard shape per
+  T-ORACLE-2), E4 `com.apple.ResourceFork` / `com.apple.FinderInfo` through
+  the v1.27 xattr allow-list (restore Apple-hosts only). The arc's original
+  "RR vintage 0x11D" premise was retired by the probe (see the research
+  record below — kept for provenance).
   *Research state (2026-10-04, probe record `docs/v1.35.0-rr-probe.md`,
   independently reviewed against outside format analysis with all
   corrections re-verified on the wire):* the black-box RR probe against
