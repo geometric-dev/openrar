@@ -382,9 +382,14 @@ gate until dethroned by evidence).
   none beat the v1.33.5 decoder (best structural change min-neutral with a
   worse median tail; left-aligned accumulator +9.8%). The durable outcome is
   the measurement protocol (paired deltas, min-statistics, wiped builds) and
-  the scoped levers for a future arc: SIMD/flat-table decode, PCLMUL CRC
-  (~7.6% attribution), intra-entry parallel decode via the documented slot
-  model (window half open), batched durability declined at a ~16% ceiling.
+  the scoped levers for a future arc: SIMD/flat-table decode, intra-entry
+  parallel decode via the documented slot model (window half open), and
+  batched durability declined at a ~16% ceiling. Addendum (plan doc §5):
+  PCLMUL CRC was found already shipped (crc32_step has dispatched to the
+  folding kernel since v1.30 — the ~7.6% attribution is its floor), and the
+  stored-path 2x gap is the v1.24 durability contract's price (>= 2
+  FlushFileBuffers-class ops per entry, durable-first journal ordering),
+  which UnRAR does not pay — recovering it is a security-architecture Gate 0.
   Decoder ships byte-identical to v1.33.5.
 - **v1.35.0 — RAR 7.x parity ledger.** RR vintage 0x11D + single-erasure
   repair (deferred from v1.26), resource forks + FinderInfo (deferred
