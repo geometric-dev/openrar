@@ -484,6 +484,16 @@ void test_xattr_restore_policy() {
     assert(ArchiveReader::xattr_restorable("user.greeting", false));
     assert(ArchiveReader::xattr_restorable("com.apple.metadata:_kMDItemUserTags", false));
     assert(ArchiveReader::xattr_restorable("com.apple.metadata.tag", false));
+    // v1.35.0: Apple content-class names restore by default — but only on
+    // Apple hosts (D10: on Linux the predicate must not admit com.apple.*
+    // content names, or setxattr would create alien namespaces).
+#if defined(__APPLE__)
+    assert(ArchiveReader::xattr_restorable("com.apple.ResourceFork", false));
+    assert(ArchiveReader::xattr_restorable("com.apple.FinderInfo", false));
+#else
+    assert(!ArchiveReader::xattr_restorable("com.apple.ResourceFork", false));
+    assert(!ArchiveReader::xattr_restorable("com.apple.FinderInfo", false));
+#endif
     // Privileged namespaces: default-deny, opt-in restores.
     assert(!ArchiveReader::xattr_restorable("security.selinux", false));
     assert(!ArchiveReader::xattr_restorable("trusted.backup", false));
