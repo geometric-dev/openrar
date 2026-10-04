@@ -393,34 +393,46 @@ gate until dethroned by evidence).
   Decoder ships byte-identical to v1.33.5. The remaining levers are versioned
   below (v1.37.0 / v1.38.0) plus the unversioned durability candidate in the
   discovery pool.
-- **v1.35.0 — RAR 7.x parity ledger.** RR single-erasure → multi-erasure
-  repair (deferred from v1.26), resource forks + FinderInfo (deferred
-  from v1.27 to "2.1" — pulled here if the perf arcs land early).
-  *Research state (2026-10-04, probe record in `docs/v1.35.0-rr-probe.md`):*
-  the black-box RR probe against Rar.exe 7.20 (tools/scan_rr.py,
-  CRC32-validated walk + shard analyzer + `--matrix` RS check) **retired the
-  arc's founding premise**: RAR 7.20's inline RR is the classic RAR5-era
-  `{RB}` shard scheme byte-layout-identical to ours in every probed
-  configuration (sizes 4 KiB–4 MiB, 1–150 %, store/m5, -md1g/-md5g,
-  multi-file, zeros); the "WinRAR 7.0 changed the RR format" claim is not
-  reproducible through the console oracle (GUI-only default remains a
-  known-unknown — WinRAR.exe not installed here), and 0x11D is the RAR4-era
-  GF(256) polynomial, not a 7.x scheme. **RS core bit-equivalence PROVEN**:
-  our Cauchy/GF(2^16)-0x1100B convention recomputes the reference writer's
-  stored parity byte-for-byte (all 10 shards); protected-range semantics
-  (parity covers `[0, RR-header offset)`) and the geometry formula match.
-  The reference `t` validates our records unconditionally; our repairer
-  repairs their damaged archives byte-exact. Two measured reader gaps
-  remain, both ours: (1) **multi-erasure repair** — the inline repair path
-  is single-erasure by design (`recovery_writer.cpp:1962`); ≥2 damaged
-  words anywhere are refused — the arc's actionable item; (2) the
-  reference `r` ignores zero state-blob records (phantom "recovered"
-  accounting, no actual repair) — root-caused to a non-deterministic
-  nonce-class fold state in the shard header that no third-party writer
-  can reproduce (even RAR 7.20 doesn't reproduce its own; fixed in 7.30
-  per its changelog) — recorded as a reference-repairer limitation, zeros
-  stay. `.rev` containers re-confirmed identical. No emission change
-  proposed for this arc.
+- **v1.35.0 — RAR 7.x parity ledger.** RR multi-erasure repair + scale>1
+  record support (deferred-from-v1.26 single-erasure item, now measured),
+  resource forks + FinderInfo (deferred from v1.27 to "2.1" — pulled here
+  if the perf arcs land early).
+  *Research state (2026-10-04, probe record `docs/v1.35.0-rr-probe.md`,
+  independently reviewed against outside format analysis with all
+  corrections re-verified on the wire):* the black-box RR probe against
+  Rar.exe 7.20 (tools/scan_rr.py, CRC32-validated walk + shard analyzer +
+  `--matrix` RS check) **retired the arc's founding premise**: RAR 7.20's
+  inline RR is the classic RAR5-era `{RB}` shard scheme byte-layout-
+  identical to ours in every probed configuration (4 KiB–16 MiB, 1–150 %,
+  store/m5, -md1g/-md5g, multi-file, zeros); the "WinRAR 7.0 changed the RR
+  format" claim is not reproducible through the console oracle (GUI-only
+  default stays a known-unknown — WinRAR.exe not installed here), and 0x11D
+  is the RAR4-era GF(256) polynomial, not a 7.x scheme. **RS core
+  bit-equivalence PROVEN** at scale 1 and scale>1: our
+  Cauchy/GF(2^16)-0x1100B convention recomputes the reference writer's
+  stored parity byte-for-byte; protected-range semantics (parity covers
+  `[0, RR-header offset)`) and the geometry formula (NR = floor(pct·D/100)
+  capped at 10·D) match. The shard-header state blob is **identified**: D
+  per-data-chunk raw CRC-64 values (init 0, no final XOR, unpadded tail)
+  plus one per-run random seed (the sole source of the reference writer's
+  nondeterminism, 160 B = 10×(seed + shard CRC)); splice experiments prove
+  the reference repairer consumes it as an erasure locator, and the
+  positive splice (real entries + fixed zero seed in OUR archive) restores
+  full reference-repairer functionality — 0 phantom accounting, byte-exact
+  damage repair (expC). **Two measured reader gaps, both ours:** (1)
+  inline repair is single-erasure by design (`recovery_writer.cpp:1962`);
+  ≥2 damaged chunks anywhere are refused, while the MDS code supports any
+  E ≤ NR chunk erasures with known positions — the binding constraint is
+  localization, not capacity; (2) above D·64 KiB protected size (≈12.8 MiB)
+  the reference packages each logical shard as multiple 64 KiB physical
+  chunk-shards (unscaled headers, advancing chunk_position) while we emit
+  one scaled-header shard — `t` interop passes both ways and the parity
+  math is proven identical, but our repairer refuses the reference shape.
+  Scoped candidates (probe record §10): E1 emit the blob (real entries +
+  zero seed, deterministic, Gate 0 — changes emitted bytes), E2
+  chunk-granularity multi-erasure decode (localization via E1), E3
+  multi-physical record support + packaging decision. `.rev` containers
+  re-confirmed identical (structure).
   Resource forks: extend the v1.27 xattr allow-list (`com.apple.ResourceFork`
   / `com.apple.FinderInfo` are currently excluded, `archive_mutator.hpp`
   xattr_capturable) — macOS-only capture, unit-testable predicate on every
