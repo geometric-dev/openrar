@@ -390,7 +390,9 @@ gate until dethroned by evidence).
   stored-path 2x gap is the v1.24 durability contract's price (>= 2
   FlushFileBuffers-class ops per entry, durable-first journal ordering),
   which UnRAR does not pay — recovering it is a security-architecture Gate 0.
-  Decoder ships byte-identical to v1.33.5.
+  Decoder ships byte-identical to v1.33.5. The remaining levers are versioned
+  below (v1.37.0 / v1.38.0) plus the unversioned durability candidate in the
+  discovery pool.
 - **v1.35.0 — RAR 7.x parity ledger.** RR vintage 0x11D + single-erasure
   repair (deferred from v1.26), resource forks + FinderInfo (deferred
   from v1.27 to "2.1" — pulled here if the perf arcs land early).
@@ -398,11 +400,54 @@ gate until dethroned by evidence).
   Gate 0 — `prepare_add_symlink_from_memory`), cv output-shaping switches
   (`-s`/`-v`/`-ts*`), FILECOPY default-materialization policy decision
   (deferred from v1.27).
-- **v1.37 – v1.41 — discovery pool (unsequenced).** Parallel CDC
+- **v1.37.0 — Intra-entry parallel decode driver (the MT slot model, decoder
+  side).**
+  *Why:* 84% of single-member extraction time is decode+verify, and
+  extraction parallelism is across-entries only (`main.cpp:643`), so `-mtN`
+  does nothing on single-member archives — the shape most real large files
+  and every decode benchmark have. The design groundwork is half-done: the
+  reference's block-slot model is documented from our own black-box
+  experiments (`question-log.md` Entry 8), our encoder already ships the
+  decoder-side seed rule it dictates, and landing the driver closes the
+  v1.33 conformance residue — our decoder has never decoded a bit-7-clear
+  block.
+  *Prediction:* on the 2C/4T perf host, decode-bound single-member
+  extraction improves **~1.15-1.35x** (the reference demonstrates 1.27x at
+  `-mt8` vs `-mt1` on the same corpus); scaling grows with core count.
+  Stored, solid, and multi-volume paths unchanged. Secondary conformance
+  win: our decoder becomes the second implementation to exercise
+  inherited-table blocks, making the v1.33 documentation executable.
+  *Risk / why not sooner:* the window half — a block's matches reference
+  window bytes a neighbouring worker may not yet have produced — is the
+  open design question, and filters spanning blocks plus solid-chain
+  ordering must be answered in the same design. Largest effort of the
+  levers; Gate 0 with the window-half answer before any code.
+- **v1.38.0 — Decode kernel algorithmic rework (flat tables / SIMD).**
+  *Why:* the decode kernel carries 84% of extraction and is ~1.7x behind
+  the reference's; v1.34.0 measured that call-pattern and structural changes
+  are exhausted (all three variants byte-exact, none faster), so the gap
+  needs algorithmic change: single-lookup 15-bit flat tables with lazy
+  second-level pages, or SIMD-assisted decode (GFNI-class; precedent in the
+  RS16 kernel).
+  *Prediction:* a lazy-page flat-table landing that avoids the measured
+  per-block rebuild trap (naive flat tables cost ~131K writes per block
+  build and lose; today's build is ~7 us/block) gives **~1.2-1.4x** on
+  decode-bound extraction; a SIMD decode kernel targets **1.5-2x on the
+  kernel** and is the highest-risk item in the roadmap. Compounds with
+  v1.37.0: every worker inherits the faster kernel, so the two wins
+  multiply rather than overlap.
+  *Risk:* decode-side bounds/Kraft validation inside SIMD paths is
+  security-relevant; the fuzz corpus and hostile-table unit tests gate
+  every step.
+- **v1.39 – v1.43 — discovery pool (unsequenced).** Parallel CDC
   fingerprint pass, multi-volume no-data-area entries, WASM streaming
-  encode, MSan/fuzz depth growth, dictionary auto-sizing, and whatever
-  the v1.31–v1.34 arcs surface. Deliberately uncommitted: new findings
-  outrank this list.
+  encode, MSan/fuzz depth growth, dictionary auto-sizing, **durability
+  batching (security-Gate-0 candidate: batching the per-entry journal sync
+  takes stored-path extraction from ~205 MB/s toward the ~400 MB/s
+  I/O-bound ceiling — ~1.8-2x — and ~16% on text, at the price of coarser
+  crash-consistency granularity; default-off until the contract revision is
+  proven)**, and whatever the v1.31–v1.34 arcs surface. Deliberately
+  uncommitted: new findings outrank this list.
 
 Standing inputs to re-triage at each arc boundary: the deferred ledgers in
 this document (v1.26/v1.27 rollover items), README "Not yet" rows, the
