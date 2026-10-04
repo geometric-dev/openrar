@@ -71,4 +71,30 @@ core::uint64 Crc64Xz::compute(const void* data, size_t n) {
     return c.get();
 }
 
+void RawCrc64::update(const void* data, size_t n) {
+    const core::byte* p = static_cast<const core::byte*>(data);
+    core::uint64 c = crc_;
+    const auto& tab = tables();
+
+    while (n >= 4) {
+        core::uint64 chunk = 0;
+        std::memcpy(&chunk, p, 4); // little-endian load via memcpy (portable)
+        c ^= chunk;
+        c = (c >> 32) ^ tab.t[3][c & 0xFF] ^ tab.t[2][(c >> 8) & 0xFF] ^
+            tab.t[1][(c >> 16) & 0xFF] ^ tab.t[0][(c >> 24) & 0xFF];
+        p += 4;
+        n -= 4;
+    }
+    while (n--) {
+        c = tab.t[0][(c ^ *p++) & 0xFFu] ^ (c >> 8);
+    }
+    crc_ = c;
+}
+
+core::uint64 RawCrc64::compute(const void* data, size_t n) {
+    RawCrc64 c;
+    c.update(data, n);
+    return c.get();
+}
+
 } // namespace openrar::crypto

@@ -22,11 +22,29 @@ File header type 3, Name "RR", HFL_DATA set
   Data area: parity bytes (see below)
   File flags: 0 (no CRC32 in header; parity has its own CRCs)
   PackSize = Data size = parity length
+  SubData (extra 0x07): single vint = recovery percent (informational)
 ```
 
 Locator: main extra `Locator` with `0x0002` flag holds `Recovery offset` (distance from `RR` header to main header). If locator is missing, scanners must scan for `RR` by type.
 
-`.rev` volumes: each `.rev` file is a standalone RAR volume containing a single `RR` service header. The `Archive number` in the main header distinguishes them. `recvol` vs `recvol5` handling: RAR4 `recvol` and RAR5 `recvol5` are distinct; RAR5 uses the `GF(2^16)` codec.
+`.rev` volumes: each `.rev` file is a standalone container (`Rar!\x1aRev` signature, not a RAR5 archive) holding one parity shard plus a volume table. `recvol` vs `recvol5` handling: RAR4 `recvol` and RAR5 `recvol5` are distinct; RAR5 uses the `GF(2^16)` codec.
+
+### Shard-header state region (v1.35.0, measured against the reference writer)
+
+Each shard header carries `D + 1` u64s at `+0x40` (geometry: `header_size = D*8 + 0x48`):
+
+* `+0x40 .. +0x40+D*8-1` — **per-slice entry k = raw CRC-64 of data chunk k's byte range `[chunk_position, chunk_position + payload_len)`** (the piece's row of the chunk). Raw means init 0 and NO final XOR — a GF(2)-linear checksum, so all-zero input folds to zero. The protected range is chunked into `D` chunks of `group_count` bytes; the final chunk's entry covers its UNPADDED length. Entries are the reference repairer's erasure locator.
+* `+0x40+D*8` — a per-run random seed in the reference writer (its only source of record nondeterminism; removed in reference 7.30 per its changelog). Validators ignore it. This writer emits a fixed zero, keeping the record bit-for-bit reproducible.
+* `+0x1E` — `chunk_data_extent`: unpadded byte count of the final data chunk.
+
+### Wire packaging above D × 64 KiB protected size
+
+Two observed packagings of the same logical record:
+
+* **Reference (multi-physical):** each logical parity shard is split into multiple physical chunk-shards — unscaled `D*8+0x48` headers, `chunk_position` advancing in 64 KiB steps, logical fields repeated per piece, per-piece CRC-64/XZ. Entries are per-slice (one set per row).
+* **This writer (single-scaled):** one physical shard per logical index with a scaled header (`(D*8+0x48) × scale`, `scale = ceil(group_count/65536)`) and the full `group_count` payload; entries are whole-chunk CRCs. Verified interoperable with the reference validator and repairer at scale>1 (`docs/v1.35.0-rr-probe.md` §6, T-ORACLE-2).
+
+Repair-side readers must accept both packagings (reassemble multi-physical records per logical shard in `chunk_position` order).
 
 ---
 
