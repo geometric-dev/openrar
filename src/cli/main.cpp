@@ -3264,7 +3264,8 @@ int convert_archive(const std::string& source_str, const std::string& dest_arg, 
              (e.reason.empty() ? "" : " (" + e.reason + ")"));
     }
     line("Migrated " + std::to_string(result.migrated_files) + " file(s), " +
-         std::to_string(result.migrated_dirs) + " dir(s); skipped " +
+         std::to_string(result.migrated_dirs) + " dir(s), " +
+         std::to_string(result.migrated_links) + " link(s); skipped " +
          std::to_string(result.skipped) + "; -> " + sanitize_for_display(dest.string()) +
          (result.verified ? " [verified]" : ""));
 
@@ -3272,7 +3273,7 @@ int convert_archive(const std::string& source_str, const std::string& dest_arg, 
     // class), even when nothing else migrated; nothing-migrated writes no
     // output archive and reports 10.
     if (result.encrypted_refused_present) return emit(EXIT_BAD_PASSWORD);
-    if (result.migrated_files == 0 && result.migrated_dirs == 0) {
+    if (result.migrated_files == 0 && result.migrated_dirs == 0 && result.migrated_links == 0) {
         std::cerr << "Nothing migrated\n";
         return emit(EXIT_NO_FILES); // no output archive was written
     }

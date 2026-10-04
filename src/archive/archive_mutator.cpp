@@ -1805,6 +1805,65 @@ bool ArchiveMutator::prepare_add_hardlink(const std::filesystem::path& src_file,
     return true;
 }
 
+bool ArchiveMutator::prepare_add_symlink_from_memory(const std::string& arc_entry_name,
+                                                     const std::string& target, bool is_dir_target,
+                                                     int64_t mtime_sec, PreparedAdd& out,
+                                                     core::uint32 times_mask,
+                                                     const std::string& default_group,
+                                                     const std::string& default_user) {
+    format::FileBlock fb;
+    fb.file_name = arc_entry_name;
+    fb.unp_size = 0;
+    fb.pack_size = -1;
+    fb.attributes = is_dir_target ? 0x10 : 0x20;
+    fb.method = 0;
+    fb.win_size = 0;
+    fb.unp_ver = 0;
+#ifdef _WIN32
+    fb.redir_type = 2;
+#else
+    fb.redir_type = 1;
+#endif
+    fb.redir_dir_target = is_dir_target;
+    fb.redir_target = target;
+    // Times from foreign metadata: mtime seconds only (the unix HTIME fields
+    // are 32-bit; sub-second precision is not representable here). Clamp
+    // negative values like MtimeBounds does elsewhere — a pre-1970 foreign
+    // mtime would wrap the uint32 cast.
+    FileTimes times{};
+    times.mtime = mtime_sec > 0 ? static_cast<core::uint64>(mtime_sec) : 0;
+    apply_file_times(fb, times, times_mask);
+    apply_owner_overrides(fb, default_group, default_user);
+    out.fb = std::move(fb);
+    return true;
+}
+
+bool ArchiveMutator::prepare_add_hardlink_from_memory(const std::string& arc_entry_name,
+                                                      const std::string& target_entry_name,
+                                                      int64_t mtime_sec, PreparedAdd& out,
+                                                      core::uint32 times_mask,
+                                                      const std::string& default_group,
+                                                      const std::string& default_user) {
+    format::FileBlock fb;
+    fb.file_name = arc_entry_name;
+    fb.unp_size = 0;
+    fb.pack_size = -1;
+    fb.attributes = 0x20;
+    fb.method = 0;
+    fb.win_size = 0;
+    fb.unp_ver = 0;
+    fb.redir_type = 4; // HARDLINK
+    fb.redir_dir_target = false;
+    fb.redir_target = target_entry_name;
+    FileTimes times{};
+    times.mtime = mtime_sec > 0 ? static_cast<core::uint64>(mtime_sec) : 0;
+    apply_file_times(fb, times, times_mask);
+    apply_owner_overrides(fb, default_group, default_user);
+    out.fb = std::move(fb);
+    out.payload.clear();
+    return true;
+}
+
 bool ArchiveMutator::prepare_add_filecopy(const std::filesystem::path& src_file,
                                           const std::string& arc_entry_name,
                                           const std::string& target_entry_name, PreparedAdd& out,
