@@ -373,12 +373,19 @@ gate until dethroned by evidence).
     of the per-chunk dictionary explanation stands. The gap that hid all of this
     — our decoder is sequential-only and never exercised the slot model — is
     recorded in `docs/v1.33-pre-analysis.md` §12.
-- **v1.34.0 — Extraction throughput inside the v1.24 contract.** Batched
-  durability (fewer flushes without weakening the ordering/journal
-  guarantees), pipelined verification, QO/scan wins. Any weakening of the
-  fsync contract is an explicit security-architecture decision with its
-  own Gate 0 (PERFORMANCE.md's standing note), default-on only if the
-  contract holds.
+- **v1.34.0 — Extraction throughput: measured and re-scoped (Gate 0 + record
+  in `docs/v1.34.0-pre-analysis.md` / `-implementation-plan.md`).** Baseline:
+  ~2x slower than UnRAR on real extraction (68 vs 121-153 MB/s text) and on
+  the stored path; 84% of single-member extraction time is decode+verify;
+  `-mt8` does nothing on single members (extraction parallelism is
+  across-entries only). Three decode-kernel variants measured byte-exact:
+  none beat the v1.33.5 decoder (best structural change min-neutral with a
+  worse median tail; left-aligned accumulator +9.8%). The durable outcome is
+  the measurement protocol (paired deltas, min-statistics, wiped builds) and
+  the scoped levers for a future arc: SIMD/flat-table decode, PCLMUL CRC
+  (~7.6% attribution), intra-entry parallel decode via the documented slot
+  model (window half open), batched durability declined at a ~16% ceiling.
+  Decoder ships byte-identical to v1.33.5.
 - **v1.35.0 — RAR 7.x parity ledger.** RR vintage 0x11D + single-erasure
   repair (deferred from v1.26), resource forks + FinderInfo (deferred
   from v1.27 to "2.1" — pulled here if the perf arcs land early).
