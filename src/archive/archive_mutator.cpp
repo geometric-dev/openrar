@@ -449,17 +449,21 @@ bool solid_replace_permitted(const std::vector<ArchiveEntry>& entries,
 // ── Extended-attribute capture (FHEXTRA_XATTR, v1.27 plan §1.3) ────────────
 bool ArchiveMutator::xattr_capturable(const std::string& name) {
     // Namespace allow-list: user.*, security.*, trusted.*,
-    // com.apple.metadata.* (macOS Finder tags ride here). Everything else
-    // is never stored — system.* would side-step the -ow ACL policy,
+    // com.apple.metadata.* (macOS Finder tags ride here) and — since
+    // v1.35.0 — the macOS resource fork and FinderInfo (content-class
+    // metadata, deferred from v1.27; Gate 0 D10/D11). Everything else is
+    // never stored — system.* would side-step the -ow ACL policy,
     // quarantine/provenance are transport metadata that SECURITY_
-    // ARCHITECTURE §4.3 forbids carrying as archive content, resource
-    // forks and FinderInfo are deferred to 2.1. Pure predicate — unit-
-    // tested on every platform.
+    // ARCHITECTURE §4.3 forbids carrying as archive content. Pure predicate
+    // — unit-tested on every platform. The Apple content names occur only on
+    // Apple filesystems; the existing FHEXTRA_XATTR caps bound their size
+    // (over-cap values skip, never truncate).
     static constexpr const char* kAllowPrefixes[] = {"user.", "security.", "trusted.",
                                                      "com.apple.metadata:", "com.apple.metadata."};
     for (const char* prefix : kAllowPrefixes) {
         if (name.rfind(prefix, 0) == 0) return true;
     }
+    if (name == "com.apple.ResourceFork" || name == "com.apple.FinderInfo") return true;
     return false;
 }
 
