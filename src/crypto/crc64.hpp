@@ -29,6 +29,25 @@ private:
     core::uint64 crc_;
 };
 
+// Raw CRC-64: the same reflected polynomial and slicing tables as Crc64Xz,
+// but init 0 and no final XOR. This is the per-data-chunk checksum carried
+// in the inline recovery-record shard-header state region (v1.35.0; probe
+// record docs/v1.35.0-rr-probe.md §5). Init 0 makes the checksum GF(2)-
+// linear (all-zero input folds to 0), which the reference repairer relies
+// on; the unpadded chunk length is the canonical input.
+class RawCrc64 {
+public:
+    RawCrc64() : crc_(0) {}
+    void reset() { crc_ = 0; }
+    void update(const void* data, size_t n);
+    core::uint64 get() const { return crc_; }
+
+    static core::uint64 compute(const void* data, size_t n);
+
+private:
+    core::uint64 crc_;
+};
+
 } // namespace openrar::crypto
 
 #endif // OPENRAR_CRYPTO_CRC64_HPP
