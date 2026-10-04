@@ -41,6 +41,7 @@ struct TranscodeResult {
     bool source_deleted = false;
     core::uint64 migrated_files = 0;
     core::uint64 migrated_dirs = 0;
+    core::uint64 migrated_links = 0; // v1.36.0: symlink + hardlink records migrated
     core::uint64 skipped = 0;
     core::uint64 failed = 0;
     bool encrypted_refused_present = false;
