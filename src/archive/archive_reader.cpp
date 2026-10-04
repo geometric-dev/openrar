@@ -299,19 +299,25 @@ core::uint32 ArchiveReader::sanitize_extract_mode(core::uint32 raw_mode, bool pr
 
 bool ArchiveReader::xattr_restorable(const std::string& name, bool security_opt_in) {
     // v1.27 plan §1.4: restore allow-list. user.* and the macOS metadata
-    // namespaces (Finder tags) restore by default; security.*/trusted.*
-    // carry OS security semantics (SELinux labels, etc.) and restore only
-    // with the explicit --xattr-security admin opt-in — the same
-    // default-deny + documented-trust-decision line as --preserve-suid
-    // (SECURITY_ARCHITECTURE §4.3). Everything else is never restored from
-    // archive content: system.* would side-step the -ow ACL policy, and
-    // quarantine/provenance namespaces are transport metadata owned by the
-    // local OS, not by the archive.
+    // namespaces (Finder tags) restore by default; v1.35.0 adds the resource
+    // fork and FinderInfo (content-class metadata, not security class — same
+    // default-on line, D10). security.*/trusted.* carry OS security semantics
+    // (SELinux labels, etc.) and restore only with the explicit
+    // --xattr-security admin opt-in — the same default-deny +
+    // documented-trust-decision line as --preserve-suid (SECURITY_ARCHITECTURE
+    // §4.3). Everything else is never restored from archive content: system.*
+    // would side-step the -ow ACL policy, and quarantine/provenance namespaces
+    // are transport metadata owned by the local OS, not by the archive.
+    // The Apple content names restore only on Apple hosts (D10): on Linux,
+    // setxattr would happily create alien com.apple.* namespaces.
     static constexpr const char* kDefaultNamespaces[] = {
         "user.", "com.apple.metadata:", "com.apple.metadata."};
     for (const char* prefix : kDefaultNamespaces) {
         if (name.rfind(prefix, 0) == 0) return true;
     }
+#if defined(__APPLE__)
+    if (name == "com.apple.ResourceFork" || name == "com.apple.FinderInfo") return true;
+#endif
     if (security_opt_in) {
         static constexpr const char* kPrivilegedNamespaces[] = {"security.", "trusted."};
         for (const char* prefix : kPrivilegedNamespaces) {

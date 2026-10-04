@@ -27,6 +27,7 @@
 #include <cstring>
 #include <cctype>
 #include <filesystem>
+#include <tuple>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -76,21 +77,32 @@ std::filesystem::path recovery_temp_path(const std::filesystem::path& arc_path, 
 //     +0x14          version_a = 0x01                        (u8)
 //     +0x15          version_b = 0x01                        (u8)
 //     +0x16..+0x1D   chunk_position = 0 for inline RR        (u64 LE)
-//     +0x1E..+0x21   encoder state "chunk_data_extent"       (u32 LE)
+//     +0x1E..+0x21   chunk_data_extent: unpadded byte count  (u32 LE)
+//                    of the final data chunk (0 impossible:
+//                    archive_size > (D-1)*group_count)
 //     +0x22..+0x29   protected_archive_size                  (u64 LE)
 //     +0x2A..+0x31   group_count = parity bytes per shard    (u64 LE)
 //     +0x32..+0x39   shard_size (repeated as u64)            (u64 LE)
 //     +0x3A..+0x3B   D  (data-shard count per group)         (u16 LE)
 //     +0x3C..+0x3D   NR (parity-shard count in this record)  (u16 LE)
 //     +0x3E..+0x3F   shard_index (0..NR-1)                   (u16 LE)
-//     +0x40..+0x40+D*8-1   D * u64 LE   encoder-internal state
-//     +0x40+D*8..+0x47+D*8 u64 LE     encoder-internal final state
+//     +0x40..+0x40+D*8-1   D * u64 LE   per-data-chunk checksum
+//                    (raw CRC-64: init 0, NO final XOR) over the chunk's
+//                    unpadded bytes — the reference repairer's erasure
+//                    locator (v1.35.0; docs/v1.35.0-rr-probe.md §5)
+//     +0x40+D*8..+0x47+D*8 u64 LE     per-run seed in the reference
+//                    writer (crypto-random; the sole source of its
+//                    record nondeterminism). We emit a fixed zero —
+//                    the validator ignores it (expA/expC).
 //     +header_size..+shard_size-1   parity payload (group_count bytes)
 //
-// The three encoder-internal fields (`chunk_data_extent`, the per-shard state
-// array, and `final_state`) are not needed to decode the record; decoders do not
-// parse them. This writer emits them as zero so the RR
-// remains bit-for-bit reproducible from `(rec_pct, archive_size, parity)`.
+// The state region is NOT decoder-optional decoration: with real entries
+// the reference repair command localizes damage per chunk and repairs
+// byte-exactly; with zeroed entries it phantom-reports "N blocks are
+// recovered" on pristine archives and does not repair damage at all
+// (probe record §5, experiments expA/expB/expC). Entries are a pure
+// function of the protected byte range and the seed is fixed, so the RR
+// remains bit-for-bit reproducible from `(rec_pct, archive bytes, parity)`.
 //
 // Sizing formula, matching standard RAR5 encoder output and format spec §4.6.2:
 //
@@ -407,7 +419,8 @@ RrLocation find_rr(io::FileStream& stream, core::uint64 sfx_offset) {
 // internal fields zeroed), then group_count parity bytes. Compute and stamp
 // the CRC-64/XZ over bytes from +0x0C to end.
 std::vector<core::byte> build_shard(core::uint32 shard_index, const RecoveryGeometry& g,
-                                    const core::byte* parity, size_t parity_len) {
+                                    const core::byte* parity, size_t parity_len,
+                                    const core::uint64* entries, core::uint64 chunk_extent) {
     std::vector<core::byte> shard(static_cast<size_t>(g.shard_size), 0);
     std::memcpy(shard.data(), SHARD_MAGIC, SHARD_MAGIC_SIZE);
     // KNOWN CAPABILITY CLIFF (report INFO 5): for shard sizes >= 2^32 the
@@ -418,17 +431,31 @@ std::vector<core::byte> build_shard(core::uint32 shard_index, const RecoveryGeom
     core::write_le32(shard.data() + SHARD_HEADER_OFF, static_cast<core::uint32>(g.header_size));
     shard[SHARD_VER_A] = 0x01;
     shard[SHARD_VER_B] = 0x01;
-    // chunk_position: 0 for inline RR (single 64 KiB chunk covering the whole
-    // parity). chunk_data_extent: encoder-internal, safe as zero.
+    // chunk_position: 0 for inline RR (our scaled single-shard packaging
+    // carries the whole logical payload in one physical shard; the
+    // reference's multi-physical alternative is spec'd in 05-recovery.md).
+    // chunk_data_extent: unpadded byte count of the final data chunk.
     core::write_le64(shard.data() + SHARD_CHUNK_POS, 0);
-    core::write_le32(shard.data() + SHARD_CHUNK_EXT, 0);
+    core::write_le32(shard.data() + SHARD_CHUNK_EXT, static_cast<core::uint32>(chunk_extent));
     core::write_le64(shard.data() + SHARD_PROT_SIZE, g.archive_size);
     core::write_le64(shard.data() + SHARD_GROUP_CNT, g.group_count);
     core::write_le64(shard.data() + SHARD_SIZE_U64, g.shard_size);
     core::write_le16(shard.data() + SHARD_D_FIELD, static_cast<core::uint16>(g.D));
     core::write_le16(shard.data() + SHARD_NR_FIELD, static_cast<core::uint16>(g.NR));
     core::write_le16(shard.data() + SHARD_INDEX, static_cast<core::uint16>(shard_index));
-    // data_shard_state[D] and final_state are zero by construction.
+    // Per-data-chunk raw CRC-64 entries (init 0, no final XOR, unpadded
+    // bytes) + fixed-zero seed. Identical in every shard of the record.
+    // Scaled headers keep the entries in the first unscaled region; the
+    // scale remainder stays zero. A header too small to hold them (hostile
+    // geometry) leaves the region zeroed rather than spilling into the
+    // payload (D13).
+    if (g.header_size >= SHARD_STATE_ARR + static_cast<size_t>(g.D + 1) * 8) {
+        for (core::uint32 i = 0; i < g.D; ++i) {
+            core::write_le64(shard.data() + SHARD_STATE_ARR + static_cast<size_t>(i) * 8,
+                             entries[i]);
+        }
+        core::write_le64(shard.data() + SHARD_STATE_ARR + static_cast<size_t>(g.D) * 8, 0);
+    }
 
     // Parity payload.
     if (parity_len > g.group_count) parity_len = static_cast<size_t>(g.group_count);
@@ -1130,6 +1157,15 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     constexpr size_t STRIPE = 256u * 1024u;
     std::vector<core::byte> scratch(STRIPE);
 
+    // Per-chunk raw CRC-64 state for the shard-header entries (E1): chunk i's
+    // bytes stream through the serial i-loop in ascending order, so the
+    // running state is updated with exactly the unpadded stripe take. Only
+    // unpadded bytes feed the checksum (D2); the i-axis is serial regardless
+    // of the parity pool, so entries are identical at any thread count (D12).
+    std::vector<crypto::RawCrc64> entry_crc(g.D);
+    // Unpadded byte count of the final data chunk (chunk_data_extent).
+    core::uint64 chunk_extent = archive_size - static_cast<core::uint64>(g.D - 1) * g.group_count;
+
     // The inner fold loop parallelizes cleanly: every parity shard j has its
     // own buffer (parity[j]) and update_ecc only reads the shared matrix and
     // scratch stripe. Output bytes are identical to the serial run because
@@ -1161,6 +1197,7 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
                 if (out.read(scratch.data(), static_cast<size_t>(take)) != take) {
                     return false;
                 }
+                entry_crc[i].update(scratch.data(), static_cast<size_t>(take));
             }
             if (pool) {
                 core::parallel_for(*pool, 0, g.NR, [&](size_t j) {
@@ -1188,8 +1225,11 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     }
     std::vector<core::byte> data_area;
     data_area.reserve(static_cast<size_t>(*data_area_size));
+    std::vector<core::uint64> rr_entries(g.D);
+    for (core::uint32 i = 0; i < g.D; ++i) rr_entries[i] = entry_crc[i].get();
     for (core::uint32 j = 0; j < g.NR; ++j) {
-        auto s = build_shard(j, g, parity[j].data(), static_cast<size_t>(g.group_count));
+        auto s = build_shard(j, g, parity[j].data(), static_cast<size_t>(g.group_count),
+                             rr_entries.data(), chunk_extent);
         data_area.insert(data_area.end(), s.begin(), s.end());
     }
 
@@ -1690,11 +1730,253 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     }
     if (!rr.found) return false;
 
+    // Per-slice entry sets for T0 erasure localization (v1.35.0). A slice is
+    // a byte range [offset, offset+len) within every data chunk, covered by
+    // one physical piece of the record; its entries are raw CRC-64s (init 0,
+    // no final XOR) of that range per chunk. Single-shape records have one
+    // slice covering the whole chunk; multi-physical records get one slice
+    // per 64 KiB row. Empty = no trustworthy entries (legacy zeroed records
+    // keep the v1.33.5 syndrome tiers, F7).
+    struct RrSlice {
+        core::uint64 offset; // within each data chunk
+        core::uint32 len;
+        std::vector<core::uint64> entries; // D values
+    };
+    std::vector<RrSlice> t0_slices;
+
     // Interpret the RR data area. If it doesn't look like the spec layout the
     // record was written by some third party we don't yet grok; refuse
     // honestly rather than misparsing random parity bytes.
     if (rr.raw_data.size() < SHARD_STATE_ARR + 8) return false;
     if (std::memcmp(rr.raw_data.data(), SHARD_MAGIC, SHARD_MAGIC_SIZE) != 0) return false;
+
+    // ─── Multi-physical reassembly (v1.35.0, Gate 0 E3 / D8+D13) ────────────────
+    // Above D*64 KiB protected size the reference writer packages each logical
+    // parity shard as multiple physical chunk-shards: unscaled D*8+0x48 headers,
+    // chunk_position advancing in 64 KiB steps, the logical fields repeated per
+    // piece (docs/v1.35.0-rr-probe.md §6). Our repair pipeline assumes one
+    // physical shard per logical index (total == header + group). Reassemble
+    // those records into that canonical single-shape form — byte-count neutral,
+    // because scale*(D*8+0x48) equals the scaled header our writer would emit —
+    // so every downstream check runs unchanged. Any validation failure refuses
+    // the whole record (all-or-nothing, D8).
+    {
+        // Walk the physical chain first: piece totals from +0x0C must tile the
+        // data area exactly.
+        bool canonical = true;
+        std::vector<std::tuple<core::uint64, core::uint32, core::uint32>> pieces; // off, total, idx
+        {
+            size_t off = 0;
+            // Declared-geometry sanity for the piece bound below. The walk itself
+            // is inherently bounded (each accepted piece consumes >= its ~1.6 KiB
+            // header), so this is only about sane arithmetic, not loop safety.
+            core::uint32 nr_declared = core::read_le16(rr.raw_data.data() + SHARD_NR_FIELD);
+            core::uint64 group_declared = core::read_le64(rr.raw_data.data() + SHARD_GROUP_CNT);
+            if (nr_declared == 0 || nr_declared > 2000 || group_declared == 0) {
+                return false;
+            }
+            size_t max_total_pieces = static_cast<size_t>(nr_declared) *
+                                          (static_cast<size_t>(group_declared / 0x10000) + 1) +
+                                      2;
+            while (off < rr.raw_data.size()) {
+                if (rr.raw_data.size() - off < SHARD_STATE_ARR + 8 ||
+                    pieces.size() > max_total_pieces) {
+                    canonical = false;
+                    break;
+                }
+                const core::byte* s = rr.raw_data.data() + off;
+                if (std::memcmp(s, SHARD_MAGIC, SHARD_MAGIC_SIZE) != 0) {
+                    canonical = false;
+                    break;
+                }
+                core::uint32 piece_total = core::read_le32(s + SHARD_TOTAL_OFF);
+                core::uint32 piece_header = core::read_le32(s + SHARD_HEADER_OFF);
+                core::uint32 piece_d = core::read_le16(s + SHARD_D_FIELD);
+                if (piece_total < piece_header ||
+                    piece_header < SHARD_STATE_ARR + static_cast<size_t>(piece_d + 1) * 8 ||
+                    static_cast<size_t>(piece_total) > rr.raw_data.size() - off) {
+                    canonical = false;
+                    break;
+                }
+                core::uint32 piece_idx = core::read_le16(s + SHARD_INDEX);
+                pieces.emplace_back(off, piece_total, piece_idx);
+                off += piece_total;
+            }
+        }
+        // Canonical single-shape record: every piece total == its header + the
+        // logical group, piece index j occupies the j-th slot, and there are no
+        // repeated indices. Detected cheaply below; anything else that still
+        // parses goes through reassembly.
+        bool multiphysical = false;
+        if (canonical && !pieces.empty()) {
+            core::uint32 first_header =
+                core::read_le32(rr.raw_data.data() + std::get<0>(pieces[0]) + SHARD_HEADER_OFF);
+            core::uint64 first_group =
+                core::read_le64(rr.raw_data.data() + std::get<0>(pieces[0]) + SHARD_GROUP_CNT);
+            for (const auto& [off, total, idx] : pieces) {
+                const core::byte* s = rr.raw_data.data() + off;
+                if (core::read_le64(s + SHARD_GROUP_CNT) != first_group ||
+                    core::read_le32(s + SHARD_HEADER_OFF) != first_header) {
+                    canonical = false; // mixed shapes; refuse via reassembly checks
+                    break;
+                }
+                if (static_cast<core::uint64>(total) !=
+                    static_cast<core::uint64>(first_header) + first_group) {
+                    multiphysical = true;
+                }
+            }
+            std::vector<core::uint32> idxs;
+            idxs.reserve(pieces.size());
+            for (const auto& p : pieces) idxs.push_back(std::get<2>(p));
+            std::sort(idxs.begin(), idxs.end());
+            for (size_t k = 0; k < idxs.size(); ++k) {
+                if (idxs[k] != k) {
+                    multiphysical = true; // duplicate or out-of-range index
+                    break;
+                }
+            }
+            if (idxs.size() > 2000) canonical = false; // D/NR cap pre-check (D8)
+        }
+
+        if (!canonical) {
+            return false; // chain does not tile / unparseable: refuse fail-closed
+        }
+        if (multiphysical) {
+            // Group pieces by logical index with the D8 bounds, then rewrite
+            // raw_data as NR canonical single-scaled shards.
+            struct LogicalShard {
+                std::vector<std::pair<core::uint64, core::uint32>> pieces; // (off, total)
+            };
+            core::uint32 max_logical = 0;
+            for (const auto& p : pieces) max_logical = std::max(max_logical, std::get<2>(p));
+            core::uint32 nr_logical = max_logical + 1;
+            if (nr_logical > 2000) return false;
+            std::vector<LogicalShard> logical(nr_logical);
+            core::uint64 group0 =
+                core::read_le64(rr.raw_data.data() + std::get<0>(pieces[0]) + SHARD_GROUP_CNT);
+            core::uint64 shard_size0 =
+                core::read_le64(rr.raw_data.data() + std::get<0>(pieces[0]) + SHARD_SIZE_U64);
+            core::uint32 d0 =
+                core::read_le16(rr.raw_data.data() + std::get<0>(pieces[0]) + SHARD_D_FIELD);
+            core::uint32 unscaled_header = d0 * 8 + 0x48;
+            core::uint64 scale = (group0 + 0xFFFF) / 0x10000;
+            if (scale == 0) scale = 1;
+            core::uint64 max_pieces = (group0 + 0xFFFF) / 0x10000 + 1;
+            std::vector<core::uint64> covered(nr_logical, 0);
+            for (const auto& [off, total, idx] : pieces) {
+                const core::byte* s = rr.raw_data.data() + off;
+                // Per-piece geometry (D13: structure before any interpretation).
+                if (core::read_le16(s + SHARD_D_FIELD) != d0 ||
+                    core::read_le64(s + SHARD_GROUP_CNT) != group0 ||
+                    core::read_le64(s + SHARD_SIZE_U64) != shard_size0 ||
+                    core::read_le64(s + SHARD_PROT_SIZE) !=
+                        core::read_le64(rr.raw_data.data() + std::get<0>(pieces[0]) +
+                                        SHARD_PROT_SIZE) ||
+                    core::read_le32(s + SHARD_HEADER_OFF) != unscaled_header) {
+                    return false;
+                }
+                core::uint64 crc_stored = core::read_le64(s + SHARD_CRC64_OFF);
+                core::uint64 crc_actual =
+                    crypto::Crc64Xz::compute(s + SHARD_TOTAL_OFF, total - SHARD_TOTAL_OFF);
+                if (crc_stored != crc_actual) return false;
+                core::uint64 chunkpos = core::read_le64(s + SHARD_CHUNK_POS);
+                core::uint64 payload = total - unscaled_header;
+                // Piece-count bound before map growth (D8): pieces cannot exceed
+                // ceil(group/64KiB)+1 per logical shard, and coverage must stay
+                // gap-free in file order.
+                if (logical[idx].pieces.size() >= max_pieces) return false;
+                if (chunkpos != covered[idx]) return false;
+                if (chunkpos + payload > group0) return false;
+                covered[idx] = chunkpos + payload;
+                logical[idx].pieces.emplace_back(off + unscaled_header,
+                                                 static_cast<core::uint32>(payload));
+            }
+            for (core::uint32 j = 0; j < nr_logical; ++j) {
+                if (covered[j] != group0) return false; // gap or empty logical shard
+            }
+            // Entries are PER-SLICE: entry k of a piece is the raw CRC-64 over
+            // chunk k's byte range [chunkpos, chunkpos+len) within that piece's
+            // row (docs/v1.35.0-rr-probe.md §5; at scale 1 this degenerates to
+            // the whole-chunk CRC). Keep them for T0 localization keyed by row;
+            // pieces sharing a row must agree (same data slice, same checksum).
+            // Row-consistency: pieces with the same chunkpos carry the same data
+            // slices of every chunk, so their entry sets must match.
+            {
+                std::vector<std::pair<core::uint64, const core::byte*>>
+                    rows; // (chunkpos, entries*)
+                for (const auto& [off, total, idx] : pieces) {
+                    const core::byte* s = rr.raw_data.data() + off;
+                    core::uint64 chunkpos = core::read_le64(s + SHARD_CHUNK_POS);
+                    bool found = false;
+                    for (auto& row : rows) {
+                        if (row.first == chunkpos) {
+                            found = true;
+                            if (std::memcmp(row.second + SHARD_STATE_ARR, s + SHARD_STATE_ARR,
+                                            static_cast<size_t>(d0 + 1) * 8) != 0) {
+                                return false; // same row, disagreeing entries: fail-closed
+                            }
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        rows.emplace_back(chunkpos, s);
+                        RrSlice slice;
+                        slice.offset = chunkpos;
+                        slice.len = static_cast<core::uint32>(
+                            std::min<core::uint64>(total - unscaled_header, group0 - chunkpos));
+                        slice.entries.resize(d0);
+                        for (core::uint32 i = 0; i < d0; ++i) {
+                            slice.entries[i] = core::read_le64(s + SHARD_STATE_ARR + i * 8);
+                        }
+                        t0_slices.push_back(std::move(slice));
+                    }
+                }
+            }
+            // Rewrite canonical: NR single shards, scaled header, full payload.
+            // The canonical entries region stays ZERO: it cannot hold the
+            // per-slice sets of a multi-row record, and zero is the established
+            // "no whole-chunk entries" marker — T0 localization runs from
+            // t0_slices instead. The on-disk record is untouched (splice_repair
+            // copies the original RR block verbatim), so the reference's own
+            // per-slice semantics survive a data-only repair.
+            core::uint64 scaled_header = unscaled_header * scale;
+            core::uint64 canonical_total = scaled_header + group0;
+            std::vector<core::byte> out_data(
+                static_cast<size_t>(nr_logical) * static_cast<size_t>(canonical_total), 0);
+            for (core::uint32 j = 0; j < nr_logical; ++j) {
+                core::byte* dst =
+                    out_data.data() + static_cast<size_t>(j) * static_cast<size_t>(canonical_total);
+                std::memcpy(dst, SHARD_MAGIC, SHARD_MAGIC_SIZE);
+                core::write_le32(dst + SHARD_TOTAL_OFF, static_cast<core::uint32>(canonical_total));
+                core::write_le32(dst + SHARD_HEADER_OFF, static_cast<core::uint32>(scaled_header));
+                dst[SHARD_VER_A] = 0x01;
+                dst[SHARD_VER_B] = 0x01;
+                core::write_le64(dst + SHARD_CHUNK_POS, 0);
+                // extent + prot + counts + index copied from the first piece.
+                std::memcpy(dst + SHARD_CHUNK_EXT,
+                            rr.raw_data.data() + std::get<0>(pieces[0]) + SHARD_CHUNK_EXT, 4);
+                std::memcpy(dst + SHARD_PROT_SIZE,
+                            rr.raw_data.data() + std::get<0>(pieces[0]) + SHARD_PROT_SIZE, 8);
+                core::write_le64(dst + SHARD_GROUP_CNT, group0);
+                core::write_le64(dst + SHARD_SIZE_U64, shard_size0);
+                core::write_le16(dst + SHARD_D_FIELD, static_cast<core::uint16>(d0));
+                core::write_le16(dst + SHARD_NR_FIELD, static_cast<core::uint16>(nr_logical));
+                core::write_le16(dst + SHARD_INDEX, static_cast<core::uint16>(j));
+                // Canonical entries region stays zero (see t0_slices note above);
+                // the vector was zero-initialized.
+                core::uint64 filled = 0;
+                for (const auto& [poff, plen] : logical[j].pieces) {
+                    std::memcpy(dst + scaled_header + filled, rr.raw_data.data() + poff, plen);
+                    filled += plen;
+                }
+                core::uint64 crc = crypto::Crc64Xz::compute(
+                    dst + SHARD_TOTAL_OFF, static_cast<size_t>(canonical_total) - SHARD_TOTAL_OFF);
+                core::write_le64(dst + SHARD_CRC64_OFF, crc);
+            }
+            rr.raw_data = std::move(out_data);
+            rr.data_size = rr.raw_data.size();
+        }
+    }
 
     core::uint32 total_size = core::read_le32(rr.raw_data.data() + SHARD_TOTAL_OFF);
     core::uint32 header_size32 = core::read_le32(rr.raw_data.data() + SHARD_HEADER_OFF);
@@ -1802,7 +2084,111 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     }
 
     core::uint32 missing_data = D - data_valid_count;
-    if (missing_data > parity_valid_count) return false;
+
+    // ─── T0: entry-based erasure localization (v1.35.0, Gate 0 E2 / D5+D13) ────
+    // Trustworthy per-chunk entry sets (t0_slices) identify damaged chunks
+    // directly: raw CRC-64 (init 0, no final XOR) over each slice of the
+    // chunk's bytes as currently on disk. A chunk is intact iff every slice
+    // verifies; chunks beyond `available` are erasures regardless (tail
+    // truncation). Single-shape records contribute one whole-chunk slice from
+    // their (agreement-checked) shard headers; multi-physical records were
+    // given one slice per 64 KiB row during reassembly. No slices (legacy
+    // zeroed entries, too-small headers, disagreeing sets) falls through to
+    // the syndrome tiers exactly as v1.33.5 (F7).
+    bool t0_applied = false;
+    if (t0_slices.empty() && header_size32 >= SHARD_STATE_ARR + static_cast<size_t>(D + 1) * 8) {
+        const core::byte* entries_shard = nullptr;
+        RrSlice whole;
+        whole.offset = 0;
+        whole.len = static_cast<core::uint32>(std::min<core::uint64>(group_count, prot_size));
+        whole.entries.resize(D);
+        for (core::uint32 j = 0; j < NR; ++j) {
+            if (!parity_valid[j]) continue;
+            const core::byte* s =
+                rr.raw_data.data() + static_cast<size_t>(j) * static_cast<size_t>(shard_size);
+            if (entries_shard == nullptr) {
+                for (core::uint32 i = 0; i < D; ++i) {
+                    whole.entries[i] = core::read_le64(s + SHARD_STATE_ARR + i * 8);
+                }
+                entries_shard = s;
+                continue;
+            }
+            if (std::memcmp(entries_shard + SHARD_STATE_ARR, s + SHARD_STATE_ARR,
+                            static_cast<size_t>(D) * 8) != 0) {
+                entries_shard = nullptr; // disagreeing entries: unusable
+                break;
+            }
+        }
+        if (entries_shard != nullptr) t0_slices.push_back(std::move(whole));
+    }
+    if (!t0_slices.empty()) {
+        // A slice whose entire entry set is zero carries no information
+        // (all-zero data folds to zero) — without it the remaining slices
+        // cannot prove a chunk intact, so T0 stands down (fail-closed).
+        bool usable = true;
+        for (const auto& slice : t0_slices) {
+            bool all_zero = true;
+            for (core::uint32 i = 0; i < D; ++i) {
+                if (slice.entries[i] != 0) {
+                    all_zero = false;
+                    break;
+                }
+            }
+            if (all_zero) {
+                usable = false;
+                break;
+            }
+        }
+        if (usable) {
+            core::uint32 t0_missing = 0;
+            for (core::uint32 i = 0; i < D; ++i) {
+                if (!data_valid[i]) {
+                    ++t0_missing; // truncation erasure
+                    continue;
+                }
+                bool intact = true;
+                for (const auto& slice : t0_slices) {
+                    core::uint64 off = static_cast<core::uint64>(i) * group_count + slice.offset;
+                    core::uint64 len = slice.len;
+                    // The final chunk's entry covers its unpadded length only
+                    // (the last slice clips at prot_size; a multi-row record
+                    // whose final slice extends into the zero padding compares
+                    // over the clipped range — worst case one extra erasure,
+                    // still within capacity).
+                    if (off + len > prot_size) len = prot_size - off;
+                    core::uint64 end = off + len;
+                    // A slice reaching past `available` means the chunk is
+                    // truncated inside this slice — erasure regardless of the
+                    // checksum (the tail bytes are gone, not verifiable).
+                    if (end > available) {
+                        intact = false;
+                        break;
+                    }
+                    crypto::RawCrc64 crc;
+                    crc.update(file_bytes.data() + off, static_cast<size_t>(len));
+                    if (crc.get() != slice.entries[i]) {
+                        intact = false;
+                        break;
+                    }
+                }
+                if (!intact) {
+                    data_valid[i] = 0;
+                    ++t0_missing;
+                }
+            }
+            if (t0_missing <= parity_valid_count) {
+                missing_data = t0_missing;
+                t0_applied = true;
+            } else {
+                // D6: the entry sets (trusted after CRC-64 verification)
+                // demand more reconstruction than parity supports —
+                // refuse; never partial-repair, never fall through to
+                // tiers that would have to distrust the same record.
+                return false;
+            }
+        }
+    }
+    if (!t0_applied && missing_data > parity_valid_count) return false;
 
     // Pad file_bytes up to D * group_count so each shard can be read contiguously.
     auto full_data_size = calculate_parity_buffer_size(D, group_count);
@@ -1907,6 +2293,22 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
             g.header_size = header_size32;
             g.shard_size = shard_size;
 
+            // Entries for the re-emitted record come from the verified prefix
+            // (D2 frame); a hostile header too small to hold them keeps the
+            // region zeroed (build_shard's central guard, D13).
+            std::vector<core::uint64> rebuild_entries(D);
+            for (core::uint32 i = 0; i < D; ++i) {
+                core::uint64 off = static_cast<core::uint64>(i) * group_count;
+                core::uint64 end = std::min<core::uint64>(off + group_count, prot_size);
+                crypto::RawCrc64 crc;
+                if (end > off) {
+                    crc.update(file_bytes.data() + off, static_cast<size_t>(end - off));
+                }
+                rebuild_entries[i] = crc.get();
+            }
+            core::uint64 rebuild_extent =
+                prot_size - static_cast<core::uint64>(D - 1) * group_count;
+
             auto data_area_size =
                 calculate_parity_buffer_size(NR, static_cast<core::uint32>(shard_size));
             if (!data_area_size) return false;
@@ -1914,7 +2316,8 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
             data_area.reserve(static_cast<size_t>(*data_area_size));
             for (core::uint32 j = 0; j < NR; ++j) {
                 auto s =
-                    build_shard(j, g, all_new_parity[j].data(), static_cast<size_t>(group_count));
+                    build_shard(j, g, all_new_parity[j].data(), static_cast<size_t>(group_count),
+                                rebuild_entries.data(), rebuild_extent);
                 data_area.insert(data_area.end(), s.begin(), s.end());
             }
 
@@ -1925,7 +2328,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         }
     }
 
-    if (non_zero_syndromes > 0) {
+    if (non_zero_syndromes > 0 && !t0_applied) {
         std::vector<core::uint32> matching_candidates;
         if (parity_valid_count >= 2 && first_non_zero_j >= 0 && missing_data == 0) {
             core::uint32 j0 = static_cast<core::uint32>(first_non_zero_j);

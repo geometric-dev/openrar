@@ -5,6 +5,7 @@
 #include "../../src/crypto/crc64.hpp"
 #include "../../src/crypto/crc32.hpp"
 #include "../../src/format/header_writer.hpp"
+#include "../../src/format/header_reader.hpp"
 #include "../../src/format/headers.hpp"
 #include "../../src/io/file_stream.hpp"
 #include "../../src/archive/archive_mutator.hpp"
@@ -965,6 +966,347 @@ static void test_rev_legacy_numbering() {
     std::cout << "[PASS] Legacy .rNN sets are visible to .rev repair\n";
 }
 
+// ── v1.35.0: shard-header state blob (E1), T0 multi-erasure repair (E2), ────
+//    multi-physical reassembly (E3). Probe record: docs/v1.35.0-rr-probe.md.
+
+namespace rr35 {
+
+namespace fs = std::filesystem;
+
+// Walk the common header framing to the "RR" service block and return the
+// data-area bytes (the back-to-back shard array).
+std::vector<core::byte> rr_data_area(const fs::path& arc) {
+    io::FileStream f;
+    if (!f.open(arc, io::FileMode::ReadOnly)) return {};
+    core::byte sig[8];
+    if (f.read(sig, 8) != 8) return {};
+    std::vector<core::byte> area;
+    core::uint64 type = 0, flags = 0, data_sz = 0;
+    while (f.tell() < f.size()) {
+        std::vector<core::byte> body;
+        if (format::HeaderReader::read_block_raw(f, type, flags, body, data_sz) !=
+            format::HeaderResult::Ok) {
+            break;
+        }
+        if (type == format::HEAD_ENDARC) break;
+        if (type == format::HEAD_SERVICE) {
+            format::FileBlock fb;
+            if (format::HeaderReader::parse_file_header(body.data(), body.size(), fb) &&
+                fb.is_service && fb.service_type == "RR") {
+                core::uint64 start = f.tell();
+                area.resize(static_cast<size_t>(data_sz));
+                f.seek(static_cast<core::int64>(start), io::SeekOrigin::Begin);
+                if (f.read(area.data(), area.size()) != area.size()) return {};
+                return area;
+            }
+        }
+        if (data_sz > 0) {
+            core::uint64 next = f.tell() + data_sz;
+            if (!f.seek(static_cast<core::int64>(next), io::SeekOrigin::Begin)) break;
+        }
+    }
+    return {};
+}
+
+// Deterministic payload builder shared by the v1.35.0 tests.
+std::vector<core::byte> payload(size_t n) {
+    std::vector<core::byte> v(n);
+    for (size_t i = 0; i < n; ++i) v[i] = static_cast<core::byte>((i * 91 + 7) & 0xFF);
+    return v;
+}
+
+struct ShardView {
+    core::uint32 total_size = 0;
+    core::uint32 header_size = 0;
+    core::uint64 group_count = 0;
+    core::uint64 shard_size = 0;
+    core::uint64 prot = 0;
+    core::uint32 extent = 0;
+    core::uint16 D = 0;
+    core::uint16 NR = 0;
+    std::vector<core::uint64> entries; // D values from +0x40
+    core::uint64 seed = 0;
+};
+
+ShardView parse_shard0(const std::vector<core::byte>& area) {
+    assert(area.size() >= 0x48);
+    ShardView v;
+    v.total_size = core::read_le32(area.data() + 0x0C);
+    v.header_size = core::read_le32(area.data() + 0x10);
+    v.extent = core::read_le32(area.data() + 0x1E);
+    v.prot = core::read_le64(area.data() + 0x22);
+    v.group_count = core::read_le64(area.data() + 0x2A);
+    v.shard_size = core::read_le64(area.data() + 0x32);
+    v.D = core::read_le16(area.data() + 0x3A);
+    v.NR = core::read_le16(area.data() + 0x3C);
+    v.entries.resize(v.D);
+    for (core::uint16 i = 0; i < v.D; ++i) {
+        v.entries[i] = core::read_le64(area.data() + 0x40 + static_cast<size_t>(i) * 8);
+    }
+    v.seed = core::read_le64(area.data() + 0x40 + static_cast<size_t>(v.D) * 8);
+    return v;
+}
+
+// Archive offset of the stored payload: first 16-byte match of the payload
+// inside the whole archive file (store method keeps it verbatim).
+core::uint64 find_payload_start(const fs::path& arc, const std::vector<core::byte>& data) {
+    io::FileStream f;
+    assert(f.open(arc, io::FileMode::ReadOnly));
+    std::vector<core::byte> whole(static_cast<size_t>(f.size()));
+    assert(f.read(whole.data(), whole.size()) == whole.size());
+    f.close();
+    for (size_t o = 0; o + 16 <= whole.size(); ++o) {
+        if (std::memcmp(whole.data() + o, data.data(), 16) == 0) return o;
+    }
+    return 0;
+}
+
+void flip_bytes(const fs::path& arc, const std::vector<core::uint64>& offsets) {
+    io::FileStream f;
+    assert(f.open(arc, io::FileMode::ReadWrite));
+    for (core::uint64 off : offsets) {
+        f.seek(static_cast<core::int64>(off), io::SeekOrigin::Begin);
+        core::byte b = 0;
+        assert(f.read(&b, 1) == 1);
+        b = static_cast<core::byte>(b ^ 0xFF);
+        f.seek(static_cast<core::int64>(off), io::SeekOrigin::Begin);
+        assert(f.write(&b, 1) == 1);
+    }
+}
+
+// Build a protected store archive from `data`; returns the archive path.
+fs::path build_protected(const fs::path& dir, const std::string& name,
+                         const std::vector<core::byte>& data, core::uint32 percent) {
+    fs::path src = dir / (name + ".bin");
+    fs::path arc = dir / (name + ".rar");
+    io::FileStream f;
+    assert(f.open(src, io::FileMode::CreateAlways));
+    assert(f.write(data.data(), data.size()) == data.size());
+    f.close();
+    assert(archive::ArchiveMutator::add_file_to_archive(arc, src, name + ".bin", /*method=*/0));
+    assert(recovery::RecoveryWriter::add_recovery_record(arc, percent));
+    return arc;
+}
+
+std::vector<core::byte> extract_payload(const fs::path& arc, const std::string& name) {
+    archive::ArchiveReader reader;
+    assert(reader.open(arc));
+    std::vector<core::byte> out;
+    for (const auto& e : reader.entries()) {
+        if (e.header.is_service) continue;
+        assert(e.header.file_name == name + ".bin");
+        fs::path tmp = arc.parent_path() / (name + ".out");
+        assert(reader.extract_entry(e, tmp));
+        io::FileStream f;
+        assert(f.open(tmp, io::FileMode::ReadOnly));
+        out.resize(static_cast<size_t>(f.size()));
+        assert(f.read(out.data(), out.size()) == out.size());
+        f.close();
+        std::filesystem::remove(tmp);
+    }
+    reader.close();
+    return out;
+}
+
+// T-UNIT-1 (plan M1.4): the emitted state region carries the per-chunk raw
+// CRC-64 entries and chunk_data_extent with a fixed zero seed. The expected
+// values below were derived with the independent probe model
+// (tools/scan_rr.py's CRC-64, init 0 / no final XOR, unpadded tail) against a
+// reference-model build of the exact same deterministic payload.
+void test_entry_emission() {
+    namespace fs = std::filesystem;
+    fs::path dir = openrar::test::scratch_dir("recovery");
+    auto data = payload(3072);
+    // Same source file for both builds: the file header stamps the source's
+    // mtime, so byte-level reproducibility needs an unchanged source.
+    fs::path src = dir / "rr35_emit.bin";
+    {
+        io::FileStream f;
+        assert(f.open(src, io::FileMode::CreateAlways));
+        assert(f.write(data.data(), data.size()) == data.size());
+    }
+    fs::path arc = dir / "rr35_emit.rar";
+    fs::path arc2 = dir / "rr35_emit2.rar";
+    assert(archive::ArchiveMutator::add_file_to_archive(arc, src, "rr35_emit.bin", /*method=*/0));
+    assert(recovery::RecoveryWriter::add_recovery_record(arc, 5));
+    assert(archive::ArchiveMutator::add_file_to_archive(arc2, src, "rr35_emit.bin",
+                                                        /*method=*/0));
+    assert(recovery::RecoveryWriter::add_recovery_record(arc2, 5));
+
+    std::vector<core::byte> area = rr_data_area(arc);
+    assert(!area.empty());
+    ShardView v = parse_shard0(area);
+    assert(v.D == 4);
+    assert(v.NR == 1);
+    assert(v.group_count == 788);
+    assert(v.prot == 3151);
+    assert(v.extent == 787); // 3151 - 3*788: unpadded final chunk
+    assert(v.seed == 0);     // fixed zero seed (D1)
+    // The final chunk is payload-only (the file header with its mtime lives in
+    // chunk 0), so its entry is independent of the build time and pins the
+    // raw-CRC-64 model against the externally computed fixture value.
+    assert(v.entries[3] == 0xe756efd34275a6dcULL);
+    // Self-consistency: every entry recomputes from the protected prefix
+    // (archive bytes [0, prot)) — not from the shard area.
+    {
+        io::FileStream f;
+        assert(f.open(arc, io::FileMode::ReadOnly));
+        std::vector<core::byte> whole(static_cast<size_t>(f.size()));
+        assert(f.read(whole.data(), whole.size()) == whole.size());
+        f.close();
+        for (core::uint32 k = 0; k < v.D; ++k) {
+            core::uint64 off = static_cast<core::uint64>(k) * v.group_count;
+            core::uint64 end = std::min<core::uint64>(off + v.group_count, v.prot);
+            crypto::RawCrc64 crc;
+            crc.update(whole.data() + off, static_cast<size_t>(end - off));
+            assert(crc.get() == v.entries[k]);
+        }
+    }
+    // Reproducibility (D1): a second build over the same source is identical.
+    io::FileStream fa, fb;
+    assert(fa.open(arc, io::FileMode::ReadOnly));
+    assert(fb.open(arc2, io::FileMode::ReadOnly));
+    std::vector<core::byte> ba(static_cast<size_t>(fa.size())), bb(static_cast<size_t>(fb.size()));
+    assert(fa.read(ba.data(), ba.size()) == ba.size());
+    assert(fb.read(bb.data(), bb.size()) == bb.size());
+    assert(ba == bb);
+    std::cout << "[PASS] rr35_entry_emission: entries/extent/seed match the probe model\n";
+}
+
+// T-UNIT-2 (plan M3.2): chunk-granularity multi-erasure repair — k damaged
+// chunks for k <= NR rebuild byte-exact; k = NR+1 refuses (D6); two damaged
+// words inside ONE chunk repair (the pre-v1.35.0 boundary was a single unit).
+void test_multi_erasure_repair() {
+    namespace fs = std::filesystem;
+    fs::path dir = openrar::test::scratch_dir("recovery");
+    auto data = payload(64 * 1024); // D=64, NR=floor(5*64/100)=3
+
+    // Two chunks damaged (one byte each).
+    {
+        fs::path arc = build_protected(dir, "rr35_me2", data, 5);
+        // Chunk starts: data begins right after the file header; the payload
+        // equals the file content, so flipping payload-anchored offsets inside
+        // two distinct chunk-sized windows needs the group size — derive it.
+        ShardView v = parse_shard0(rr_data_area(arc));
+        assert(v.D == 65 && v.NR == 3); // ceil(65603/1024)=65; floor(5*65/100)=3
+        // The protected prefix starts at 0; the payload starts after sig+main+
+        // file header. Damage archive offsets spread across chunks 10 and 40.
+        std::vector<core::byte> area = rr_data_area(arc);
+        core::uint64 payload_start = find_payload_start(arc, data);
+        assert(payload_start > 0);
+        core::uint64 g = v.group_count;
+        core::uint64 c10 = payload_start + 10 * g + 5;
+        core::uint64 c40 = payload_start + 40 * g + 5;
+        flip_bytes(arc, {c10, c40});
+        assert(recovery::RecoveryWriter::repair(arc));
+        assert(extract_payload(arc, "rr35_me2") == data);
+    }
+    // Two words in the same chunk.
+    {
+        fs::path arc = build_protected(dir, "rr35_me1", data, 5);
+        ShardView v = parse_shard0(rr_data_area(arc));
+        core::uint64 payload_start = find_payload_start(arc, data);
+        assert(payload_start > 0);
+        core::uint64 g = v.group_count;
+        flip_bytes(arc, {payload_start + 20 * g + 5, payload_start + 20 * g + 261});
+        assert(recovery::RecoveryWriter::repair(arc));
+        assert(extract_payload(arc, "rr35_me1") == data);
+    }
+    // NR+1 damaged chunks: refuse (D6) and leave the archive loadable.
+    {
+        fs::path arc = build_protected(dir, "rr35_me4", data, 5);
+        ShardView v = parse_shard0(rr_data_area(arc));
+        core::uint64 payload_start = find_payload_start(arc, data);
+        assert(payload_start > 0);
+        core::uint64 g = v.group_count;
+        std::vector<core::uint64> offs;
+        for (core::uint32 c = 0; c <= v.NR; ++c) {
+            offs.push_back(payload_start + static_cast<core::uint64>(c) * 3 * g + 7);
+        }
+        flip_bytes(arc, offs);
+        assert(!recovery::RecoveryWriter::repair(arc));
+    }
+    std::cout << "[PASS] rr35_multi_erasure_repair: k<=NR chunks rebuild, NR+1 refuses\n";
+}
+
+// F7 pin: zeroed-entry records keep the v1.33.5 behavior — one damaged unit
+// repairs via the syndrome tier; two damaged chunks refuse.
+void test_zero_entry_fallback() {
+    namespace fs = std::filesystem;
+    fs::path dir = openrar::test::scratch_dir("recovery");
+    auto data = payload(64 * 1024);
+    fs::path arc = build_protected(dir, "rr35_zero", data, 5);
+    ShardView v = parse_shard0(rr_data_area(arc));
+    std::vector<core::byte> area = rr_data_area(arc);
+    assert(v.header_size >= 0x40 + (static_cast<size_t>(v.D) + 1) * 8);
+
+    // Zero every shard's state region and re-forge the shard CRC-64s.
+    io::FileStream f;
+    assert(f.open(arc, io::FileMode::ReadWrite));
+    core::uint64 rr_data_off = 0;
+    {
+        // find the data area offset by locating the first {RB} magic in file
+        // order (the record is the only {RB} region; the payload is built to
+        // contain none — payload bytes (i*91+7): 0x7B needs (i*91+7)==123,
+        // i=(116)/91 not integral, so no false positives).
+        std::vector<core::byte> whole(static_cast<size_t>(f.size()));
+        f.seek(0, io::SeekOrigin::Begin);
+        assert(f.read(whole.data(), whole.size()) == whole.size());
+        const core::byte magic[4] = {0x7B, 0x52, 0x42, 0x7D};
+        for (size_t o = 0; o + 4 < whole.size(); ++o) {
+            if (std::memcmp(whole.data() + o, magic, 4) == 0) {
+                rr_data_off = o;
+                break;
+            }
+        }
+        assert(rr_data_off > 0);
+    }
+    for (core::uint16 j = 0; j < v.NR; ++j) {
+        core::uint64 shard = rr_data_off + static_cast<core::uint64>(j) * v.shard_size;
+        std::vector<core::byte> zeros(static_cast<size_t>(v.D + 1) * 8, 0);
+        f.seek(static_cast<core::int64>(shard + 0x40), io::SeekOrigin::Begin);
+        assert(f.write(zeros.data(), zeros.size()) == zeros.size());
+        // Re-forge: CRC-64/XZ over [+0x0C, shard end).
+        std::vector<core::byte> shard_bytes(static_cast<size_t>(v.shard_size));
+        f.seek(static_cast<core::int64>(shard), io::SeekOrigin::Begin);
+        assert(f.read(shard_bytes.data(), shard_bytes.size()) == shard_bytes.size());
+        for (size_t b = 0x40; b < 0x40 + zeros.size(); ++b) shard_bytes[b] = 0;
+        core::uint64 crc =
+            crypto::Crc64Xz::compute(shard_bytes.data() + 0x0C, shard_bytes.size() - 0x0C);
+        core::byte crc_bytes[8];
+        for (int k = 0; k < 8; ++k) crc_bytes[k] = static_cast<core::byte>((crc >> (8 * k)) & 0xFF);
+        f.seek(static_cast<core::int64>(shard + 0x04), io::SeekOrigin::Begin);
+        assert(f.write(crc_bytes, 8) == 8);
+    }
+    f.close();
+
+    // One damaged chunk: T1 repairs (v1.33.5 behavior preserved).
+    {
+        fs::path one = arc;
+        one += ".one";
+        fs::copy(arc, one, std::filesystem::copy_options::overwrite_existing);
+        core::uint64 payload_start = find_payload_start(arc, data);
+        assert(payload_start > 0);
+        flip_bytes(one, {payload_start + 15 * v.group_count + 3});
+        assert(recovery::RecoveryWriter::repair(one));
+        assert(extract_payload(one, "rr35_zero") == data);
+    }
+    // Two damaged chunks: refusal (unchanged failure class).
+    {
+        fs::path two = arc;
+        two += ".two";
+        fs::copy(arc, two, std::filesystem::copy_options::overwrite_existing);
+        core::uint64 payload_start = find_payload_start(arc, data);
+        assert(payload_start > 0);
+        flip_bytes(two,
+                   {payload_start + 5 * v.group_count + 3, payload_start + 45 * v.group_count + 3});
+        assert(!recovery::RecoveryWriter::repair(two));
+    }
+    std::cout << "[PASS] rr35_zero_entry_fallback: legacy records keep T1/T2 behavior\n";
+}
+
+} // namespace rr35
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -997,6 +1339,9 @@ int main() {
     test_rev_volumes_roundtrip();
     test_rev_foreign_set_refused();
     test_rev_legacy_numbering();
+    rr35::test_entry_emission();
+    rr35::test_multi_erasure_repair();
+    rr35::test_zero_entry_fallback();
     std::cout << "All Milestone 4 Recovery & Reed-Solomon Primitives PASSED!\n";
     return 0;
 }
