@@ -396,6 +396,19 @@ gate until dethroned by evidence).
 - **v1.35.0 — RAR 7.x parity ledger.** RR vintage 0x11D + single-erasure
   repair (deferred from v1.26), resource forks + FinderInfo (deferred
   from v1.27 to "2.1" — pulled here if the perf arcs land early).
+  *Research state (2026-10-04):* WinRAR 7.0 changed the recovery-record
+  format (new scheme default; a legacy option preserves old-format records —
+  win-rar.com whatsnew), and 0x11D is the GF(256) field polynomial of the
+  classic RR scheme (x^8+x^4+x^3+x^2+1, per the public chromium RR
+  implementation). Our RR (`recovery_record.hpp`, "RB" magic, sector/Cauchy)
+  matches the RAR 5.0-era scheme. The clean-room path is black-box probing
+  RAR 7.20-produced RR records (Rar.exe on this host) — first task: a
+  validated RR-section walker (the reuse-scanner's header walk extended to
+  service data areas), then layout recovery, then reader-before-writer.
+  Resource forks: extend the v1.27 xattr allow-list (`com.apple.ResourceFork`
+  / `com.apple.FinderInfo` are currently excluded, `archive_mutator.hpp`
+  xattr_capturable) — macOS-only capture, unit-testable predicate on every
+  platform.
 - **v1.36.0 — Migration completeness.** cv link migration (needs its own
   Gate 0 — `prepare_add_symlink_from_memory`), cv output-shaping switches
   (`-s`/`-v`/`-ts*`), FILECOPY default-materialization policy decision
