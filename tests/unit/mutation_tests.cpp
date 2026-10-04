@@ -131,12 +131,13 @@ static void test_xattr_namespace_policy() {
     assert(ArchiveMutator::xattr_capturable("security.selinux"));
     assert(ArchiveMutator::xattr_capturable("trusted.backup.stamp"));
     assert(ArchiveMutator::xattr_capturable("com.apple.metadata:_kMDItemUserTags"));
-    // Rejected: ACL side door, provenance, deferred resource forks, unknown.
+    // v1.35.0: the macOS content-class names (resource fork, FinderInfo).
+    assert(ArchiveMutator::xattr_capturable("com.apple.ResourceFork"));
+    assert(ArchiveMutator::xattr_capturable("com.apple.FinderInfo"));
+    // Rejected: ACL side door, provenance, unknown.
     assert(!ArchiveMutator::xattr_capturable("system.posix_acl_access"));
     assert(!ArchiveMutator::xattr_capturable("com.apple.quarantine"));
     assert(!ArchiveMutator::xattr_capturable("com.apple.provenance"));
-    assert(!ArchiveMutator::xattr_capturable("com.apple.ResourceFork"));
-    assert(!ArchiveMutator::xattr_capturable("com.apple.FinderInfo"));
     assert(!ArchiveMutator::xattr_capturable("com.apple.decmpfs"));
     assert(!ArchiveMutator::xattr_capturable("com.apple.lastuseddate#PS"));
     assert(!ArchiveMutator::xattr_capturable("btrfs.compression"));

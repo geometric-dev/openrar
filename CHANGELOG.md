@@ -5,6 +5,59 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] - 2026-10-04
+
+RAR 7.x recovery-record parity + resource forks. Gate 0:
+`docs/v1.35.0-pre-analysis.md` (conditional approval, directives D1–D16).
+Research and black-box probe record: `docs/v1.35.0-rr-probe.md` (all claims
+measured against Rar.exe 7.20 / UnRAR 7.20; independently reviewed against
+outside format analysis with corrections re-verified on the wire).
+
+### Added
+
+- Recovery records now emit the shard-header state blob the reference
+  repairer consumes as its erasure locator: per-data-chunk raw CRC-64
+  entries (init 0, no final XOR, unpadded tail chunk) and
+  `chunk_data_extent`, with a fixed zero seed — the record stays
+  bit-for-bit reproducible and the reference validator and repairer accept
+  and fully use it (`src/recovery/recovery_writer.cpp` `build_shard`,
+  `add_recovery_record`; probe record §5 expC, T-ORACLE-1/2).
+- `r` multi-erasure repair: a new localization tier reads the per-chunk
+  entries and rebuilds any set of up to NR damaged chunks byte-exactly,
+  where v1.33.5 repaired exactly one damaged unit; capacity is refused
+  fail-closed (D6) and zero-entry legacy records keep the v1.33.5
+  syndrome tiers unchanged (F7 pin)
+  (`src/recovery/recovery_writer.cpp` `RecoveryWriter::repair`).
+- Reference multi-physical record support: `r` reassembles the scale>1
+  packaging (64 KiB physical chunk-shards, unscaled headers, per-slice
+  entries; piece-count bounded, all-or-nothing validation) — damaged
+  RAR 7.20 16 MiB-class archives repair byte-exact (T-ORACLE-4).
+- Resource forks & FinderInfo: `-ox` captures `com.apple.ResourceFork` /
+  `com.apple.FinderInfo` under the existing FHEXTRA_XATTR caps (over-cap
+  values skip, never truncate); restore is default-on and Apple-hosts
+  only (`src/archive/archive_mutator.cpp` `xattr_capturable`;
+  `src/archive/archive_reader.cpp` `xattr_restorable`).
+- `tools/scan_rr.py`: CRC32-validated RR-section probe — shard analyzer
+  with CRC-64/XZ verification and packaging-shape classification, plus
+  `--matrix` (writer-equivalence proof against the Cauchy/GF(2^16)
+  convention).
+
+### Changed
+
+- Premise revision recorded: "WinRAR 7.0 changed the RR format" is not
+  reproducible through the console oracle in any probed configuration;
+  RAR 7.20's inline RR is the classic `{RB}` scheme, RS-core bit-equal to
+  ours, and 0x11D is the RAR4-era GF(256) polynomial absent from RAR5
+  containers (`docs/spec/05-recovery.md` corrected accordingly).
+
+### Verification
+
+- Wiped-build 45/45 test suites, ALL 24 interop gate stages, golden
+  fixtures unchanged (non-RR archives byte-identical), oracle sweep
+  T-ORACLE-1..5 green (Rar 7.20 `t`/`r`, UnRAR 7.20 `t`, both directions,
+  scale 1 and 16 MiB). Verification record:
+  `docs/v1.35.0-implementation-plan.md`.
+
 ## [1.36.0] - 2026-10-04
 
 cv (foreign-format migration) now migrates symlink and hardlink entries to
