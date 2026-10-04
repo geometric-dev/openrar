@@ -239,6 +239,11 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
     };
 
     core::uint64 next_id = 0;
+    // Masters migrated so far, for hardlink resolution: a RAR5 hardlink
+    // record references an earlier entry BY NAME, so a foreign hardlink whose
+    // master did not migrate (skipped/refused) cannot resolve and is skipped
+    // with a report instead of emitting a dangling record.
+    std::set<std::string> migrated_names;
     for (size_t i = 0; i < reader->entry_count(); ++i) {
         if (hooks.cancelled()) {
             result.status = ForeignStatus::Aborted;
@@ -254,12 +259,47 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
             ++result.skipped;
             continue;
         }
-        // Links: Phase 1 skips with report (the staging pipeline cannot
-        // express REDIR records without touching the mutator — plan note).
-        if (e.type == ForeignType::Symlink || e.type == ForeignType::Hardlink) {
-            add_report_entry(e, ForeignStatus::UnsupportedMethod, {"link_skipped"});
-            result.detail = ""; // not an error
-            ++result.skipped;
+        // Links (v1.36.0, Gate 0 in docs/v1.36.0-pre-analysis.md): targets
+        // migrate verbatim; extraction-time safety (absolute/escaping target
+        // refusal, symlink-parent scan, spec-07 skip semantics) is enforced
+        // by ArchiveReader at extraction. Symlink dir-target-ness is not
+        // carried by foreign metadata reliably; the conservative file-target
+        // default only affects Windows directory-symlink creation.
+        if (e.type == ForeignType::Symlink) {
+            ArchiveMutator::PreparedAdd pa;
+            if (!ArchiveMutator::prepare_add_symlink_from_memory(e.name, e.link_target, false,
+                                                                 e.mtime_sec, pa)) {
+                add_report_entry(e, ForeignStatus::IoError, {});
+                ++result.failed;
+                result.status = ForeignStatus::IoError;
+                result.detail = "prepare_add_symlink_from_memory failed";
+                return result.status;
+            }
+            batch.push_back(std::move(pa));
+            migrated_names.insert(e.name);
+            ++result.migrated_links;
+            add_report_entry(e, ForeignStatus::Ok, {});
+            continue;
+        }
+        if (e.type == ForeignType::Hardlink) {
+            if (migrated_names.count(e.link_target) == 0) {
+                add_report_entry(e, ForeignStatus::UnsupportedMethod, {"link_target_missing"});
+                ++result.skipped;
+                continue;
+            }
+            ArchiveMutator::PreparedAdd pa;
+            if (!ArchiveMutator::prepare_add_hardlink_from_memory(e.name, e.link_target,
+                                                                  e.mtime_sec, pa)) {
+                add_report_entry(e, ForeignStatus::IoError, {});
+                ++result.failed;
+                result.status = ForeignStatus::IoError;
+                result.detail = "prepare_add_hardlink_from_memory failed";
+                return result.status;
+            }
+            batch.push_back(std::move(pa));
+            migrated_names.insert(e.name);
+            ++result.migrated_links;
+            add_report_entry(e, ForeignStatus::Ok, {});
             continue;
         }
         if (e.type == ForeignType::Other) {
@@ -300,6 +340,7 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
                 return result.status;
             }
             batch.push_back(std::move(pa));
+            migrated_names.insert(e.name);
             ++result.migrated_dirs;
             add_report_entry(e, ForeignStatus::Ok, {});
             continue;
@@ -360,6 +401,7 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
         std::error_code rm_ec;
         std::filesystem::remove(staging_file, rm_ec);
         batch.push_back(std::move(pa));
+        migrated_names.insert(e.name);
         source_hashes.push_back(digest);
         migrated_entries.push_back(&e);
         ++result.migrated_files;

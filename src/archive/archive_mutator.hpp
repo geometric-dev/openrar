@@ -214,6 +214,26 @@ public:
                                      bool want_acl = false, const std::string& default_group = "",
                                      const std::string& default_user = "");
 
+    // v1.36.0 (cv link migration, Gate 0): stage symlink/hardlink records
+    // WITHOUT a filesystem object — the caller supplies the link target and
+    // the entry times directly (foreign-archive metadata; mtime seconds only,
+    // sub-second precision is not representable in the unix HTIME fields).
+    // Targets migrate verbatim: extraction-time safety (absolute/escaping
+    // target refusal, symlink-parent scan, spec-07 skip semantics) is
+    // enforced by ArchiveReader, per docs/v1.36.0-pre-analysis.md.
+    static bool prepare_add_symlink_from_memory(const std::string& arc_entry_name,
+                                                const std::string& target, bool is_dir_target,
+                                                int64_t mtime_sec, PreparedAdd& out,
+                                                core::uint32 times_mask = time_flags::MTIME,
+                                                const std::string& default_group = "",
+                                                const std::string& default_user = "");
+    static bool prepare_add_hardlink_from_memory(const std::string& arc_entry_name,
+                                                 const std::string& target_entry_name,
+                                                 int64_t mtime_sec, PreparedAdd& out,
+                                                 core::uint32 times_mask = time_flags::MTIME,
+                                                 const std::string& default_group = "",
+                                                 const std::string& default_user = "");
+
     // Stage 1 variant for an identical-file reference (-oi): emits a FILECOPY
     // record (FHEXTRA_REDIR, redir_type = 5, no data area) pointing to
     // target_entry_name, an earlier entry in the same archive holding the
