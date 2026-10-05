@@ -29,7 +29,6 @@ public:
 
 private:
     void refill();
-    void fetch_more();
 
     InputCallback cb_{nullptr};
     std::vector<core::byte> buf_;
