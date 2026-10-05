@@ -465,14 +465,19 @@ gate until dethroned by evidence).
   reference graph), and (3) redundant-from-zero costs O(member) per worker.
   Full record: `docs/v1.37.0-design-wall.md`; WIP parked on branch
   `arc/v1.37.0-parallel-decode-wip` (scout + driver + identity harness,
-  interop-gate-green). The reference's 1.29-1.50x implies a mechanism
-  outside this space; the recorded successor lever is demand-driven
-  backward decoding (memoized block-aligned sub-decodes, bounded budget,
-  fail-closed) — its own Gate 0 required. v1.38 (decode kernel) does not
-  hit this wall and becomes the next arc. En-route discovery: a
-  pre-existing P2 in the sandboxed-worker `t` path (false FAILED for
-  members >= 64 MiB unpacked, v1.36.0 confirmed 12/12, in-process and
-  driver paths unaffected) — fix candidate for a 1.36.x patch.
+  interop-gate-green). Post-record independent format verification
+  corrected the conclusion (see the wall record §3): the reference
+  parallelizes via **two-phase decode** — parallel Huffman/token symbol
+  decode into operation records, serial window application — so the
+  "no parallelizable design" claim is retracted and the two-phase design
+  is the dominant successor lever (the parked scout is its symbol-stage
+  prototype); demand-driven backward decoding is the fallback candidate.
+  v1.38 (decode kernel) does not hit this wall and becomes the next arc.
+  En-route discovery: the pre-existing P2 in the sandboxed-worker `t`
+  path (false FAILED for members >= 64 MiB unpacked) was root-caused to
+  the streaming BitReader's short mid-stream refill (buffer-boundary
+  zero-padding) and **fixed in the 1.36.x patch** with a
+  streaming-vs-contiguous differential regression test.
 - **v1.38.0 — Decode kernel algorithmic rework (flat tables / SIMD).**
   *Why:* the decode kernel carries 84% of extraction and is ~1.7x behind
   the reference's; v1.34.0 measured that call-pattern and structural changes
