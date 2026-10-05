@@ -933,6 +933,524 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     return true;
 }
 
+// ── v1.37.0: scout (symbol-only) and shared-buffer range decode ─────────────
+//
+// Both loops are clones of decompress_internal's token loop with the write
+// path changed: the scout moves no bytes (rep-state depends only on token
+// SYMBOLS, never on window content, so the state it records is exact); the
+// range loop writes pre-transform bytes into the caller's shared buffer at
+// absolute positions and waits on producer frontiers for cross-range match
+// sources. Divergence between these loops and the sequential one is guarded
+// by the MT/ST byte-identity fuzz (plan M4.1).
+
+bool Decompressor50::initialize_from_description(const ScoutDescription& desc) {
+    use_extra_dist_ = desc.extra_dist;
+    cur_table_size_ = use_extra_dist_ ? 446 : 430;
+    if (desc.lengths.size() != cur_table_size_) {
+        last_error_ = DecompressErrorCode::InvalidInput;
+        last_error_str_ = "recorded description length mismatch";
+        return false;
+    }
+    std::memcpy(table_, desc.lengths.data(), cur_table_size_);
+    const size_t cur_dc = use_extra_dist_ ? 80 : 64;
+    if (!ld_decoder_.build(table_, 306)) return false;
+    if (!dd_decoder_.build(table_ + 306, cur_dc)) return false;
+    if (!ldd_decoder_.build(table_ + 306 + cur_dc, 16)) return false;
+    if (!rd_decoder_.build(table_ + 306 + cur_dc + 16, 44)) return false;
+    tables_ready_ = true;
+    return true;
+}
+
+bool Decompressor50::scout_member(const core::byte* src, size_t src_size, size_t dest_size,
+                                  ScoutRecord& out, size_t /*checkpoint_interval*/) {
+    out = ScoutRecord{};
+    if (src == nullptr || src_size == 0 || dest_size == 0) return false;
+    if (last_error_ != DecompressErrorCode::Ok) return false;
+
+    // The 430/446 table flavor derives from the entry's window size exactly
+    // as decompress_internal's callers set it up (> 4 GiB dict = RAR7 table).
+    use_extra_dist_ = (win_size_ > (4ULL * 1024 * 1024 * 1024));
+    cur_table_size_ = use_extra_dist_ ? 446 : 430;
+
+    BitReader reader(src, src_size);
+    std::fill(std::begin(old_dist_), std::end(old_dist_), static_cast<size_t>(-1));
+    last_length_ = 0;
+    tables_ready_ = false;
+    std::fill(std::begin(table_), std::end(table_), static_cast<core::byte>(0));
+
+    size_t total = 0;
+    size_t cur_desc_id = 0;
+    size_t filters_total_len = 0;
+
+    BlockHeader header;
+    header.block_size = -1;
+    if (!read_block_header(reader, header)) return false;
+    if (!read_tables(reader, header)) return false;
+    if (!header.table_present && !tables_ready_) return false;
+
+    auto block_end_bit = [&](const BlockHeader& h) -> size_t {
+        if (h.block_size <= 0) return static_cast<size_t>(h.block_start) * 8;
+        return static_cast<size_t>(h.block_start + h.block_size - 1) * 8 +
+               static_cast<size_t>(h.block_bit_size);
+    };
+
+    while (total < dest_size) {
+        // Record the current block and a worker-start checkpoint (the state
+        // below is exactly what a range worker starting at this block needs).
+        {
+            ScoutBlock sb;
+            sb.src_byte =
+                static_cast<size_t>(header.block_start) - static_cast<size_t>(header.header_size);
+            sb.header_len = static_cast<uint32_t>(header.header_size);
+            sb.block_size = header.block_size > 0 ? static_cast<uint32_t>(header.block_size) : 0;
+            sb.desc_id = static_cast<uint32_t>(cur_desc_id);
+            sb.table_present = header.table_present;
+            sb.last_block = header.last_block_in_file;
+            sb.block_bit_size = header.block_bit_size;
+            out.blocks.push_back(sb);
+            ScoutCheckpoint cp;
+            cp.output_pos = total;
+            cp.next_block = static_cast<uint32_t>(out.blocks.size() - 1);
+            cp.src_byte = sb.src_byte;
+            cp.last_length = last_length_;
+            cp.desc_id = static_cast<uint32_t>(cur_desc_id);
+            for (int i = 0; i < 4; ++i) cp.old_dist[i] = old_dist_[i];
+            out.checkpoints.push_back(cp);
+        }
+        if (header.table_present) {
+            ScoutDescription d;
+            d.extra_dist = use_extra_dist_;
+            d.lengths.assign(table_, table_ + cur_table_size_);
+            out.descriptions.push_back(std::move(d));
+            // The recorded description is IN FORCE from this block onward.
+            cur_desc_id = out.descriptions.size() - 1;
+        }
+
+        size_t end_bit = block_end_bit(header);
+        // Token loop within this block — validations identical to
+        // decompress_internal; no bytes move.
+        while (reader.bit_pos() < end_bit && reader.bits_remaining() >= 1 && total < dest_size) {
+            core::uint32 slot = ld_decoder_.decode(reader);
+            if (slot < 256) {
+                ++total;
+                continue;
+            }
+            if (slot == 256) {
+                auto read_filter_data = [&](bool& ok) -> core::uint32 {
+                    if (reader.bits_remaining() < 2) {
+                        ok = false;
+                        return 0;
+                    }
+                    core::uint32 byte_cnt = reader.get_bits(2) + 1;
+                    core::uint32 val = 0;
+                    for (core::uint32 i = 0; i < byte_cnt; ++i) {
+                        if (reader.bits_remaining() < 8) {
+                            ok = false;
+                            return 0;
+                        }
+                        val |= (reader.get_bits(8) << (i * 8));
+                    }
+                    return val;
+                };
+                bool ok = true;
+                core::uint32 f_start = read_filter_data(ok);
+                core::uint32 f_len = ok ? read_filter_data(ok) : 0;
+                if (!ok) return false;
+                if (f_len > 0x400000) f_len = 0;
+                if (reader.bits_remaining() < 3) return false;
+                core::uint32 f_type = reader.get_bits(3);
+                core::uint32 f_ch = 1;
+                if (f_type == 0) {
+                    if (reader.bits_remaining() < 5) return false;
+                    f_ch = reader.get_bits(5) + 1;
+                }
+                FilterEntry fe;
+                fe.type = static_cast<core::uint8>(f_type);
+                fe.channels = static_cast<core::uint8>(f_ch);
+                fe.block_start = total + f_start;
+                fe.file_offset = static_cast<core::uint64>(total) + f_start;
+                fe.block_length = f_len;
+                if (static_cast<size_t>(f_len) > win_size_) return false;
+                filters_total_len += static_cast<size_t>(f_len);
+                if (dest_size <= SIZE_MAX - win_size_ &&
+                    filters_total_len > dest_size + win_size_) {
+                    return false;
+                }
+                if (!out.filters.empty()) {
+                    const FilterEntry& prev = out.filters.back();
+                    if (fe.block_start < prev.block_start + prev.block_length) return false;
+                }
+                if (out.filters.size() >= 65536) return false;
+                out.filters.push_back(fe);
+                continue;
+            }
+            if (slot == 257) {
+                if (last_length_ != 0) {
+                    size_t distance = old_dist_[0];
+                    if (distance == static_cast<size_t>(-1) || distance == 0 ||
+                        distance > win_size_) {
+                        return false;
+                    }
+                    core::uint32 len = static_cast<core::uint32>(last_length_);
+                    if (len > dest_size - total) len = static_cast<core::uint32>(dest_size - total);
+                    total += len;
+                }
+                continue;
+            }
+            if (slot >= 262) {
+                core::uint32 len = slot_to_length(reader, slot - 262);
+                if (reader.bits_remaining() < 1) return false;
+                core::uint32 dist_slot = dd_decoder_.decode(reader);
+                size_t distance = 1;
+                core::uint32 d_bits = 0;
+                if (dist_slot < 4) {
+                    distance += dist_slot;
+                    d_bits = 0;
+                } else {
+                    d_bits = dist_slot / 2 - 1;
+                    distance += static_cast<size_t>(2 | (dist_slot & 1)) << d_bits;
+                }
+                if (d_bits > 0) {
+                    if (d_bits >= 4) {
+                        if (d_bits > 4) {
+                            if (reader.bits_remaining() < d_bits - 4) return false;
+                            core::uint64 extra = 0;
+                            if (d_bits > 36) {
+                                extra = reader.get_bits64(d_bits - 4);
+                            } else {
+                                extra = reader.get_bits(d_bits - 4);
+                            }
+                            distance += static_cast<size_t>(extra) << 4;
+                        }
+                        if (reader.bits_remaining() < 1) return false;
+                        core::uint32 low = ldd_decoder_.decode(reader);
+                        distance += low;
+                    } else {
+                        if (reader.bits_remaining() < d_bits) return false;
+                        distance += reader.get_bits(d_bits);
+                    }
+                }
+                if (distance > 0x100) {
+                    ++len;
+                    if (distance > 0x2000) {
+                        ++len;
+                        if (distance > 0x40000) ++len;
+                    }
+                }
+                old_dist_[3] = old_dist_[2];
+                old_dist_[2] = old_dist_[1];
+                old_dist_[1] = old_dist_[0];
+                old_dist_[0] = distance;
+                last_length_ = len;
+                if (distance == 0 || distance > win_size_) return false;
+                if (len > dest_size - total) len = static_cast<core::uint32>(dest_size - total);
+                total += len;
+                continue;
+            }
+            // slot 258..261: repeat distances.
+            core::uint32 dist_num = slot - 258;
+            size_t distance = old_dist_[dist_num];
+            if (distance == static_cast<size_t>(-1) || distance == 0 || distance > win_size_) {
+                return false;
+            }
+            for (core::uint32 i = dist_num; i > 0; --i) old_dist_[i] = old_dist_[i - 1];
+            old_dist_[0] = distance;
+            if (reader.bits_remaining() < 1) return false;
+            core::uint32 len_slot = rd_decoder_.decode(reader);
+            core::uint32 len = slot_to_length(reader, len_slot);
+            last_length_ = len;
+            if (len > dest_size - total) len = static_cast<core::uint32>(dest_size - total);
+            total += len;
+        }
+
+        if (total >= dest_size) break;
+        if (header.last_block_in_file) break;
+        if (!read_block_header(reader, header)) return false;
+        if (!read_tables(reader, header)) return false;
+        if (!header.table_present && !tables_ready_) return false;
+    }
+
+    // Truncation semantics identical to the sequential decoder: a member
+    // that ends on LastBlock below dest_size is accepted (out_finished).
+    if (total < dest_size && !(header.last_block_in_file)) return false;
+
+    out.total_output = total;
+    out.ok = true;
+    return true;
+}
+
+
+// Range decode: blocks [first_block, last_block] of a scouted member written
+// into the shared pre-transform buffer at absolute positions. The BitReader
+// flows continuously (blocks are contiguous); each wire header is verified
+// against the scout record (F6 detector). Cross-range match sources wait on
+// the producer range's frontier (P1/P4); own-range sources are already
+// written (P3 — sequential order guarantees q < p).
+
+// Range decode (v1.37.0, redundant-overlap design): blocks
+// [first_block, last_block] starting from a scout checkpoint whose output
+// position is at most (range_start - dict). The worker decodes the overlap
+// into its own ring window WITHOUT writing the shared buffer (state-only
+// decode), so every cross-range match source resolves inside its own window
+// history — no waits, no cross-worker communication. From write_from on,
+// each produced byte is also written to shared_buf[absolute position].
+// Filters are recorded by the scout and applied post-join; filter tokens
+// here are parsed-and-skipped with identical bit consumption.
+bool Decompressor50::decode_range(const ScoutRecord& rec, const core::byte* src, size_t src_size,
+                                  uint32_t first_block, uint32_t last_block,
+                                  const ScoutCheckpoint& start, core::byte* shared_buf,
+                                  size_t dest_size, size_t write_from, RangeSync* sync,
+                                  size_t* out_written) {
+    if (out_written) *out_written = 0;
+    if (src == nullptr || shared_buf == nullptr || sync == nullptr) return false;
+    if (first_block >= rec.blocks.size() || last_block >= rec.blocks.size() ||
+        first_block > last_block) {
+        last_error_ = DecompressErrorCode::InvalidInput;
+        last_error_str_ = "range block indices out of bounds";
+        return false;
+    }
+    if (start.desc_id >= rec.descriptions.size()) {
+        last_error_ = DecompressErrorCode::InvalidInput;
+        last_error_str_ = "range start description out of bounds";
+        return false;
+    }
+    if (win_size_ == 0) {
+        last_error_ = DecompressErrorCode::InvalidInput;
+        last_error_str_ = "range decode without a window";
+        return false;
+    }
+    // Table state at the range start (P7): identical to what read_tables
+    // would have built by this point in the sequential decode.
+    if (!initialize_from_description(rec.descriptions[start.desc_id])) return false;
+    std::fill(std::begin(old_dist_), std::end(old_dist_), static_cast<size_t>(-1));
+    for (int i = 0; i < 4; ++i) {
+        if (start.old_dist[i] != static_cast<size_t>(-1)) old_dist_[i] = start.old_dist[i];
+    }
+    last_length_ = start.last_length;
+
+    // Ring window: fresh instance, positioned so that absolute position
+    // (start.output_pos + i) lives at ring slot ((start.output_pos + i) %
+    // win_size_) — the same mapping the sequential decoder has for the
+    // whole entry. The ring is zero-filled: matches reaching before the
+    // entry's byte 0 read zeros exactly like the sequential decoder.
+    if (!window_ready_) {
+        try {
+            window_.assign(win_size_, 0);
+            window_ready_ = true;
+        } catch (const std::bad_alloc&) {
+            last_error_ = DecompressErrorCode::AllocationFailed;
+            last_error_str_ = "dictionary too large: allocation failed";
+            window_.clear();
+            return false;
+        }
+    } else {
+        std::fill(window_.begin(), window_.end(), static_cast<core::byte>(0));
+    }
+    // Rebased frame: the worker's ring treats the checkpoint as byte 0.
+    // Matches reaching before the checkpoint can only occur during the
+    // redundant-overlap phase (their output is discarded), and post-write
+    // references never reach behind ckpt_pos (dist <= dict <= base - ckpt).
+    win_pos_ = 0;
+    unp_ptr_ = 0;
+    first_win_done_ = false;
+
+    BitReader reader(src + start.src_byte, src_size - start.src_byte);
+    if (const char* dl = std::getenv("PD_DBG_LO")) dbg_lo_ = std::strtoull(dl, nullptr, 10);
+    if (const char* dh = std::getenv("PD_DBG_HI")) dbg_hi_ = std::strtoull(dh, nullptr, 10);
+    size_t total = 0; // output bytes since the checkpoint (state frame: start.output_pos)
+
+    // Writes the produced byte range [abs_start, abs_start+len) (absolute
+    // coordinates) into shared_buf — skipping the part below write_from.
+    auto emit_to_shared = [&](size_t abs_start, size_t len) {
+        size_t lo = abs_start < write_from ? write_from : abs_start;
+        size_t hi = abs_start + len;
+        if (hi > dest_size) hi = dest_size;
+        if (lo >= hi) return;
+        // The bytes are the LAST (hi - lo) bytes of the ring ending at
+        // win_pos_ (copy_match/literal advanced it already).
+        size_t back = (win_pos_ + win_size_ - (hi - lo)) % win_size_;
+        for (size_t i = 0; i < hi - lo; ++i) {
+            shared_buf[lo + i] = window_[(back + i) % win_size_];
+        }
+    };
+
+    for (uint32_t bi = first_block; bi <= last_block; ++bi) {
+        const ScoutBlock& expect = rec.blocks[bi];
+        BlockHeader header;
+        if (!read_block_header(reader, header)) return false;
+        size_t hdr_start =
+            start.src_byte + reader.byte_pos() - static_cast<size_t>(header.header_size);
+        // F6 detector: the wire header must match the scout's record.
+        if (hdr_start != expect.src_byte ||
+            static_cast<uint32_t>(header.block_size > 0 ? header.block_size : 0) !=
+                expect.block_size ||
+            header.table_present != expect.table_present ||
+            header.last_block_in_file != expect.last_block ||
+            header.block_bit_size != expect.block_bit_size) {
+            last_error_ = DecompressErrorCode::InvalidInput;
+            last_error_str_ = "range header diverged from scout record";
+            return false;
+        }
+        if (header.table_present) {
+            if (!read_tables(reader, header)) return false;
+        } else if (!tables_ready_) {
+            last_error_ = DecompressErrorCode::InvalidInput;
+            last_error_str_ = "range starts on reuse block without tables";
+            return false;
+        }
+
+        auto block_end_bit = [&](const BlockHeader& h) -> size_t {
+            if (h.block_size <= 0) return static_cast<size_t>(h.block_start) * 8;
+            return static_cast<size_t>(h.block_start + h.block_size - 1) * 8 +
+                   static_cast<size_t>(h.block_bit_size);
+        };
+        size_t end_bit = block_end_bit(header);
+        const size_t abs_base = start.output_pos;
+
+        while (reader.bit_pos() < end_bit && reader.bits_remaining() >= 1 &&
+               abs_base + total < dest_size) {
+            const size_t abs_pos = abs_base + total;
+            const bool dbg = dbg_lo_ != ~size_t{0} && abs_pos >= dbg_lo_ && abs_pos < dbg_hi_;
+            core::uint32 slot = ld_decoder_.decode(reader);
+            if (dbg && std::getenv("OPENRAR_PD_DEBUG"))
+                std::fprintf(stderr, "[pd] tok abs=%zu slot=%u\n", abs_pos, slot);
+            if (slot < 256) {
+                window_[win_pos_] = static_cast<core::byte>(slot);
+                win_pos_ = wrap_up(win_pos_ + 1);
+                unp_ptr_ = wrap_up(unp_ptr_ + 1);
+                if (unp_ptr_ == 0) first_win_done_ = true;
+                if (abs_pos >= write_from)
+                    shared_buf[abs_pos] = window_[(win_pos_ + win_size_ - 1) % win_size_];
+                ++total;
+                continue;
+            }
+            if (slot == 256) {
+                // Filter token: recorded by the scout; skip with identical
+                // bit consumption (bounds checks preserved).
+                auto skip_filter_data = [&](bool& ok) -> core::uint32 {
+                    if (reader.bits_remaining() < 2) {
+                        ok = false;
+                        return 0;
+                    }
+                    core::uint32 byte_cnt = reader.get_bits(2) + 1;
+                    core::uint32 val = 0;
+                    for (core::uint32 i = 0; i < byte_cnt; ++i) {
+                        if (reader.bits_remaining() < 8) {
+                            ok = false;
+                            return 0;
+                        }
+                        val |= (reader.get_bits(8) << (i * 8));
+                    }
+                    return val;
+                };
+                bool ok = true;
+                core::uint32 f_start = skip_filter_data(ok);
+                core::uint32 f_len = ok ? skip_filter_data(ok) : 0;
+                if (!ok) return false;
+                if (f_len > 0x400000) f_len = 0;
+                if (reader.bits_remaining() < 3) return false;
+                core::uint32 f_type = reader.get_bits(3);
+                if (f_type == 0) {
+                    if (reader.bits_remaining() < 5) return false;
+                    reader.get_bits(5);
+                }
+                continue;
+            }
+            if (slot == 257) {
+                if (last_length_ != 0) {
+                    size_t distance = old_dist_[0];
+                    if (distance == static_cast<size_t>(-1) || distance == 0 ||
+                        distance > win_size_) {
+                        return false;
+                    }
+                    core::uint32 len = static_cast<core::uint32>(last_length_);
+                    if (abs_pos + len > dest_size)
+                        len = static_cast<core::uint32>(dest_size - abs_pos);
+                    copy_match(distance, len, abs_pos);
+                    emit_to_shared(abs_pos, len);
+                    total += len;
+                }
+                continue;
+            }
+            if (slot >= 262) {
+                core::uint32 len = slot_to_length(reader, slot - 262);
+                if (reader.bits_remaining() < 1) return false;
+                core::uint32 dist_slot = dd_decoder_.decode(reader);
+                size_t distance = 1;
+                core::uint32 d_bits = 0;
+                if (dist_slot < 4) {
+                    distance += dist_slot;
+                    d_bits = 0;
+                } else {
+                    d_bits = dist_slot / 2 - 1;
+                    distance += static_cast<size_t>(2 | (dist_slot & 1)) << d_bits;
+                }
+                if (d_bits > 0) {
+                    if (d_bits >= 4) {
+                        if (d_bits > 4) {
+                            if (reader.bits_remaining() < d_bits - 4) return false;
+                            core::uint64 extra = 0;
+                            if (d_bits > 36) {
+                                extra = reader.get_bits64(d_bits - 4);
+                            } else {
+                                extra = reader.get_bits(d_bits - 4);
+                            }
+                            distance += static_cast<size_t>(extra) << 4;
+                        }
+                        if (reader.bits_remaining() < 1) return false;
+                        core::uint32 low = ldd_decoder_.decode(reader);
+                        distance += low;
+                    } else {
+                        if (reader.bits_remaining() < d_bits) return false;
+                        distance += reader.get_bits(d_bits);
+                    }
+                }
+                if (distance > 0x100) {
+                    ++len;
+                    if (distance > 0x2000) {
+                        ++len;
+                        if (distance > 0x40000) ++len;
+                    }
+                }
+                old_dist_[3] = old_dist_[2];
+                old_dist_[2] = old_dist_[1];
+                old_dist_[1] = old_dist_[0];
+                old_dist_[0] = distance;
+                last_length_ = len;
+                if (distance == 0 || distance > win_size_) return false;
+                if (abs_pos + len > dest_size) len = static_cast<core::uint32>(dest_size - abs_pos);
+                if (dbg && std::getenv("OPENRAR_PD_DEBUG"))
+                    std::fprintf(stderr, "[pd]   match dist=%zu len=%u ring_src=%zu first=%02X\n",
+                                 distance, len, (win_pos_ + win_size_ - distance) % win_size_,
+                                 window_[(win_pos_ + win_size_ - distance) % win_size_]);
+                copy_match(distance, len, abs_pos);
+                emit_to_shared(abs_pos, len);
+                total += len;
+                continue;
+            }
+            // slot 258..261: repeat distances.
+            core::uint32 dist_num = slot - 258;
+            size_t distance = old_dist_[dist_num];
+            if (distance == static_cast<size_t>(-1) || distance == 0 || distance > win_size_) {
+                return false;
+            }
+            for (core::uint32 i = dist_num; i > 0; --i) old_dist_[i] = old_dist_[i - 1];
+            old_dist_[0] = distance;
+            if (reader.bits_remaining() < 1) return false;
+            core::uint32 len_slot = rd_decoder_.decode(reader);
+            core::uint32 len = slot_to_length(reader, len_slot);
+            last_length_ = len;
+            if (abs_pos + len > dest_size) len = static_cast<core::uint32>(dest_size - abs_pos);
+            copy_match(distance, len, abs_pos);
+            emit_to_shared(abs_pos, len);
+            total += len;
+        }
+    }
+
+    if (out_written) *out_written = total;
+    return true;
+}
+
 bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size,
                                           std::vector<core::byte>& out, bool solid) {
     out.clear();

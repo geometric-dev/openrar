@@ -365,6 +365,9 @@ int main(int argc, char** argv) {
                 }
                 uint64_t emitted = 0;
                 auto sink = [&](const core::byte* data, size_t n) -> bool {
+                    if (std::getenv("OPENRAR_PD_DEBUG"))
+                        std::fprintf(stderr, "[pd] sink n=%zu emitted=%llu\n", n,
+                                     (unsigned long long)emitted);
                     if (n > sandbox::kMaxFramePayload) return false;
                     sandbox::Frame chunk{sandbox::FrameType::DataChunk, {}};
                     chunk.payload.assign(data, data + n);
