@@ -15,6 +15,7 @@
 #include "../crypto/aes256.hpp"
 #include "../crypto/pbkdf2.hpp"
 #include "../compress/decompressor50.hpp"
+#include "../compress/parallel_decode.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -2122,10 +2123,28 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry, const core::byt
                                       size_t src_size,
                                       std::function<bool(const core::byte*, size_t)> flush_cb) {
     bool chain = is_solid() || entry.header.is_solid;
+    const size_t dest = static_cast<size_t>(entry.header.unp_size);
+    // v1.37.0: the single decision function gates the intra-entry parallel
+    // driver (review D5). The win_size for the entry comes from the same
+    // selection the sequential unpacker would get.
+    // Encrypted entries are excluded: the chunked-decrypt layer streams in
+    // 64 KiB slices precisely to hold the invariants.md §2 RAM ceiling, and
+    // the driver's materialized packed buffer would break it.
+    if (!chain && !is_volume() && !entry.header.is_encrypted &&
+        compress::should_use_parallel_decode(src_size, dest, false)) {
+        size_t win = entry.header.win_size;
+        if (win == 0) win = 32 * 1024 * 1024;
+        compress::ParallelDecodeDiag diag;
+        if (compress::decode_entry(src, src_size, dest, win, flush_cb, &diag)) return true;
+        // F2/F3: the parallel path is fail-closed — a worker or validation
+        // failure fails the entry (never re-run sequential: that would mask
+        // a real divergence). Scout failures (F1) already fell back to
+        // sequential INSIDE decode_entry.
+        return false;
+    }
     UnpackerSelection sel;
     if (!select_unpacker(entry, sel)) return false;
-    bool ok = sel.unpacker->decompress(src, src_size, static_cast<size_t>(entry.header.unp_size),
-                                       sel.solid, flush_cb);
+    bool ok = sel.unpacker->decompress(src, src_size, dest, sel.solid, flush_cb);
     if (!ok) {
         last_decompress_error_ = sel.unpacker->last_error();
     }
@@ -2138,10 +2157,49 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry,
                                       size_t src_size,
                                       std::function<bool(const core::byte*, size_t)> flush_cb) {
     bool chain = is_solid() || entry.header.is_solid;
+    const size_t dest = static_cast<size_t>(entry.header.unp_size);
+    // Encrypted entries are excluded: the chunked-decrypt layer streams in
+    // 64 KiB slices precisely to hold the invariants.md §2 RAM ceiling, and
+    // the driver's materialized packed buffer would break it.
+    if (!chain && !is_volume() && !entry.header.is_encrypted &&
+        compress::should_use_parallel_decode(src_size, dest, false)) {
+        // The driver needs the packed stream in RAM (G5 budget covers it);
+        // materialize once via the callback, then decode.
+        std::vector<core::byte> packed;
+        try {
+            packed.resize(src_size);
+        } catch (const std::bad_alloc&) {
+            packed.clear();
+        }
+        bool pulled = !packed.empty();
+        if (pulled) {
+            size_t got = 0;
+            while (got < src_size) {
+                size_t n = src_cb(packed.data() + got, src_size - got);
+                if (n == 0) {
+                    pulled = false;
+                    break;
+                }
+                got += n;
+            }
+            if (got != src_size) pulled = false;
+        }
+        if (pulled) {
+            size_t win = entry.header.win_size;
+            if (win == 0) win = 32 * 1024 * 1024;
+            compress::ParallelDecodeDiag diag;
+            if (compress::decode_entry(packed.data(), src_size, dest, win, flush_cb, &diag)) {
+                return true;
+            }
+            // F2/F3 fail-closed; scout failures (F1) already fell back to a
+            // sequential decode INSIDE decode_entry on the materialized bytes.
+            return false;
+        }
+        // Materialization failed (OOM/short pull): streaming sequential path.
+    }
     UnpackerSelection sel;
     if (!select_unpacker(entry, sel)) return false;
-    bool ok = sel.unpacker->decompress(src_cb, src_size, static_cast<size_t>(entry.header.unp_size),
-                                       sel.solid, flush_cb);
+    bool ok = sel.unpacker->decompress(src_cb, src_size, dest, sel.solid, flush_cb);
     if (!ok) {
         last_decompress_error_ = sel.unpacker->last_error();
     }

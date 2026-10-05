@@ -81,6 +81,7 @@ set(OPENRAR_CORE_SOURCES
     src/compress/solid_packer.cpp
     src/compress/compressor50.cpp
     src/compress/decompressor50.cpp
+    src/compress/parallel_decode.cpp
     src/compress/stream_encoder.cpp
     src/compress/stream_decoder.cpp
     src/compress/parallel_compressor.cpp
@@ -466,6 +467,7 @@ if(NOT EMSCRIPTEN)
     endfunction()
 
     add_openrar_test(compress_tests tests/unit/compress_tests.cpp)
+    add_openrar_test(parallel_decode_tests tests/unit/parallel_decode_tests.cpp)
     add_openrar_test(parallel_compress_tests tests/unit/parallel_compress_tests.cpp)
 
     # Streaming encoder gates: byte-identical vs one-shot, the historical
