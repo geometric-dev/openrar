@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <cassert>
 
 namespace openrar::compress {
@@ -17,43 +18,51 @@ BitReader::BitReader(InputCallback cb, size_t size)
     : cb_(cb), buf_(65536), p_(buf_.data()), end_(buf_.data()), acc_(0), n_(0), consumed_(0),
       size_(size), fetched_(0) {}
 
-void BitReader::fetch_more() {
-    if (!cb_ || p_ < end_) return;
-    if (fetched_ >= size_) return;
-    size_t to_read = std::min<size_t>(buf_.size(), size_ - fetched_);
-    size_t n = cb_(buf_.data(), to_read);
-    p_ = buf_.data();
-    end_ = p_ + n;
-    fetched_ += n;
+void BitReader::refill() {
+    // Fill the accumulator to at least 57 bits, fetching successive input
+    // chunks as needed, so a peek/consume is served short ONLY at the true
+    // end of the stream (zero padding is EOF semantics). The staging buffer
+    // boundary must never leak into delivered bits: with a single-shot load,
+    // an accumulator down to its last bits coupled with a buffer down to its
+    // last bytes returned a short mid-stream peek (observed as scattered
+    // single-byte corruption in every streaming consumer of large members
+    // while contiguous readers over the same stream decoded cleanly).
+    if (n_ > 56) return;
+    for (;;) {
+        if (p_ >= end_) {
+            if (!cb_ || fetched_ >= size_) return; // true end of stream
+            size_t to_read = std::min<size_t>(buf_.size(), size_ - fetched_);
+            size_t n = cb_(buf_.data(), to_read);
+            p_ = buf_.data();
+            end_ = p_ + n;
+            fetched_ += n;
+            if (n == 0) return; // input starved; treat as end of stream
+        }
+        unsigned int max_bytes = (64 - n_) / 8;
+        unsigned int k = std::min<unsigned int>(max_bytes, static_cast<unsigned int>(end_ - p_));
+        if (k == 0) return; // accumulator holds >= 57 bits
+        core::uint64 v = 0;
+        std::memcpy(&v, p_, k);
+#if defined(_MSC_VER)
+        v = _byteswap_uint64(v);
+#else
+        v = __builtin_bswap64(v);
+#endif
+        v >>= (64 - 8 * k);
+        if (k == 8) {
+            acc_ = v; // k == 8 implies n_ == 0, so no unconsumed bits are lost
+        } else {
+            acc_ = (acc_ << (8 * k)) | v;
+        }
+        n_ += 8 * k;
+        p_ += k;
+        if (n_ >= 57) return;
+    }
 }
 
 size_t BitReader::bits_remaining() const {
     size_t rem_bytes = (end_ - p_) + (size_ - fetched_);
     return rem_bytes * 8 + n_;
-}
-
-void BitReader::refill() {
-    if (n_ > 56) return;
-    if (p_ >= end_) fetch_more();
-    if (p_ >= end_) return;
-    unsigned int max_bytes = (64 - n_) / 8;
-    unsigned int k = std::min<unsigned int>(max_bytes, static_cast<unsigned int>(end_ - p_));
-    if (k == 0) return;
-    core::uint64 v = 0;
-    std::memcpy(&v, p_, k);
-#if defined(_MSC_VER)
-    v = _byteswap_uint64(v);
-#else
-    v = __builtin_bswap64(v);
-#endif
-    v >>= (64 - 8 * k);
-    if (k == 8) {
-        acc_ = v;
-    } else {
-        acc_ = (acc_ << (8 * k)) | v;
-    }
-    n_ += 8 * k;
-    p_ += k;
 }
 
 core::uint32 BitReader::peek_bits(unsigned int count) {
