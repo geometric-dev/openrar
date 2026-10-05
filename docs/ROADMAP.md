@@ -452,28 +452,27 @@ gate until dethroned by evidence).
   Gate 0 — `prepare_add_symlink_from_memory`), cv output-shaping switches
   (`-s`/`-v`/`-ts*`), FILECOPY default-materialization policy decision
   (deferred from v1.27).
-- **v1.37.0 — Intra-entry parallel decode driver (the MT slot model, decoder
-  side).**
-  *Why:* 84% of single-member extraction time is decode+verify, and
-  extraction parallelism is across-entries only (`main.cpp:643`), so `-mtN`
-  does nothing on single-member archives — the shape most real large files
-  and every decode benchmark have. The design groundwork is half-done: the
-  reference's block-slot model is documented from our own black-box
-  experiments (`question-log.md` Entry 8), our encoder already ships the
-  decoder-side seed rule it dictates, and landing the driver closes the
-  v1.33 conformance residue — our decoder has never decoded a bit-7-clear
-  block.
-  *Prediction:* on the 2C/4T perf host, decode-bound single-member
-  extraction improves **~1.15-1.35x** (the reference demonstrates 1.27x at
-  `-mt8` vs `-mt1` on the same corpus); scaling grows with core count.
-  Stored, solid, and multi-volume paths unchanged. Secondary conformance
-  win: our decoder becomes the second implementation to exercise
-  inherited-table blocks, making the v1.33 documentation executable.
-  *Risk / why not sooner:* the window half — a block's matches reference
-  window bytes a neighbouring worker may not yet have produced — is the
-  open design question, and filters spanning blocks plus solid-chain
-  ordering must be answered in the same design. Largest effort of the
-  levers; Gate 0 with the window-half answer before any code.
+- **v1.37.0 — Intra-entry parallel decode driver: MEASURED AND RE-SCOPED
+  (design wall).** The arc ran its full Gate 0 (probes, two review rounds)
+  and built three complete range-decode designs on a validated symbol-only
+  scout pass (per-block rep/table/state checkpoints, 141/141 block-by-block
+  equivalence with the sequential decoder). All three hit the same
+  structural wall: **a RAR5 member's LZ dependency chain is the whole
+  member** — no per-block state markers exist on the wire, so (1)
+  wait-on-producer serializes at range tails (measured 0.72-0.74x, 0/9
+  paired deltas faster), (2) redundant-overlap decode is poisoned by legal
+  backward references (copy_match's zero-fill propagates through the
+  reference graph), and (3) redundant-from-zero costs O(member) per worker.
+  Full record: `docs/v1.37.0-design-wall.md`; WIP parked on branch
+  `arc/v1.37.0-parallel-decode-wip` (scout + driver + identity harness,
+  interop-gate-green). The reference's 1.29-1.50x implies a mechanism
+  outside this space; the recorded successor lever is demand-driven
+  backward decoding (memoized block-aligned sub-decodes, bounded budget,
+  fail-closed) — its own Gate 0 required. v1.38 (decode kernel) does not
+  hit this wall and becomes the next arc. En-route discovery: a
+  pre-existing P2 in the sandboxed-worker `t` path (false FAILED for
+  members >= 64 MiB unpacked, v1.36.0 confirmed 12/12, in-process and
+  driver paths unaffected) — fix candidate for a 1.36.x patch.
 - **v1.38.0 — Decode kernel algorithmic rework (flat tables / SIMD).**
   *Why:* the decode kernel carries 84% of extraction and is ~1.7x behind
   the reference's; v1.34.0 measured that call-pattern and structural changes
