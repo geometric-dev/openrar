@@ -162,6 +162,87 @@ public:
                           size_t* out_written = nullptr, bool* out_finished = nullptr,
                           bool solid = false);
 
+    // ── v1.37.0 intra-entry parallel decode ─────────────────────────────────
+    //
+    // The design (docs/v1.37.0-pre-analysis.md): a symbol-only scout pass
+    // computes per-range sequential state (rep distances, tables, filter
+    // applications, output spans) without moving bytes — rep-state is a
+    // function of the token SYMBOLS alone; then contiguous output ranges
+    // decode concurrently into a shared pre-transform buffer in absolute
+    // coordinates, cross-range match references waiting on the producing
+    // range's frontier; filters apply in order post-join; the sequential
+    // decoder remains the default and the fallback.
+
+    // A resynchronization point recorded by the scout: decoding may start
+    // here in a fresh worker with exactly this state.
+    struct ScoutCheckpoint {
+        size_t output_pos{0};   // absolute pre-transform output position
+        uint32_t next_block{0}; // block index whose tokens start here
+        size_t src_byte{0};     // packed-stream byte offset of that block's header
+        size_t old_dist[4]{0, 0, 0, 0};
+        size_t last_length{0};
+        uint32_t desc_id{0}; // description in force (index into ScoutRecord::descriptions)
+    };
+
+    struct ScoutDescription {
+        std::vector<core::byte> lengths; // cur_table_size_ code lengths
+        bool extra_dist{false};          // 446-entry table (RAR7 >4GiB dict)
+    };
+
+    struct ScoutBlock {
+        size_t src_byte{0};     // packed offset of the block header
+        uint32_t header_len{0}; // header bytes (flags+chk+size)
+        uint32_t block_size{0}; // payload bytes after the header
+        uint32_t desc_id{0};    // description in force while decoding (post-read_tables)
+        bool table_present{false};
+        bool last_block{false};
+        int block_bit_size{0};
+    };
+
+    struct ScoutRecord {
+        std::vector<ScoutBlock> blocks;
+        std::vector<ScoutDescription> descriptions;
+        std::vector<FilterEntry> filters;         // absolute output coordinates, validated
+        std::vector<ScoutCheckpoint> checkpoints; // [0] = the member start
+        size_t total_output{0};
+        bool ok{false};
+    };
+
+    // Symbol-only pass over one member's packed stream: validates the block
+    // chain, records descriptions/blocks/filters/checkpoints and the output
+    // size, and moves no bytes. All sequential-context state (old_dist_,
+    // last_length_) evolves exactly as the full decode would. Fails
+    // fail-closed on any anomaly the full decode would reject.
+    bool scout_member(const core::byte* src, size_t src_size, size_t dest_size, ScoutRecord& out,
+                      size_t checkpoint_interval);
+
+    // Range-decode blocks [first_block, last_block] of a scouted member into
+    // `shared_buf` (the entry's whole pre-transform output buffer) starting
+    // at `start.output_pos`. Cross-range match sources wait on the producer
+    // range's frontier via `sync`. Filters are NOT applied (recorded by the
+    // scout); slot-256 filter tokens are parsed-and-skipped with identical
+    // bit consumption. Writes clamp at dest_size; overshoot fails closed.
+    struct RangeSync {
+        virtual ~RangeSync() = default;
+        virtual bool cancelled() const = 0;
+    };
+
+    // Decodes blocks [first_block, last_block] starting from a scout
+    // checkpoint, writing pre-transform bytes into shared_buf ONLY at
+    // absolute positions >= write_from (the redundant-overlap design: the
+    // worker re-decodes up to dict bytes before its range so every cross-
+    // range match resolves inside its own window — no waits, no shared
+    // mutable state). Writes clamp at dest_size.
+    bool decode_range(const ScoutRecord& rec, const core::byte* src, size_t src_size,
+                      uint32_t first_block, uint32_t last_block, const ScoutCheckpoint& start,
+                      core::byte* shared_buf, size_t dest_size, size_t write_from, RangeSync* sync,
+                      size_t* out_written);
+
+    // Builds the four Huffman decoders from a recorded description exactly as
+    // read_tables would (P7: the range worker's tables are bit-identical to
+    // the sequential decoder's at the same point).
+    bool initialize_from_description(const ScoutDescription& desc);
+
     // Streams the decompressed output into a growing vector until the RAR5
     // stream terminates on a LastBlock flag. Uses decompress() internally
     // with a geometric grow-and-retry strategy so we never require callers
@@ -245,6 +326,8 @@ private:
     size_t unp_ptr_{0}; // linear position for filter handling
     bool first_win_done_{false};
     bool window_ready_{false};
+    size_t dbg_lo_{~size_t{0}};
+    size_t dbg_hi_{~size_t{0}};
 
     // Huffman tables
     HuffmanDecoder ld_decoder_;  // NC=306
