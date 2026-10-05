@@ -5,6 +5,32 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.13] - 2026-10-05
+
+Worker verify fix for members >= 64 MiB unpacked (the en-route P2 of the
+v1.37.0 record; root cause and isolation notes in
+`docs/v1.37.0-design-wall.md` SS5). Version note: the 1.36 line is the
+highest MINOR released; the patch counter counts every commit on master
+since `v1.36.0`, including the interleaved 1.35.0 release line, which
+restores the strictly increasing version order this policy mandates.
+
+### Fixed
+
+- **Streaming BitReader mid-stream short refill** (`BitReader::refill()`):
+  the next input chunk was fetched only when the 64 KiB staging buffer
+  was completely drained, so an accumulator down to its last bits
+  coupled with a buffer down to its last bytes returned a zero-padded
+  peek MID-STREAM (zero padding is end-of-stream semantics). Whether
+  that corrupts decoded output depends on the resolved Huffman code
+  length, which is why the sandboxed-worker verify path (`t`) reported
+  false FAILED with scattered single-byte corruption only on some large
+  members while contiguous readers over the same stream were immune.
+  `refill()` now loops - tops the accumulator to >= 57 bits, fetching
+  successive chunks, and serves short only at the true end of stream.
+  Regression: `bitreader_stream_tests` (streaming vs contiguous
+  differential over an identical op sequence; fails on the pre-fix
+  reader).
+
 ## [1.35.0] - 2026-10-04
 
 RAR 7.x recovery-record parity + resource forks. Gate 0:
