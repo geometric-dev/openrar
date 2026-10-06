@@ -5,6 +5,61 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.0] - 2026-10-06
+
+Two-phase intra-entry parallel decode — the revised v1.37.0 arc per the
+design-wall record (`docs/v1.37.0-design-wall.md` SS4 lever 1). Gate 0:
+`docs/v1.37.0-two-phase-pre-analysis.md`; plan with the shipped-state M4
+record: `docs/v1.37.0-two-phase-implementation-plan.md`. MINOR bump: the
+patch counter resets at this tag.
+
+### Added
+
+- **Two-phase parallel decode for single members** (`-mtN`, N >= 2):
+  a header-only pre-scan builds the block/table timeline; span workers
+  decode symbol spans into operation records (the parse is stateless
+  given the tables — Gate 0 SS0, verified structurally per token class,
+  empirically by the parked scout's 141/141 block-state validation, and
+  against the black-box scaling record); one applier consumes spans in
+  order through the SAME apply engine the sequential token loop drives —
+  sequential/parallel divergence is structurally impossible, and emission
+  is byte- AND chunk-identical (`src/compress/parallel_decode.{hpp,cpp}`
+  `should_use_parallel_decode`/`decode_entry`,
+  `src/compress/decompressor50.{hpp,cpp}` `ApplyEngine`, `prescan_member`,
+  `decode_span`, `OpRecord`, `apply_span_records`,
+  `src/archive/archive_reader.cpp` `decode_compressed`).
+- Decision-function gating: solid chains, multivolume members, encrypted
+  entries, v1-flavor (>4 GiB window) members, and sub-floor packed sizes
+  stay sequential (bit-identical path); `OPENRAR_NO_PARALLEL_DECODE=1`
+  kill switch; `OPENRAR_PARALLEL_DECODE_THREADS` override; WASM/ILP32
+  compile-out (`should_use_parallel_decode`).
+- MT-vs-ST differential sweep in the roundtrip fuzzer: both engines on
+  every generated archive (byte + chunk identity) plus hostile packed-
+  stream mutations (fail-closed or fallback-owned verdicts)
+  (`tests/fuzz/fuzz_roundtrip.cpp` `two_phase_differential`).
+- `two_phase_tests`: pre-scan agreement + hostile rows (F1), R2 block-cap
+  row, span-records identity across splits 1/2/3/4/8 with 257-at-span-
+  start and dest-crossing rows [R8], driver gate matrix, MT/ST byte+chunk
+  identity at threads 2/3/4/8, filter-bearing member identity
+  (`tests/unit/two_phase_tests.cpp`).
+- `tools/tokencensus.cpp` (Gate 0 probe, master path): token census +
+  alpha measurement through the real phase-1 path; `tools/perf_two_phase.py`
+  (paired-delta claim harness, v1.34 SS3 protocol).
+
+### Changed
+
+- `Decompressor50::ApplyEngine` extraction: the apply path (ring window,
+  `copy_match`, filter queue, out-of-place transforms, flush cadence) is
+  shared by the sequential token loop and the record applier — the M0
+  refactor is behavior-neutral and frozen by the full gate
+  (`src/compress/decompressor50.{hpp,cpp}`).
+- ROADMAP/PERFORMANCE/README updated with the measured claims: 1.21-1.36x
+  at `-mt4` on decode-bound 64 MiB text (2C/4T host), no-regression
+  0.96-1.09x; the Gate 0 prediction (1.5-2.2x) missed for structural
+  reasons recorded in the plan's M4 section (the end-to-end serial stage
+  is apply+flush+CRC+write at 0.55-0.62 of sequential, contended on 2
+  cores — reference parity within session noise).
+
 ## [1.36.16] - 2026-10-06
 
 Solid-chain E8/ARM transform-base fix, found by the v1.37.0 (revised)
