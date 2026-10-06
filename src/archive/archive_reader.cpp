@@ -14,6 +14,7 @@
 #include "../crypto/blake2sp.hpp"
 #include "../crypto/aes256.hpp"
 #include "../crypto/pbkdf2.hpp"
+#include "../compress/parallel_decode.hpp"
 #include "../compress/decompressor50.hpp"
 
 #include <algorithm>
@@ -2122,10 +2123,31 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry, const core::byt
                                       size_t src_size,
                                       std::function<bool(const core::byte*, size_t)> flush_cb) {
     bool chain = is_solid() || entry.header.is_solid;
+    const size_t dest = static_cast<size_t>(entry.header.unp_size);
+    // v1.37.0: the single decision function gates the two-phase parallel
+    // driver (review R6). Excluded: solid chains (sequential scope this
+    // arc), multivolume members, and encrypted entries — the chunked-
+    // decrypt layer streams in 64 KiB slices precisely to hold the
+    // invariants.md SS2 RAM ceiling, and the driver's materialized packed
+    // buffer would break it.
+    if (!chain && !is_volume() && !entry.header.is_encrypted) {
+        size_t win = entry.header.win_size;
+        if (win == 0) win = 32 * 1024 * 1024;
+        compress::ParallelDecodeDiag diag;
+        if (compress::should_use_parallel_decode(src_size, dest, win, false, nullptr)) {
+            if (compress::decode_entry(src, src_size, dest, win, flush_cb, &diag)) return true;
+            // Fail-safe-identical (plan R5/F1-F3): a parallel-stage failure
+            // before any emission already retried the sequential path
+            // inside decode_entry (diag.fell_back); a post-emission failure
+            // fails the entry exactly like the sequential decoder's
+            // identical mid-stream failure. last_decompress_error_ keeps
+            // the sequential branch's semantics.
+            return false;
+        }
+    }
     UnpackerSelection sel;
     if (!select_unpacker(entry, sel)) return false;
-    bool ok = sel.unpacker->decompress(src, src_size, static_cast<size_t>(entry.header.unp_size),
-                                       sel.solid, flush_cb);
+    bool ok = sel.unpacker->decompress(src, src_size, dest, sel.solid, flush_cb);
     if (!ok) {
         last_decompress_error_ = sel.unpacker->last_error();
     }
@@ -2138,10 +2160,44 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry,
                                       size_t src_size,
                                       std::function<bool(const core::byte*, size_t)> flush_cb) {
     bool chain = is_solid() || entry.header.is_solid;
+    const size_t dest = static_cast<size_t>(entry.header.unp_size);
+    if (!chain && !is_volume() && !entry.header.is_encrypted) {
+        size_t win = entry.header.win_size;
+        if (win == 0) win = 32 * 1024 * 1024;
+        if (compress::should_use_parallel_decode(src_size, dest, win, false, nullptr)) {
+            // The driver needs the packed stream in RAM (bounded by the
+            // same gate above); materialize once, then the in-memory path.
+            std::vector<core::byte> packed;
+            try {
+                packed.resize(src_size);
+            } catch (const std::bad_alloc&) {
+                packed.clear();
+            }
+            bool pulled = !packed.empty();
+            if (pulled) {
+                size_t got = 0;
+                while (got < src_size) {
+                    size_t n = src_cb(packed.data() + got, src_size - got);
+                    if (n == 0) {
+                        pulled = false;
+                        break;
+                    }
+                    got += n;
+                }
+            }
+            if (pulled) {
+                compress::ParallelDecodeDiag diag;
+                if (compress::decode_entry(packed.data(), packed.size(), dest, win, flush_cb,
+                                           &diag)) {
+                    return true;
+                }
+                return false;
+            }
+        }
+    }
     UnpackerSelection sel;
     if (!select_unpacker(entry, sel)) return false;
-    bool ok = sel.unpacker->decompress(src_cb, src_size, static_cast<size_t>(entry.header.unp_size),
-                                       sel.solid, flush_cb);
+    bool ok = sel.unpacker->decompress(src_cb, src_size, dest, sel.solid, flush_cb);
     if (!ok) {
         last_decompress_error_ = sel.unpacker->last_error();
     }
