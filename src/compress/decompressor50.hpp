@@ -356,6 +356,7 @@ private:
         // filter queue + flush cursor (last_flushed_ is call-local; reset
         // by begin_call, exactly like the sequential decoder's call-local)
         std::vector<FilterEntry> filters_;
+        size_t filters_head_{0}; // consumed-prefix cursor (v1.38.0 M2)
         size_t last_flushed_{0};
 #ifdef OPENRAR_CROSS_VALIDATE
         const core::byte* val_src_{nullptr};
