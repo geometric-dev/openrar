@@ -56,20 +56,30 @@ size_t debug_span_floor() {
     return SPAN_PACKED_FLOOR;
 }
 
-unsigned resolve_workers() {
-    unsigned hw = std::thread::hardware_concurrency();
+// Worker resolution (review D9/R6 as shipped): requested_threads carries the
+// CLI's -mt (0 = unset, 1 = sequential, N = N). Unset resolves to the D9
+// default of 2. The OPENRAR_PARALLEL_DECODE_THREADS env var is the same
+// channel for callers that cannot pass -mt in-process (the sandboxed `t`
+// worker): it overrides ONLY the unset case — 0/1 force sequential, N≥2
+// sets the worker count (clamped to the 8 ceiling) — and never overrides
+// an explicit -mtN.
+unsigned resolve_workers(unsigned requested) {
+    if (requested >= 2) return std::clamp(requested, 2u, 8u);
+    if (requested == 1) return 0; // F7: -mt1 forces sequential
     if (const char* forced = std::getenv("OPENRAR_PARALLEL_DECODE_THREADS")) {
         unsigned long v = std::strtoul(forced, nullptr, 10);
-        if (v >= 1 && v <= 64) hw = static_cast<unsigned>(v);
+        if (v <= 64) return v < 2 ? 0 : static_cast<unsigned>(std::clamp(v, 2ul, 8ul));
     }
-    if (hw < 2) return 0; // F7
-    return std::clamp(hw, 2u, 8u);
+    // D9 default when -mt is unset: 2 (the win is worker-count-insensitive
+    // on the apply floor per the plan M4 record).
+    return std::thread::hardware_concurrency() < 2 ? 0 : 2;
 }
 
 } // namespace
 
 bool should_use_parallel_decode(size_t pack_size, size_t dest_size, size_t win_size,
-                                bool solid_entry, unsigned* out_workers) {
+                                bool solid_entry, unsigned requested_threads,
+                                unsigned* out_workers) {
 #if defined(__EMSCRIPTEN__) || defined(__wasm__) || defined(_M_IX86) || defined(__i386__)
     (void)pack_size;
     (void)dest_size;
@@ -85,18 +95,20 @@ bool should_use_parallel_decode(size_t pack_size, size_t dest_size, size_t win_s
     // table flavor (win <= 4 GiB). v1-flavor members (446 tables) stay
     // sequential this arc.
     if (win_size > (4ULL * 1024 * 1024 * 1024)) return false;
-    const unsigned workers = resolve_workers();
+    const unsigned workers = resolve_workers(requested_threads);
     if (workers == 0) return false;
-    // G3: the amortization floor keys on PACKED size (Gate 0 SS1: a
-    // run-heavy member packs to almost nothing and has nothing to split).
-    if (pack_size / workers < debug_span_floor()) return false;
+    // G3 (amended with the span topology): the member needs room for ~4
+    // meaningful spans at the span target; the debug floor scales it for
+    // fuzz/identity harnesses.
+    if (pack_size < 4 * debug_span_floor()) return false;
     if (out_workers) *out_workers = workers;
     return true;
 #endif
 }
 
 bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size_t win_size,
-                  Decompressor50::OutputCallback flush_cb, ParallelDecodeDiag* diag) {
+                  Decompressor50::OutputCallback flush_cb, ParallelDecodeDiag* diag,
+                  unsigned requested_threads) {
     if (diag) *diag = ParallelDecodeDiag{};
     if (flush_cb == nullptr || src == nullptr || src_size == 0 || dest_size == 0) return false;
 
@@ -107,7 +119,7 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
 
     unsigned workers = 0;
     if (!should_use_parallel_decode(src_size, dest_size, win_size, /*solid_entry=*/false,
-                                    &workers)) {
+                                    requested_threads, &workers)) {
         return run_sequential();
     }
 
@@ -121,9 +133,10 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
 
     // ── Span split (R3): block boundaries nearest an even PACKED split ─────
     size_t target_spans = std::clamp(src_size / SPAN_TARGET_BYTES, size_t{3}, SPAN_COUNT_MAX);
-    // G3 keeps the amortization floor on the member (workers x floor).
+    // G3 (amended with the span topology): member-level floor; the debug
+    // floor scales it for fuzz/identity harnesses.
     const bool trace = std::getenv("OPENRAR_PD_TRACE") != nullptr;
-    if (src_size / workers < debug_span_floor()) {
+    if (src_size < 4 * debug_span_floor()) {
         if (diag) diag->fell_back = true;
         return run_sequential();
     }

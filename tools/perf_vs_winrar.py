@@ -359,24 +359,35 @@ def main():
     BIG = ["text.txt", "code.cpp", "random.bin"]
     cfg("openrar", "big", BIG, "o_big_m3_mt", ["-m3", "-mt4"])
     cfg("winrar", "big", BIG, "w_big_m3_mt", ["-m3", "-mt4"])
-    # H. extraction: from the canonical m3 ST archives
+    # H. extraction: the canonical m3 ST archives, sequential AND parallel
+    # (v1.37.2: openrar honors -mt on x; unrar/winrar pinned -mt1 and -mt4
+    # for the serial/parallel baselines).
     ex_rows = []
-    arc_o = DATA / "out" / "canonical_o_m3_st.rar"
-    for engine, exe in (("openrar", [OPENRAR, "x", "-y", "-q", str(arc_o)]),
-                        ("unrar", [UNRAR, "x", "-y", str(arc_o)]),
-                        ("winrar", [RAR, "x", "-y", "-inul", str(arc_o)])):
+    arc_o = DATA / "out" / "canonical_o_m3_st.rar"   # OpenRAR-made stream
+    arc_w = DATA / "out" / "canonical_w_m3_st.rar"   # Rar-made stream
+    ex_matrix = [
+        ("o", arc_o, "extract_m3_o_st", [OPENRAR, "x", "-y", "-q", "-mt1", str(arc_o)]),
+        ("o", arc_o, "extract_m3_o_mt4", [OPENRAR, "x", "-y", "-q", "-mt4", str(arc_o)]),
+        ("o", arc_w, "extract_m3_w_st", [OPENRAR, "x", "-y", "-q", "-mt1", str(arc_w)]),
+        ("o", arc_w, "extract_m3_w_mt4", [OPENRAR, "x", "-y", "-q", "-mt4", str(arc_w)]),
+        ("unrar", arc_w, "extract_m3_unrar_st", [UNRAR, "x", "-y", "-mt1", str(arc_w)]),
+        ("unrar", arc_w, "extract_m3_unrar_mt4", [UNRAR, "x", "-y", "-mt4", str(arc_w)]),
+        ("winrar", arc_w, "extract_m3_winrar_mt4", [RAR, "x", "-y", "-inul", "-mt4", str(arc_w)]),
+    ]
+    for eng, arc, label, base in ex_matrix:
         runs = []
-        for i in range(4 if not QUICK else 2):
-            ex = DATA / "out" / f"ex_{engine}_{i}"
+        n = 2 if QUICK else 4
+        for i in range(n):
+            ex = DATA / "out" / f"ex_{label}_{i}"
             shutil.rmtree(ex, ignore_errors=True)
             ex.mkdir()
-            cmd = exe + [str(ex) + os.sep] if engine != "openrar" else exe + [str(ex)]
+            cmd = base + [str(ex) + os.sep] if eng != "o" else base + [str(ex)]
             dt = run(cmd)
             if i > 0 or QUICK:
                 runs.append(dt)
             shutil.rmtree(ex, ignore_errors=True)
-            print(f"    run{i}: {dt:.2f}s")
-        ex_rows.append({"engine": engine, "label": f"extract_m3_{engine}", "runs": runs,
+            print(f"    {label} run{i}: {dt:.2f}s")
+        ex_rows.append({"engine": eng, "label": label, "runs": runs,
                         "median": statistics.median(runs), "min": min(runs),
                         "size": 0, "corpus": "canonical"})
         json.dump({"host": HOST, "quick": QUICK, "corpora": CORPORA_FPS, "rows": rows + ex_rows},

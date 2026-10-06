@@ -409,26 +409,42 @@ int main() {
 
         unsigned w = 0;
         const size_t MB = 1024 * 1024;
-        // Baseline engagement.
-        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, &w));
-        assert(w >= 2 && w <= 8);
+        // Baseline engagement (requested 0 = D9 default: 2 workers).
+        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, &w));
+        assert(w == 2);
+        // Requested -mtN is honored (clamped to the 8-worker ceiling).
+        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 3, &w));
+        assert(w == 3);
+        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 64, &w));
+        assert(w == 8);
+        // -mt1 forces sequential.
+        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 1, nullptr));
         // G1: solid entries never engage.
-        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, true, nullptr));
+        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, true, 0, nullptr));
         // G2 flavor: v1 (446-table, > 4 GiB window) stays sequential.
-        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 5ULL * 1024 * 1024 * 1024, false,
+        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 5ULL * 1024 * 1024 * 1024, false, 0,
                                            nullptr));
         // G3: packed amortization floor.
-        assert(!should_use_parallel_decode(4 * MB, 64 * MB, 0x200000, false, nullptr));
+        assert(!should_use_parallel_decode(2 * MB, 64 * MB, 0x200000, false, 0, nullptr));
         // Degenerate sizes.
-        assert(!should_use_parallel_decode(32 * MB, 0, 0x200000, false, nullptr));
-        assert(!should_use_parallel_decode(0, 64 * MB, 0x200000, false, nullptr));
+        assert(!should_use_parallel_decode(32 * MB, 0, 0x200000, false, 0, nullptr));
+        assert(!should_use_parallel_decode(0, 64 * MB, 0x200000, false, 0, nullptr));
         // D9 kill switch.
         _putenv("OPENRAR_NO_PARALLEL_DECODE=1");
-        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, nullptr));
+        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, nullptr));
         _putenv("OPENRAR_NO_PARALLEL_DECODE=");
         // F7: single-thread override.
         _putenv("OPENRAR_PARALLEL_DECODE_THREADS=1");
-        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, nullptr));
+        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, nullptr));
+        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+        // The env override is real for the unset case (v1.37.2 — the
+        // sandboxed-`t` channel): 4 through the env engages 4 workers, and
+        // an explicit -mt still outranks it.
+        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=4");
+        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, &w));
+        assert(w == 4);
+        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 2, &w));
+        assert(w == 2);
         _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
         std::cout << "[PASS] driver gate matrix\n";
     }
@@ -488,6 +504,63 @@ int main() {
         // m3 at a smaller member: engagement at 2-4 workers on this host.
         auto mid = make_text(64u * 1024 * 1024, 0x515);
         run_identity("text64m-m3 threads 2/3/4", mid, 3, {2, 3, 4});
+
+        // v1.37.2 drift regression: decode_entry re-gates internally, so the
+        // caller's requested count must be CARRIED INTO the driver — before
+        // the fix the count was re-resolved from the D9 default there and
+        // every caller silently got 2 workers. diag.workers makes the
+        // engaged count observable; -mt1 stays sequential (F7).
+        {
+            // The debug span floor (the documented test knob) lowers the G3
+            // member floor to 1 MiB packed so a 32 MiB m1 member engages;
+            // the default floor (4 x 4 MiB = 16 MiB packed) needs the
+            // 96 MiB identity rows above.
+            _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=262144");
+            auto mid32 = make_text(32u * 1024 * 1024, 0x5a5);
+            std::vector<core::byte> packed32;
+            assert(
+                Compressor50::compress_buffer(mid32.data(), mid32.size(), packed32, 1, 0x200000));
+            assert(packed32.size() >= 1024u * 1024); // the lowered G3 floor, explicitly
+            std::vector<core::byte> seq_out;
+            std::vector<size_t> seq_chunks;
+            {
+                Decompressor50 seq(0x200000);
+                auto cb = [&](const core::byte* p, size_t n) -> bool {
+                    seq_out.insert(seq_out.end(), p, p + n);
+                    seq_chunks.push_back(n);
+                    return true;
+                };
+                assert(seq.decompress(packed32.data(), packed32.size(), mid32.size(), false, cb));
+            }
+            for (unsigned requested : {2u, 4u, 8u}) {
+                ParallelDecodeDiag diag;
+                std::vector<core::byte> par_out;
+                std::vector<size_t> par_chunks;
+                auto cb = [&](const core::byte* p, size_t n) -> bool {
+                    par_out.insert(par_out.end(), p, p + n);
+                    par_chunks.push_back(n);
+                    return true;
+                };
+                assert(decode_entry(packed32.data(), packed32.size(), mid32.size(), 0x200000, cb,
+                                    &diag, requested));
+                assert(diag.engaged && !diag.fell_back);
+                assert(diag.workers == requested);
+                assert(par_out == seq_out);
+                assert(par_chunks == seq_chunks);
+            }
+            ParallelDecodeDiag diag1;
+            std::vector<core::byte> out1;
+            auto cb1 = [&](const core::byte* p, size_t n) -> bool {
+                out1.insert(out1.end(), p, p + n);
+                return true;
+            };
+            assert(decode_entry(packed32.data(), packed32.size(), mid32.size(), 0x200000, cb1,
+                                &diag1, 1));
+            assert(!diag1.engaged && !diag1.fell_back); // sequential, not fallback
+            assert(out1 == seq_out);
+            _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=");
+            std::cout << "[PASS] decode_entry requested-threads routing (2/4/8, mt1 sequential)\n";
+        }
     }
 
     // ── M3: hostile fallback + filter-bearing member through the driver ─────
@@ -497,8 +570,11 @@ int main() {
         auto plain = make_text(64u * 1024 * 1024, 0x91);
         std::vector<core::byte> packed;
         assert(Compressor50::compress_buffer(plain.data(), plain.size(), packed, 3, 0x200000));
-        // 2 workers: the truncated stream still clears the G3 floor so the
-        // pre-scan (not the gate) is what fails.
+        // 2 workers: with the span-floor test knob the truncated stream still
+        // clears the G3 member floor, so the pre-scan (not the gate) is what
+        // fails — at the default 16 MiB packed floor this member size would
+        // fall out at the gate instead.
+        _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=262144");
         _putenv("OPENRAR_PARALLEL_DECODE_THREADS=2");
         {
             std::vector<core::byte> trunc(packed.begin(), packed.begin() + packed.size() / 2);

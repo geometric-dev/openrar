@@ -2134,8 +2134,10 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry, const core::byt
         size_t win = entry.header.win_size;
         if (win == 0) win = 32 * 1024 * 1024;
         compress::ParallelDecodeDiag diag;
-        if (compress::should_use_parallel_decode(src_size, dest, win, false, nullptr)) {
-            if (compress::decode_entry(src, src_size, dest, win, flush_cb, &diag)) return true;
+        if (compress::should_use_parallel_decode(src_size, dest, win, false, decode_threads_,
+                                                 nullptr)) {
+            if (compress::decode_entry(src, src_size, dest, win, flush_cb, &diag, decode_threads_))
+                return true;
             // Fail-safe-identical (plan R5/F1-F3): a parallel-stage failure
             // before any emission already retried the sequential path
             // inside decode_entry (diag.fell_back); a post-emission failure
@@ -2164,7 +2166,8 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry,
     if (!chain && !is_volume() && !entry.header.is_encrypted) {
         size_t win = entry.header.win_size;
         if (win == 0) win = 32 * 1024 * 1024;
-        if (compress::should_use_parallel_decode(src_size, dest, win, false, nullptr)) {
+        if (compress::should_use_parallel_decode(src_size, dest, win, false, decode_threads_,
+                                                 nullptr)) {
             // The driver needs the packed stream in RAM (bounded by the
             // same gate above); materialize once, then the in-memory path.
             std::vector<core::byte> packed;
@@ -2187,8 +2190,8 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry,
             }
             if (pulled) {
                 compress::ParallelDecodeDiag diag;
-                if (compress::decode_entry(packed.data(), packed.size(), dest, win, flush_cb,
-                                           &diag)) {
+                if (compress::decode_entry(packed.data(), packed.size(), dest, win, flush_cb, &diag,
+                                           decode_threads_)) {
                     return true;
                 }
                 return false;
