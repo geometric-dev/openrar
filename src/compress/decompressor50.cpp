@@ -566,6 +566,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     core::uint64 base_at_entry = solid ? file_base_ : 0;
     if (!solid) {
         file_base_ = 0;
+        member_start_ = 0;
         base_at_entry = 0;
         if (window_ready_) std::fill(window_.begin(), window_.end(), static_cast<core::byte>(0));
         win_pos_ = 0;
@@ -575,6 +576,10 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
         std::fill(std::begin(table_), std::end(table_), static_cast<core::byte>(0));
         last_length_ = 0;
         tables_ready_ = false;
+    } else if (!single_block) {
+        // A whole-stream solid call is a member start: the transform base
+        // (see member_start_) resets even though the window carries.
+        member_start_ = base_at_entry;
     }
     if (dest_size == 0) return true;
 
@@ -779,7 +784,12 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             // ABSOLUTE file coordinates: carried across per-block calls without
             // frame drift (see abs_pos()/local_region_start() above).
             fe.block_start = static_cast<size_t>(base_at_entry) + total_written + f_start;
-            fe.file_offset = base_at_entry + static_cast<core::uint64>(total_written) + f_start;
+            // E8/E8E9/ARM transform base is the offset WITHIN the member: the
+            // reference resets it per member even on solid chains
+            // (oracle-verified, v1.36.x — a carried base corrupted every
+            // non-first solid member with E8-filtered content).
+            fe.file_offset =
+                base_at_entry + static_cast<core::uint64>(total_written) - member_start_ + f_start;
             fe.block_length = f_len;
             // A filter region larger than the window can never be applied
             // intact: by the time the region ends, its start has been

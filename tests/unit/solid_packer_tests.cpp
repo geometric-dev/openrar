@@ -5,6 +5,7 @@
 // file from an empty window, making solid archives header-solid only).
 
 #include "../../src/compress/solid_packer.hpp"
+#include "../../src/compress/compressor50.hpp"
 #include "../../src/compress/decompressor50.hpp"
 
 #include <cassert>
@@ -114,6 +115,77 @@ int main() {
         assert(out == members[i]);
     }
     std::cout << "[PASS] carried-window decode reproduces every byte\n";
+
+    // v1.36.x regression: the E8/E8E9/ARM transform base resets PER MEMBER
+    // even on solid chains (oracle-verified against a Rar 7.20-made solid
+    // multi-member archive). The decoder used to seed the transform base
+    // with the accumulated solid position, corrupting every non-first
+    // member whose stream carries filter tokens (CRC-rejected end to end).
+    // Member 1 primes the carried window (no filter); members 2..3 are
+    // PE-like so compress_buffer emits E8-filtered streams whose filter
+    // tokens hold member-local offsets — the decoder must apply them with
+    // the per-member base.
+    {
+        const size_t prime_size = 256 * 1024;
+        const size_t exe_size = 256 * 1024;
+        auto pe_like = [](size_t n, unsigned seed) {
+            std::vector<core::byte> v = make_noise(n, seed);
+            v[0] = 'M';
+            v[1] = 'Z';
+            v[0x3C] = 0x80;
+            v[0x3C + 1] = 0;
+            v[0x3C + 2] = 0;
+            v[0x3C + 3] = 0;
+            v[0x80] = 'P';
+            v[0x81] = 'E';
+            v[0x82] = 0;
+            v[0x83] = 0;
+            v[0x84] = 0x64; // machine 0x8664 (x64) — E8/E8E9 class
+            v[0x85] = 0x86;
+            // Dense call pattern so the pretransform has real work.
+            for (size_t i = 0x100; i + 5 <= n; i += 24) {
+                v[i] = 0xE8;
+                v[i + 1] = static_cast<core::byte>((i * 13) & 0xFF);
+                v[i + 2] = static_cast<core::byte>((i >> 8) & 0xFF);
+                v[i + 3] = 0x01;
+                v[i + 4] = 0x00;
+            }
+            return v;
+        };
+        const std::vector<core::byte> member1 = make_noise(prime_size, 21);
+        const std::vector<core::byte> member2 = pe_like(exe_size, 22);
+        const std::vector<core::byte> member3 = pe_like(exe_size, 23);
+
+        std::vector<core::byte> packed1, packed2, packed3;
+        assert(compress::Compressor50::compress_buffer(member1.data(), member1.size(), packed1, 3,
+                                                       1 << 20));
+        assert(compress::Compressor50::compress_buffer(member2.data(), member2.size(), packed2, 3,
+                                                       1 << 20));
+        assert(compress::Compressor50::compress_buffer(member3.data(), member3.size(), packed3, 3,
+                                                       1 << 20));
+
+        compress::Decompressor50 sdec(1 << 20);
+        const std::vector<core::byte>* plain[] = {&member1, &member2, &member3};
+        const std::vector<core::byte>* pk[] = {&packed1, &packed2, &packed3};
+        const size_t szs[] = {prime_size, exe_size, exe_size};
+        for (size_t i = 0; i < 3; ++i) {
+            std::vector<core::byte> out(szs[i]);
+            size_t written = 0;
+            bool finished = false;
+            auto sink = [&](const core::byte* data, size_t n) -> bool {
+                if (written + n > out.size()) return false;
+                std::memcpy(out.data() + written, data, n);
+                written += n;
+                return true;
+            };
+            // Member 1 is the chain head; 2..3 ride the carried window.
+            assert(sdec.decompress(pk[i]->data(), pk[i]->size(), szs[i], i > 0, sink, &written,
+                                   &finished));
+            assert(written == szs[i]);
+            assert(out == *plain[i]);
+        }
+        std::cout << "[PASS] solid-chain E8 transform base resets per member\n";
+    }
 
     // A fresh session's pack_begin(true) has nothing to carry and silently
     // packs fresh — the append-onto-existing-chain case (chain membership
