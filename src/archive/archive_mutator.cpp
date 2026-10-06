@@ -1151,37 +1151,12 @@ bool ArchiveMutator::prepare_add_file(
     // Dictionary window: dict_size 1..15 -> 128 KiB..2 GiB (backward compatibility);
     // 0 uses tuned defaults per method (8 MB for -m3, 64 MB for -m5);
     // > 15 is treated directly as exact byte sizes (supporting non-power-of-two and > 2 GiB).
-    // Must match the win_size passed to Compressor50 and written into the header.
-    core::uint64 win_size = 0x800000ULL;
-    if (dict_size >= 1 && dict_size <= 15) {
-        win_size = 0x20000ULL << (dict_size - 1);
-    } else if (dict_size == 0) {
-        switch (method) {
-        case 0:
-            win_size = 0x20000ULL;
-            break; // 128 KB
-        case 1:
-            win_size = 0x80000ULL;
-            break; // 512 KB
-        case 2:
-            win_size = 0x100000ULL;
-            break; // 1 MB
-        case 3:
-            win_size = 0x800000ULL;
-            break; // 8 MB
-        case 4:
-            win_size = 0x1000000ULL;
-            break; // 16 MB
-        case 5:
-            win_size = 0x4000000ULL;
-            break; // 64 MB
-        default:
-            win_size = 0x800000ULL;
-            break;
-        }
-    } else {
-        win_size = dict_size;
-    }
+    // resolve_dict_window_size is the one shared table — the volume add path
+    // and the CLI's workspace/solid-session math resolve through it too, and
+    // the value below is the same one passed to Compressor50 and written
+    // into the header.
+    core::uint64 win_size =
+        compress::resolve_dict_window_size(dict_size, static_cast<core::uint32>(method));
     win_size = compress::snap_window_to_fci_grid(win_size);
 
     core::uint64 file_sz = 0;
@@ -3043,7 +3018,49 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         file_sz = src.size();
     }
 
-    core::uint64 win_size = (dict_size > 0) ? dict_size : 0x200000ULL; // 2 MiB default
+    // Chain provenance, needed BEFORE the payload is packed: the volume path
+    // can add onto an existing chain, and a solid continuation must not grow
+    // the window above what the chain already carries (shrink-or-equal is
+    // safe under every decoder model; a grow forces the decoder to reconcile
+    // a larger window with history it may never have retained).
+    std::filesystem::path firstVolume = volume::first_volume_name(arc_path, false);
+    std::filesystem::path existing_path;
+    if (std::filesystem::exists(firstVolume))
+        existing_path = firstVolume;
+    else if (std::filesystem::exists(arc_path))
+        existing_path = arc_path;
+
+    core::uint64 prior_chain_win = 0;
+    bool prior_chain_compressed = false;
+    bool prior_chain_solid = false;
+    if (!existing_path.empty() && method > 0) {
+        // Header-only pre-scan. Open failure is not fatal here: the full
+        // chain read below re-opens and refuses properly (locked / corrupt /
+        // header-encrypted) before anything is mutated; skipping the clamp
+        // only forfeits the window narrowing.
+        ArchiveReader pre;
+        if (!password.empty()) pre.set_password(password);
+        if (pre.open(existing_path, password)) {
+            prior_chain_solid = pre.is_solid();
+            for (const auto& e : pre.entries()) {
+                // Mirror the carry filters below: the entry being replaced
+                // does not count as prior chain.
+                if (e.header.is_service || e.header.file_name == arc_entry_name) continue;
+                if (e.header.method == 0) continue;
+                prior_chain_compressed = true;
+                prior_chain_win = std::max(prior_chain_win, e.header.win_size);
+            }
+            pre.close();
+        }
+    }
+
+    // Dictionary window: 1..15 -> 128 KiB..2 GiB legacy scale, 0 -> the
+    // method-tuned defaults shared with prepare_add_file (8 MB for -m3,
+    // 64 MB for -m5 — the flat 2 MiB default this path used to have is the
+    // question-log Entry 24 defect), > 15 exact bytes. The resolved value is
+    // the same one passed to the encoder and written into the header.
+    core::uint64 win_size =
+        compress::resolve_dict_window_size(dict_size, static_cast<core::uint32>(method));
     win_size = compress::snap_window_to_fci_grid(win_size);
     if (dict_size == 0 && !solid && method > 0 && file_sz > 0) {
         core::uint64 file_pow2 = 0x20000ULL; // 128 KiB floor
@@ -3052,6 +3069,24 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         }
         win_size = std::min(win_size, file_pow2);
     }
+    // Solid-run discipline (mirrors the non-volume single-window rule): a
+    // member that continues a solid chain packs with the chain's window when
+    // that is smaller. The head of a fresh run keeps its own resolution.
+    if (method > 0 && prior_chain_compressed && (solid || prior_chain_solid) &&
+        prior_chain_win > 0 && win_size > prior_chain_win) {
+        win_size = prior_chain_win;
+    }
+    // unp_ver mirrors prepare_add_file: version 0 cannot encode non-pow2 or
+    // above-v0-ceiling windows (the writer would floor the base power and
+    // drop the fraction — header window < encoder window), so such members
+    // declare version 1. Applied where the final method is decided below;
+    // store and empty members keep 0.
+    const core::uint64 unp_ver_gib = 1ULL * 1024 * 1024 * 1024;
+    auto unp_ver_for = [&](core::uint32 final_method) -> core::uint32 {
+        return (final_method > 0 && (win_size > unp_ver_gib || (win_size & (win_size - 1)) != 0))
+                   ? 1u
+                   : 0u;
+    };
 
     volume_detail::PayloadEntry new_pe;
     format::FileBlock& base_fb = new_pe.fb;
@@ -3125,6 +3160,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             base_fb.pack_size = static_cast<core::int64>(new_pe.packed_mem.size());
             base_fb.method = static_cast<core::uint32>(method);
             base_fb.win_size = win_size;
+            base_fb.unp_ver = unp_ver_for(static_cast<core::uint32>(method));
         } else {
             new_pe.packed_mem = std::move(uncompressed);
             base_fb.pack_size = static_cast<core::int64>(new_pe.packed_mem.size());
@@ -3300,6 +3336,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             base_fb.pack_size = static_cast<core::int64>(spooled_pack_bytes);
             base_fb.method = static_cast<core::uint32>(method);
             base_fb.win_size = (method > 0) ? win_size : 0;
+            base_fb.unp_ver = unp_ver_for(static_cast<core::uint32>(method));
             new_pe.extents = {archive::VolumeExtent{spool_p, 0, spooled_pack_bytes}};
             new_pe.total_size = spooled_pack_bytes;
         }
@@ -3321,22 +3358,16 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         new_pe.unpacked_crc = base_fb.data_crc32;
     }
 
-    // Collect existing entries if any (try first volume then arc_path)
+    // Collect existing entries if any. firstVolume/existing_path were derived
+    // (and pre-scanned) before the payload was packed, for the solid-run
+    // window clamp above.
     std::vector<volume_detail::PayloadEntry> all_payloads;
-    std::filesystem::path firstVolume = volume::first_volume_name(arc_path, false);
-    std::filesystem::path existing_path;
     // Solid chaining across the rewritten chain: requested via -s, or
     // continued when the existing chain is solid. The new entry carries the
     // solid bit only when a prior compressed entry starts/continues the
     // stream (matching write_batch_add's bookkeeping).
     bool vol_solid = solid;
     bool has_prior_compressed = false;
-    if (std::filesystem::exists(firstVolume))
-        existing_path = firstVolume;
-    else if (std::filesystem::exists(arc_path) && arc_path != firstVolume)
-        existing_path = arc_path;
-    else if (std::filesystem::exists(arc_path))
-        existing_path = arc_path;
 
     // SFX handling: capture sfx bytes if present (first-volume-only)
     std::vector<core::byte> sfx_bytes;
