@@ -272,6 +272,24 @@ public:
                      size_t dest_size, uint32_t first_block, uint32_t last_block, size_t rec_cap,
                      SpanRecords& out);
 
+    // Phase 2: the applier (plan M3). Consumes spans in order through the
+    // SAME ApplyEngine the sequential token loop drives [R1]: identical
+    // window, copy, filter-queue, and flush semantics - byte- AND chunk-
+    // identical emission. The applier owns the member's rep state and the
+    // running output position; span records are member-local [R7]. Driver
+    // lifecycle: apply_begin once per member, apply_span_records per span
+    // strictly in order (is_last on the final span runs the end-of-call
+    // flush and the truncation check). The applier reports success/failure
+    // and the byte count; the sequential out_finished semantics stay in the
+    // sequential API (the driver's contract is ok + byte count).
+    bool apply_begin();
+    bool apply_span_records(const SpanRecords& sr, size_t dest_size, bool is_last,
+                            OutputCallback flush_cb, size_t* io_total_written);
+
+    // Aggregate filter budget across the member's spans (the sequential
+    // decoder's filters_total_len, report M7); reset by apply_begin.
+    size_t filters_total_len_{0};
+
 #ifdef OPENRAR_CROSS_VALIDATE
     // Seed the decompressor with the expected original source bytes.
     // When enabled, copy_match will verify that all dictionary references

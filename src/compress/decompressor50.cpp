@@ -1316,6 +1316,156 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
     return true;
 }
 
+bool Decompressor50::apply_begin() {
+    if (last_error_ != DecompressErrorCode::Ok) return false;
+    if (!engine_.ensure_window_alloc()) {
+        last_error_ = DecompressErrorCode::AllocationFailed;
+        last_error_str_ = "dictionary too large: allocation failed";
+        return false;
+    }
+    // Non-solid member start: the !solid branch of decompress_internal,
+    // minus table state (tables are span-worker concerns; the applier owns
+    // only window, filter queue, flush cursor, and rep state).
+    engine_.reset_window();
+    engine_.filters_.clear();
+    engine_.begin_call();
+    filters_total_len_ = 0;
+    std::fill(std::begin(old_dist_), std::end(old_dist_), static_cast<size_t>(-1));
+    last_length_ = 0;
+    return true;
+}
+
+bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size, bool is_last,
+                                        OutputCallback flush_cb, size_t* io_total_written) {
+    size_t total_written = *io_total_written;
+    // The sequential decoder's per-token flush cadence, verbatim: plain
+    // bytes flush at the 64 KiB output cadence and at filter completions
+    // (inside engine_.flush_pending). Filter records skip the cadence check
+    // exactly like the sequential filter-token branch.
+    auto cadence = [&]() -> bool {
+        if (total_written - engine_.last_flushed_ < 65536) return true;
+        return engine_.flush_pending(false, 0, total_written, dest_size, flush_cb);
+    };
+
+    for (const auto& r : sr.recs) {
+        if (total_written >= dest_size) break; // applier clamp point [R8]
+        auto tag = static_cast<OpRecord::Tag>(r.tag);
+        if (tag == OpRecord::Tag::Lit) {
+            for (core::uint32 i = 0; i < r.aux; ++i) {
+                if (total_written >= dest_size) break;
+                engine_.write_literal(sr.lit_pool[r.b + i]);
+                ++total_written;
+                if (!cadence()) return false;
+            }
+            continue;
+        }
+        if (tag == OpRecord::Tag::Match) {
+            size_t distance = r.a;
+            size_t len = r.b;
+            // Sequential order, verbatim: rep-state update, last_length
+            // (the WIRE length — the dest clamp does not shrink it),
+            // validation, clamp, copy.
+            old_dist_[3] = old_dist_[2];
+            old_dist_[2] = old_dist_[1];
+            old_dist_[1] = old_dist_[0];
+            old_dist_[0] = distance;
+            last_length_ = len;
+            if (distance == 0 || distance > engine_.win_size_) return false;
+            if (len > dest_size - total_written) len = dest_size - total_written;
+            engine_.copy_match(distance, len, total_written);
+            total_written += len;
+            if (!cadence()) return false;
+            continue;
+        }
+        if (tag == OpRecord::Tag::Rep) {
+            core::uint32 dist_num = r.aux;
+            if (dist_num >= 4) return false;
+            size_t distance = old_dist_[dist_num];
+            // Repeat distances are attacker-controlled state: the sentinel
+            // (never set) or an out-of-window value means the stream is
+            // corrupt (report M6) — the sequential check, verbatim.
+            if (distance == static_cast<size_t>(-1) || distance == 0 ||
+                distance > engine_.win_size_) {
+                return false;
+            }
+            for (core::uint32 i = dist_num; i > 0; --i) old_dist_[i] = old_dist_[i - 1];
+            old_dist_[0] = distance;
+            last_length_ = r.a;
+            size_t len = r.a;
+            if (len > dest_size - total_written) len = dest_size - total_written;
+            engine_.copy_match(distance, len, total_written);
+            total_written += len;
+            if (!cadence()) return false;
+            continue;
+        }
+        if (tag == OpRecord::Tag::R257) {
+            // Re-emit from the applier's own state; updates neither
+            // old_dist_ nor last_length_ (sequential slot-257 semantics).
+            if (last_length_ != 0) {
+                size_t distance = old_dist_[0];
+                if (distance == static_cast<size_t>(-1) || distance == 0 ||
+                    distance > engine_.win_size_) {
+                    return false;
+                }
+                size_t len = last_length_;
+                if (len > dest_size - total_written) len = dest_size - total_written;
+                engine_.copy_match(distance, len, total_written);
+                total_written += len;
+                if (!cadence()) return false;
+            }
+            continue;
+        }
+        // Filter: resolve the raw start delta against the running position
+        // [R7] and run the sequential push-site check set, verbatim.
+        FilterEntry fe;
+        fe.type = static_cast<core::uint8>(r.aux & 7);
+        fe.channels = static_cast<core::uint8>(((r.aux >> 3) & 31) + 1);
+        fe.block_start = total_written + r.a;
+        // Per-member transform base (v1.36.16): the base is the offset
+        // WITHIN the member; the applier's frame IS the member frame.
+        fe.file_offset = static_cast<core::uint64>(total_written) + r.a;
+        fe.block_length = r.b;
+        // A filter region larger than the window can never be applied
+        // intact (report M5).
+        if (static_cast<size_t>(fe.block_length) > engine_.win_size_) return false;
+        // Aggregate budget against unbounded scheduled transform work
+        // (report M7); dest_size == SIZE_MAX is a sequential-streaming
+        // shape that never reaches the applier, kept for symmetry.
+        filters_total_len_ += static_cast<size_t>(fe.block_length);
+        if (dest_size != SIZE_MAX && dest_size <= SIZE_MAX - engine_.win_size_ &&
+            filters_total_len_ > dest_size + engine_.win_size_) {
+            return false;
+        }
+        // Legitimate encoders emit disjoint, ordered regions; overlap or
+        // backward regions let a crafted stream emit transform output out
+        // of frame order (the sequential rejection, verbatim).
+        if (!engine_.filters_.empty()) {
+            const FilterEntry& prev = engine_.filters_.back();
+            if (fe.block_start < prev.block_start + prev.block_length) return false;
+        }
+        if (engine_.filters_.size() >= 65536) return false;
+#ifdef OPENRAR_CROSS_VALIDATE
+        if (engine_.val_src_ != nullptr) {
+            engine_.val_regions_.emplace_back(static_cast<size_t>(fe.block_start), fe.block_length);
+        }
+#endif
+        engine_.filters_.push_back(fe);
+    }
+
+    if (is_last) {
+        // End-of-call flush, strict: incomplete regions mean a corrupt
+        // stream (the sequential whole-stream call's behavior).
+        if (!engine_.flush_pending(true, 0, total_written, dest_size, flush_cb)) return false;
+        // Truncation: a member that ends below dest_size without a
+        // LastBlock flag is incomplete (the sequential check; the span
+        // trailer carries the flag because the worker decoded the whole
+        // span regardless of the applier's stop point [R8]).
+        if (total_written < dest_size && !sr.saw_last_block) return false;
+    }
+    *io_total_written = total_written;
+    return true;
+}
+
 bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size,
                                           std::vector<core::byte>& out, bool solid) {
     out.clear();
