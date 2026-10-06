@@ -5,6 +5,57 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.4] - 2026-10-06
+
+Entry 24 (`docs/question-log.md`): the multivolume add path defaulted the
+compressor window to a flat 2 MiB regardless of method, so volume sets
+inflated on data whose redundancy period exceeds 2 MiB — the perf corpus's
+generated-code member packed 8.39 MB through `-m3 -v32m` where the
+non-volume path packs 0.45 MB, and the canonical volume set measured
++19.15% over WinRAR's. Shipped measured: full perf re-run with the volume
+rows re-recorded (set size −13.88%, delta vs WinRAR now +2.61%, every
+non-volume row byte-identical), full gate green (Release build, 47/47
+ctest, 25/25 interop stages including multivolume cross-extraction by
+UnRAR.exe and Rar.exe). The nominal 1.37.3 is skipped: PATCH is the commit
+counter since `v1.37.0` and the release commit counts itself
+(`docs/versioning.md`), exactly as 1.37.1 was skipped.
+
+### Fixed
+
+- **The multivolume add path uses the method-tuned default window.**
+  `add_file_to_archive_vol` resolved `dict_size == 0` to a flat 2 MiB for
+  every method; it now resolves through the shared
+  `compress::resolve_dict_window_size` table (`src/compress/
+  compress_plan.hpp`) that `prepare_add_file` already uses, keeping the
+  FCI snap and the pow2 file-size clamp (`src/archive/archive_mutator.cpp`
+  `add_file_to_archive_vol`).
+- **`-md1..15` on the volume path means the legacy 128 KiB scale, not
+  bytes.** The volume path treated `-md 3` as a 3-byte window; both
+  prepare paths now share the 1..15 legacy scale / 0 = method default /
+  >15 exact bytes resolution (same sites; `src/cli/main.cpp`
+  `resolve_effective_dict_size` delegates to the same helper).
+- **Volume headers declare `unp_ver = 1` for non-pow2 or above-v0-ceiling
+  windows.** The v0 COMP_INFO encoding cannot carry the dictionary
+  fraction, so the writer silently floored such headers below the
+  encoder's match horizon (the v1.21.2 corrupt direction). Mirrors the
+  non-volume rule at both compressed-finalize sites
+  (`src/archive/archive_mutator.cpp` `add_file_to_archive_vol`).
+- **Solid continuations on volume chains never grow the window**: a member
+  that continues a solid chain packs with the chain's prior compressed
+  window when smaller — shrink-or-equal is safe under every decoder
+  model, mirroring the non-volume single-window-per-run discipline
+  (`src/archive/archive_mutator.cpp` `add_file_to_archive_vol`,
+  header-only chain pre-scan + window clamp).
+- `volume_tests` pins the shared table, per-method volume/non-volume
+  header `win_size` agreement, the pow2 clamp agreement, the `-md` scale
+  and `unp_ver` rows, a 3 MiB-redundancy-period regression through the
+  volume path (within 1.2x of the non-volume pack), and the solid window
+  clamp in both directions (`tests/unit/volume_tests.cpp`).
+- `docs/invariants.md` §7 pins the single-table dictionary-window
+  resolution rule and names the intentionally separate raw-codec ABI
+  defaults (2 MiB DLL/WASM/C++ codec pairs, 4 MiB stream pair) — those
+  are headerless surfaces, unchanged and byte-stable for embedders.
+
 ## [1.37.2] - 2026-10-06
 
 The perf-check audit (extending `tools/perf_vs_winrar.py` with parallel
