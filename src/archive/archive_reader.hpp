@@ -109,6 +109,10 @@ public:
                              const ExtractionLimits* limits = nullptr, LimitState* state = nullptr);
 
     void set_keep_broken(bool kb) { keep_broken_ = kb; }
+    // v1.37 decode workers for the two-phase driver on this reader: 0 =
+    // D9 default (2), 1 = sequential only, N = N (clamped to the driver's
+    // ceiling). The CLI's -mt lands here on x/t.
+    void set_decode_threads(unsigned t) { decode_threads_ = t; }
     bool keep_broken() const { return keep_broken_; }
     void set_extract_symlinks(bool es) { extract_symlinks_ = es; }
     bool extract_symlinks() const { return extract_symlinks_; }
@@ -369,6 +373,7 @@ private:
     bool saw_crypt_header_{false};
     bool crypt_unsupported_{false};
     core::uint64 sfx_offset_{0};
+    unsigned decode_threads_{0}; // 0 = D9 default (2); 1 = sequential
     format::MainBlock main_block_;
     std::vector<ArchiveEntry> entries_;
     bool header_encrypted_{false};
