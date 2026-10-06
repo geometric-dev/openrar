@@ -837,3 +837,54 @@ clamp agreement, the `-md` legacy/exact/non-pow2 (`unp_ver = 1`) rows, the
 fails against the 2 MiB default by construction), and the solid window
 clamp in both directions. 47/47 ctest green; full gate green (Release
 build + ctest + interop incl. multivolume cross-extraction). Entry closed.
+
+### Entry 25 — v1.38.0: the BlockBitSize reader model corrected; Entry 23's
+### deferred decoder change resolved as an explicit non-goal
+
+*(independent format verification during the v1.38.0 Gate 0; supersedes the
+reader model of Entries 4 and 23.)*
+
+Entry 23 left a decode-side item deferred: our decoder stops token decoding
+at the declared `BlockBitSize` (the conservative reader), believed to differ
+from a reference that "consumes the whole final byte as tokens". The v1.38.0
+consultation corrected the model:
+
+- **The reference discipline is a token-start check, not a byte-boundary
+  reader.** Decode a token iff the current bit position is strictly before
+  the declared block-bit end; a started token runs to completion (peeks past
+  the end are zero-padded); the next block header is parsed from wherever the
+  stream then sits, aligned up to the byte boundary. Nothing prescribes any
+  behavior for the undeclared tail bits — they belong to no block.
+- **Our decoder is already reference-equivalent.** `decompress_internal` /
+  `decode_span` gate on `cur_bit() >= end_bit` (token-start check) and run a
+  started token to completion — the shipped behavior needs no change.
+- **Entry 4's corruption re-explained.** The all-257 sparse-table experiment
+  corrupted because its padding bits sat *inside* a declared
+  `BlockBitSize = 8` region — token payload by definition, decoded
+  identically by any conforming reader. The "byte-boundary reference" model
+  is not needed to explain it.
+- **Switching readers is strictly negative.** A byte-boundary reader would
+  start extra tokens whenever an undeclared tail completes a short code —
+  with the 1-bit codes common in sparse tables, most zero tails qualify —
+  desyncing mid-member blocks of the 838/954 WinRAR-produced blocks that
+  declare BlockBitSize 1-7 (all of which decode fine everywhere today).
+
+**Disposition:** non-goal, closed at the documentation level. No decoder
+change ships in v1.38.0. If the question is ever re-opened, three
+black-box oracle experiments settle it conclusively (craftable today with
+UnRAR.exe/Rar.exe as oracles):
+
+1. Two-block member; block 1 declares bits < 8 and its undeclared tail is
+   edited to complete a short code — UnRAR's output should be byte-identical
+   to the bit-exact expectation (no extra tokens) iff the start-check holds.
+2. A block declaring bits = 8 whose in-declaration tail completes a code —
+   UnRAR must emit those extra tokens (the Entry 4 experiment re-run as a
+   positive control).
+3. A token positioned to start before and end after the declared end —
+   UnRAR should decode it and byte-align from wherever it landed.
+
+Related v1.38.0 Gate 0 record: `docs/v1.38.0-pre-analysis.md` (the flat-table
+premise measured and refuted; the canonical-decoder equivalence conditions —
+covered-peek exactness, the two-band uncovered-peek fallback,
+skip-don't-wrap over-subscription, the 15-bit length cap — validated for any
+future table work).

@@ -501,23 +501,29 @@ gate until dethroned by evidence).
   the streaming BitReader's short mid-stream refill (buffer-boundary
   zero-padding) and **fixed in the 1.36.x patch** with a
   streaming-vs-contiguous differential regression test.
-- **v1.38.0 — Decode kernel algorithmic rework (flat tables / SIMD).**
-  *Why:* the decode kernel carries 84% of extraction and is ~1.7x behind
-  the reference's; v1.34.0 measured that call-pattern and structural changes
-  are exhausted (all three variants byte-exact, none faster), so the gap
-  needs algorithmic change: single-lookup 15-bit flat tables with lazy
-  second-level pages, or SIMD-assisted decode (GFNI-class; precedent in the
-  RS16 kernel).
-  *Prediction:* a lazy-page flat-table landing that avoids the measured
-  per-block rebuild trap (naive flat tables cost ~131K writes per block
-  build and lose; today's build is ~7 us/block) gives **~1.2-1.4x** on
-  decode-bound extraction; a SIMD decode kernel targets **1.5-2x on the
-  kernel** and is the highest-risk item in the roadmap. Compounds with
-  v1.37.0: every worker inherits the faster kernel, so the two wins
-  multiply rather than overlap.
-  *Risk:* decode-side bounds/Kraft validation inside SIMD paths is
-  security-relevant; the fuzz corpus and hostile-table unit tests gate
-  every step.
+- **v1.38.0 — Decode kernel arc: Gate 0 refuted the premise; the measured
+  levers shipped.** *Founding premise (now corrected):* the roadmap
+  predicted ~1.2–1.4x from single-lookup 15-bit flat Huffman tables with
+  lazy second-level pages and 1.5–2x on the kernel from SIMD dispatch.
+  Gate 0 (`tools/decode_kernel_probe.cpp`, hash-verified token-stream A/B
+  against the real kernel) measured the shipped 10-bit quick table +
+  canonical slow path FASTER than every flat variant (full-flat 17–45%
+  slower; lazy-page PB sweep degrades monotonically — L1 working set, not
+  branch count) and concurred with outside hardware analysis that SIMD
+  dispatch of the serial symbol stream is a trap. The v1.34 build-cost trap
+  was also corrected: +14.7 µs/rebuild measured (~30x smaller than
+  projected). *Shipped:* phase-1 record-emission slimming (span decode
+  −8/−17/−25% on text/exelike/random with a no-record control row;
+  two-phase `-mt4` ratios rose to 1.36–1.45x from 1.18–1.25x) and the
+  filter-queue head cursor; a wrap-split memcpy region read — 24x on its
+  isolated micro-bench — measured +16% end-to-end and was declined, the
+  second integrated-vs-microbench reversal this line has recorded (the
+  first: the flat tables themselves). Independent format verification also
+  dissolved the Entry 23 BlockBitSize concern: our token-start-check reader
+  is reference-equivalent; recorded as a non-goal with the corrected model
+  (question-log Entry 25). Compounds with v1.37.0: every worker inherits
+  the slimmed symbol stage. Full record:
+  `docs/v1.38.0-pre-analysis.md` + `docs/v1.38.0-implementation-plan.md`.
 - **v1.39 – v1.43 — discovery pool (unsequenced).** Parallel CDC
   fingerprint pass, multi-volume no-data-area entries, WASM streaming
   encode, MSan/fuzz depth growth, dictionary auto-sizing, **durability
