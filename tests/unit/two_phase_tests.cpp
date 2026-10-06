@@ -620,6 +620,94 @@ int main() {
         std::cout << "[PASS] driver hostile fallback + filter member identity\n";
     }
 
+    // ── v1.38.0 M2: filter-region extraction + queue cursor edge rows ──────
+    // D3 rows (docs/v1.38.0-implementation-plan.md): the wrapped region read
+    // and the zero-length / many-region cursor discipline.
+    {
+        // Small window forces wrapped region reads: at win=128 KiB the E8
+        // pretransform chunks are 64 KiB, so every second region's ring read
+        // starts past the window midpoint and crosses the ring end — the
+        // filter-region read path in ApplyEngine::flush_pending owns this
+        // path (the per-byte ring walk ships unchanged; a wrap-split memcpy
+        // variant was measured slower end-to-end and declined —
+        // docs/v1.38.0-pre-analysis.md §6). Byte AND chunk identity vs the
+        // sequential decoder pins it.
+        {
+            auto pe = make_pe_like(1 * M, 77);
+            std::vector<core::byte> packed;
+            assert(Compressor50::compress_buffer(pe.data(), pe.size(), packed, 3, 128 * 1024));
+            std::vector<core::byte> seq_out, par_out;
+            std::vector<size_t> seq_chunks, par_chunks;
+            auto collect = [&](std::vector<core::byte>& out, std::vector<size_t>& chunks) {
+                return [&](const core::byte* p, size_t n) -> bool {
+                    out.insert(out.end(), p, p + n);
+                    chunks.push_back(n);
+                    return true;
+                };
+            };
+            {
+                Decompressor50 seq(128 * 1024);
+                assert(seq.decompress(packed.data(), packed.size(), pe.size(), false,
+                                      collect(seq_out, seq_chunks)));
+            }
+            assert(seq_out == pe);
+            ParallelDecodeDiag diag;
+            _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=65536");
+            _putenv("OPENRAR_PARALLEL_DECODE_THREADS=2");
+            bool ok = decode_entry(packed.data(), packed.size(), pe.size(), 128 * 1024,
+                                   collect(par_out, par_chunks), &diag);
+            _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=");
+            _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+            assert(ok);
+            assert(par_out == seq_out);
+            assert(par_chunks == seq_chunks);
+            std::cout << "[PASS] filter region crosses window wrap (128K window, E8 member)\n";
+        }
+        // Zero-length regions and the head cursor: feed the applier records
+        // with 300 zero-length E8 regions interleaved with literals; the
+        // queue cursor must consume each without shifting the vector and
+        // emit exactly the plain bytes (a zero-length region transforms and
+        // emits nothing).
+        {
+            const size_t NLIT = 64;
+            Decompressor50::SpanRecords sr;
+            std::vector<core::byte> plain;
+            plain.reserve(NLIT * 301);
+            for (size_t g = 0; g <= 300; ++g) {
+                Decompressor50::OpRecord r;
+                r.tag = static_cast<core::uint8>(Decompressor50::OpRecord::Tag::Lit);
+                r.aux = static_cast<core::uint8>(64);
+                r.a = 0;
+                r.b = static_cast<core::uint32>(sr.lit_pool.size());
+                for (int i = 0; i < 64; ++i) sr.lit_pool.push_back(static_cast<core::byte>(g + i));
+                sr.recs.push_back(r);
+                plain.insert(plain.end(), sr.lit_pool.end() - 64, sr.lit_pool.end());
+                if (g == 300) break;
+                Decompressor50::OpRecord f;
+                f.tag = static_cast<core::uint8>(Decompressor50::OpRecord::Tag::Filter);
+                f.aux = static_cast<core::uint8>(1); // E8, 1 channel
+                f.a = 0;                             // start delta 0 (past region)
+                f.b = 0;                             // zero-length region
+                sr.recs.push_back(f);
+            }
+            sr.ok = true;
+            Decompressor50 applier(0x200000);
+            assert(applier.apply_begin());
+            size_t total = 0;
+            std::vector<core::byte> out;
+            assert(applier.apply_span_records(
+                sr, plain.size(), true,
+                [&](const core::byte* p, size_t n) -> bool {
+                    out.insert(out.end(), p, p + n);
+                    return true;
+                },
+                &total));
+            assert(total == plain.size());
+            assert(out == plain);
+            std::cout << "[PASS] zero-length filter regions + queue cursor (301 groups)\n";
+        }
+    }
+
     std::cout << "All two_phase_tests passed.\n";
     return 0;
 }
