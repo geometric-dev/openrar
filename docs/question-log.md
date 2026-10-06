@@ -755,3 +755,33 @@ count (`decompressor50.cpp` `block_end_bit`) — the conservative reader, which
 differs from reference behavior only on foreign archives whose padding
 completes a code. `scan_table_reuse.py` now reports the final-byte bit-count
 histogram so this stays measurable.
+
+### Entry 24 — The multivolume default window is 2 MiB regardless of method (perf-check finding, OPEN)
+
+Found by the v1.37.2 perf-check benchmark's first full multivolume size
+row: `openrar a -m3 -v32m` produced a 62.9 MB volume set where the same
+corpus packs to 54.2 MB non-volume (+16%), while WinRAR's set (52.8 MB)
+matches its own non-volume archive. Root cause, isolated by a minimal
+repro (46 MB generated code + 44 MB random, `-m3 -v4m`):
+
+`ArchiveMutator::add_file_to_archive_vol` sizes the compressor window
+with `win_size = (dict_size > 0) ? dict_size : 0x200000ULL` — a flat
+2 MiB default for every method — where the non-volume path
+(`prepare_add_file`) uses the method-tuned defaults (8 MiB for m3, 16 MiB
+for m4, 64 MiB for m5). The perf corpus's generated code has a ~2 MiB
+redundancy period, so a 2 MiB window kills nearly all cross-period
+matches: code.cpp packs 0.45 MB non-volume, 8.39 MB through the volume
+path (46,452,882 -> 452,174 vs 4,194,201+4,194,200 across two 4 MiB
+volumes). Text (short match distances) is unaffected; stored members are
+unaffected; explicit `-md` IS honored (the drift is default-only, which
+is also the user workaround). Solo-file volume sets do not inflate; the
+overhead appears exactly when a member's redundancy period exceeds 2 MiB.
+
+Not a v1.37 regression — the compressor is untouched this arc; the
+benchmark simply recorded volume-set sizes for the first time. Fix
+direction: share the method-tuned default table with the non-volume path
+(one helper), keep the existing pow2 file-size clamp and the dict_size
+override, then re-run the interop gate (the window change alters packed
+streams) and re-record the volume rows. Scheduled as its own patch
+release: the change alters archive bytes, so it ships measured, not
+rushed.
