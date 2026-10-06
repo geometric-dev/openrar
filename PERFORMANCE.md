@@ -188,25 +188,44 @@ Extraction is the one axis where OpenRAR trails the reference engines
 byte-exact in every direction (verified per config above and by the
 24-stage interop gate).
 
-### Two-phase parallel decode (v1.37.0)
+### Two-phase parallel decode (v1.37.0; plumbing corrected in v1.37.2)
 
 Single-member extraction engages the two-phase driver when `-mtN` (N >= 2)
-is requested and the member clears the gating rules: symbol spans decode
-on worker threads while one applier applies records to the window through
-the same engine as the sequential decoder (byte- AND chunk-identical
-output). Paired-delta protocol (min-of-15, alternating order, 2C/4T
-laptop), 64 MiB text members:
+is requested — or by default with 2 workers when `-mt` is unset — and the
+member clears the gating rules: symbol spans decode on worker threads
+while one applier applies records to the window through the same engine
+as the sequential decoder (byte- AND chunk-identical output). Paired-delta
+protocol (min-of-15, alternating order, 2C/4T laptop), 64 MiB text
+members:
 
-| member | sequential | `-mt4` | ratio |
+| member | sequential | parallel (2 workers) | ratio |
 |---|---:|---:|---:|
 | Rar 7.20-made m3 -md2m | 786-919 ms | 625-760 ms | **1.21-1.26x** |
 | Rar 7.20-made m3 -md128m | 976-1008 ms | 723-747 ms | **1.35x** |
 | OpenRAR-made m3 -md2m | 819-1169 ms | 660-928 ms | **1.14-1.26x** |
 
+v1.37.2 correction: the shipped v1.37.0 never actually received the CLI's
+`-mt` on decode — the requested count was re-resolved to the default
+inside the driver, and the measurement env override could not raise the
+count either — so the table above, measured with the v1.37.0 build, is
+the **2-worker (default) configuration**, now relabeled. The same protocol
+re-run on the fixed build, at the counts the CLI actually requested:
+
+| member | true `-mt4` | true `-mt8` |
+|---|---:|---:|
+| Rar 7.20-made m3 -md2m | 1.18x | 1.17x |
+| Rar 7.20-made m3 -md128m | 1.24x | — |
+| OpenRAR-made m3 -md2m | 1.25x | — |
+
+**The default of 2 workers is the best configuration on this 2C/4T
+host**: symbol workers beyond the second hyperthread deepen contention
+with the serial applier (D9 stands as measured).
+
 No-regression rows (4-block member, stored, zeros, `-mt1`): 0.96-1.09x.
 The serial apply+flush+CRC+write stage (0.55-0.62 of sequential on this
 host) is the structural floor; the win grows with core count. Full record:
-`docs/v1.37.0-two-phase-implementation-plan.md` M4.
+`docs/v1.37.0-two-phase-implementation-plan.md` M4 + the v1.37.2
+correction addendum.
 
 ## Highlights
 
