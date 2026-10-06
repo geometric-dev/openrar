@@ -1364,6 +1364,68 @@ def test_track17_long_match(openrar, unrar, rar):
               '(self + UnRAR + WinRAR)')
         return True
 
+def test_track18_solid_filtered_chain(openrar, unrar, rar):
+    """Track 18 (v1.36.x): solid chain whose non-first member carries E8
+    filter tokens. The E8/E8E9/ARM transform base resets PER MEMBER even on
+    solid chains (oracle-verified; the decoder used to carry the accumulated
+    solid position into the base, corrupting every filtered non-first
+    member). Requires rar.exe (it is the oracle that produces the shape)."""
+    print("[25/25] Track 18: solid chain, filtered non-first member...", flush=True)
+    if not rar:
+        print("  SKIP: rar.exe not available (oracle-only shape)")
+        return True
+
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+        # Member 1: plain compressible filler (primes the carried window).
+        src1 = td / "first.bin"
+        src1.write_bytes(bytes((i * 7 + (i >> 8)) & 0xFF for i in range(600000)))
+        # Member 2: dense E8/E9 call stream under a .exe name — the reference
+        # applies the executable filter here (member-local offsets on the wire).
+        src2 = td / "second.exe"
+        chunk = bytearray()
+        for i in range(130000):
+            op = 0xE8 if (i % 2 == 0) else 0xE9
+            disp = (i * 0x10) & 0xFFFFFFFF
+            chunk.extend([op, disp & 0xFF, (disp >> 8) & 0xFF, (disp >> 16) & 0xFF,
+                          (disp >> 24) & 0xFF])
+        src2.write_bytes(chunk)
+        hashes = {"first.bin": sha256(src1), "second.exe": sha256(src2)}
+
+        arc = td / "solid_filtered.rar"
+        rc, out, err = run([rar, "a", "-s", "-ep", "-m3", "-md1m", str(arc),
+                            str(src1), str(src2)], cwd=str(td))
+        if rc != 0:
+            print(f"  FAIL: rar a -s rc={rc}\n{out}\n{err}"); return False
+
+        # OpenRAR must extract every member byte-exact (the regression: the
+        # filtered non-first member used to fail CRC on our decoder).
+        out_dir = td / "out_openrar"
+        out_dir.mkdir()
+        rc, out, err = run([openrar, "x", "-y", str(arc), str(out_dir) + os.sep])
+        if rc != 0:
+            print(f"  FAIL: openrar x solid_filtered.rar rc={rc}\n{out}\n{err}"); return False
+        for name, h in hashes.items():
+            dec = find_extracted(out_dir, name)
+            if not dec or sha256(dec) != h:
+                print(f"  FAIL: hash mismatch on OpenRAR decoding solid member {name}"); return False
+
+        # Control: the reference reader agrees on the same archive.
+        if unrar:
+            out_unrar = td / "out_unrar"
+            out_unrar.mkdir()
+            rc, out, err = run([unrar, "x", "-y", str(arc), str(out_unrar) + os.sep])
+            if rc != 0:
+                print(f"  FAIL: reference x solid_filtered.rar rc={rc}\n{out}\n{err}"); return False
+            for name, h in hashes.items():
+                dec = find_extracted(out_unrar, name)
+                if not dec or sha256(dec) != h:
+                    print(f"  FAIL: reference mismatch on solid member {name}"); return False
+
+    print("  OK Track 18 solid chain with filtered non-first member")
+    return True
+
+
 def main():
     import time
     t0 = time.time()
@@ -1401,6 +1463,7 @@ def main():
         (test_track15_cv_7z, (openrar, unrar, rar)),
         (test_track16_differential_7z, (openrar, unrar, rar)),
         (test_track17_long_match, (openrar, unrar, rar)),
+        (test_track18_solid_filtered_chain, (openrar, unrar, rar)),
     ]
 
     for fn, args in stages:
