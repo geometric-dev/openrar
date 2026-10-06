@@ -707,6 +707,12 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(tokencensus PRIVATE openrar_core)
     target_include_directories(tokencensus PRIVATE ${OPENRAR_INCLUDES})
 
+    # v1.38.0 Gate 0 probe (not a test): decode-kernel variant A/B + rebuild
+    # trap reproduction (docs/v1.38.0-pre-analysis.md).
+    add_executable(decode_kernel_probe tools/decode_kernel_probe.cpp)
+    target_link_libraries(decode_kernel_probe PRIVATE openrar_core)
+    target_include_directories(decode_kernel_probe PRIVATE ${OPENRAR_INCLUDES})
+
     # The sandboxed worker process (v1.30.0 M3): drives the SAME
     # ArchiveReader engine over the IPC protocol, holds no paths, writes
     # nothing. The per-OS privilege models (AppContainer / seccomp /
