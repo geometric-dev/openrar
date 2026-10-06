@@ -33,6 +33,17 @@ constexpr size_t RECORD_CAP_PACKED_MULTIPLE = 16;
 // its current span) plus the publish window.
 constexpr size_t MAX_IN_FLIGHT_AHEAD = 2;
 
+// Testing/measurement override (the threads-override precedent): lowers
+// the G3 span floor so small generated members can engage the pipeline in
+// fuzzers and identity harnesses. Never set in production.
+size_t debug_span_floor() {
+    if (const char* f = std::getenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR")) {
+        unsigned long long v = std::strtoull(f, nullptr, 10);
+        if (v > 0 && v <= (1ULL << 30)) return static_cast<size_t>(v);
+    }
+    return SPAN_PACKED_FLOOR;
+}
+
 unsigned resolve_workers() {
     unsigned hw = std::thread::hardware_concurrency();
     if (const char* forced = std::getenv("OPENRAR_PARALLEL_DECODE_THREADS")) {
@@ -66,7 +77,7 @@ bool should_use_parallel_decode(size_t pack_size, size_t dest_size, size_t win_s
     if (workers == 0) return false;
     // G3: the amortization floor keys on PACKED size (Gate 0 SS1: a
     // run-heavy member packs to almost nothing and has nothing to split).
-    if (pack_size / workers < SPAN_PACKED_FLOOR) return false;
+    if (pack_size / workers < debug_span_floor()) return false;
     if (out_workers) *out_workers = workers;
     return true;
 #endif
@@ -97,10 +108,12 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
     }
 
     // ── Span split (R3): block boundaries nearest an even PACKED split ─────
-    size_t target_spans = std::clamp(src_size / SPAN_PACKED_FLOOR, size_t{2}, size_t{4} * workers);
-    if (target_spans < 3 || tl.blocks.size() < target_spans) {
-        // A member of few blocks has nothing to claim (the black-box
-        // scaling record: a 4-block member does not scale).
+    size_t target_spans = std::clamp(src_size / debug_span_floor(), size_t{2}, size_t{4} * workers);
+    // A member with few blocks splits no further than its block count; the
+    // floor stays 3 spans (a 2-span member has one symbol worker - the
+    // black-box scaling record: a 4-block member does not scale).
+    target_spans = std::min(target_spans, tl.blocks.size());
+    if (target_spans < 3) {
         if (diag) diag->fell_back = true;
         return run_sequential();
     }
