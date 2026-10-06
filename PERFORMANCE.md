@@ -200,6 +200,61 @@ Extraction is the one axis where OpenRAR trails the reference engines
 byte-exact in every direction (verified per config above and by the
 24-stage interop gate).
 
+### Decode-kernel arc (v1.38.0): flat tables and SIMD dispatch measured and declined
+
+The roadmap's v1.38 premise — single-lookup 15-bit flat Huffman tables with
+lazy second-level pages, then SIMD-assisted symbol dispatch — was tested in
+Gate 0 (`tools/decode_kernel_probe.cpp`, hash-verified token-stream A/B
+against the real kernel) and **measured false on this host**: the shipped
+10-bit quick table + canonical slow path beats every flat variant on the
+symbol-decode hot path (full-flat 17–45% slower; the lazy-page sweep
+degrades monotonically with primary size — L1 working set, not branch
+count, decides). The SIMD-dispatch family (gather, dual-speculative, GFNI)
+sits on the same tables and the same serial chain and is declined with the
+same evidence. The recorded v1.34 build-cost trap was also corrected by
+measurement: a full 4×32768 span fill costs 24.8 µs/rebuild against the
+shipped build's 10.1 µs (+5.6 ms per 64 MiB member), ~30x smaller than
+projected — the lookup, not the build, was the blocker. Full record:
+`docs/v1.38.0-pre-analysis.md`.
+
+What shipped instead, measured (probe + paired-delta protocol, same
+session, no-record replica row as the session-drift control):
+
+| row (16 MiB members) | v1.37.4 | v1.38.0 | delta |
+|---|---:|---:|---|
+| phase-1 span decode, text m3 | 148.0 ms | 135.8 ms | **−8%** |
+| phase-1 span decode, exelike m3 | 216.1 ms | 180.6 ms | **−17%** |
+| phase-1 span decode, random m3 (stored) | 195.3 ms | 146.1 ms | **−25%** |
+| sequential decode, text m3 (no records — control surface) | 148.5 ms | 147.0–149.0 ms | neutral |
+
+(phase-1 record-emission slimming: pre-reserve from the span's packed size,
+bulk 255-byte literal runs, hoisted record-cap counter —
+`decode_span`, `src/compress/decompressor50.cpp`; the G5 cap fails on the
+same token as before. The filter-queue head cursor —
+`ApplyEngine::flush_pending` — replaces the per-region erase shift; measured
+neutral at the tested scale, kept as the principled discipline. A
+wrap-split memcpy filter-region read — 24x on its isolated micro-bench —
+measured **+16% end-to-end** on exelike sequential and was declined; the
+integrated-behavior reversal is recorded in the pre-analysis §6.)
+
+Two-phase ratios re-measured with the slimmed workers (paired-delta,
+min-of-15, alternating, 2C/4T; v1.37.2 record in parentheses):
+
+| member | true `-mt4` | `-mt8` |
+|---|---:|---:|
+| Rar 7.20-made m3 -md2m | **1.36x** (1.18x) | 1.25x (1.17x) |
+| Rar 7.20-made m3 -md128m | 1.27x (1.24x) | — |
+| OpenRAR-made m3 -md2m | **1.45x** (1.25x) | — |
+
+No-regression rows: stored 1.06x; `-mt1` parity 0.98x; small members
+(4-block 0.91x, zeros 0.88x) read slightly below the v1.37.2 band with
+absolute deltas of 6–34 ms on sub-300 ms operations. The serial
+apply+flush+CRC+write stage remains the structural floor on this host; the
+phase-1 win grows with core count. Extraction rows (section H re-recorded
+same session): OpenRAR ST 1.44 s / `-mt4` 0.77 s on our archive, 1.48 s /
+1.03 s on the WinRAR-made archive; UnRAR 0.43 s ST; WinRAR `-mt4` 0.32 s
+(compression rows byte-identical — the encoder is untouched).
+
 ### Two-phase parallel decode (v1.37.0; plumbing corrected in v1.37.2)
 
 Single-member extraction engages the two-phase driver when `-mtN` (N >= 2)

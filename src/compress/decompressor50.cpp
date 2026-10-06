@@ -459,8 +459,8 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
         return f.block_start > base_at_entry ? static_cast<size_t>(f.block_start - base_at_entry)
                                              : 0;
     };
-    while (!filters_.empty()) {
-        const auto& f = filters_.front();
+    while (filters_head_ < filters_.size()) {
+        const auto& f = filters_[filters_head_];
         if (f.block_start + f.block_length <= abs_pos()) {
             // 1. Flush any plain data preceding this filter:
             size_t region_local = local_region_start(f);
@@ -511,18 +511,27 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
                     last_flushed_ += to_emit;
                 }
             }
-            filters_.erase(filters_.begin());
+            ++filters_head_;
         } else {
             if (flush_all) {
                 if (f.block_start < abs_pos()) {
                     return false;
                 }
-                filters_.erase(filters_.begin());
+                ++filters_head_;
                 continue;
             } else {
                 break;
             }
         }
+    }
+
+    // v1.38.0 M2: compact the consumed prefix once per flush call (each
+    // region used to pay an O(pending) erase shift). The push-side overlap
+    // check compares against the last PUSHED region; compacting here keeps
+    // filters_.empty()/.back() semantics identical to the erased queue.
+    if (filters_head_) {
+        filters_.erase(filters_.begin(), filters_.begin() + filters_head_);
+        filters_head_ = 0;
     }
 
     // Flush any plain bytes up to the safe limit (before the next pending filter):
@@ -710,6 +719,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     // a fresh Decompressor50 per file, so no region leaks across files.
     if (!single_block || !solid) {
         engine_.filters_.clear();
+        engine_.filters_head_ = 0;
     }
     core::uint64 base_at_entry = solid ? file_base_ : 0;
     if (!solid) {
@@ -864,7 +874,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             // bounded by the region length itself, so this only bounds queue
             // memory (65536 entries ~= 2 MiB) — large filtered files emit one
             // region per ~1 MiB and legitimately exceed the old 8192 cap.
-            if (engine_.filters_.size() >= 65536) return false;
+            if (engine_.filters_.size() - engine_.filters_head_ >= 65536) return false;
 #ifdef OPENRAR_CROSS_VALIDATE
             if (engine_.val_src_ != nullptr) {
                 engine_.val_regions_.emplace_back(static_cast<size_t>(fe.block_start),
@@ -1116,23 +1126,49 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
     size_t total_local = 0;
     size_t run_start = static_cast<size_t>(-1); // lit_pool offset of the open literal run
     core::uint32 run_count = 0;
-    auto rec_bytes = [&]() {
-        return out.recs.size() * sizeof(OpRecord) + out.lit_pool.size();
-    };
+    core::byte run_buf[255]; // open literal run; appended to lit_pool on close
+    // v1.38.0 M1a: reserve once from the span's packed size instead of
+    // growing through the token loop (the G5 cap still bounds everything;
+    // estimates stay well under it so resident memory does not scale with
+    // the worker count). A failed reserve fails the span the same way a
+    // failed mid-loop growth would (F1/F3), just earlier and cleanly.
+    {
+        size_t span_packed = 0;
+        for (uint32_t bi = first_block; bi <= last_block; ++bi)
+            span_packed += tl.blocks[bi].header_len + tl.blocks[bi].block_size;
+        const size_t est_pool = std::min(rec_cap, std::max<size_t>(64 * 1024, span_packed));
+        const size_t est_recs =
+            std::min(rec_cap / sizeof(OpRecord), std::max<size_t>(4096, span_packed / 2));
+        try {
+            out.lit_pool.reserve(est_pool);
+            out.recs.reserve(est_recs);
+        } catch (...) {
+            last_error_ = DecompressErrorCode::AllocationFailed;
+            last_error_str_ = "span record pool reserve failed (G5)";
+            return false;
+        }
+    }
+    // v1.38.0 M1a: running record-pool byte counter, updated exactly where
+    // recs/lit_pool grow, so the G5 check at the loop top fails on the same
+    // token the rec_bytes() lambda failed on - representation only [D8].
+    size_t rec_bytes_now = 0;
     auto close_run = [&]() {
         if (run_count == 0) return;
+        out.lit_pool.insert(out.lit_pool.end(), run_buf, run_buf + run_count);
+        rec_bytes_now += run_count;
         OpRecord r;
         r.tag = static_cast<core::uint8>(OpRecord::Tag::Lit);
         r.aux = static_cast<core::uint8>(run_count);
         r.a = 0;
         r.b = static_cast<core::uint32>(run_start);
         out.recs.push_back(r);
+        rec_bytes_now += sizeof(OpRecord);
         run_count = 0;
         run_start = static_cast<size_t>(-1);
     };
     auto push_lit = [&](core::uint32 slot) {
         if (run_count == 0) run_start = out.lit_pool.size();
-        out.lit_pool.push_back(static_cast<core::byte>(slot));
+        run_buf[run_count] = static_cast<core::byte>(slot);
         ++run_count;
         ++total_local;
         if (run_count == 255) close_run();
@@ -1187,7 +1223,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
         const size_t end_bit = block_end_bit(header);
 
         while (reader.bit_pos() < end_bit && reader.bits_remaining() >= 1) {
-            if (rec_bytes() > rec_cap) {
+            if (rec_bytes_now > rec_cap) {
                 last_error_ = DecompressErrorCode::AllocationFailed;
                 last_error_str_ = "span record pool cap exceeded (G5)";
                 return false;
@@ -1233,6 +1269,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
                 r.a = f_start; // raw delta as-read; applier resolves [R7]
                 r.b = f_len;
                 out.recs.push_back(r);
+                rec_bytes_now += sizeof(OpRecord);
                 continue;
             }
             if (slot == 257) {
@@ -1245,6 +1282,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
                 r.a = 0;
                 r.b = 0;
                 out.recs.push_back(r);
+                rec_bytes_now += sizeof(OpRecord);
                 continue;
             }
             if (slot >= 262) {
@@ -1301,6 +1339,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
                 r.a = static_cast<core::uint32>(distance);
                 r.b = len;
                 out.recs.push_back(r);
+                rec_bytes_now += sizeof(OpRecord);
                 total_local += len;
                 continue;
             }
@@ -1318,6 +1357,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
             r.a = len;
             r.b = 0;
             out.recs.push_back(r);
+            rec_bytes_now += sizeof(OpRecord);
             total_local += len;
         }
         if (bi == last_block && expect.last_block) out.saw_last_block = true;
@@ -1341,6 +1381,7 @@ bool Decompressor50::apply_begin() {
     // only window, filter queue, flush cursor, and rep state).
     engine_.reset_window();
     engine_.filters_.clear();
+    engine_.filters_head_ = 0;
     engine_.begin_call();
     filters_total_len_ = 0;
     std::fill(std::begin(old_dist_), std::end(old_dist_), static_cast<size_t>(-1));
@@ -1486,7 +1527,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
             const FilterEntry& prev = engine_.filters_.back();
             if (fe.block_start < prev.block_start + prev.block_length) return false;
         }
-        if (engine_.filters_.size() >= 65536) return false;
+        if (engine_.filters_.size() - engine_.filters_head_ >= 65536) return false;
 #ifdef OPENRAR_CROSS_VALIDATE
         if (engine_.val_src_ != nullptr) {
             engine_.val_regions_.emplace_back(static_cast<size_t>(fe.block_start), fe.block_length);
