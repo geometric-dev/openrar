@@ -1001,6 +1001,69 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     return true;
 }
 
+bool Decompressor50::prescan_member(const core::byte* src, size_t src_size, PrescanTimeline& out) {
+    out = PrescanTimeline{};
+    if (src == nullptr || src_size == 0) return false;
+    if (last_error_ != DecompressErrorCode::Ok) return false;
+
+    // Same table flavor the applier/worker instances derive from the entry's
+    // window size (decompress_internal does this per member).
+    use_extra_dist_ = (engine_.win_size_ > (4ULL * 1024 * 1024 * 1024));
+    cur_table_size_ = use_extra_dist_ ? 446 : 430;
+    tables_ready_ = false;
+    std::fill(std::begin(table_), std::end(table_), static_cast<core::byte>(0));
+
+    // Headers are byte-aligned and contiguous: the next header sits exactly
+    // one payload past this header's end (block_size counts payload bytes,
+    // the last of which carries block_bit_size valid bits). A fresh BitReader
+    // per block at that byte offset is therefore equivalent to the sequential
+    // decoder's continuously-advancing reader at block boundaries.
+    size_t pos = 0;
+    uint32_t cur_desc = 0;
+    bool first = true;
+    while (true) {
+        if (out.blocks.size() >= PRESCAN_MAX_BLOCKS) return false; // R2 cap
+        if (pos >= src_size) return false; // ran off the end without LastBlock
+        BitReader reader(src + pos, src_size - pos);
+        BlockHeader header;
+        if (!read_block_header(reader, header)) return false;
+        const size_t payload_start = pos + static_cast<size_t>(header.header_size);
+        const size_t payload = header.block_size > 0 ? static_cast<size_t>(header.block_size) : 0;
+        if (payload_start > src_size || payload > src_size - payload_start) return false;
+        if (!read_tables(reader, header)) return false;
+        if (header.table_present && header.block_size != 0) {
+            PrescanDescription d;
+            d.extra_dist = use_extra_dist_;
+            d.lengths.assign(table_, table_ + cur_table_size_);
+            out.descriptions.push_back(std::move(d));
+            cur_desc = static_cast<uint32_t>(out.descriptions.size() - 1);
+        }
+        if (first) {
+            // Non-solid member start: the sequential decoder requires tables
+            // in force at the first token; the scan fails closed earlier.
+            if (!tables_ready_) return false;
+            first = false;
+        }
+        PrescanBlock b;
+        b.src_byte = pos;
+        b.header_len = static_cast<uint32_t>(header.header_size);
+        b.block_size = static_cast<uint32_t>(payload);
+        b.desc_id = cur_desc;
+        b.table_present = header.table_present;
+        b.last_block = header.last_block_in_file;
+        b.block_bit_size = header.block_bit_size;
+        out.blocks.push_back(b);
+        pos = payload_start + payload;
+        if (header.last_block_in_file) {
+            out.saw_last_block = true;
+            break;
+        }
+    }
+    out.packed_extent = pos;
+    out.ok = true;
+    return true;
+}
+
 bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size,
                                           std::vector<core::byte>& out, bool solid) {
     out.clear();
