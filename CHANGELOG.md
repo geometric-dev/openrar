@@ -5,6 +5,58 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.37.2] - 2026-10-06
+
+The perf-check audit (extending `tools/perf_vs_winrar.py` with parallel
+extraction rows) found the shipped v1.37.0 decode plumbing never delivered
+the requested worker count, and that its own measurement harness could not
+have observed that. Full gate green on the fixed tree.
+
+### Fixed
+
+- **`-mt` reaches the two-phase driver on extraction and test.** Both
+  `ArchiveReader::decode_compressed` overloads consulted `decode_threads_`
+  at the gate, but `decode_entry` re-gated internally with
+  `requested_threads = 0` — every caller (CLI `-mt4`/`-mt8` included)
+  silently got the D9 default of 2 workers. The requested count now flows
+  into `decode_entry` (0 = unset → D9 default, 1 = sequential per F7,
+  N clamped [2, 8]) (`src/compress/parallel_decode.{hpp,cpp}`
+  `decode_entry`, `src/archive/archive_reader.cpp` both
+  `decode_compressed` sites).
+- **The sandboxed `t` worker receives the CLI count**: the CLI parent
+  forwards `-mtN` through `OPENRAR_PARALLEL_DECODE_THREADS` before the
+  broker spawn, and `-mt1` as the `OPENRAR_NO_PARALLEL_DECODE` kill
+  switch (`src/cli/main.cpp` `forward_decode_threads_to_worker`).
+- **The env override is real**: `resolve_workers` read
+  `OPENRAR_PARALLEL_DECODE_THREADS` into a local that only gated the
+  2-worker fallback — the var could disable but never raise the count,
+  contradicting its own comment. Unset + env now resolves v < 2 →
+  sequential, v in [2, 8] → v workers; an explicit `-mtN` still outranks
+  the env (`src/compress/parallel_decode.cpp` `resolve_workers`).
+- `two_phase_tests`: `decode_entry`-level rows pin `diag.workers ==
+  requested` (2/4/8) and `-mt1` sequential; the gate matrix covers the
+  corrected env semantics; the hostile-fallback row engages through the
+  span-floor test knob (`tests/unit/two_phase_tests.cpp`).
+- `perf_vs_winrar.py` section H now times extraction sequential AND
+  parallel (openrar `-mt1`/`-mt4` on its own and the Rar-made canonical
+  archive; unrar `-mt1`/`-mt4`; winrar `-mt4`) — the defaults-only rows
+  were how the drift stayed invisible to the perf harness.
+
+### Changed
+
+- Measurement correction (the v1.37.0 harness drove the driver through
+  the broken env var, so its M4 rows labeled `-mt4`/`-mt8` were 2-worker
+  rows): true `-mt4`/`-mt8` re-measure 1.17-1.25x on the fixed build;
+  the 2-worker D9 default is confirmed the best configuration on the
+  2C/4T host. PERFORMANCE.md/README relabeled; correction addendum in
+  the plan's M4 record (`docs/v1.37.0-two-phase-implementation-plan.md`).
+- New finding filed as `docs/question-log.md` Entry 24: the multivolume
+  add path defaults the compressor window to 2 MiB for every method
+  (`add_file_to_archive_vol`) where the non-volume path uses the
+  method-tuned default (8 MiB at m3) — measured +16% on the canonical
+  corpus through the volume path. Scheduled as its own measured patch;
+  the fix alters archive bytes and ships with its own interop round.
+
 ## [1.37.0] - 2026-10-06
 
 Two-phase intra-entry parallel decode — the revised v1.37.0 arc per the
