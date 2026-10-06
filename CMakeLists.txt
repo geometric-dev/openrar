@@ -702,6 +702,11 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(walk_probe PRIVATE openrar_core)
     target_include_directories(walk_probe PRIVATE ${OPENRAR_INCLUDES})
 
+    # v1.37.0 two-phase Gate 0 probe (not a test): token census + alpha.
+    add_executable(tokencensus tools/tokencensus.cpp)
+    target_link_libraries(tokencensus PRIVATE openrar_core)
+    target_include_directories(tokencensus PRIVATE ${OPENRAR_INCLUDES})
+
     # The sandboxed worker process (v1.30.0 M3): drives the SAME
     # ArchiveReader engine over the IPC protocol, holds no paths, writes
     # nothing. The per-OS privilege models (AppContainer / seccomp /
