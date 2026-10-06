@@ -5,6 +5,39 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.16] - 2026-10-06
+
+Solid-chain E8/ARM transform-base fix, found by the v1.37.0 (revised)
+Gate 0 while probing the open questions parked in
+`docs/v1.37.0-two-phase-pre-analysis.md` SS9 against the oracle.
+
+### Fixed
+
+- **E8/E8E9/ARM transform base carried the accumulated solid position**
+  (`Decompressor50::decompress_internal`): `fe.file_offset` — the address
+  fixup base the executable/ARM filters apply — was seeded from
+  `base_at_entry` (the carried-window chain position), while the wire
+  encodes filter offsets relative to the current member; the reference
+  resets the transform base per member even on solid chains
+  (oracle-verified: a Rar 7.20-made solid four-member archive with real
+  DLL content engaging 78 E8 + 28 E8E9 filter tokens extracts byte-exact
+  with the per-member base and CRC-fails on members 3-4 without it —
+  never silent, always rejected by the CRC32 check). Never triggered by
+  OpenRAR-produced archives (the encoder scopes filters to chain heads)
+  and invisible to self-roundtrip tests by construction; spec 04's
+  `solid_base + ...` wording corrected alongside
+  (`src/compress/decompressor50.hpp` `member_start_`,
+  `src/compress/decompressor50.cpp` filter-token site,
+  `docs/spec/04-filters.md` Filter Signalling).
+- Regression `solid-chain E8 transform base resets per member`
+  (`tests/unit/solid_packer_tests.cpp`): a carried-window chain whose
+  non-first members are PE-like (E8-filtered via `compress_buffer`)
+  roundtrips byte-exact; verified to fail on the pre-fix decoder.
+- Interop Track 18 `solid chain, filtered non-first member`
+  (`tools/interop_gate.py`): Rar-made solid archive with an E8/E9-dense
+  non-first member extracts byte-exact (OpenRAR + reference control);
+  gate grows 24 -> 25 stages.
+
 ## [1.36.13] - 2026-10-05
 
 Worker verify fix for members >= 64 MiB unpacked (the en-route P2 of the
