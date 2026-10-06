@@ -1214,12 +1214,10 @@ static bool files_byte_identical(const std::filesystem::path& a, const std::file
 }
 
 // Dictionary resolution shared by run_batch_add (workspace/thread math) and
-// the -cdc report (the window the planner packed for).
+// the -cdc report (the window the planner packed for). Delegates to the one
+// shared table the mutator's prepare paths use.
 static core::uint64 resolve_effective_dict_size(core::uint64 dict_size, int method) {
-    if (dict_size >= 1 && dict_size <= 15) return 0x20000ULL << (dict_size - 1);
-    if (dict_size == 0)
-        return compress::default_dict_size_for_method(static_cast<uint32_t>(method));
-    return dict_size;
+    return compress::resolve_dict_window_size(dict_size, static_cast<core::uint32>(method));
 }
 
 // One streaming CDC pass over a file (v1.26 M2b): 1 MiB buffered reads
