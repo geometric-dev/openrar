@@ -240,7 +240,7 @@ int main() {
         _putenv("OPENRAR_PARALLEL_DECODE_THREADS=3");
         unsigned w = 0;
         const bool gated =
-            should_use_parallel_decode(compressed.size(), data.size(), 0x200000, false, &w);
+            should_use_parallel_decode(compressed.size(), data.size(), 0x200000, false, 0, &w);
         Decompressor50 ps(0x200000);
         Decompressor50::PrescanTimeline tl;
         const bool splittable = gated &&
