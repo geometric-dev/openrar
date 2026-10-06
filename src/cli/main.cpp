@@ -34,6 +34,8 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <fstream>
@@ -413,7 +415,8 @@ void print_help() {
         << "  -mc<par>      Set compression pre-processing filters (e.g. -mc-, -mcE+, -mcD+)\n"
         << "  -md<size>     Accepted and validated (128k..1T); dictionary size is\n"
         << "                auto-selected per entry\n"
-        << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto)\n"
+        << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto);\n"
+        << "                on x/t: single-member decode workers (default: 2; -mt1 = sequential)\n"
         << "  -oh           Save hard links as the link instead of the file\n"
         << "  -ol           Save symbolic links as the link instead of the file\n"
         << "  -o+ / -o-     Overwrite all existing files / never overwrite (default: ask)\n"
@@ -743,9 +746,35 @@ bool entries_independently_decodable(const archive::ArchiveReader& reader) {
 // worker could not be engaged and the caller MUST fall back in-process,
 // loudly (spawn failure, multi-volume, header-encrypted — every fallback is
 // policy-visible, never silent).
+// v1.37.2: the sandboxed `t` worker runs in its own process, so the CLI's
+// -mt cannot reach reader.set_decode_threads there — the environment is the
+// channel (the child inherits the parent's block, and resolve_workers
+// applies the var only when -mt was not passed in-process). Explicit -mt
+// outranks any OPENRAR_PARALLEL_DECODE_THREADS already in the CLI's own
+// environment; unset forwards nothing (the worker takes the D9 default).
+static void forward_decode_threads_to_worker(unsigned decode_threads) {
+#if defined(_WIN32)
+    auto put = [](const char* k, const char* v) {
+        _putenv_s(k, v);
+    };
+#else
+    auto put = [](const char* k, const char* v) {
+        setenv(k, v, 1);
+    };
+#endif
+    if (decode_threads == 1) {
+        put("OPENRAR_NO_PARALLEL_DECODE", "1"); // F7: sequential everywhere
+    } else if (decode_threads >= 2) {
+        char buf[16];
+        std::snprintf(buf, sizeof buf, "%u", decode_threads);
+        put("OPENRAR_PARALLEL_DECODE_THREADS", buf);
+    }
+}
+
 int test_archive_worker(const std::string& arc_path, const std::string& password,
                         const std::vector<std::string>& exclude_patterns,
-                        const std::vector<std::string>& file_masks, std::string& werr) {
+                        const std::vector<std::string>& file_masks, unsigned decode_threads,
+                        std::string& werr) {
     const std::filesystem::path worker = sandbox::worker_exe_path();
     if (worker.empty() || !std::filesystem::exists(worker)) {
         werr = "openrar_worker not found beside the CLI";
@@ -756,6 +785,7 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
         std::cerr << "Cannot open " << arc_path << "\n";
         return EXIT_NO_FILES;
     }
+    forward_decode_threads_to_worker(decode_threads);
 
     sandbox::WorkerBroker broker;
     sandbox::WorkerBroker::Limits limits; // engine floors are non-disableable regardless
@@ -868,19 +898,21 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
 
 int test_archive(const std::string& arc_path, const std::string& password = "",
                  unsigned threads = 1, const std::vector<std::string>& exclude_patterns = {},
-                 const std::vector<std::string>& file_masks = {}) {
+                 const std::vector<std::string>& file_masks = {}, unsigned decode_threads = 0) {
     // v1.30 sandboxed worker (§5.1): ONE decision function decides; a
     // worker that cannot be engaged falls back in-process LOUDLY (once per
     // run) and the run stays output-identical and exit-identical.
     if (sandbox::sandbox_mode_for(g_in_proc_flag) == sandbox::SandboxMode::Worker) {
         std::string werr;
-        const int wrc = test_archive_worker(arc_path, password, exclude_patterns, file_masks, werr);
+        const int wrc = test_archive_worker(arc_path, password, exclude_patterns, file_masks,
+                                            decode_threads, werr);
         if (wrc >= 0) return wrc;
         if (!g_quiet_mode)
             std::cerr << "W: sandboxed worker unavailable (" << werr << "); parsing in-process\n";
     }
 
     archive::ArchiveReader reader;
+    reader.set_decode_threads(decode_threads); // v1.37: -mt on single members
     int open_status = archive::RAR_OK;
     std::string open_detail;
     if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
@@ -2317,7 +2349,8 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
                     const std::vector<std::string>& exclude_patterns = {}, int extract_version = -1,
                     const std::vector<std::string>& file_patterns = {},
                     [[maybe_unused]] bool restore_owner = false, bool preserve_suid = false,
-                    bool use_mmap = true, bool xattr_security = false, bool propagate_motw = true) {
+                    bool use_mmap = true, bool xattr_security = false, bool propagate_motw = true,
+                    unsigned decode_threads = 0) {
     // --json-summary (v1.24 M4, plan §5): stdout purity + machine report.
     if (g_json_stdout_only) set_prog_out(std::cerr);
     archive::ExtractionReport report;
@@ -2330,6 +2363,7 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     };
 
     archive::ArchiveReader reader;
+    reader.set_decode_threads(decode_threads); // v1.37: -mt on single members
     reader.set_keep_broken(keep_broken);
     reader.set_extract_symlinks(extract_symlinks);
     reader.set_restore_xattr_security(xattr_security);
@@ -4159,10 +4193,11 @@ static int cli_main(int argc, char* argv[]) {
                 }
             }
         }
-        return openrar::cli::extract_archive(
-            arc_path, dest, cmd == "x", password, threads, keep_broken, overwrite_mode,
-            extract_symlinks, exclude_patterns, extract_version, file_patterns,
-            (want_acl || want_og), preserve_suid, use_mmap, restore_xattr_security, propagate_motw);
+        return openrar::cli::extract_archive(arc_path, dest, cmd == "x", password, threads,
+                                             keep_broken, overwrite_mode, extract_symlinks,
+                                             exclude_patterns, extract_version, file_patterns,
+                                             (want_acl || want_og), preserve_suid, use_mmap,
+                                             restore_xattr_security, propagate_motw, mt_flag);
     } else if (cmd == "cv") {
         // Source = arc_path; files[0] = optional destination (arc_path is
         // always non-empty here - main() refuses an empty archive name).
@@ -4303,7 +4338,8 @@ static int cli_main(int argc, char* argv[]) {
     } else if (cmd == "lt" || cmd == "lta") {
         return openrar::cli::list_archive(arc_path, false, true, password, exclude_patterns, files);
     } else if (cmd == "t") {
-        return openrar::cli::test_archive(arc_path, password, threads, exclude_patterns, files);
+        return openrar::cli::test_archive(arc_path, password, threads, exclude_patterns, files,
+                                          mt_flag);
     } else if (cmd == "d") {
         return openrar::cli::delete_from_archive(arc_path, files);
     } else if (cmd == "k") {
