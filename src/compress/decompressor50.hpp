@@ -125,7 +125,7 @@ public:
     bool is_dictionary_too_large() const {
         return last_error_ == DecompressErrorCode::DictionaryTooLarge;
     }
-    size_t win_size() const { return win_size_; }
+    size_t win_size() const { return engine_.win_size_; }
 
     // Callback type for streaming decompressed output.
     // The callback is invoked with contiguous chunks of unpacked data.
@@ -182,9 +182,9 @@ public:
     // a decoded filter region are therefore exempt from validation; the
     // final memcmp in the harness still fully validates the output.
     void set_validation_source(const core::byte* src, size_t size) {
-        val_src_ = src;
-        val_size_ = size;
-        val_regions_.clear();
+        engine_.val_src_ = src;
+        engine_.val_size_ = size;
+        engine_.val_regions_.clear();
     }
 #endif
 
@@ -207,14 +207,6 @@ public:
 #endif
 
 private:
-#ifdef OPENRAR_CROSS_VALIDATE
-    const core::byte* val_src_{nullptr};
-    size_t val_size_{0};
-    // (start, len) of every decoded filter region, ascending; validation is
-    // suppressed for matches whose dictionary range intersects one.
-    std::vector<std::pair<size_t, size_t>> val_regions_;
-#endif
-
     struct BlockHeader {
         int block_size{-1};
         int block_bit_size{0};
@@ -224,26 +216,65 @@ private:
         bool table_present{false};
     };
 
+    // The shared apply engine (v1.37.0 plan M0, review directive R1): ring
+    // window + match copy + filter queue + flush cadence. Driven by BOTH the
+    // sequential token loop (decompress_internal) and the two-phase record
+    // applier — the LZ dependency chain has exactly ONE home, so the
+    // sequential and parallel paths cannot drift. Not a public surface; the
+    // class layout is internal to the static library.
+    struct ApplyEngine {
+        // window configuration (set once by init)
+        size_t win_size_{0};
+        size_t win_mask_{0};
+        bool win_pow2_{false};
+        // ring window
+        std::vector<core::byte> window_;
+        size_t win_pos_{0};
+        size_t unp_ptr_{0}; // linear position for filter handling
+        bool first_win_done_{false};
+        bool window_ready_{false};
+        // filter queue + flush cursor (last_flushed_ is call-local; reset
+        // by begin_call, exactly like the sequential decoder's call-local)
+        std::vector<FilterEntry> filters_;
+        size_t last_flushed_{0};
+#ifdef OPENRAR_CROSS_VALIDATE
+        const core::byte* val_src_{nullptr};
+        size_t val_size_{0};
+        // (start, len) of every decoded filter region, ascending; validation
+        // is suppressed for matches whose dictionary range intersects one.
+        std::vector<std::pair<size_t, size_t>> val_regions_;
+#endif
+
+        void init(size_t win_size);
+        size_t wrap_up(size_t pos) const;
+        // Allocates the window once; false on bad_alloc (caller maps the
+        // error exactly as before the extraction).
+        bool ensure_window_alloc();
+        // Member-start reset: zero-fill + position reset (the !solid branch).
+        void reset_window();
+        // Resets the call-local flush cursor (per decompress/decompress_block
+        // call, like the sequential decoder's call-local last_flushed).
+        void begin_call() { last_flushed_ = 0; }
+        void write_literal(core::uint32 slot);
+        void copy_match(size_t distance, size_t length, size_t total_written);
+        bool flush_plain_up_to(size_t target, size_t total_written, size_t dest_size,
+                               OutputCallback cb);
+        bool flush_pending(bool flush_all, core::uint64 base_at_entry, size_t total_written,
+                           size_t dest_size, OutputCallback cb);
+    };
+
+    ApplyEngine engine_;
+
     bool read_block_header(BitReader& reader, BlockHeader& header);
     bool read_tables(BitReader& reader, BlockHeader& header);
     core::uint32 slot_to_length(BitReader& reader, core::uint32 slot);
-    size_t wrap_up(size_t pos) const;
-    void copy_match(size_t distance, size_t length, size_t total_written);
-    bool apply_filters(core::byte* data, size_t size, core::uint64 file_offset);
-    bool flush_pending(bool flush_all, OutputCallback cb);
-
     bool decompress_internal(BitReader& reader, size_t dest_size, bool solid,
                              OutputCallback flush_cb, size_t* out_written, bool* out_finished,
                              bool single_block = false);
 
-    size_t win_size_;
-    size_t win_mask_;
-    bool win_pow2_{false};
-    std::vector<core::byte> window_;
-    size_t win_pos_{0};
-    size_t unp_ptr_{0}; // linear position for filter handling
-    bool first_win_done_{false};
-    bool window_ready_{false};
+    // Repeat match distances
+    size_t old_dist_[4]{0, 0, 0, 0};
+    size_t last_length_{0};
 
     // Huffman tables
     HuffmanDecoder ld_decoder_;  // NC=306
@@ -257,11 +288,6 @@ private:
     size_t cur_table_size_{430};
     bool use_extra_dist_{false};
 
-    // Repeat match distances
-    size_t old_dist_[4]{0, 0, 0, 0};
-    size_t last_length_{0};
-
-    std::vector<FilterEntry> filters_;
     core::uint64 file_base_{0}; // unpacked bytes of prior solid files in this group
     // Absolute position where the current member started. The E8/E8E9/ARM
     // transform base is the offset WITHIN the member (the reference resets
