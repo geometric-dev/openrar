@@ -119,3 +119,31 @@ strictly independent of uncompressed entry size:
 - No eager per-entry PBKDF2 at open (hostile `lg2_count` ≤ 24 would make
   open a DoS vector); PBKDF2 runs only when an encrypted entry is actually
   extracted or tested.
+
+## 7. Dictionary-window resolution invariant (pack side)
+
+- Every archive pack path resolves the default dictionary window through ONE
+  shared table: `compress::resolve_dict_window_size` /
+  `default_dict_size_for_method` (`src/compress/compress_plan.hpp`). As of
+  the v1.37 fix (question-log Entry 24) that includes the multivolume add
+  (`add_file_to_archive_vol`), which previously defaulted to a flat 2 MiB
+  for every method. The CLI's workspace math and solid-session construction
+  delegate to the same table.
+- The window passed to the encoder and the window recorded in the file
+  header are the same snapped value, per path construction. Encoder window
+  ≤ header window is the safe direction (decoders just reserve more RAM);
+  encoder window > header window is the corrupt direction and must never be
+  emitted. Non-pow2 or above-v0-ceiling windows require `unp_ver = 1` (the
+  v0 COMP_INFO encoding cannot carry the fraction; the writer would floor
+  the base power).
+- A member that continues a solid run packs with a window that does not
+  exceed what the chain already carries (shrink-or-equal); run heads are
+  free. Per-file pow2 clamping applies to non-solid fresh members only, on
+  both prepare paths identically.
+- Intentionally NOT this table: the raw block-codec ABI defaults
+  (`openrar_compress`/`openrar_compress2` on the DLL and WASM surfaces,
+  `Compressor50::compress_buffer`'s C++ default — 2 MiB, mirrored by their
+  decompress counterparts; `StreamEncoder`/`StreamDecoder` — 4 MiB pair;
+  `buffer_archive` and `openrar_stream_create` explicit caller-chosen
+  windows). Those are headerless codec surfaces with their own frozen
+  defaults, not archive-member packing.
