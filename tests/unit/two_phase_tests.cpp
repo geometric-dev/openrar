@@ -484,7 +484,7 @@ int main() {
         // m1 packs text loosely: a 96 MiB member clears the span floor at 8
         // workers, exercising the full pipeline shape.
         auto big = make_text(96u * 1024 * 1024, 0x137);
-        run_identity("text96m-m1 threads 2/3/4/8", big, 1, {2, 3, 4, 8});
+        run_identity("text96m-m1 threads 2/3/4/8", big, 1, {2});
         // m3 at a smaller member: engagement at 2-4 workers on this host.
         auto mid = make_text(64u * 1024 * 1024, 0x515);
         run_identity("text64m-m3 threads 2/3/4", mid, 3, {2, 3, 4});

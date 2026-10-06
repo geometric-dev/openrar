@@ -208,6 +208,11 @@ Windows 11, WinRAR 7.20 x64.
 - **Compression at the default `-m3`: 1.3–2.0x faster than WinRAR**, ratios
   within ~3%. **`-m5` is now faster than WinRAR too (1.4x)** — v1.30 was
   2.3x slower (match-finder walk depth, see PERFORMANCE.md).
+- **Extraction parallelism (v1.37.0): `-mtN` now parallelizes single-member
+  extraction** via two-phase decode (parallel symbol spans + serial window
+  apply through one shared engine; byte-identical output). Measured
+  1.2-1.35x on decode-bound 64 MiB text at `-mt4` (2C/4T host), with
+  no-regression on small/stored/zeros members; see PERFORMANCE.md.
 - **Multi-threading (`-mtN`) was switched back on in v1.32.0** after an
   inverted enablement condition left it disabled for all filter-free input —
   so the `-mt4` figures above predate the fix and the published 1.48x
