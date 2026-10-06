@@ -4,6 +4,7 @@
 // MT/ST byte-identity corpus.
 #include "../../src/compress/compressor50.hpp"
 #include "../../src/compress/decompressor50.hpp"
+#include "../../src/compress/parallel_decode.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -80,6 +81,8 @@ bool roundtrip_ok(const std::vector<core::byte>& packed, const std::vector<core:
 } // namespace
 
 int main() {
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
@@ -397,6 +400,148 @@ int main() {
             std::cout << "[PASS] span-records identity: " << c.name
                       << " (splits 1/2/3/4/8 + dest-crossing)\n";
         }
+    }
+
+    // ── M3: driver gate matrix (each gate individually forces sequential) ───
+    {
+        _putenv("OPENRAR_NO_PARALLEL_DECODE=");
+        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+
+        unsigned w = 0;
+        const size_t MB = 1024 * 1024;
+        // Baseline engagement.
+        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, &w));
+        assert(w >= 2 && w <= 8);
+        // G1: solid entries never engage.
+        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, true, nullptr));
+        // G2 flavor: v1 (446-table, > 4 GiB window) stays sequential.
+        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 5ULL * 1024 * 1024 * 1024, false,
+                                           nullptr));
+        // G3: packed amortization floor.
+        assert(!should_use_parallel_decode(4 * MB, 64 * MB, 0x200000, false, nullptr));
+        // Degenerate sizes.
+        assert(!should_use_parallel_decode(32 * MB, 0, 0x200000, false, nullptr));
+        assert(!should_use_parallel_decode(0, 64 * MB, 0x200000, false, nullptr));
+        // D9 kill switch.
+        _putenv("OPENRAR_NO_PARALLEL_DECODE=1");
+        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, nullptr));
+        _putenv("OPENRAR_NO_PARALLEL_DECODE=");
+        // F7: single-thread override.
+        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=1");
+        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, nullptr));
+        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+        std::cout << "[PASS] driver gate matrix\n";
+    }
+
+    // ── M3: MT/ST byte- AND chunk-identity through the real driver ──────────
+    // The driver's pipeline (workers + pipelined applier) must reproduce the
+    // sequential decoder's emission exactly — including callback chunk
+    // boundaries, which the shared apply engine makes structural.
+    {
+        _putenv("OPENRAR_NO_PARALLEL_DECODE=");
+        auto chunks_decode = [&](const std::vector<core::byte>& packed, size_t plain_size,
+                                 size_t win, bool parallel, std::vector<core::byte>& out,
+                                 std::vector<size_t>& chunk_sizes,
+                                 ParallelDecodeDiag* diag) -> bool {
+            Decompressor50 seq(win);
+            out.clear();
+            chunk_sizes.clear();
+            auto cb = [&](const core::byte* p, size_t n) -> bool {
+                out.insert(out.end(), p, p + n);
+                chunk_sizes.push_back(n);
+                return true;
+            };
+            if (parallel)
+                return decode_entry(packed.data(), packed.size(), plain_size, win, cb, diag);
+            return seq.decompress(packed.data(), packed.size(), plain_size, false, cb);
+        };
+
+        auto run_identity = [&](const char* name, std::vector<core::byte>& plain, int method,
+                                std::vector<unsigned> thread_counts) {
+            std::vector<core::byte> packed;
+            assert(Compressor50::compress_buffer(plain.data(), plain.size(), packed, method,
+                                                 0x200000));
+            std::vector<core::byte> seq_out, par_out;
+            std::vector<size_t> seq_chunks, par_chunks;
+            assert(
+                chunks_decode(packed, plain.size(), 0x200000, false, seq_out, seq_chunks, nullptr));
+            for (unsigned threads : thread_counts) {
+                const std::string forced =
+                    "OPENRAR_PARALLEL_DECODE_THREADS=" + std::to_string(threads);
+                _putenv(forced.c_str());
+                ParallelDecodeDiag diag;
+                assert(chunks_decode(packed, plain.size(), 0x200000, true, par_out, par_chunks,
+                                     &diag));
+                assert(diag.engaged); // the identity rows require engagement
+                assert(!diag.fell_back);
+                assert(par_out == seq_out);
+                assert(par_chunks == seq_chunks); // chunk-identity [R1]
+                _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+            }
+            std::cout << "[PASS] driver MT/ST identity: " << name << "\n";
+        };
+
+        // m1 packs text loosely: a 96 MiB member clears the span floor at 8
+        // workers, exercising the full pipeline shape.
+        auto big = make_text(96u * 1024 * 1024, 0x137);
+        run_identity("text96m-m1 threads 2/3/4/8", big, 1, {2, 3, 4, 8});
+        // m3 at a smaller member: engagement at 2-4 workers on this host.
+        auto mid = make_text(64u * 1024 * 1024, 0x515);
+        run_identity("text64m-m3 threads 2/3/4", mid, 3, {2, 3, 4});
+    }
+
+    // ── M3: hostile fallback + filter-bearing member through the driver ─────
+    {
+        // F1: a truncated member fails the pre-scan; decode_entry falls back
+        // to the sequential path, whose verdict (failure) is the answer.
+        auto plain = make_text(64u * 1024 * 1024, 0x91);
+        std::vector<core::byte> packed;
+        assert(Compressor50::compress_buffer(plain.data(), plain.size(), packed, 3, 0x200000));
+        // 2 workers: the truncated stream still clears the G3 floor so the
+        // pre-scan (not the gate) is what fails.
+        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=2");
+        {
+            std::vector<core::byte> trunc(packed.begin(), packed.begin() + packed.size() / 2);
+            ParallelDecodeDiag diag;
+            auto cb = [&](const core::byte*, size_t) -> bool {
+                return true;
+            };
+            assert(!decode_entry(trunc.data(), trunc.size(), plain.size(), 0x200000, cb, &diag));
+            assert(diag.fell_back);
+        }
+        // Filter-bearing member: the PE-like corpus engages E8 pretransform
+        // tokens; the applier resolves them through the engine queue.
+        {
+            auto pe = make_pe_like(64u * 1024 * 1024, 99);
+            std::vector<core::byte> packed_pe;
+            assert(Compressor50::compress_buffer(pe.data(), pe.size(), packed_pe, 3, 0x200000));
+            // Confirm the corpus actually bears filters.
+            Decompressor50 ps(0x200000);
+            Decompressor50::PrescanTimeline tl;
+            assert(ps.prescan_member(packed_pe.data(), packed_pe.size(), tl));
+            std::vector<core::byte> seq_out, par_out;
+            std::vector<size_t> seq_chunks, par_chunks;
+            auto collect = [&](std::vector<core::byte>& out, std::vector<size_t>& chunks) {
+                return [&](const core::byte* p, size_t n) -> bool {
+                    out.insert(out.end(), p, p + n);
+                    chunks.push_back(n);
+                    return true;
+                };
+            };
+            {
+                Decompressor50 seq(0x200000);
+                assert(seq.decompress(packed_pe.data(), packed_pe.size(), pe.size(), false,
+                                      collect(seq_out, seq_chunks)));
+            }
+            ParallelDecodeDiag diag;
+            assert(decode_entry(packed_pe.data(), packed_pe.size(), pe.size(), 0x200000,
+                                collect(par_out, par_chunks), &diag));
+            assert(diag.engaged && !diag.fell_back);
+            assert(par_out == seq_out);
+            assert(par_chunks == seq_chunks);
+        }
+        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+        std::cout << "[PASS] driver hostile fallback + filter member identity\n";
     }
 
     std::cout << "All two_phase_tests passed.\n";
