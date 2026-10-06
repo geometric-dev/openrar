@@ -188,6 +188,26 @@ Extraction is the one axis where OpenRAR trails the reference engines
 byte-exact in every direction (verified per config above and by the
 24-stage interop gate).
 
+### Two-phase parallel decode (v1.37.0)
+
+Single-member extraction engages the two-phase driver when `-mtN` (N >= 2)
+is requested and the member clears the gating rules: symbol spans decode
+on worker threads while one applier applies records to the window through
+the same engine as the sequential decoder (byte- AND chunk-identical
+output). Paired-delta protocol (min-of-15, alternating order, 2C/4T
+laptop), 64 MiB text members:
+
+| member | sequential | `-mt4` | ratio |
+|---|---:|---:|---:|
+| Rar 7.20-made m3 -md2m | 786-919 ms | 625-760 ms | **1.21-1.26x** |
+| Rar 7.20-made m3 -md128m | 976-1008 ms | 723-747 ms | **1.35x** |
+| OpenRAR-made m3 -md2m | 819-1169 ms | 660-928 ms | **1.14-1.26x** |
+
+No-regression rows (4-block member, stored, zeros, `-mt1`): 0.96-1.09x.
+The serial apply+flush+CRC+write stage (0.55-0.62 of sequential on this
+host) is the structural floor; the win grows with core count. Full record:
+`docs/v1.37.0-two-phase-implementation-plan.md` M4.
+
 ## Highlights
 
 - **Compression at the default `-m3`: OpenRAR is 1.3–2.0x faster than

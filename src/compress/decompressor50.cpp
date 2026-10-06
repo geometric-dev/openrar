@@ -428,6 +428,11 @@ bool Decompressor50::ApplyEngine::flush_plain_up_to(size_t target, size_t total_
         size_t max_contig = win_size_ - circ_start;
         if (chunk > max_contig) chunk = max_contig;
 
+        if (chunk == 0) {
+            std::fprintf(stderr, "FLUSH CHUNK0 last_flushed=%zu target=%zu total=%zu\n",
+                         last_flushed_, target, total_written);
+            std::abort();
+        }
         if (cb && !cb(&window_[circ_start], chunk)) {
             return false;
         }
@@ -1086,7 +1091,15 @@ bool Decompressor50::initialize_from_description(const PrescanDescription& desc)
 bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* src, size_t src_size,
                                  size_t dest_size, uint32_t first_block, uint32_t last_block,
                                  size_t rec_cap, SpanRecords& out) {
-    out = SpanRecords{};
+    // Capacity-preserving reset: callers that reuse a SpanRecords across
+    // spans (the pipeline workers, the census probe) keep the record/pool
+    // buffers warm instead of re-allocating per span.
+    out.recs.clear();
+    out.lit_pool.clear();
+    out.out_lower_bound = 0;
+    out.crossed_hint = false;
+    out.saw_last_block = false;
+    out.ok = false;
     if (src == nullptr || tl.blocks.empty() || first_block >= tl.blocks.size() ||
         last_block >= tl.blocks.size() || first_block > last_block) {
         last_error_ = DecompressErrorCode::InvalidInput;
@@ -1351,11 +1364,41 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
         if (total_written >= dest_size) break; // applier clamp point [R8]
         auto tag = static_cast<OpRecord::Tag>(r.tag);
         if (tag == OpRecord::Tag::Lit) {
-            for (core::uint32 i = 0; i < r.aux; ++i) {
-                if (total_written >= dest_size) break;
-                engine_.write_literal(sr.lit_pool[r.b + i]);
-                ++total_written;
-                if (!cadence()) return false;
+            // Bulk literal copy: wrap-aware memcpys straight from the record
+            // pool, segmented at the window edge AND at the sequential
+            // decoder's 64 KiB flush cadence points — the flush fires at the
+            // exact byte it fires at in the sequential loop, so callback
+            // chunk boundaries stay identical (M0/R1 invariant).
+            size_t remaining = r.aux;
+            if (remaining > dest_size - total_written) remaining = dest_size - total_written;
+            const core::byte* srcp = sr.lit_pool.data() + r.b;
+            while (remaining > 0) {
+                size_t stretch = engine_.win_size_ - engine_.win_pos_;
+                if (stretch > remaining) stretch = remaining;
+                // Cadence segmentation only while the flush cursor is inside
+                // the current window: with a PENDING FILTER, flush_pending
+                // stops at the region start and freezes last_flushed_ below
+                // total_written (the sequential per-byte loop just re-attempts
+                // and emits nothing) - clamping to a wrapped to_cadence there
+                // would zero the stretch and spin forever. The post-copy
+                // flush attempt below still fires at the same positions, so
+                // callback chunk boundaries are unchanged.
+                const size_t pending = total_written - engine_.last_flushed_;
+                if (pending < 65536) {
+                    const size_t to_cadence = 65536 - pending;
+                    if (to_cadence < stretch) stretch = to_cadence;
+                }
+                std::memcpy(engine_.window_.data() + engine_.win_pos_, srcp, stretch);
+                engine_.win_pos_ = engine_.wrap_up(engine_.win_pos_ + stretch);
+                engine_.unp_ptr_ = engine_.wrap_up(engine_.unp_ptr_ + stretch);
+                if (engine_.unp_ptr_ == 0) engine_.first_win_done_ = true;
+                srcp += stretch;
+                total_written += stretch;
+                remaining -= stretch;
+                if (total_written - engine_.last_flushed_ >= 65536) {
+                    if (!engine_.flush_pending(false, 0, total_written, dest_size, flush_cb))
+                        return false;
+                }
             }
             continue;
         }
