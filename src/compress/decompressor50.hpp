@@ -184,6 +184,10 @@ public:
         uint32_t header_len{0}; // header bytes (flags + check + size)
         uint32_t block_size{0}; // payload bytes after the header
         uint32_t desc_id{0};    // description in force for this block
+        uint32_t token_bits{0}; // bits from src_byte to the block's first token
+                                // (header + description); a worker that builds
+                                // tables from the recorded description [R10]
+                                // skips here instead of re-parsing the bits
         bool table_present{false};
         bool last_block{false};
         int block_bit_size{0};
@@ -214,6 +218,59 @@ public:
     // the failure verdict. Call on a scratch instance (like the parked
     // scout): read_tables mutates this instance's table state.
     bool prescan_member(const core::byte* src, size_t src_size, PrescanTimeline& out);
+
+    // ── Phase 1: operation records (plan M2, Gate 0 §0 record set) ──────────
+    //
+    // One wire token per record, in span-relative token order. 12 bytes:
+    // {tag, aux, a, b}. The v0 flavor is gated (win_size <= 4 GiB), so a
+    // resolved distance fits u32; v1-flavor members (446 tables, > 4 GiB
+    // windows) take the sequential path.
+    struct OpRecord {
+        enum class Tag : core::uint8 {
+            Lit = 0,    // aux = count (1..255), b = literal-pool offset
+            Match = 1,  // a = distance (resolved, u32), b = length (ladder applied)
+            Rep = 2,    // aux = index 0..3, a = RD length (no ladder)
+            R257 = 3,   // no payload: applier re-emits (old_dist[0], last_length)
+            Filter = 4, // a = raw start delta, b = length (post-clamp), aux = type | ((ch-1)<<3)
+        };
+        core::uint8 tag;
+        core::uint8 aux;
+        core::uint32 a;
+        core::uint32 b;
+    };
+    static_assert(sizeof(OpRecord) == 12, "OpRecord layout is part of the span contract");
+
+    // One span's phase-1 output. Record memory is bounded by the driver's
+    // per-span cap (review R2/G5); overflow fails the span => sequential
+    // fallback, never OOM.
+    struct SpanRecords {
+        std::vector<OpRecord> recs;
+        std::vector<core::byte> lit_pool; // Lit runs point here
+        size_t out_lower_bound{0};        // wire output length, a LOWER bound:
+                                          // slot-257 tokens contribute their
+                                          // last_length, which a span worker
+                                          // cannot know — the applier is the
+                                          // sole authority for stop/clamp [R8]
+        bool crossed_hint{false};         // out_lower_bound reached dest_size
+        bool saw_last_block{false};
+        bool ok{false};
+    };
+
+    // Builds the four token decoders from a pre-scanned description — the
+    // same product read_tables would build (review R10: workers never
+    // re-parse description bits).
+    bool initialize_from_description(const PrescanDescription& desc);
+
+    // Phase-1 span worker: decodes tokens of blocks [first_block,
+    // last_block] (inclusive, from the pre-scan timeline) into records.
+    // No window, no rep-state dependency, no output writes. Position-free
+    // validity only (dist = 0 / dist > win_size fails the span; everything
+    // position-dependent is the applier's sequential check set). Each wire
+    // header is verified against the timeline (F6 detector). rec_cap bytes
+    // bound records + literal pool. Call on a scratch instance per span.
+    bool decode_span(const PrescanTimeline& tl, const core::byte* src, size_t src_size,
+                     size_t dest_size, uint32_t first_block, uint32_t last_block, size_t rec_cap,
+                     SpanRecords& out);
 
 #ifdef OPENRAR_CROSS_VALIDATE
     // Seed the decompressor with the expected original source bytes.
