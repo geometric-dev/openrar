@@ -466,6 +466,7 @@ if(NOT EMSCRIPTEN)
     endfunction()
 
     add_openrar_test(compress_tests tests/unit/compress_tests.cpp)
+    add_openrar_test(two_phase_tests tests/unit/two_phase_tests.cpp)
     add_openrar_test(bitreader_stream_tests tests/unit/bitreader_stream_tests.cpp)
     add_openrar_test(parallel_compress_tests tests/unit/parallel_compress_tests.cpp)
 

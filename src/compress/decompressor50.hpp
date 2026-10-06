@@ -170,6 +170,51 @@ public:
     bool decompress_to_vector(const core::byte* src, size_t src_size, std::vector<core::byte>& out,
                               bool solid = false);
 
+    // ── v1.37.0 two-phase parallel decode (docs/v1.37.0-two-phase-*.md) ────
+    //
+    // Phase 0: the pre-scan. A parse-only walk of the packed stream's block
+    // headers (the decoder's own read_block_header/read_tables), producing
+    // the block timeline (per-block bit positions + description in force)
+    // phase-1 span workers claim. NO tokens are decoded: the symbol parse is
+    // stateless given the tables (Gate 0 §0), so a worker starting at block
+    // i needs only the timeline and the parsed description — never rep
+    // state, output position, or any prior token.
+    struct PrescanBlock {
+        size_t src_byte{0};     // packed-stream byte offset of the header
+        uint32_t header_len{0}; // header bytes (flags + check + size)
+        uint32_t block_size{0}; // payload bytes after the header
+        uint32_t desc_id{0};    // description in force for this block
+        bool table_present{false};
+        bool last_block{false};
+        int block_bit_size{0};
+    };
+
+    struct PrescanDescription {
+        std::vector<core::byte> lengths; // cur_table_size_ code lengths
+        bool extra_dist{false};          // 446-entry table (RAR7 >4 GiB dict)
+    };
+
+    // Hostile-stream cap (review R2): minimal 3-byte headers would otherwise
+    // force O(packed) timeline entries with ~16x memory amplification.
+    // Overflow => pre-scan failure => sequential fallback.
+    static constexpr size_t PRESCAN_MAX_BLOCKS = 1u << 22; // 4 Mi blocks
+
+    struct PrescanTimeline {
+        std::vector<PrescanBlock> blocks;
+        std::vector<PrescanDescription> descriptions;
+        size_t packed_extent{0}; // byte offset just past the last block's payload
+        bool saw_last_block{false};
+        bool ok{false};
+    };
+
+    // Fails fail-closed on any framing anomaly (bad header checksum, size
+    // overrun, description parse error, block-count cap). The scan is at
+    // least as strict as the sequential framing walk (it reuses the same
+    // readers); a member it rejects goes to the sequential path, which owns
+    // the failure verdict. Call on a scratch instance (like the parked
+    // scout): read_tables mutates this instance's table state.
+    bool prescan_member(const core::byte* src, size_t src_size, PrescanTimeline& out);
+
 #ifdef OPENRAR_CROSS_VALIDATE
     // Seed the decompressor with the expected original source bytes.
     // When enabled, copy_match will verify that all dictionary references
