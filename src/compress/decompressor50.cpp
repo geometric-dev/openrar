@@ -1049,6 +1049,7 @@ bool Decompressor50::prescan_member(const core::byte* src, size_t src_size, Pres
         b.header_len = static_cast<uint32_t>(header.header_size);
         b.block_size = static_cast<uint32_t>(payload);
         b.desc_id = cur_desc;
+        b.token_bits = static_cast<uint32_t>(reader.bit_pos());
         b.table_present = header.table_present;
         b.last_block = header.last_block_in_file;
         b.block_bit_size = header.block_bit_size;
@@ -1060,6 +1061,257 @@ bool Decompressor50::prescan_member(const core::byte* src, size_t src_size, Pres
         }
     }
     out.packed_extent = pos;
+    out.ok = true;
+    return true;
+}
+
+bool Decompressor50::initialize_from_description(const PrescanDescription& desc) {
+    use_extra_dist_ = desc.extra_dist;
+    cur_table_size_ = use_extra_dist_ ? 446 : 430;
+    if (desc.lengths.size() != cur_table_size_) {
+        last_error_ = DecompressErrorCode::InvalidInput;
+        last_error_str_ = "recorded description length mismatch";
+        return false;
+    }
+    std::memcpy(table_, desc.lengths.data(), cur_table_size_);
+    const size_t cur_dc = use_extra_dist_ ? 80 : 64;
+    if (!ld_decoder_.build(table_, 306)) return false;
+    if (!dd_decoder_.build(table_ + 306, cur_dc)) return false;
+    if (!ldd_decoder_.build(table_ + 306 + cur_dc, 16)) return false;
+    if (!rd_decoder_.build(table_ + 306 + cur_dc + 16, 44)) return false;
+    tables_ready_ = true;
+    return true;
+}
+
+bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* src, size_t src_size,
+                                 size_t dest_size, uint32_t first_block, uint32_t last_block,
+                                 size_t rec_cap, SpanRecords& out) {
+    out = SpanRecords{};
+    if (src == nullptr || tl.blocks.empty() || first_block >= tl.blocks.size() ||
+        last_block >= tl.blocks.size() || first_block > last_block) {
+        last_error_ = DecompressErrorCode::InvalidInput;
+        last_error_str_ = "span block range out of bounds";
+        return false;
+    }
+    // Slot-257's emitted length and rep distances are APPLIER state; the
+    // worker tracks none of it (Gate 0 section 0: the symbol parse is
+    // stateless). Only bit positions, tables, and the record buffers live
+    // here. total_local is the span-relative output LOWER bound (257
+    // contributes 0 - its length is unknowable without prior tokens) and
+    // feeds only the crossed_hint, never any semantic decision [R8].
+    tables_ready_ = false;
+    size_t total_local = 0;
+    size_t run_start = static_cast<size_t>(-1); // lit_pool offset of the open literal run
+    core::uint32 run_count = 0;
+    auto rec_bytes = [&]() {
+        return out.recs.size() * sizeof(OpRecord) + out.lit_pool.size();
+    };
+    auto close_run = [&]() {
+        if (run_count == 0) return;
+        OpRecord r;
+        r.tag = static_cast<core::uint8>(OpRecord::Tag::Lit);
+        r.aux = static_cast<core::uint8>(run_count);
+        r.a = 0;
+        r.b = static_cast<core::uint32>(run_start);
+        out.recs.push_back(r);
+        run_count = 0;
+        run_start = static_cast<size_t>(-1);
+    };
+    auto push_lit = [&](core::uint32 slot) {
+        if (run_count == 0) run_start = out.lit_pool.size();
+        out.lit_pool.push_back(static_cast<core::byte>(slot));
+        ++run_count;
+        ++total_local;
+        if (run_count == 255) close_run();
+    };
+
+    for (uint32_t bi = first_block; bi <= last_block; ++bi) {
+        const PrescanBlock& expect = tl.blocks[bi];
+        if (expect.src_byte >= src_size) return false;
+        BitReader reader(src + expect.src_byte, src_size - expect.src_byte);
+        BlockHeader header;
+        if (!read_block_header(reader, header)) return false;
+        // F6 detector: the wire header must match the pre-scan record.
+        if (static_cast<size_t>(header.header_size) != expect.header_len ||
+            (header.block_size > 0 ? static_cast<uint32_t>(header.block_size) : 0u) !=
+                expect.block_size ||
+            header.table_present != expect.table_present ||
+            header.last_block_in_file != expect.last_block ||
+            header.block_bit_size != expect.block_bit_size) {
+            last_error_ = DecompressErrorCode::InvalidInput;
+            last_error_str_ = "span header diverged from pre-scan timeline";
+            return false;
+        }
+        if (header.table_present && header.block_size != 0) {
+            // R10: build from the pre-scanned description; no bit re-parse.
+            // The description's bits still occupy the stream, so skip them:
+            // token_bits is where this block's tokens start.
+            if (expect.desc_id >= tl.descriptions.size()) return false;
+            if (!initialize_from_description(tl.descriptions[expect.desc_id])) return false;
+        } else if (!tables_ready_) {
+            last_error_ = DecompressErrorCode::InvalidInput;
+            last_error_str_ = "span starts on reuse block without tables";
+            return false;
+        }
+        // Skip header + (already-built) description bits down to the first
+        // token. consume_bits caps at the accumulator width (~57 bits), so
+        // long descriptions skip in chunks.
+        while (reader.bit_pos() < expect.token_bits) {
+            size_t remain = expect.token_bits - reader.bit_pos();
+            reader.consume_bits(static_cast<unsigned>(remain > 57 ? 57 : remain));
+        }
+        if (reader.bit_pos() != expect.token_bits) {
+            last_error_ = DecompressErrorCode::InvalidInput;
+            last_error_str_ = "span token-bit skip mismatch";
+            return false;
+        }
+
+        auto block_end_bit = [&](const BlockHeader& h) -> size_t {
+            if (h.block_size <= 0) return static_cast<size_t>(h.block_start) * 8;
+            return static_cast<size_t>(h.block_start + h.block_size - 1) * 8 +
+                   static_cast<size_t>(h.block_bit_size);
+        };
+        const size_t end_bit = block_end_bit(header);
+
+        while (reader.bit_pos() < end_bit && reader.bits_remaining() >= 1) {
+            if (rec_bytes() > rec_cap) {
+                last_error_ = DecompressErrorCode::AllocationFailed;
+                last_error_str_ = "span record pool cap exceeded (G5)";
+                return false;
+            }
+            core::uint32 slot = ld_decoder_.decode(reader);
+            if (slot < 256) {
+                push_lit(slot);
+                continue;
+            }
+            if (slot == 256) {
+                auto read_filter_data = [&](bool& ok) -> core::uint32 {
+                    if (reader.bits_remaining() < 2) {
+                        ok = false;
+                        return 0;
+                    }
+                    core::uint32 byte_cnt = reader.get_bits(2) + 1;
+                    core::uint32 val = 0;
+                    for (core::uint32 i = 0; i < byte_cnt; ++i) {
+                        if (reader.bits_remaining() < 8) {
+                            ok = false;
+                            return 0;
+                        }
+                        val |= (reader.get_bits(8) << (i * 8));
+                    }
+                    return val;
+                };
+                bool ok = true;
+                core::uint32 f_start = read_filter_data(ok);
+                core::uint32 f_len = ok ? read_filter_data(ok) : 0;
+                if (!ok) return false;
+                if (f_len > 0x400000) f_len = 0;
+                if (reader.bits_remaining() < 3) return false;
+                core::uint32 f_type = reader.get_bits(3);
+                core::uint32 f_ch = 1;
+                if (f_type == 0) {
+                    if (reader.bits_remaining() < 5) return false;
+                    f_ch = reader.get_bits(5) + 1;
+                }
+                close_run();
+                OpRecord r;
+                r.tag = static_cast<core::uint8>(OpRecord::Tag::Filter);
+                r.aux = static_cast<core::uint8>(f_type | ((f_ch - 1) << 3));
+                r.a = f_start; // raw delta as-read; applier resolves [R7]
+                r.b = f_len;
+                out.recs.push_back(r);
+                continue;
+            }
+            if (slot == 257) {
+                // No payload; the applier re-emits from its own rep state and
+                // counts the real length. The worker's bound stays a bound.
+                close_run();
+                OpRecord r;
+                r.tag = static_cast<core::uint8>(OpRecord::Tag::R257);
+                r.aux = 0;
+                r.a = 0;
+                r.b = 0;
+                out.recs.push_back(r);
+                continue;
+            }
+            if (slot >= 262) {
+                core::uint32 len = slot_to_length(reader, slot - 262);
+                if (reader.bits_remaining() < 1) return false;
+                core::uint32 dist_slot = dd_decoder_.decode(reader);
+                assert(dist_slot < (use_extra_dist_ ? 80 : 64) && "Distance slot out of bounds");
+                size_t distance = 1;
+                core::uint32 d_bits = 0;
+                if (dist_slot < 4) {
+                    distance += dist_slot;
+                    d_bits = 0;
+                } else {
+                    d_bits = dist_slot / 2 - 1;
+                    distance += static_cast<size_t>(2 | (dist_slot & 1)) << d_bits;
+                }
+                if (d_bits > 0) {
+                    if (d_bits >= 4) {
+                        if (d_bits > 4) {
+                            if (reader.bits_remaining() < d_bits - 4) return false;
+                            core::uint64 extra = 0;
+                            if (d_bits > 36) {
+                                extra = reader.get_bits64(d_bits - 4);
+                            } else {
+                                extra = reader.get_bits(d_bits - 4);
+                            }
+                            distance += static_cast<size_t>(extra) << 4;
+                        }
+                        if (reader.bits_remaining() < 1) return false;
+                        core::uint32 low = ldd_decoder_.decode(reader);
+                        distance += low;
+                    } else {
+                        if (reader.bits_remaining() < d_bits) return false;
+                        distance += reader.get_bits(d_bits);
+                    }
+                }
+                // The distance-band ladder applies HERE, exactly once: the
+                // record carries the adjusted length and the applier never
+                // re-applies it (Gate 0 section 0).
+                if (distance > 0x100) {
+                    ++len;
+                    if (distance > 0x2000) {
+                        ++len;
+                        if (distance > 0x40000) ++len;
+                    }
+                }
+                // Position-free validity only (Gate 0 section 4): the applier
+                // re-runs the full sequential check set at apply positions.
+                if (distance == 0 || distance > engine_.win_size_) return false;
+                close_run();
+                OpRecord r;
+                r.tag = static_cast<core::uint8>(OpRecord::Tag::Match);
+                r.aux = 0;
+                r.a = static_cast<core::uint32>(distance);
+                r.b = len;
+                out.recs.push_back(r);
+                total_local += len;
+                continue;
+            }
+            // slots 258..261: rep distances. No ladder (the sequential
+            // decoder applies none on this path); the applier resolves
+            // old_dist[idx] and rotates.
+            core::uint32 dist_num = slot - 258;
+            if (reader.bits_remaining() < 1) return false;
+            core::uint32 len_slot = rd_decoder_.decode(reader);
+            core::uint32 len = slot_to_length(reader, len_slot);
+            close_run();
+            OpRecord r;
+            r.tag = static_cast<core::uint8>(OpRecord::Tag::Rep);
+            r.aux = static_cast<core::uint8>(dist_num);
+            r.a = len;
+            r.b = 0;
+            out.recs.push_back(r);
+            total_local += len;
+        }
+        if (bi == last_block && expect.last_block) out.saw_last_block = true;
+    }
+    close_run();
+    out.out_lower_bound = total_local;
+    out.crossed_hint = total_local >= dest_size;
     out.ok = true;
     return true;
 }

@@ -196,6 +196,209 @@ int main() {
         std::cout << "[PASS] prescan block-count cap falls back (R2)\n";
     }
 
+    // ── M2: span-records semantics — any split replays to the same bytes ────
+    // A test-side interpreter consumes SpanRecords with continuous applier
+    // state (old_dist/last_length) across spans: the M3 applier's contract
+    // in miniature. Filter-bearing corpora wait for M3 (the engine's queue
+    // resolves deltas); here: filter-free corpora, every split shape.
+    {
+        struct MiniApplier {
+            std::vector<core::byte> out;
+            size_t old_dist[4] = {static_cast<size_t>(-1), static_cast<size_t>(-1),
+                                  static_cast<size_t>(-1), static_cast<size_t>(-1)};
+            size_t last_length = 0;
+            bool fail = false;
+            void copy(size_t dist, size_t len) {
+                if (dist == 0) {
+                    fail = true;
+                    return;
+                }
+                for (size_t i = 0; i < len; ++i) {
+                    if (dist > out.size()) {
+                        out.push_back(0); // first-window zero-fill, linear frame
+                    } else {
+                        out.push_back(out[out.size() - dist]);
+                    }
+                }
+            }
+        };
+        auto apply_span = [&](MiniApplier& ap, const Decompressor50::SpanRecords& sr,
+                              size_t dest_size) {
+            for (const auto& r : sr.recs) {
+                if (ap.out.size() >= dest_size) break; // applier clamp point [R8]
+                auto tag = static_cast<Decompressor50::OpRecord::Tag>(r.tag);
+                if (tag == Decompressor50::OpRecord::Tag::Lit) {
+                    for (core::uint32 i = 0; i < r.aux && ap.out.size() < dest_size; ++i) {
+                        ap.out.push_back(sr.lit_pool[r.b + i]);
+                    }
+                } else if (tag == Decompressor50::OpRecord::Tag::Match) {
+                    // last_length keeps the WIRE length (sequential pins it
+                    // before the dest clamp); the copy clamps at dest_size.
+                    ap.last_length = r.b;
+                    size_t dist = r.a;
+                    if (dist == 0) {
+                        ap.fail = true;
+                        return;
+                    }
+                    size_t len = r.b;
+                    if (len > dest_size - ap.out.size()) len = dest_size - ap.out.size();
+                    ap.copy(dist, len);
+                    ap.old_dist[3] = ap.old_dist[2];
+                    ap.old_dist[2] = ap.old_dist[1];
+                    ap.old_dist[1] = ap.old_dist[0];
+                    ap.old_dist[0] = dist;
+                } else if (tag == Decompressor50::OpRecord::Tag::Rep) {
+                    size_t idx = r.aux;
+                    size_t dist = ap.old_dist[idx];
+                    if (dist == static_cast<size_t>(-1) || dist == 0) {
+                        ap.fail = true;
+                        return;
+                    }
+                    for (size_t i = idx; i > 0; --i) ap.old_dist[i] = ap.old_dist[i - 1];
+                    ap.old_dist[0] = dist;
+                    ap.last_length = r.a;
+                    size_t len = r.a;
+                    if (len > dest_size - ap.out.size()) len = dest_size - ap.out.size();
+                    ap.copy(dist, len);
+                } else if (tag == Decompressor50::OpRecord::Tag::R257) {
+                    if (ap.last_length != 0) {
+                        size_t dist = ap.old_dist[0];
+                        if (dist == static_cast<size_t>(-1) || dist == 0) {
+                            ap.fail = true;
+                            return;
+                        }
+                        size_t len = ap.last_length;
+                        if (len > dest_size - ap.out.size()) len = dest_size - ap.out.size();
+                        ap.copy(dist, len);
+                    }
+                } else {
+                    ap.fail = true; // Filter: M3 (engine queue)
+                    return;
+                }
+            }
+        };
+
+        auto split_bounds = [](const Decompressor50::PrescanTimeline& tl, size_t n_spans) {
+            std::vector<std::pair<uint32_t, uint32_t>> spans;
+            size_t nb = tl.blocks.size();
+            for (size_t s = 0; s < n_spans; ++s) {
+                uint32_t first = static_cast<uint32_t>(nb * s / n_spans);
+                uint32_t last = static_cast<uint32_t>(nb * (s + 1) / n_spans) - 1;
+                if (!spans.empty() && first <= spans.back().second) continue;
+                spans.push_back({first, last});
+            }
+            return spans;
+        };
+
+        const size_t win = 0x200000;
+        struct Case {
+            const char* name;
+            std::vector<core::byte> plain;
+            int method;
+        };
+        std::vector<Case> cases = {
+            {"text8m", make_text(8 * M, 0x137), 3},
+            {"zeros4m", make_zeros(4 * M), 3}, // 257-heavy: span-start R257 rows
+        };
+        for (auto& c : cases) {
+            std::vector<core::byte> packed;
+            assert(Compressor50::compress_buffer(c.plain.data(), c.plain.size(), packed, c.method,
+                                                 win));
+            Decompressor50 ps(win);
+            Decompressor50::PrescanTimeline tl;
+            assert(ps.prescan_member(packed.data(), packed.size(), tl));
+
+            for (size_t n_spans : {size_t{1}, size_t{2}, size_t{3}, size_t{4}, size_t{8}}) {
+                auto spans = split_bounds(tl, n_spans);
+                MiniApplier ap;
+                size_t total_lower = 0;
+                for (auto& sp : spans) {
+                    Decompressor50 worker(win);
+                    Decompressor50::SpanRecords sr;
+                    // rec_cap: 16x span packed (the driver's G5 bound)
+                    size_t span_packed =
+                        tl.blocks[sp.second].src_byte + tl.blocks[sp.second].header_len +
+                        tl.blocks[sp.second].block_size - tl.blocks[sp.first].src_byte;
+                    size_t cap = span_packed * 16 + (16u << 20);
+                    assert(worker.decode_span(tl, packed.data(), packed.size(), c.plain.size(),
+                                              sp.first, sp.second, cap, sr));
+                    assert(sr.ok);
+                    // Filters never appear in these corpora.
+                    for (const auto& r : sr.recs) {
+                        assert(static_cast<Decompressor50::OpRecord::Tag>(r.tag) !=
+                               Decompressor50::OpRecord::Tag::Filter);
+                    }
+                    total_lower += sr.out_lower_bound;
+                    apply_span(ap, sr, c.plain.size());
+                    assert(!ap.fail);
+                }
+                if (ap.out != c.plain) {
+                    size_t d = 0;
+                    while (d < ap.out.size() && d < c.plain.size() && ap.out[d] == c.plain[d]) ++d;
+                    std::fprintf(stderr,
+                                 "DIVERGE %s split=%zu out=%zu plain=%zu at=%zu got=%02x "
+                                 "want=%02x | spans:",
+                                 c.name, n_spans, ap.out.size(), c.plain.size(), d,
+                                 d < ap.out.size() ? ap.out[d] : 0,
+                                 d < c.plain.size() ? c.plain[d] : 0);
+                    for (auto& sp : spans) std::fprintf(stderr, " [%u,%u]", sp.first, sp.second);
+                    std::fprintf(stderr, "\n");
+                    {
+                        Decompressor50 dbg(win);
+                        Decompressor50::SpanRecords sr;
+                        dbg.decode_span(tl, packed.data(), packed.size(), c.plain.size(), 0,
+                                        static_cast<uint32_t>(tl.blocks.size() - 1),
+                                        size_t{1} << 30, sr);
+                        for (size_t i = 0; i < 8 && i < sr.recs.size(); ++i) {
+                            const auto& r = sr.recs[i];
+                            std::fprintf(stderr, "rec[%zu] tag=%u aux=%u a=%u b=%u\n", i, r.tag,
+                                         r.aux, r.a, r.b);
+                        }
+                        std::fprintf(stderr, "pool[0..8]:");
+                        for (size_t i = 0; i < 8 && i < sr.lit_pool.size(); ++i)
+                            std::fprintf(stderr, " %02x", sr.lit_pool[i]);
+                        std::fprintf(stderr, "\n");
+                    }
+                    std::exit(1);
+                }
+                (void)total_lower;
+            }
+
+            // dest_size crossing row [R8]: applier clamps mid-record and
+            // discards the rest, exactly like the sequential stop.
+            {
+                const size_t dest = c.plain.size() * 3 / 5;
+                Decompressor50 seq(win);
+                std::vector<core::byte> seq_out;
+                size_t written = 0;
+                bool finished = false;
+                auto sink = [&](const core::byte* p, size_t n) -> bool {
+                    seq_out.insert(seq_out.end(), p, p + n);
+                    written += n;
+                    return true;
+                };
+                assert(seq.decompress(packed.data(), packed.size(), dest, false, sink, &written,
+                                      &finished));
+                assert(seq_out.size() == dest);
+
+                MiniApplier ap;
+                auto spans = split_bounds(tl, 4);
+                for (auto& sp : spans) {
+                    Decompressor50 worker(win);
+                    Decompressor50::SpanRecords sr;
+                    size_t cap = (16u << 20) + (1u << 20);
+                    assert(worker.decode_span(tl, packed.data(), packed.size(), dest, sp.first,
+                                              sp.second, cap, sr));
+                    apply_span(ap, sr, dest);
+                    assert(!ap.fail);
+                }
+                assert(ap.out == seq_out);
+            }
+            std::cout << "[PASS] span-records identity: " << c.name
+                      << " (splits 1/2/3/4/8 + dest-crossing)\n";
+        }
+    }
+
     std::cout << "All two_phase_tests passed.\n";
     return 0;
 }
