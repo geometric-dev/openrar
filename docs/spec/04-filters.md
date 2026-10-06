@@ -16,7 +16,7 @@ MainSlot == 256
   Channels    : if Type==0 (DELTA) then 5 bits (GetBits(5)+1) else 1
 ```
 
-* `BlockStart` is an offset relative to the current unpack position. The linear start in this file's output is `total_written_so_far + BlockStart`. The address fixup base for E8/E8E9/ARM (`file_offset`) is the linear file position including prior solid bytes: `solid_base + total_written_so_far + BlockStart`.
+* `BlockStart` is an offset relative to the current unpack position. The linear start in this file's output is `total_written_so_far + BlockStart`. The address fixup base for E8/E8E9/ARM (`file_offset`) is the offset WITHIN the current member: `total_written_so_far + BlockStart` — it does NOT include prior solid bytes. (Corrected in the v1.36.x arc: the earlier `solid_base + …` wording described our decoder's carried base; oracle verification against a solid multi-member archive with E8-filtered non-first members proved the per-member base — a carried base corrupts every such member.)
 * `BlockLength` is clamped: if `>0x400000` (4 MiB) it is forced to `0` (no-op filter).
 * `Type` values: `0=DELTA`, `1=E8`, `2=E8E9`, `3=ARM`, `4=AUDIO`, `5=RGB`, `6=ITANIUM`, `7=TEXT`. Only `0..3` are used by RAR5 encoders today; decoders must skip unknown types.
 * At most `8192` filters per file; excess must flush the write buffer (`UnpWriteBuf`) and reset.

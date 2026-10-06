@@ -263,6 +263,13 @@ private:
 
     std::vector<FilterEntry> filters_;
     core::uint64 file_base_{0}; // unpacked bytes of prior solid files in this group
+    // Absolute position where the current member started. The E8/E8E9/ARM
+    // transform base is the offset WITHIN the member (the reference resets
+    // it per member even on solid chains — oracle-verified, v1.36.x), so
+    // filter fixups subtract this from the accumulated position. Whole-
+    // stream solid calls are member starts; per-block solid calls continue
+    // the current member.
+    core::uint64 member_start_{0};
 
     DecompressErrorCode last_error_{DecompressErrorCode::Ok};
     std::string last_error_str_;
