@@ -27,6 +27,19 @@ inline uint64_t default_dict_size_for_method(uint32_t method) {
     }
 }
 
+// Full dictionary-window resolution shared by every archive pack path (the
+// non-volume prepare, the multivolume add, the CLI's solid-session and
+// workspace math): 1..15 is the legacy 128 KiB<<n scale, 0 selects the
+// method-tuned default, >15 is exact bytes. The result still goes through
+// snap_window_to_fci_grid() and the per-path pow2 file-size clamp — this
+// helper only owns the request-to-window mapping (v1.37 fix for the volume
+// path's flat 2 MiB default, question-log Entry 24).
+inline uint64_t resolve_dict_window_size(uint64_t dict_size, uint32_t method) {
+    if (dict_size >= 1 && dict_size <= 15) return 0x20000ULL << (dict_size - 1);
+    if (dict_size == 0) return default_dict_size_for_method(method);
+    return dict_size;
+}
+
 // Quantize a requested window to the FCI grid the header can represent
 // (power-of-two base + base/32 fractions, 128 KiB floor). Single copy shared
 // by the mutator's header bookkeeping and the CLI's solid-session

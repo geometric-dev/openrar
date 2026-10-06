@@ -134,13 +134,25 @@ MT on the corpus).
 
 | Config | Median | Archive |
 |---|---:|---:|
-| OpenRAR `-m3 -s -mt1` | **8.74 s** | 54.16 MB |
-| WinRAR `-m3 -s -mt1` | 17.73 s | 52.77 MB |
-| OpenRAR `-m3 -v32m -mt1` | **10.63 s** | 62.59 MB (2 parts) |
-| WinRAR `-m3 -v32m -mt1` | 16.61 s | 52.77 MB (2 parts) |
+| OpenRAR `-m3 -s -mt1` | **9.27 s** | 54.18 MB |
+| WinRAR `-m3 -s -mt1` | 18.38 s | 52.79 MB |
+| OpenRAR `-m3 -v32m -mt1` | **9.22 s** | 54.17 MB (2 parts) |
+| WinRAR `-m3 -v32m -mt1` | 17.16 s | 52.79 MB (2 parts) |
 
 Solid costs OpenRAR ~4% over plain m3 and WinRAR ~8% — parity in overhead.
-**OpenRAR is ~2.0x (solid) and ~1.6x (volumes) faster.**
+**OpenRAR is ~2.0x (solid) and ~1.9x (volumes) faster.**
+
+Multivolume sizes re-measured after the v1.37.4 window-default fix
+(question-log Entry 24): the volume add path used to default the compressor
+window to a flat 2 MiB for every method, which inflated this set to
+62.90 MB (+19.15% vs WinRAR's 52.79 MB) — the corpus's generated-code
+member packed 8.39 MB through `-v32m` where the non-volume path packs
+0.45 MB. With the method-tuned defaults shared with the non-volume path,
+the set lands at 54.17 MB (+2.61% vs WinRAR; slicing overhead only) and
+code.cpp returns to 0.45 MB / 8 MiB dictionary. The same-session
+non-volume rows are byte-identical to the pre-fix run, so the size change
+is attributable to the volume-path fix alone; the window's match-search
+cost shows within-run as volumes-vs-nonvolume median +2.3% -> +5.9%.
 
 ## Mixed multi-file corpus (153 MB, 37 files, `-m3 -mt4`)
 

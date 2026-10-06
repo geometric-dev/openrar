@@ -756,7 +756,7 @@ differs from reference behavior only on foreign archives whose padding
 completes a code. `scan_table_reuse.py` now reports the final-byte bit-count
 histogram so this stays measurable.
 
-### Entry 24 — The multivolume default window is 2 MiB regardless of method (perf-check finding, OPEN)
+### Entry 24 — The multivolume default window is 2 MiB regardless of method (perf-check finding, RESOLVED in v1.37.4)
 
 Found by the v1.37.2 perf-check benchmark's first full multivolume size
 row: `openrar a -m3 -v32m` produced a 62.9 MB volume set where the same
@@ -785,3 +785,55 @@ override, then re-run the interop gate (the window change alters packed
 streams) and re-record the volume rows. Scheduled as its own patch
 release: the change alters archive bytes, so it ships measured, not
 rushed.
+
+#### Entry 24 close-out — fixed and measured (v1.37.4)
+
+**Fix as shipped.** `add_file_to_archive_vol` resolves the window through
+`compress::resolve_dict_window_size` (`src/compress/compress_plan.hpp`) —
+one shared helper with `prepare_add_file` (1..15 legacy 128 KiB scale,
+0 = method-tuned default, >15 exact bytes), then the existing FCI snap and
+pow2 file-size clamp. The sibling sweep found and fixed two adjacent drifts
+in the same lines: the volume path treated `-md 1..15` as exact bytes (a
+1-byte window for `-md1 -v4m`), and it never set `unp_ver = 1`, so a
+non-pow2 or above-v0-ceiling window would have been written with the v0
+COMP_INFO encoding, which cannot carry the fraction — the header would
+silently floor below the encoder's match horizon (the v1.21.2 corrupt
+direction). It also gained a solid-run window clamp: a member continuing a
+solid chain packs with the chain's prior compressed window when smaller
+(shrink-or-equal is safe under every decoder model; run heads are free).
+The raw-codec ABI defaults (`openrar_compress`/WASM 2 MiB pairs,
+`StreamEncoder`/`StreamDecoder` 4 MiB pair) are self-consistent headerless
+surfaces — documented as intentionally separate in `docs/invariants.md`
+§7, not changed. The volume path's RAM profile stays O(window): one
+StreamEncoder (~5x window + 5 MiB) with packed bytes streamed to the spool
+file, i.e. the 64 MiB m5 default costs ~330 MiB transient, the same class
+the non-volume path already declares per entry and strictly less than its
+parallel path.
+
+**After numbers (same host, full `perf_vs_winrar.py` re-run, corpora
+fingerprint-identical; every archive cross-extracted by both engines).**
+
+| metric | before | after | prediction | verdict |
+|---|---|---|---|---|
+| `o_volumes` size | 62,900,354 B | **54,168,121 B** (−13.88%) | ~54.5–55.5 MB | ✓ |
+| `o_volumes` vs `w_volumes` (52,789,355 B) | +19.15% | **+2.61%** | ~+3% | ✓ |
+| code.cpp via volume path | 8.39 MB | **451,867 B, method 3, 8 MiB dict** | ~0.45–0.55 MB | ✓ |
+| non-volume `o_*` rows | — | all byte-identical (+0.00%) | byte-identical | ✓ |
+| `w_*` rows | — | all byte-identical (+0.00%) | identical | ✓ |
+| `o_volumes` median | 11.40 s | 9.22 s | "<2%" | ✗ partially |
+
+The timing prediction needs the honest reading: absolute medians moved
+with session-level machine variance (both engines' m3-ST rows ~21% faster
+this session, MT rows flat), so the window's true cost is the within-run
+volumes-vs-nonvolume ratio: **+2.3% → +5.9%** — the 8 MiB window's
+match-search cost is ~3.6% relative, more than the <2% predicted. Sizes
+were the contract; they landed. Extraction rows are within session noise
+(decode path untouched).
+
+**Tests.** `volume_tests` pins the shared table, per-method
+volume/non-volume header `win_size` agreement (m0..m5, dict 0), the pow2
+clamp agreement, the `-md` legacy/exact/non-pow2 (`unp_ver = 1`) rows, the
+3 MiB-redundancy-period regression (volume set within 1.2x of non-volume;
+fails against the 2 MiB default by construction), and the solid window
+clamp in both directions. 47/47 ctest green; full gate green (Release
+build + ctest + interop incl. multivolume cross-extraction). Entry closed.
