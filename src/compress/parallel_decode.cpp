@@ -3,6 +3,7 @@
 #include "../core/types.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +21,17 @@ constexpr size_t MIB = 1024 * 1024;
 // (review R3): spans = clamp(pack / 4 MiB, 2, 4 * workers); engagement
 // requires >= 3 spans so at least two symbol workers exist.
 constexpr size_t SPAN_PACKED_FLOOR = 4 * MIB;
+// Span topology (review R3, amended by measurement): the pipelined applier
+// overlaps apply with decode only when spans are fine enough - at the Gate
+// 0 probe's 5-span split the applier idles through the first span decode
+// and the tail serializes (measured 1.14x at -mt4 on 64 MiB text); at
+// ~1 MiB spans the overlap covers the whole member. Per-span fixed costs
+// (worker wakeup, table build from the recorded description, publish) are
+// tens of microseconds against a ~17 ms span decode - the original 4 MiB
+// floor amortized per-range state the single-pass designs needed; this
+// pipeline has none.
+constexpr size_t SPAN_TARGET_BYTES = 1 * MIB;
+constexpr size_t SPAN_COUNT_MAX = 32;
 // Per-span record cap (G5, review R2): records + literal pool together.
 // Real corpora measure 2-3x span output in the 12-byte record encoding;
 // 16x the span's packed bytes keeps every common shape inside the bound
@@ -108,7 +120,13 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
     }
 
     // ── Span split (R3): block boundaries nearest an even PACKED split ─────
-    size_t target_spans = std::clamp(src_size / debug_span_floor(), size_t{2}, size_t{4} * workers);
+    size_t target_spans = std::clamp(src_size / SPAN_TARGET_BYTES, size_t{3}, SPAN_COUNT_MAX);
+    // G3 keeps the amortization floor on the member (workers x floor).
+    const bool trace = std::getenv("OPENRAR_PD_TRACE") != nullptr;
+    if (src_size / workers < debug_span_floor()) {
+        if (diag) diag->fell_back = true;
+        return run_sequential();
+    }
     // A member with few blocks splits no further than its block count; the
     // floor stays 3 spans (a 2-span member has one symbol worker - the
     // black-box scaling record: a 4-block member does not scale).
@@ -207,19 +225,25 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
             const size_t rec_cap =
                 std::max(RECORD_CAP_MIN, RECORD_CAP_PACKED_MULTIPLE * span_packed);
             auto sr = std::make_unique<Decompressor50::SpanRecords>();
-            if (std::getenv("OPENRAR_PD_TRACE"))
-                std::fprintf(stderr, "[pd] w%u span %zu start\n", w, s);
+            const auto t0 = std::chrono::steady_clock::now();
             if (!wdec.decode_span(tl, src, src_size, dest_size, first, last, rec_cap, *sr)) {
                 set_failed(wdec.last_error_message());
                 return;
             }
-            if (std::getenv("OPENRAR_PD_TRACE"))
-                std::fprintf(stderr, "[pd] w%u span %zu decoded recs=%zu\n", w, s, sr->recs.size());
+            if (trace)
+                std::fprintf(
+                    stderr, "[pd] w%u span %zu decode %.1fms recs=%zu\n", w, s,
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                        .count(),
+                    sr->recs.size());
             std::unique_lock<std::mutex> lk(sync.mu);
             // Turn-ordered publish: `published` is the next span to publish,
             // so the applier can never observe a later span before an
             // earlier one (span_data[s] must be non-null when it consumes).
             // The in-flight gate bounds published-but-unconsumed spans.
+            if (trace)
+                std::fprintf(stderr, "[pd] w%u span %zu parked (published=%zu applier=%zu)\n", w, s,
+                             sync.published, sync.applier_pos);
             sync.cv.wait(lk, [&] {
                 return sync.cancelled || sync.failed ||
                        (s == sync.published && s < sync.applier_pos + MAX_IN_FLIGHT_AHEAD);
@@ -227,6 +251,9 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
             if (sync.cancelled || sync.failed) return;
             span_data[s] = std::move(sr);
             ++sync.published;
+            if (trace)
+                std::fprintf(stderr, "[pd] w%u publish %zu (published=%zu)\n", w, s,
+                             sync.published);
             lk.unlock();
             sync.cv.notify_all();
         }
@@ -250,11 +277,15 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
     }
 
     // ── Phase 2: the applier on the caller's thread ────────────────────────
+    const auto t_start = std::chrono::steady_clock::now();
+    if (trace) std::fprintf(stderr, "[pd] applier starting\n");
     Decompressor50 applier(win_size);
     bool applied_ok = applier.apply_begin();
+    if (trace) std::fprintf(stderr, "[pd] applier begin ok=%d\n", (int)applied_ok);
     size_t total = 0;
     bool aborted = false;
     if (applied_ok) {
+        if (trace) std::fprintf(stderr, "[pd] applier loop enter\n");
         for (size_t s = 0; s < nspans; ++s) {
             std::unique_ptr<Decompressor50::SpanRecords> sr;
             {
@@ -267,13 +298,19 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
                 }
                 sr = std::move(span_data[s]);
             }
-            if (std::getenv("OPENRAR_PD_TRACE"))
-                std::fprintf(stderr, "[pd] apply span %zu begin\n", s);
+            if (trace) std::fprintf(stderr, "[pd] apply got span %zu\n", s);
+            const auto ta = std::chrono::steady_clock::now();
             if (!applier.apply_span_records(*sr, dest_size, s + 1 == nspans, flush_cb, &total)) {
                 set_failed(applier.last_error_message());
                 aborted = true;
                 break;
             }
+            if (trace)
+                std::fprintf(
+                    stderr, "[pd] apply span %zu %.1fms total=%zu\n", s,
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ta)
+                        .count(),
+                    total);
             sr.reset(); // free records as soon as the span is consumed
             {
                 std::lock_guard<std::mutex> lk(sync.mu);
@@ -298,6 +335,12 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
     sync.cv.notify_all();
     join_all();
 
+    if (trace) {
+        const auto t_end = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "[pd] done nspans=%zu workers=%u total=%zu wall=%.1fms\n", nspans,
+                     workers, total,
+                     std::chrono::duration<double, std::milli>(t_end - t_start).count());
+    }
     if (aborted) {
         if (total == 0) {
             // F1/F2/F3 pre-emission failure: the sequential path owns the
