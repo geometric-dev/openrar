@@ -5,6 +5,76 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.38.0] - 2026-10-07
+
+The decode-kernel arc's founding premise was tested before implementation and
+measured false: the shipped 10-bit quick table + canonical slow path beats
+every flat-table variant (full-flat 17-45% slower; lazy-page sweep degrades
+monotonically — L1 working set, not branch count) and SIMD dispatch of the
+serial symbol stream is declined with the same evidence. The v1.34-era
+rebuild-trap arithmetic was corrected ~30x by measurement (+14.7 us/rebuild
+vs shipped 10.1 us, about +5.6 ms per 64 MiB member). The measured levers
+shipped instead: phase-1 record-emission slimming (span decode -8/-17/-25%
+on text/exelike/random with a no-record control row; two-phase `-mt4`
+ratios rose to 1.36-1.45x from 1.18-1.25x) and the filter-queue head cursor.
+A wrap-split memcpy region read — 24x on its isolated micro-bench — measured
++16% end-to-end and was declined; the second integrated-vs-microbench
+reversal this line has recorded. Independent format verification also
+dissolved the Entry 23 BlockBitSize concern: our token-start-check reader is
+reference-equivalent (question-log Entry 25). Decoder output is byte- and
+chunk-identical; the encoder is untouched (pack-side rows byte-identical;
+47/47 ctest; 25/25 interop). Records: `docs/v1.38.0-pre-analysis.md` +
+`docs/v1.38.0-implementation-plan.md`.
+
+### Changed
+
+- **Phase-1 record-emission slimming in the two-phase span worker.**
+  `decode_span` pre-reserves the record pool from the span's packed size
+  (the G5 cap still bounds and fails on the same token — the check is a
+  hoisted counter, representation only), accumulates literal runs in a
+  255-byte stack buffer appended with one insert, and tracks record bytes
+  incrementally (`src/compress/decompressor50.cpp` `decode_span`:
+  `close_run`/`push_lit`/record push sites). Span decode measured -8%
+  (text m3), -17% (exelike m3), -25% (random/stored) against the v1.37.4
+  build with the untouched no-record replica as the session control; the
+  warm-vs-cold allocation gap closed to zero, so the buffer-pool
+  contingency was not built. Two-phase `-mt4` ratios re-measured with the
+  slimmed workers: 1.36x (Rar-made m3 -md2m), 1.27-1.40x (Rar-made -md128m),
+  1.45x (OpenRAR-made m3 -md2m) — from 1.18-1.25x in the v1.37.2 record.
+- **Filter-queue head cursor.** `ApplyEngine::flush_pending` advances a
+  consumed-prefix cursor and compacts once per flush call instead of paying
+  an O(pending) `erase(begin())` shift per region; the push-side overlap
+  check and the 65536 pending bound are preserved
+  (`src/compress/decompressor50.cpp` `ApplyEngine::flush_pending`,
+  `src/compress/decompressor50.hpp` `ApplyEngine::filters_head_`). Measured
+  neutral at the tested scale (~16 pending regions); kept as the
+  principled queue discipline.
+
+### Declined (measured, recorded so nobody re-applies them)
+
+- **Flat 15-bit Huffman tables (lazy-page and full).** Hash-verified A/B in
+  `tools/decode_kernel_probe.cpp` against the real kernel's token stream:
+  the shipped structure wins on every corpus (full-flat +17-45% span time).
+- **SIMD dispatch of the symbol stream** (gather / dual-speculative /
+  GFNI): the serial dependency chain and the table working set dominate;
+  outside hardware analysis concurs (`docs/v1.38.0-pre-analysis.md` §5).
+- **Wrap-split memcpy filter-region read**: 24x on the isolated micro-bench,
+  +16% exelike sequential end-to-end — bisected, reverted, recorded
+  (`ApplyEngine::flush_pending` keeps the per-byte ring walk).
+
+### Documented
+
+- **Entry 23's BlockBitSize item closed as an explicit non-goal with the
+  corrected model**: the reference discipline is a token-start check — which
+  is what our decoder already does (`decompress_internal` /
+  `decode_span` `end_bit` gates); a byte-boundary reader would be strictly
+  negative. Three oracle experiments recorded for any future re-opening
+  (`docs/question-log.md` Entry 25).
+- Gate 0 probe shipped as a non-test tool (`tools/decode_kernel_probe.cpp`,
+  CMake target `decode_kernel_probe`); the divergence finder
+  (`tools/decode_kernel_debug.cpp`) is diagnostic-only and intentionally not
+  wired into the build.
+
 ## [1.37.4] - 2026-10-06
 
 Entry 24 (`docs/question-log.md`): the multivolume add path defaulted the
