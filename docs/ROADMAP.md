@@ -452,8 +452,31 @@ gate until dethroned by evidence).
   Gate 0 — `prepare_add_symlink_from_memory`), cv output-shaping switches
   (`-s`/`-v`/`-ts*`), FILECOPY default-materialization policy decision
   (deferred from v1.27).
+- **v1.37.0 — Two-phase intra-entry parallel decode: ✅ SHIPPED.** The
+  design-wall arc (below) re-scoped the roadmap lever to the mechanism
+  independent format verification identified; this arc shipped it: a
+  header-only pre-scan builds the block/table timeline; span workers
+  decode symbol spans into operation records (stateless parse, Gate 0
+  `docs/v1.37.0-two-phase-pre-analysis.md`); one applier consumes spans in
+  order through the SAME apply engine the sequential decoder drives (the
+  M0 extraction makes sequential/parallel drift structurally impossible);
+  turn-ordered publish through a bounded in-flight window. Byte- AND
+  chunk-identical emission, fail-safe-identical failure semantics
+  (pre-emission failures retry sequential with the fallback observable;
+  post-emission failures match sequential's own mid-stream contract).
+  Measured (paired-delta protocol, 2C/4T host): **1.21-1.36x at `-mt4`**
+  on decode-bound 64 MiB text (Rar-made and our streams; 1.35x at
+  128 MiB dict), no-regression on 4-block/stored/zeros/`-mt1` rows
+  (0.96-1.09x) — reference parity on this host, with the apply+consumer
+  serial stage (0.55-0.62 of sequential) as the structural floor and the
+  full analysis in the plan's M4 record. En-route: the solid-chain
+  E8/ARM transform-base defect (shipped as v1.36.16) and an applier
+  literal-path stall on filter-blocked flush cursors (caught by the
+  filter-bearing identity row, fixed pre-ship). MT-vs-ST differential
+  fuzzing in the roundtrip fuzzer; full record:
+  `docs/v1.37.0-two-phase-implementation-plan.md` M4.
 - **v1.37.0 — Intra-entry parallel decode driver: MEASURED AND RE-SCOPED
-  (design wall).** The arc ran its full Gate 0 (probes, two review rounds)
+  (design wall; superseded by the shipped two-phase arc above).** The arc ran its full Gate 0 (probes, two review rounds)
   and built three complete range-decode designs on a validated symbol-only
   scout pass (per-block rep/table/state checkpoints, 141/141 block-by-block
   equivalence with the sequential decoder). All three hit the same
