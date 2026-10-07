@@ -5,9 +5,20 @@
 #include "file_stream.hpp"
 
 #include <filesystem>
+#include <list>
 #include <map>
 
 namespace openrar::io {
+
+// ── Durability granularity (v1.39.0) ────────────────────────────────────────
+//
+// Two levels. `entry` is the shipped v1.24 contract: per-file journal record
+// sync, per-file temp flush, journal closed+unlinked at zero in-flight.
+// `batch` is the opt-in revision: record sync deferred to a boundary (every
+// 32 appends, LRU eviction, session teardown), no temp-data flush, journals
+// held for the session under an LRU cap. The durable-first ORDER (record
+// appended before the temp exists) is preserved in both modes.
+enum class DurabilityGranularity { Entry, Batch };
 
 // ── Atomic extraction foundation (v1.24.0 plan §2) ──────────────────────────
 //
@@ -100,10 +111,28 @@ public:
     // exists (gate-1 suite runs the containment tests through both paths).
     void force_containment_fallback_for_test() { containment_.force_walk_fallback_for_test(); }
 
+    // ── Durability policy (v1.39.0) ─────────────────────────────────────────
+    // `entry` (default) = the v1.24 contract, unchanged. `batch` = the
+    // opt-in revision: deferred record sync, no temp flush, session-held
+    // journals under an LRU cap. See DurabilityGranularity above.
+    void set_durability_granularity(DurabilityGranularity g) {
+        granularity_ = g;
+        if (g == DurabilityGranularity::Batch) configure_test_failure_hooks();
+    }
+    DurabilityGranularity durability_granularity() const { return granularity_; }
+
+    // Test-only failure hooks (v1.39.0 M2; failure-adding only, no-ops in
+    // entry mode): OPENRAR_TEST_BATCH_CRASH_AFTER=N kills the process after
+    // the Nth register_temp in batch mode; OPENRAR_TEST_FAIL_JOURNAL_SYNC=N
+    // fails the Nth journal sync. Both are read once at session creation.
+    void configure_test_failure_hooks();
+
 private:
     struct DirJournal {
         void* file = nullptr; // LockedFile (extraction_journal.cpp); opaque here
         unsigned in_flight = 0;
+        unsigned pending = 0; // batch mode: records appended since last sync
+        std::list<std::filesystem::path>::iterator lru_it; // valid when in lru_
     };
 
     static void journal_name(std::filesystem::path& out);
@@ -111,6 +140,29 @@ private:
     std::map<std::filesystem::path, DirJournal> journals_;
     std::map<std::filesystem::path, std::filesystem::path> journal_paths_;
     ContainmentRoot containment_;
+
+    // ── Batch-mode journal lifetime (v1.39.0, D2) ───────────────────────────
+    // Journals are held for the session under an LRU cap. The list is the
+    // access-order queue (front = evict next); the map stores list iterators
+    // for O(1) splice-on-access. An evicted journal is synced, closed, and
+    // unlinked. Teardown syncs, closes, and unlinks all.
+    static constexpr size_t kBatchJournalLruCap = 64;
+    static constexpr unsigned kBatchSyncBoundary = 32;
+    std::list<std::filesystem::path> lru_;
+    DurabilityGranularity granularity_ = DurabilityGranularity::Entry;
+
+    // Test-only failure-hook state (M2).
+    bool fail_next_sync_ = false;
+    unsigned sync_count_ = 0;
+    unsigned crash_after_ = 0;
+    unsigned register_count_ = 0;
+
+    // Batch-mode helpers (v1.39.0, D1/D2/D3).
+    void touch_journal(const std::filesystem::path& key);
+    bool append_record_deferred(void* file, const std::filesystem::path& temp_abs);
+    bool sync_journal(void* file);
+    void evict_journal(const std::filesystem::path& key);
+    void close_and_unlink(const std::filesystem::path& key);
 };
 
 // RAII temp writer: creates a crypto-random temp next to the destination,
@@ -150,7 +202,13 @@ public:
     //   NoClobber — fails atomically when the destination exists.
     // Terminal either way: on false the temp has already been disposed of
     // and the destination is untouched.
-    bool commit(CommitMode mode = CommitMode::ReplaceExisting);
+    // `flush_first` (v1.39.0): default true = today's behavior (temp data
+    // fsynced before the rename). The session's durability policy is the
+    // single decision point: batch mode always elides the flush (data
+    // durability is the OS writeback's — the reference-tool class), entry
+    // mode always flushes. An explicit flush_first=true from a caller is
+    // honored only in entry mode.
+    bool commit(CommitMode mode = CommitMode::ReplaceExisting, bool flush_first = true);
 
     // Closes and deletes the temp. The journal record becomes stale but is
     // harmless: the name no longer exists, and sweeps verify the shape.
