@@ -250,10 +250,20 @@ No-regression rows: stored 1.06x; `-mt1` parity 0.98x; small members
 (4-block 0.91x, zeros 0.88x) read slightly below the v1.37.2 band with
 absolute deltas of 6–34 ms on sub-300 ms operations. The serial
 apply+flush+CRC+write stage remains the structural floor on this host; the
-phase-1 win grows with core count. Extraction rows (section H re-recorded
-same session): OpenRAR ST 1.44 s / `-mt4` 0.77 s on our archive, 1.48 s /
-1.03 s on the WinRAR-made archive; UnRAR 0.43 s ST; WinRAR `-mt4` 0.32 s
-(compression rows byte-identical — the encoder is untouched).
+phase-1 win grows with core count.
+
+Extraction rows, full-matrix re-record on the v1.38.0 release binary
+(`tools/perf_vs_winrar.py` complete A–H run, 28 configs, cross-extraction
+verification 28/28): OpenRAR ST 0.94 s / `-mt4` 0.76 s on our archive,
+1.03 s / 0.66 s on the WinRAR-made archive; UnRAR 0.35 s ST; WinRAR
+`-mt4` 0.31 s. Session-drift disclosure: the reference engines also read
+~20% faster than the prior session in this run (UnRAR ST 0.43 → 0.35 s),
+so cross-session deltas are not the claim — the durable claims are the
+same-session paired measurements above. What the full matrix adds is the
+byte-stability contract: **all 21 compression rows byte-identical to the
+v1.37.4 run** (the encoder is untouched; archive sizes match to the byte),
+and OpenRAR-vs-UnRAR relative position on ST extraction moved from ~3.4x
+to ~2.7x behind in like-for-like sessions.
 
 ### Two-phase parallel decode (v1.37.0; plumbing corrected in v1.37.2)
 
