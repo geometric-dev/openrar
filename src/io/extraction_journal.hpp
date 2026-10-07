@@ -2,6 +2,7 @@
 #define OPENRAR_IO_EXTRACTION_JOURNAL_HPP
 
 #include "containment.hpp"
+#include "durability.hpp"
 #include "file_stream.hpp"
 
 #include <filesystem>
@@ -9,16 +10,6 @@
 #include <map>
 
 namespace openrar::io {
-
-// ── Durability granularity (v1.39.0) ────────────────────────────────────────
-//
-// Two levels. `entry` is the shipped v1.24 contract: per-file journal record
-// sync, per-file temp flush, journal closed+unlinked at zero in-flight.
-// `batch` is the opt-in revision: record sync deferred to a boundary (every
-// 32 appends, LRU eviction, session teardown), no temp-data flush, journals
-// held for the session under an LRU cap. The durable-first ORDER (record
-// appended before the temp exists) is preserved in both modes.
-enum class DurabilityGranularity { Entry, Batch };
 
 // ── Atomic extraction foundation (v1.24.0 plan §2) ──────────────────────────
 //
@@ -111,13 +102,31 @@ public:
     // exists (gate-1 suite runs the containment tests through both paths).
     void force_containment_fallback_for_test() { containment_.force_walk_fallback_for_test(); }
 
+    // Test hook: override the batch-mode journal-sync boundary (default 32).
+    // Lets the window-1 equivalence test prove that batch mode with
+    // sync-after-every-record produces the same journal content as entry mode.
+    void set_batch_sync_boundary_for_test(unsigned n) { batch_sync_boundary_ = n; }
+
     // ── Durability policy (v1.39.0) ─────────────────────────────────────────
     // `entry` (default) = the v1.24 contract, unchanged. `batch` = the
     // opt-in revision: deferred record sync, no temp flush, session-held
     // journals under an LRU cap. See DurabilityGranularity above.
     void set_durability_granularity(DurabilityGranularity g) {
+        if (g == granularity_) return;
         granularity_ = g;
-        if (g == DurabilityGranularity::Batch) configure_test_failure_hooks();
+        if (g == DurabilityGranularity::Batch) {
+            configure_test_failure_hooks();
+            // Journals created under entry mode were never tracked in the LRU;
+            // register them (map order = creation order) so eviction and
+            // touch_journal are safe after a late entry→batch transition.
+            for (auto& kv : journals_) {
+                if (!kv.second.lru_tracked) {
+                    lru_.push_back(kv.first);
+                    kv.second.lru_it = std::prev(lru_.end());
+                    kv.second.lru_tracked = true;
+                }
+            }
+        }
     }
     DurabilityGranularity durability_granularity() const { return granularity_; }
 
@@ -132,7 +141,8 @@ private:
         void* file = nullptr; // LockedFile (extraction_journal.cpp); opaque here
         unsigned in_flight = 0;
         unsigned pending = 0; // batch mode: records appended since last sync
-        std::list<std::filesystem::path>::iterator lru_it; // valid when in lru_
+        std::list<std::filesystem::path>::iterator lru_it; // valid when lru_tracked
+        bool lru_tracked = false; // true when lru_it is a valid iterator into lru_
     };
 
     static void journal_name(std::filesystem::path& out);
@@ -148,11 +158,12 @@ private:
     // unlinked. Teardown syncs, closes, and unlinks all.
     static constexpr size_t kBatchJournalLruCap = 64;
     static constexpr unsigned kBatchSyncBoundary = 32;
+    unsigned batch_sync_boundary_ = kBatchSyncBoundary; // overridable for tests
     std::list<std::filesystem::path> lru_;
     DurabilityGranularity granularity_ = DurabilityGranularity::Entry;
 
     // Test-only failure-hook state (M2).
-    bool fail_next_sync_ = false;
+    unsigned fail_at_sync_ = 0; // 0 = disabled; N = fail the Nth journal sync
     unsigned sync_count_ = 0;
     unsigned crash_after_ = 0;
     unsigned register_count_ = 0;
@@ -161,8 +172,9 @@ private:
     void touch_journal(const std::filesystem::path& key);
     bool append_record_deferred(void* file, const std::filesystem::path& temp_abs);
     bool sync_journal(void* file);
+    bool should_fail_next_sync();
     void evict_journal(const std::filesystem::path& key);
-    void close_and_unlink(const std::filesystem::path& key);
+    void evict_lru_journal();
 };
 
 // RAII temp writer: creates a crypto-random temp next to the destination,

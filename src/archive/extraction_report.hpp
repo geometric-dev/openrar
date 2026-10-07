@@ -52,6 +52,11 @@ struct ExtractionReport {
     bool verified = false;       // roundtrip verify outcome
     bool source_deleted = false; // -df outcome
 
+    // v1.39.0: durability granularity actually in effect ("entry" | "batch").
+    // Machine-surfaced so consumers can distinguish the contract revision.
+    std::string durability = "entry";
+    bool durability_kill_switch = false; // true when OPENRAR_NO_BATCH_DURABILITY overrode batch
+
     // Marks every entry still pending as unprocessed (abort semantics, plan
     // §5.4: entries processed before an abort keep their real status).
     void finalize_pending();

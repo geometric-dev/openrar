@@ -103,6 +103,11 @@ strictly independent of uncompressed entry size:
   the archive file").
 - The frozen `openrar_archive_extract_file_to_path` keeps its direct-write
   behavior; only the handle surface owns durability.
+- **[v1.39.0] DLL file-mode handles stay entry-granularity:** the per-call
+  `durable_write_to` session (`src/dll/dll_api.cpp:330`) is unchanged —
+  each DLL extraction call is its own run with the v1.24 entry contract.
+  No export is added; the batch granularity is CLI-only. The frozen
+  `openrar_archive_extract_file_to_path` is untouched (direct-write).
 - Pinned by: `atomic_durability_success`, `cancel_leaves_no_temp`,
   `destination_guard`.
 

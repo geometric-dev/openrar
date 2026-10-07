@@ -527,11 +527,11 @@ gate until dethroned by evidence).
 - **v1.39 – v1.43 — discovery pool (unsequenced).** Parallel CDC
   fingerprint pass, multi-volume no-data-area entries, WASM streaming
   encode, MSan/fuzz depth growth, dictionary auto-sizing, **durability
-  batching (security-Gate-0 candidate: batching the per-entry journal sync
-  takes stored-path extraction from ~205 MB/s toward the ~400 MB/s
-  I/O-bound ceiling — ~1.8-2x — and ~16% on text, at the price of coarser
-  crash-consistency granularity; default-off until the contract revision is
-  proven)**, and whatever the v1.31–v1.34 arcs surface. Deliberately
+  batching (✅ SHIPPED v1.39.0: two-level crash-consistency contract —
+  `entry` default unchanged, `batch` opt-in via `--durability=batch`/`-db`
+  with deferred journal sync + no temp flush; measured 1.99x stored /
+  1.18x text; default-off, kill switch `OPENRAR_NO_BATCH_DURABILITY=1`)**,
+  and whatever the v1.31–v1.34 arcs surface. Deliberately
   uncommitted: new findings outrank this list.
 
 Standing inputs to re-triage at each arc boundary: the deferred ledgers in

@@ -2340,15 +2340,15 @@ int emit_report_json(archive::ExtractionReport& report, int exit_code) {
     }
     return exit_code;
 }
-int extract_archive(const std::string& arc_path, const std::string& dest_dir, bool full_paths,
-                    const std::string& password = "", unsigned threads = 1,
-                    bool keep_broken = false, OverwriteMode overwrite_mode = OverwriteMode::Prompt,
-                    bool extract_symlinks = false,
-                    const std::vector<std::string>& exclude_patterns = {}, int extract_version = -1,
-                    const std::vector<std::string>& file_patterns = {},
-                    [[maybe_unused]] bool restore_owner = false, bool preserve_suid = false,
-                    bool use_mmap = true, bool xattr_security = false, bool propagate_motw = true,
-                    unsigned decode_threads = 0) {
+int extract_archive(
+    const std::string& arc_path, const std::string& dest_dir, bool full_paths,
+    const std::string& password = "", unsigned threads = 1, bool keep_broken = false,
+    OverwriteMode overwrite_mode = OverwriteMode::Prompt, bool extract_symlinks = false,
+    const std::vector<std::string>& exclude_patterns = {}, int extract_version = -1,
+    const std::vector<std::string>& file_patterns = {}, [[maybe_unused]] bool restore_owner = false,
+    bool preserve_suid = false, bool use_mmap = true, bool xattr_security = false,
+    bool propagate_motw = true, unsigned decode_threads = 0,
+    openrar::io::DurabilityGranularity durability = openrar::io::DurabilityGranularity::Entry) {
     // --json-summary (v1.24 M4, plan §5): stdout purity + machine report.
     if (g_json_stdout_only) set_prog_out(std::cerr);
     archive::ExtractionReport report;
@@ -2365,6 +2365,12 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     reader.set_keep_broken(keep_broken);
     reader.set_extract_symlinks(extract_symlinks);
     reader.set_restore_xattr_security(xattr_security);
+    reader.set_durability_granularity(durability); // v1.39.0: --durability / -db
+    // v1.39.0: surface the durability granularity in the machine report.
+    report.durability = reader.durability_granularity() == openrar::io::DurabilityGranularity::Batch
+                            ? "batch"
+                            : "entry";
+    report.durability_kill_switch = reader.durability_override();
     int open_status = archive::RAR_OK;
     std::string open_detail;
     if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
@@ -2395,6 +2401,20 @@ int extract_archive(const std::string& arc_path, const std::string& dest_dir, bo
     if (!g_quiet_mode && !is_vt_supported()) {
         // --json-summary stdout purity: banner goes to stderr in JSON mode.
         (g_json_stdout_only ? std::cerr : std::cout) << "Extracting from " << arc_path << "\n\n";
+    }
+
+    // v1.39.0: surface the durability granularity in the run banner (never
+    // silent — the contract revision is disclosed in three places: switch
+    // echo, JSON field, docs).
+    if (!g_quiet_mode) {
+        if (durability == openrar::io::DurabilityGranularity::Batch &&
+            !reader.durability_override()) {
+            std::cerr << "durability: batch (deferred journal sync, no temp flush; data durability "
+                         "= OS writeback)\n";
+        }
+        if (reader.durability_override()) {
+            std::cerr << "durability: entry (OPENRAR_NO_BATCH_DURABILITY override)\n";
+        }
     }
 
     size_t total_entries = 0;
@@ -3576,8 +3596,10 @@ static int cli_main(int argc, char* argv[]) {
     bool keep_broken = false;            // -kb
     bool preserve_suid = false;          // --preserve-suid (v1.24 §7.1)
     bool restore_xattr_security = false; // --xattr-security (v1.27 §1.4)
-    bool propagate_motw = true;          // -oz (default ON) / -oz- disables (v1.27 §1.5)
-    bool use_mmap = true;                // --no-mmap (v1.25 §0 kill switch)
+    openrar::io::DurabilityGranularity durability =
+        openrar::io::DurabilityGranularity::Entry; // --durability / -db (v1.39.0)
+    bool propagate_motw = true;                    // -oz (default ON) / -oz- disables (v1.27 §1.5)
+    bool use_mmap = true;                          // --no-mmap (v1.25 §0 kill switch)
     openrar::cli::OverwriteMode overwrite_mode = openrar::cli::OverwriteMode::Prompt;
     bool want_qo = true;   // -qo, -qo+, -qo- (default: enabled)
     bool want_ams = false; // -ams, -am
@@ -3698,6 +3720,15 @@ static int cli_main(int argc, char* argv[]) {
         } else if (sw_eq(s, "--preserve-suid")) {
             // v1.24 plan §7.1: admin opt-in to restore SUID/SGID/sticky bits.
             preserve_suid = true;
+        } else if (sw_eq(s, "--durability=batch") || sw_eq(s, "-db")) {
+            // v1.39.0: opt-in batch durability granularity (deferred journal
+            // sync, no temp flush, session-held journals under LRU cap).
+            // Default-off; the kill switch OPENRAR_NO_BATCH_DURABILITY=1
+            // forces entry granularity and is surfaced.
+            durability = openrar::io::DurabilityGranularity::Batch;
+        } else if (sw_eq(s, "--durability=entry") || sw_eq(s, "-db-")) {
+            // v1.39.0: re-pin the default explicitly.
+            durability = openrar::io::DurabilityGranularity::Entry;
         } else if (sw_eq(s, "--xattr-security")) {
             // v1.27 plan §1.4: admin opt-in to restore security.*/trusted.*
             // extended attributes (the --preserve-suid trust-decision model).
@@ -4191,11 +4222,11 @@ static int cli_main(int argc, char* argv[]) {
                 }
             }
         }
-        return openrar::cli::extract_archive(arc_path, dest, cmd == "x", password, threads,
-                                             keep_broken, overwrite_mode, extract_symlinks,
-                                             exclude_patterns, extract_version, file_patterns,
-                                             (want_acl || want_og), preserve_suid, use_mmap,
-                                             restore_xattr_security, propagate_motw, mt_flag);
+        return openrar::cli::extract_archive(
+            arc_path, dest, cmd == "x", password, threads, keep_broken, overwrite_mode,
+            extract_symlinks, exclude_patterns, extract_version, file_patterns,
+            (want_acl || want_og), preserve_suid, use_mmap, restore_xattr_security, propagate_motw,
+            mt_flag, durability);
     } else if (cmd == "cv") {
         // Source = arc_path; files[0] = optional destination (arc_path is
         // always non-empty here - main() refuses an empty archive name).
