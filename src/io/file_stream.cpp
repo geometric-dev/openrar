@@ -415,12 +415,13 @@ bool rename_ex_unsupported(DWORD e) {
 }
 } // namespace
 
-bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mode) {
+bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mode,
+                               bool flush_first) {
     if (!is_open()) {
         last_error_ = static_cast<int>(ERROR_INVALID_HANDLE);
         return false;
     }
-    if (!flush()) {
+    if (flush_first && !flush()) {
         last_error_ = static_cast<int>(GetLastError());
         return false;
     }
@@ -447,6 +448,54 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
         ri->RootDirectory = parent;
         ri->FileNameLength = static_cast<DWORD>(leaf.size() * sizeof(WCHAR));
         std::memcpy(ri->FileName, leaf.c_str(), (leaf.size() + 1) * sizeof(WCHAR));
+
+        // v1.39.0 (D5): NT-first. SetFileInformationByHandle(FileRenameInfoEx,
+        // class 13) fails with GLE=87 unconditionally on this host (NTFS,
+        // Win11 26100 — measured by tools/ren_iso.cpp bisect); the direct NT
+        // call NtSetInformationFile(class 65) succeeds on the same handles.
+        // The containment path (commit_rename_in) has used the NT call since
+        // v1.24; this brings the non-contained path to the same proven call.
+        // The kernel32 attempt is retained behind the NT call for
+        // filesystems where the NT call is unavailable but kernel32 succeeds.
+        using NtSetInfoFn = LONG(NTAPI*)(HANDLE, PVOID, PVOID, ULONG, ULONG);
+        static NtSetInfoFn set_info = []() -> NtSetInfoFn {
+            const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+            return ntdll ? reinterpret_cast<NtSetInfoFn>(
+                               static_cast<void*>(GetProcAddress(ntdll, "NtSetInformationFile")))
+                         : nullptr;
+        }();
+        if (set_info != nullptr) {
+            struct {
+                LONG Status;
+                ULONG_PTR Information;
+            } iosb{0, 0};
+            constexpr ULONG kNtFileRenameInformationEx = 65;
+            const LONG st = set_info(static_cast<HANDLE>(handle_), &iosb, ri,
+                                     static_cast<ULONG>(buf.size()), kNtFileRenameInformationEx);
+            if (st == 0) {
+                last_error_ = 0;
+                CloseHandle(parent);
+                return true; // handle stays open on the renamed file; caller closes
+            }
+            static constexpr LONG kStatusInvalidParameter = static_cast<LONG>(0xC000000Du);
+            static constexpr LONG kStatusNotSupported = static_cast<LONG>(0xC00000BBu);
+            static constexpr LONG kStatusInvalidDeviceRequest = static_cast<LONG>(0xC0000010u);
+            if (st != kStatusInvalidParameter && st != kStatusNotSupported &&
+                st != kStatusInvalidDeviceRequest) {
+                // Real error (ACCESS_DENIED, sharing violation): report it.
+                const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+                if (ntdll) {
+                    using RtlFn = ULONG(NTAPI*)(LONG);
+                    auto to_dos = reinterpret_cast<RtlFn>(
+                        static_cast<void*>(GetProcAddress(ntdll, "RtlNtStatusToDosError")));
+                    if (to_dos) last_error_ = static_cast<int>(to_dos(st));
+                }
+                CloseHandle(parent);
+                return false;
+            }
+            // Capability failure: fall through to the kernel32 attempt.
+        }
+
         const BOOL ok = SetFileInformationByHandle(
             static_cast<HANDLE>(handle_),
             static_cast<FILE_INFO_BY_HANDLE_CLASS>(kFileRenameInfoExClass), ri,
@@ -487,12 +536,12 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
 }
 
 bool FileStream::commit_rename_in(void* parent_dir_handle, const std::string& utf8_leaf,
-                                  CommitMode mode) {
+                                  CommitMode mode, bool flush_first) {
     if (!is_open() || parent_dir_handle == nullptr) {
         last_error_ = static_cast<int>(ERROR_INVALID_HANDLE);
         return false;
     }
-    if (!flush()) {
+    if (flush_first && !flush()) {
         last_error_ = static_cast<int>(GetLastError());
         return false;
     }
@@ -590,12 +639,13 @@ bool commit_error_is_unsupported(int last_error) {
 
 #else // POSIX
 
-bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mode) {
+bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mode,
+                               bool flush_first) {
     if (!is_open()) {
         last_error_ = EBADF;
         return false;
     }
-    if (!flush()) {
+    if (flush_first && !flush()) {
         last_error_ = errno;
         return false;
     }
