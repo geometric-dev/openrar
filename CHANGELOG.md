@@ -5,6 +5,50 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.0] - 2026-10-07
+
+The durability-batching arc revised the extraction crash-consistency contract
+with a two-level granularity: `entry` (default — the v1.24 contract, unchanged)
+and `batch` (opt-in via `--durability=batch` / `-db`). The stored-path price was
+decomposed into three measured components (temp flush before rename, per-entry
+journal lifecycle, per-entry record sync), and the flush-after-rename =
+flush-before-rename measurement locked the design away from boundary
+data-flushes. Batch mode defers the journal record sync to a boundary (every
+32 appends, LRU eviction, session teardown) and elides the temp-data flush —
+data durability is the OS writeback's (reference-tool class). The atomic
+no-follow rename is unchanged. An en-route finding fixed the non-contained
+commit path: `SetFileInformationByHandle(FileRenameInformationEx, class 13)`
+fails with GLE=87 on NTFS/Win11, so `commit_rename` now tries the NT call
+(`NtSetInformationFile` class 65) first. Measured (v1.34 §3 protocol, min-of-4,
+one session): stored sequential 1.99x, stored parallel 1.64x, text sequential
+1.18x, text parallel 1.05x. Default-off; kill switch
+`OPENRAR_NO_BATCH_DURABILITY=1`; `--json-summary` gains a `durability` field.
+Records: `docs/v1.39.0-pre-analysis.md`.
+
+### Added
+
+- **`--durability=batch` / `-db` — opt-in batch durability granularity.**
+  `ExtractionSession::set_durability_granularity`
+  (`src/io/extraction_journal.hpp`) + `ArchiveReader::set_durability_granularity`
+  (`src/archive/archive_reader.hpp`) + CLI parse (`src/cli/main.cpp`
+  `--durability=batch` / `-db` / `--durability=entry` / `-db-`). Journal
+  record sync deferred to a boundary (every 32 appends, LRU eviction under
+  cap 64, session teardown); no temp-data flush; journals held for the
+  session. Kill switch `OPENRAR_NO_BATCH_DURABILITY=1`. `--json-summary`
+  gains a session-level `durability` field
+  (`src/archive/extraction_report.cpp` `to_json`).
+
+### Fixed
+
+- **NT-first `commit_rename` — the non-contained commit path was silently on
+  the `MoveFileExW` fallback since v1.24 on NTFS/Win11.**
+  `SetFileInformationByHandle(FileRenameInformationEx, class 13)` fails with
+  GLE=87 unconditionally on this host (measured by `tools/ren_iso.cpp`
+  bisect); the NT call `NtSetInformationFile` (class 65) succeeds on the
+  same handles. `FileStream::commit_rename` (`src/io/file_stream.cpp`) now
+  tries the NT call first, keeping the kernel32 class-13 attempt and the
+  `MoveFileExW` fallback behind it for genuinely unsupported filesystems.
+
 ## [1.38.0] - 2026-10-07
 
 The decode-kernel arc's founding premise was tested before implementation and

@@ -126,6 +126,18 @@ chain position:
 
 ## 6. Partial Output and Disk Safety
 
+> **[v1.39.0] Durability granularity note:** the CLI `x`/`e` extraction
+> paths support two durability granularities (see SECURITY_ARCHITECTURE
+> §3.3): `entry` (default — the v1.24 contract, unchanged) and `batch`
+> (opt-in via `--durability=batch` / `-db`). In `batch` mode, the journal
+> record sync is deferred to a boundary (every 32 appends, LRU eviction,
+> session teardown) and the temp-data flush before rename is elided — data
+> durability is the OS writeback's (the reference-tool class). The atomic
+> no-follow rename is unchanged; the destination is never partial. The
+> DLL file-mode handles and the frozen `openrar_archive_extract_file_to_path`
+> surface are unchanged (entry granularity, per-call session). The kill
+> switch `OPENRAR_NO_BATCH_DURABILITY=1` forces entry granularity.
+
 ### Checksum Verification Ordering
 
 BLAKE2sp/CRC32 verification occurs **after the full payload has been written** to the
