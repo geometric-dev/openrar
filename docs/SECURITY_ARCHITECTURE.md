@@ -78,11 +78,14 @@ Fail-closed, with granularity split between the **process exit code** and the
   targets to defeat the parallel-write race; the policy here strengthens
   detection-from-rejection and covers in-archive duplicates.)
 
-### 3.3. Atomic Extraction
+### 3.3. Atomic Extraction **[Revised v1.39.0]**
 * Files are extracted to cryptographically unique temporary names
   (`filename.<random>.tmp`) created **in the destination directory** (same
   volume) so completion is an atomic rename. On Windows the rename uses
-  POSIX-semantics `FileRenameInformationEx`.
+  POSIX-semantics `FileRenameInformationEx` (NT-first: `NtSetInformationFile`
+  class 65, with kernel32 class-13 and `MoveFileExW` behind it — the
+  non-contained commit path was silently on the fallback since v1.24 on
+  NTFS/Win11; fixed v1.39.0).
 * *Cleanup:* `FILE_FLAG_DELETE_ON_CLOSE` prevents atomic renaming, so
   abandoned temps rely on best-effort disposition-on-abort
   (`FILE_DISPOSITION_INFO`). Startup sweeps delete only temps recorded in a
@@ -94,6 +97,21 @@ Fail-closed, with granularity split between the **process exit code** and the
   shape — a forged journal can only ever name candidates the engine itself
   would create. Journals close+unlink at zero in-flight temps, so
   descriptor use is bounded by parallelism, not tree size.
+* **[Revised v1.39.0] Two durability granularities:**
+  * **`entry` (default — the v1.24 contract, unchanged):** per-file journal
+    record sync, per-file temp flush before rename, journal closed+unlinked
+    at zero in-flight. Committed data survives power loss.
+  * **`batch` (opt-in via `--durability=batch` / `-db`):** journal record
+    appended before the temp exists (durable-first ORDER preserved) but
+    record sync deferred to a boundary (every 32 appends, LRU eviction,
+    session teardown); **no temp-data flush** — data durability is the OS
+    writeback's (the reference-tool class); journals held for the session
+    under an LRU cap of 64. Atomic no-follow rename unchanged. The kill
+    switch `OPENRAR_NO_BATCH_DURABILITY=1` forces entry granularity.
+    `--json-summary` gains a session-level `durability` field. The orphan
+    exposure is bounded by in-flight parallelism, NOT by the window (renames
+    consume temps). Default-off: the data-durability claim is disclosed,
+    not proven (power-loss injection is not CI-reproducible).
 
 ## 4. Extraction Boundaries & File System Security
 

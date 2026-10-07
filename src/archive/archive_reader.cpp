@@ -141,9 +141,32 @@ void apply_commit_mtime(const format::FileBlock& header, const MtimeBounds& boun
 }
 } // namespace
 
+void ArchiveReader::set_durability_granularity(io::DurabilityGranularity g) {
+    // Kill switch (v1.39.0): OPENRAR_NO_BATCH_DURABILITY=1 forces entry
+    // granularity and is surfaced through durability_override(). Read per
+    // call (called once per run) so a late-set env is honored.
+    const bool kill_switch = []() {
+        const char* v = std::getenv("OPENRAR_NO_BATCH_DURABILITY");
+        return v && (std::string(v) == "1" || std::string(v) == "true");
+    }();
+    if (kill_switch && g == io::DurabilityGranularity::Batch) {
+        durability_granularity_ = io::DurabilityGranularity::Entry;
+        durability_override_ = true;
+    } else {
+        durability_granularity_ = g;
+        durability_override_ = false;
+    }
+    // Propagate to a live session so the machine report (derived from the
+    // reader) can never disagree with the granularity actually in effect.
+    if (extraction_session_) {
+        extraction_session_->set_durability_granularity(durability_granularity_);
+    }
+}
+
 io::ExtractionSession& ArchiveReader::ensure_extraction_session() {
     if (!extraction_session_) {
         extraction_session_ = std::make_unique<io::ExtractionSession>();
+        extraction_session_->set_durability_granularity(durability_granularity_);
         if (!extraction_root_.empty()) extraction_session_->attach_root(extraction_root_);
     }
     return *extraction_session_;

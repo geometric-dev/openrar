@@ -346,8 +346,7 @@ void ExtractionSession::configure_test_failure_hooks() {
     const char* fail = std::getenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC");
     if (fail) {
         try {
-            unsigned n = static_cast<unsigned>(std::stoul(fail));
-            if (n == ++sync_count_) fail_next_sync_ = true;
+            fail_at_sync_ = static_cast<unsigned>(std::stoul(fail));
         } catch (...) {
         }
     }
@@ -356,6 +355,14 @@ void ExtractionSession::configure_test_failure_hooks() {
 void ExtractionSession::touch_journal(const std::filesystem::path& key) {
     auto it = journals_.find(key);
     if (it == journals_.end()) return;
+    if (!it->second.lru_tracked) {
+        // First touch under batch mode (journal was created in entry mode):
+        // register it in the LRU rather than splicing a singular iterator.
+        lru_.push_back(key);
+        it->second.lru_it = std::prev(lru_.end());
+        it->second.lru_tracked = true;
+        return;
+    }
     // Splice to the back of the LRU list (most-recently-used).
     lru_.splice(lru_.end(), lru_, it->second.lru_it);
 }
@@ -365,46 +372,51 @@ bool ExtractionSession::append_record_deferred(void* file, const std::filesystem
 }
 
 bool ExtractionSession::sync_journal(void* file) {
-    if (fail_next_sync_) {
-        fail_next_sync_ = false; // consume the hook (one-shot)
-        return false;
-    }
-    ++sync_count_;
+    if (should_fail_next_sync()) return false;
     return static_cast<LockedFile*>(file)->sync();
+}
+
+bool ExtractionSession::should_fail_next_sync() {
+    if (fail_at_sync_ == 0) return false;
+    return ++sync_count_ == fail_at_sync_;
 }
 
 void ExtractionSession::evict_journal(const std::filesystem::path& key) {
     auto it = journals_.find(key);
     if (it == journals_.end()) return;
     // Sync before eviction: the evicted journal's records must be durable
-    // so the next run's sweep can recover its temps.
-    static_cast<LockedFile*>(it->second.file)->sync();
+    // so the next run's sweep can recover its temps. If the sync fails, keep
+    // the journal file — never unlink a journal whose records may not be
+    // durable (the next sweep will retry).
+    const bool synced = static_cast<LockedFile*>(it->second.file)->sync();
     static_cast<LockedFile*>(it->second.file)->close();
     delete static_cast<LockedFile*>(it->second.file);
     const auto jp = journal_paths_.find(key);
-    if (jp != journal_paths_.end()) {
+    if (synced && jp != journal_paths_.end()) {
         std::error_code ec;
         std::filesystem::remove(jp->second, ec);
-        journal_paths_.erase(jp);
     }
-    lru_.erase(it->second.lru_it);
+    if (jp != journal_paths_.end()) journal_paths_.erase(jp);
+    if (it->second.lru_tracked) {
+        lru_.erase(it->second.lru_it);
+        it->second.lru_tracked = false;
+    }
     journals_.erase(it);
 }
 
-void ExtractionSession::close_and_unlink(const std::filesystem::path& key) {
-    auto it = journals_.find(key);
-    if (it == journals_.end()) return;
-    static_cast<LockedFile*>(it->second.file)->close();
-    delete static_cast<LockedFile*>(it->second.file);
-    const auto jp = journal_paths_.find(key);
-    if (jp != journal_paths_.end()) {
-        std::error_code ec;
-        std::filesystem::remove(jp->second, ec);
-        journal_paths_.erase(jp);
+// Batch mode: evict the least-recently-used journal that has no in-flight
+// temps. Scans from the LRU front (bounded by kBatchJournalLruCap = 64).
+// If every journal has an in-flight temp, skips eviction — exceeding the
+// cap temporarily is safer than destroying the only recovery reference for
+// a temp that is still being written.
+void ExtractionSession::evict_lru_journal() {
+    for (auto lit = lru_.begin(); lit != lru_.end(); ++lit) {
+        auto jit = journals_.find(*lit);
+        if (jit != journals_.end() && jit->second.in_flight == 0) {
+            evict_journal(*lit);
+            return;
+        }
     }
-    auto lit = std::find(lru_.begin(), lru_.end(), key);
-    if (lit != lru_.end()) lru_.erase(lit);
-    journals_.erase(it);
 }
 
 bool ExtractionSession::register_temp(const std::filesystem::path& dir,
@@ -436,8 +448,7 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
         }
         // Test-only sync-failure hook (D6): the header sync is the first
         // sync a new journal sees — the fail-closed path must cover it.
-        if (fail_next_sync_) {
-            fail_next_sync_ = false;
+        if (should_fail_next_sync()) {
             lf->close();
             delete lf;
             std::error_code rm_ec;
@@ -456,17 +467,10 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
         if (granularity_ == DurabilityGranularity::Batch) {
             lru_.push_back(key);
             it->second.lru_it = std::prev(lru_.end());
+            it->second.lru_tracked = true;
         }
     } else if (granularity_ == DurabilityGranularity::Batch) {
         touch_journal(key);
-    }
-
-    // Test-only crash hook (D6): kill the process after the Nth register_temp
-    // in batch mode, before the boundary sync — the kill point is
-    // deterministic for the failure matrix.
-    if (granularity_ == DurabilityGranularity::Batch && crash_after_ > 0 &&
-        ++register_count_ >= crash_after_) {
-        std::exit(99); // test-only: simulate a hard kill mid-batch
     }
 
     bool ok;
@@ -476,18 +480,27 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
         ok = append_record(*static_cast<LockedFile*>(it->second.file), temp_abs);
     }
     if (!ok) return false;
-    ++it->second.in_flight;
+    ++register_count_;
+
+    // Test-only crash hook (D6): kill the process after the Nth record has
+    // been appended to the journal (the Nth register_temp call), before the
+    // boundary sync — the kill point is deterministic for the failure matrix.
+    if (granularity_ == DurabilityGranularity::Batch && crash_after_ > 0 &&
+        register_count_ >= crash_after_) {
+        std::exit(99); // test-only: simulate a hard kill mid-batch
+    }
 
     // Batch mode: sync at the boundary (every 32 appends).
     if (granularity_ == DurabilityGranularity::Batch &&
-        ++it->second.pending >= kBatchSyncBoundary) {
+        ++it->second.pending >= batch_sync_boundary_) {
         if (!sync_journal(it->second.file)) return false;
         it->second.pending = 0;
     }
+    ++it->second.in_flight;
 
     // Batch mode: evict LRU journals over the cap.
     if (granularity_ == DurabilityGranularity::Batch && journals_.size() > kBatchJournalLruCap) {
-        evict_journal(lru_.front());
+        evict_lru_journal();
     }
 
     return true;
@@ -521,8 +534,7 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
         }
         // Test-only sync-failure hook (D6): the header sync is the first
         // sync a new journal sees — the fail-closed path must cover it.
-        if (fail_next_sync_) {
-            fail_next_sync_ = false;
+        if (should_fail_next_sync()) {
             lf->close();
             delete lf;
             return false;
@@ -537,16 +549,10 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
         if (granularity_ == DurabilityGranularity::Batch) {
             lru_.push_back(journal_dir_key);
             it->second.lru_it = std::prev(lru_.end());
+            it->second.lru_tracked = true;
         }
     } else if (granularity_ == DurabilityGranularity::Batch) {
         touch_journal(journal_dir_key);
-    }
-
-    // Test-only crash hook (D6): kill the process after the Nth register_temp
-    // in batch mode, before the boundary sync.
-    if (granularity_ == DurabilityGranularity::Batch && crash_after_ > 0 &&
-        ++register_count_ >= crash_after_) {
-        std::exit(99); // test-only: simulate a hard kill mid-batch
     }
 
     bool ok;
@@ -556,18 +562,27 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
         ok = append_record(*static_cast<LockedFile*>(it->second.file), temp_abs);
     }
     if (!ok) return false;
-    ++it->second.in_flight;
+    ++register_count_;
+
+    // Test-only crash hook (D6): kill the process after the Nth record has
+    // been appended to the journal (the Nth register_temp call), before the
+    // boundary sync.
+    if (granularity_ == DurabilityGranularity::Batch && crash_after_ > 0 &&
+        register_count_ >= crash_after_) {
+        std::exit(99); // test-only: simulate a hard kill mid-batch
+    }
 
     // Batch mode: sync at the boundary (every 32 appends).
     if (granularity_ == DurabilityGranularity::Batch &&
-        ++it->second.pending >= kBatchSyncBoundary) {
+        ++it->second.pending >= batch_sync_boundary_) {
         if (!sync_journal(it->second.file)) return false;
         it->second.pending = 0;
     }
+    ++it->second.in_flight;
 
     // Batch mode: evict LRU journals over the cap.
     if (granularity_ == DurabilityGranularity::Batch && journals_.size() > kBatchJournalLruCap) {
-        evict_journal(lru_.front());
+        evict_lru_journal();
     }
 
     return true;

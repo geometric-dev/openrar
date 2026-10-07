@@ -2,6 +2,7 @@
 #define OPENRAR_ARCHIVE_ARCHIVE_READER_HPP
 
 #include "../core/types.hpp"
+#include "../io/durability.hpp"
 #include "../io/file_stream.hpp"
 #include "../format/headers.hpp"
 #include "archive_entry.hpp"
@@ -138,6 +139,15 @@ public:
     // v1.24 plan §7.1: --preserve-suid admin opt-in — when false (default),
     // archived POSIX modes lose their SUID/SGID/sticky bits.
     void set_preserve_suid(bool ps) { preserve_suid_ = ps; }
+
+    // v1.39.0: durability granularity — `entry` (default) = the v1.24
+    // contract, unchanged; `batch` = the opt-in revision (deferred journal
+    // sync, no temp flush, session-held journals under LRU cap). The kill
+    // switch OPENRAR_NO_BATCH_DURABILITY=1 forces entry granularity and is
+    // surfaced through durability_override().
+    void set_durability_granularity(io::DurabilityGranularity g);
+    io::DurabilityGranularity durability_granularity() const { return durability_granularity_; }
+    bool durability_override() const { return durability_override_; }
 
     // v1.27 plan §1.4: --xattr-security admin opt-in — when false (default),
     // security.*/trusted.* extended attributes are never restored from the
@@ -437,6 +447,10 @@ private:
                                   const std::string& entry_name);
     bool preserve_suid_{false};
     bool restore_xattr_security_{false}; // --xattr-security (v1.27)
+
+    // v1.39.0: durability granularity policy + kill-switch override flag.
+    io::DurabilityGranularity durability_granularity_{io::DurabilityGranularity::Entry};
+    bool durability_override_{false};
 
     // v1.28 M2: disk-extraction hooks (see set_disk_hooks) + cancel outcome
     // of the MOST RECENT extract_entry call.
