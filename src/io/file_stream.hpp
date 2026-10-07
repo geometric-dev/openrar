@@ -65,8 +65,10 @@ public:
     // inside the already-verified parent directory handle — no path
     // resolution of any archive-controlled component happens after the walk.
     // POSIX callers use ContainmentRoot::anchored_rename (name-anchored
-    // renameat) instead.
-    bool commit_rename_in(void* parent_dir_handle, const std::string& utf8_leaf, CommitMode mode);
+    // renameat) instead. `flush_first` (v1.39.0): default true = today;
+    // batch mode passes false (data durability is the OS writeback's).
+    bool commit_rename_in(void* parent_dir_handle, const std::string& utf8_leaf, CommitMode mode,
+                          bool flush_first = true);
 
     bool is_open() const override;
     core::uint64 size() const override;
@@ -82,15 +84,17 @@ public:
 
     // Atomic rename of THIS open file to `dest` (same directory — temp and
     // destination must share the volume, which the AtomicWriter guarantees by
-    // construction). Flushes first. Windows: POSIX-semantics
-    // FileRenameInformationEx through the open handle (replaces a symlink
-    // leaf without following it; pre-1709 / FAT falls back to MoveFileExW,
-    // which requires closing the handle first and is not truly atomic —
-    // documented per plan §2.2). POSIX: renameat2(RENAME_NOREPLACE) /
-    // renamex_np(RENAME_EXCL) for NoClobber, rename() for ReplaceExisting,
-    // link()+unlink() cascade when the no-clobber syscalls are unavailable.
-    // A read-only destination fails the commit (never clobbered).
-    bool commit_rename(const std::filesystem::path& dest, CommitMode mode);
+    // construction). Flushes first (unless `flush_first` is false — v1.39.0
+    // batch mode: data durability is the OS writeback's). Windows:
+    // POSIX-semantics FileRenameInformationEx through the open handle
+    // (replaces a symlink leaf without following it; pre-1709 / FAT falls
+    // back to MoveFileExW, which requires closing the handle first and is
+    // not truly atomic — documented per plan §2.2). POSIX:
+    // renameat2(RENAME_NOREPLACE) / renamex_np(RENAME_EXCL) for NoClobber,
+    // rename() for ReplaceExisting, link()+unlink() cascade when the
+    // no-clobber syscalls are unavailable. A read-only destination fails the
+    // commit (never clobbered).
+    bool commit_rename(const std::filesystem::path& dest, CommitMode mode, bool flush_first = true);
 
     const std::filesystem::path& path() const { return path_; }
     int last_error() const { return last_error_; }
