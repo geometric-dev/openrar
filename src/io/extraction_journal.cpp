@@ -4,7 +4,9 @@
 #include "../crypto/rng.hpp"
 #include "path_util.hpp"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -277,10 +279,12 @@ std::filesystem::path normalize_dir(const std::filesystem::path& dir) {
     return abs;
 }
 
-// Appends one record and fsyncs. The record reaches the disk BEFORE the
-// caller creates the temp — durable-first ordering, the core of the
-// orphan-hygiene guarantee.
-bool append_record(LockedFile& f, const std::filesystem::path& temp_abs) {
+// Appends one record. The record reaches the disk BEFORE the caller creates
+// the temp — durable-first ordering, the core of the orphan-hygiene
+// guarantee. `sync_now` (v1.39.0, D3): true = fsync immediately (entry mode,
+// today's behavior); false = defer the sync to the next boundary (batch
+// mode — the caller tracks pending count and syncs at the boundary).
+bool append_record(LockedFile& f, const std::filesystem::path& temp_abs, bool sync_now = true) {
     std::string path_bytes = u8_str(temp_abs);
     if (path_bytes.size() > kMaxRecordPathLen) return false;
     std::string rec = "T ";
@@ -289,7 +293,8 @@ bool append_record(LockedFile& f, const std::filesystem::path& temp_abs) {
     rec += hex8(path_checksum(path_bytes));
     rec += "\n";
     rec += path_bytes;
-    return f.append(rec) && f.sync();
+    if (!f.append(rec)) return false;
+    return sync_now ? f.sync() : true;
 }
 
 } // namespace
@@ -327,6 +332,81 @@ void ExtractionSession::journal_name(std::filesystem::path& out) {
     out = name;
 }
 
+// ── Batch-mode member helpers (v1.39.0, D1/D2/D3) ──────────────────────────
+
+void ExtractionSession::configure_test_failure_hooks() {
+    if (granularity_ != DurabilityGranularity::Batch) return;
+    const char* crash = std::getenv("OPENRAR_TEST_BATCH_CRASH_AFTER");
+    if (crash) {
+        try {
+            crash_after_ = static_cast<unsigned>(std::stoul(crash));
+        } catch (...) {
+        }
+    }
+    const char* fail = std::getenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC");
+    if (fail) {
+        try {
+            unsigned n = static_cast<unsigned>(std::stoul(fail));
+            if (n == ++sync_count_) fail_next_sync_ = true;
+        } catch (...) {
+        }
+    }
+}
+
+void ExtractionSession::touch_journal(const std::filesystem::path& key) {
+    auto it = journals_.find(key);
+    if (it == journals_.end()) return;
+    // Splice to the back of the LRU list (most-recently-used).
+    lru_.splice(lru_.end(), lru_, it->second.lru_it);
+}
+
+bool ExtractionSession::append_record_deferred(void* file, const std::filesystem::path& temp_abs) {
+    return append_record(*static_cast<LockedFile*>(file), temp_abs, /*sync_now=*/false);
+}
+
+bool ExtractionSession::sync_journal(void* file) {
+    if (fail_next_sync_) {
+        fail_next_sync_ = false; // consume the hook (one-shot)
+        return false;
+    }
+    ++sync_count_;
+    return static_cast<LockedFile*>(file)->sync();
+}
+
+void ExtractionSession::evict_journal(const std::filesystem::path& key) {
+    auto it = journals_.find(key);
+    if (it == journals_.end()) return;
+    // Sync before eviction: the evicted journal's records must be durable
+    // so the next run's sweep can recover its temps.
+    static_cast<LockedFile*>(it->second.file)->sync();
+    static_cast<LockedFile*>(it->second.file)->close();
+    delete static_cast<LockedFile*>(it->second.file);
+    const auto jp = journal_paths_.find(key);
+    if (jp != journal_paths_.end()) {
+        std::error_code ec;
+        std::filesystem::remove(jp->second, ec);
+        journal_paths_.erase(jp);
+    }
+    lru_.erase(it->second.lru_it);
+    journals_.erase(it);
+}
+
+void ExtractionSession::close_and_unlink(const std::filesystem::path& key) {
+    auto it = journals_.find(key);
+    if (it == journals_.end()) return;
+    static_cast<LockedFile*>(it->second.file)->close();
+    delete static_cast<LockedFile*>(it->second.file);
+    const auto jp = journal_paths_.find(key);
+    if (jp != journal_paths_.end()) {
+        std::error_code ec;
+        std::filesystem::remove(jp->second, ec);
+        journal_paths_.erase(jp);
+    }
+    auto lit = std::find(lru_.begin(), lru_.end(), key);
+    if (lit != lru_.end()) lru_.erase(lit);
+    journals_.erase(it);
+}
+
 bool ExtractionSession::register_temp(const std::filesystem::path& dir,
                                       const std::filesystem::path& temp_abs) {
     std::filesystem::path key = normalize_dir(dir);
@@ -347,18 +427,69 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
             delete lf;
             return false; // locked by someone else should not happen (fresh name)
         }
-        if (!lf->append(kJournalHeader) || !lf->sync()) {
+        if (!lf->append(kJournalHeader)) {
             lf->close();
             delete lf;
             std::error_code rm_ec;
             std::filesystem::remove(jpath, rm_ec);
             return false;
         }
-        it = journals_.emplace(key, DirJournal{lf, 0}).first;
+        // Test-only sync-failure hook (D6): the header sync is the first
+        // sync a new journal sees — the fail-closed path must cover it.
+        if (fail_next_sync_) {
+            fail_next_sync_ = false;
+            lf->close();
+            delete lf;
+            std::error_code rm_ec;
+            std::filesystem::remove(jpath, rm_ec);
+            return false;
+        }
+        if (!lf->sync()) {
+            lf->close();
+            delete lf;
+            std::error_code rm_ec;
+            std::filesystem::remove(jpath, rm_ec);
+            return false;
+        }
+        it = journals_.emplace(key, DirJournal{lf, 0, 0, lru_.end()}).first;
         journal_paths_[key] = jpath;
+        if (granularity_ == DurabilityGranularity::Batch) {
+            lru_.push_back(key);
+            it->second.lru_it = std::prev(lru_.end());
+        }
+    } else if (granularity_ == DurabilityGranularity::Batch) {
+        touch_journal(key);
     }
-    if (!append_record(*static_cast<LockedFile*>(it->second.file), temp_abs)) return false;
+
+    // Test-only crash hook (D6): kill the process after the Nth register_temp
+    // in batch mode, before the boundary sync — the kill point is
+    // deterministic for the failure matrix.
+    if (granularity_ == DurabilityGranularity::Batch && crash_after_ > 0 &&
+        ++register_count_ >= crash_after_) {
+        std::exit(99); // test-only: simulate a hard kill mid-batch
+    }
+
+    bool ok;
+    if (granularity_ == DurabilityGranularity::Batch) {
+        ok = append_record_deferred(it->second.file, temp_abs);
+    } else {
+        ok = append_record(*static_cast<LockedFile*>(it->second.file), temp_abs);
+    }
+    if (!ok) return false;
     ++it->second.in_flight;
+
+    // Batch mode: sync at the boundary (every 32 appends).
+    if (granularity_ == DurabilityGranularity::Batch &&
+        ++it->second.pending >= kBatchSyncBoundary) {
+        if (!sync_journal(it->second.file)) return false;
+        it->second.pending = 0;
+    }
+
+    // Batch mode: evict LRU journals over the cap.
+    if (granularity_ == DurabilityGranularity::Batch && journals_.size() > kBatchJournalLruCap) {
+        evict_journal(lru_.front());
+    }
+
     return true;
 }
 
@@ -383,16 +514,62 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
             delete lf;
             return false;
         }
-        if (!lf->append(kJournalHeader) || !lf->sync()) {
+        if (!lf->append(kJournalHeader)) {
             lf->close();
             delete lf;
             return false;
         }
-        it = journals_.emplace(journal_dir_key, DirJournal{lf, 0}).first;
+        // Test-only sync-failure hook (D6): the header sync is the first
+        // sync a new journal sees — the fail-closed path must cover it.
+        if (fail_next_sync_) {
+            fail_next_sync_ = false;
+            lf->close();
+            delete lf;
+            return false;
+        }
+        if (!lf->sync()) {
+            lf->close();
+            delete lf;
+            return false;
+        }
+        it = journals_.emplace(journal_dir_key, DirJournal{lf, 0, 0, lru_.end()}).first;
         journal_paths_[journal_dir_key] = journal_dir_key / name;
+        if (granularity_ == DurabilityGranularity::Batch) {
+            lru_.push_back(journal_dir_key);
+            it->second.lru_it = std::prev(lru_.end());
+        }
+    } else if (granularity_ == DurabilityGranularity::Batch) {
+        touch_journal(journal_dir_key);
     }
-    if (!append_record(*static_cast<LockedFile*>(it->second.file), temp_abs)) return false;
+
+    // Test-only crash hook (D6): kill the process after the Nth register_temp
+    // in batch mode, before the boundary sync.
+    if (granularity_ == DurabilityGranularity::Batch && crash_after_ > 0 &&
+        ++register_count_ >= crash_after_) {
+        std::exit(99); // test-only: simulate a hard kill mid-batch
+    }
+
+    bool ok;
+    if (granularity_ == DurabilityGranularity::Batch) {
+        ok = append_record_deferred(it->second.file, temp_abs);
+    } else {
+        ok = append_record(*static_cast<LockedFile*>(it->second.file), temp_abs);
+    }
+    if (!ok) return false;
     ++it->second.in_flight;
+
+    // Batch mode: sync at the boundary (every 32 appends).
+    if (granularity_ == DurabilityGranularity::Batch &&
+        ++it->second.pending >= kBatchSyncBoundary) {
+        if (!sync_journal(it->second.file)) return false;
+        it->second.pending = 0;
+    }
+
+    // Batch mode: evict LRU journals over the cap.
+    if (granularity_ == DurabilityGranularity::Batch && journals_.size() > kBatchJournalLruCap) {
+        evict_journal(lru_.front());
+    }
+
     return true;
 }
 
@@ -453,7 +630,12 @@ void ExtractionSession::release_temp(const std::filesystem::path& temp_abs) {
     std::filesystem::path key = normalize_dir(temp_abs.parent_path());
     auto it = journals_.find(key);
     if (it == journals_.end() || it->second.in_flight == 0) return;
-    if (--it->second.in_flight == 0) {
+    --it->second.in_flight;
+    // Batch mode (D1): the journal is held for the session (LRU cap); only
+    // the in_flight counter decrements. The journal is synced, closed, and
+    // unlinked at eviction or teardown, never here.
+    if (granularity_ == DurabilityGranularity::Batch) return;
+    if (it->second.in_flight == 0) {
         static_cast<LockedFile*>(it->second.file)->close();
         delete static_cast<LockedFile*>(it->second.file);
         const auto jp = journal_paths_.find(key);
@@ -570,7 +752,12 @@ bool ExtractionSession::sweep_directory(const std::filesystem::path& dir) {
 ExtractionSession::~ExtractionSession() {
     // Close + unlink every journal this run still holds (no temps in flight
     // anywhere — AtomicWriter destructors ran first by declaration order).
+    // Batch mode: sync before close so the next run's sweep can recover
+    // every record this session appended.
     for (auto& kv : journals_) {
+        if (granularity_ == DurabilityGranularity::Batch) {
+            static_cast<LockedFile*>(kv.second.file)->sync();
+        }
         static_cast<LockedFile*>(kv.second.file)->close();
         delete static_cast<LockedFile*>(kv.second.file);
         const auto jp = journal_paths_.find(kv.first);
@@ -686,8 +873,15 @@ bool AtomicWriter::open_contained(ExtractionSession& session, const std::string&
     return false;
 }
 
-bool AtomicWriter::commit(CommitMode mode) {
+bool AtomicWriter::commit(CommitMode mode, bool flush_first) {
     if (!session_ || !stream_.is_open()) return false;
+    // v1.39.0: the session's durability policy is the single decision point
+    // for flush elision — batch mode skips the pre-rename temp flush (data
+    // durability = OS writeback). An explicit flush_first=true from a caller
+    // is honored only in entry mode; batch always elides.
+    if (session_->durability_granularity() == DurabilityGranularity::Batch) {
+        flush_first = false;
+    }
     if (dir_.valid()) {
         // Containment commit (plan §1.1.3/§1.2.3). The final containment
         // assertion runs here regardless of whether the walk was a cache
@@ -715,7 +909,7 @@ bool AtomicWriter::commit(CommitMode mode) {
             }
         }
 #if defined(_WIN32)
-        const bool rename_ok = stream_.commit_rename_in(dir_.raw(), leaf_, mode);
+        const bool rename_ok = stream_.commit_rename_in(dir_.raw(), leaf_, mode, flush_first);
         if (rename_ok) {
             stream_.close();
             session_->release_temp(temp_path_);
@@ -739,7 +933,7 @@ bool AtomicWriter::commit(CommitMode mode) {
             abandon();
             return false;
         }
-        if (reopen.commit_rename(dest_path_, mode)) {
+        if (reopen.commit_rename(dest_path_, mode, flush_first)) {
             session_->release_temp(temp_path_);
             journaled_ = false;
             finished_ = true;
@@ -748,7 +942,7 @@ bool AtomicWriter::commit(CommitMode mode) {
         abandon();
         return false;
 #else
-        if (!stream_.flush()) {
+        if (flush_first && !stream_.flush()) {
             abandon();
             return false;
         }
@@ -764,7 +958,7 @@ bool AtomicWriter::commit(CommitMode mode) {
         return true;
 #endif
     }
-    if (!stream_.commit_rename(dest_path_, mode)) {
+    if (!stream_.commit_rename(dest_path_, mode, flush_first)) {
         // Failed commit is terminal: dispose of the temp (and the journal
         // slot) now so the caller cannot observe a half-open writer state.
         abandon();
