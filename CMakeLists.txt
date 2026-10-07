@@ -713,6 +713,17 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(decode_kernel_probe PRIVATE openrar_core)
     target_include_directories(decode_kernel_probe PRIVATE ${OPENRAR_INCLUDES})
 
+    # v1.39.0 Gate 0 probe (not a test): extraction durability cost
+    # decomposition (docs/v1.39.0-pre-analysis.md).
+    add_executable(durability_probe tools/durability_probe.cpp)
+    target_link_libraries(durability_probe PRIVATE openrar_core)
+    target_include_directories(durability_probe PRIVATE ${OPENRAR_INCLUDES})
+    if(WIN32)
+        add_executable(ren_iso tools/ren_iso.cpp)
+        target_link_libraries(ren_iso PRIVATE openrar_core)
+        target_include_directories(ren_iso PRIVATE ${OPENRAR_INCLUDES})
+    endif()
+
     # The sandboxed worker process (v1.30.0 M3): drives the SAME
     # ArchiveReader engine over the IPC protocol, holds no paths, writes
     # nothing. The per-OS privilege models (AppContainer / seccomp /
