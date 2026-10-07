@@ -137,6 +137,11 @@ std::string to_json(const ExtractionReport& report) {
         out += std::string(",\"verified\":") + (report.verified ? "true" : "false");
         out += std::string(",\"source_deleted\":") + (report.source_deleted ? "true" : "false");
     }
+    // v1.39.0: durability granularity (session-level; always present).
+    out += ",\"durability\":\"" + json_escape(report.durability) + "\"";
+    if (report.durability_kill_switch) {
+        out += ",\"durability_kill_switch\":true";
+    }
     out += "}";
     return out;
 }

@@ -120,7 +120,8 @@ openrar a -m5 -r best.rar ./src
 | `-oz` / `-oz-` | Mark-of-the-Web propagation at extraction (default ON; `-oz-` disables). When the archive file itself carries a Zone.Identifier ADS (Windows) or `com.apple.quarantine` (macOS), each extracted file receives a freshly generated mark — content is generated locally (`[ZoneTransfer]
 ZoneId=N
 `); the archive's HostUrl/ReferrerUrl never travel; an existing stronger mark is never removed or downgraded. Zone streams stored inside the archive (WinRAR `-os` shape) are never restored. Extraction-side only: nothing is emitted into the archive. |
-| `--json-summary[=path]` | Machine-readable per-entry extraction report (v1.24); without `path`, stdout carries only JSON. |
+| `--json-summary[=path]` | Machine-readable per-entry extraction report (v1.24); without `path`, stdout carries only JSON. Gains a session-level `durability` field (v1.39.0). |
+| `--durability=batch` / `-db` | Opt-in batch durability granularity (v1.39.0): journal record sync deferred to a boundary (every 32 appends, LRU eviction, session teardown), no temp-data flush — data durability is the OS writeback's (reference-tool class). Atomic no-follow rename unchanged. Default-off; `--durability=entry` / `-db-` re-pins the default. Kill switch `OPENRAR_NO_BATCH_DURABILITY=1`. Measured 1.99x stored / 1.18x text. |
 | `--no-mmap` | Force the buffered scan engine (v1.25; the mapped engine is default-on for listing). |
 | `-v<size>` | Create multi-volume split archive (`.part01.rar`, etc.) with per-slice checksums and MACs. |
 | `-mc[params]` | Compression filter control: `-mcE` (x86 E8/E9), `-mcD` (Delta), `-mcL` (Long range), etc. |

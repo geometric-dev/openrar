@@ -340,6 +340,14 @@ structural, two were FIXED in v1.31:
   UnRAR and WinRAR do none of that (write + close). We keep the
   durability guarantee; an opt-in fast path would be a
   security-architecture decision, not a perf tweak.
+  **[v1.39.0] Shipped as opt-in:** `--durability=batch` / `-db` defers
+  the journal record sync to a boundary (every 32 appends, LRU eviction,
+  session teardown) and elides the temp-data flush — data durability is
+  the OS writeback's (reference-tool class). Measured (v1.34 §3 protocol,
+  min-of-4, one session): stored sequential 1.99x, stored parallel 1.64x,
+  text sequential 1.18x, text parallel 1.05x. Default-off; kill switch
+  `OPENRAR_NO_BATCH_DURABILITY=1`. The contract revision is normative in
+  SECURITY_ARCHITECTURE §3.3.
 - **m1 ratio (~17.6% vs WinRAR): structural.** The full v1.31 M3 grid
   (chains 4/8/16 × nice 256/512 × lazy 0/1) found no candidate meeting
   the "ratio gain at ≤ current runtime" constraint — the best bought
