@@ -496,30 +496,20 @@ void test_rename_failure_mid_run_batched() {
 }
 
 void test_journal_sync_failure_fail_closed() {
-    // OPENRAR_TEST_FAIL_JOURNAL_SYNC=1: the first journal sync fails.
-    // The temp must NOT be created (fail-closed: unreferenced-orphan rule).
+    // Fail the first journal sync: the temp must NOT be created
+    // (fail-closed: unreferenced-orphan rule).
     const fs::path dir = make_test_dir("syncfail");
     const fs::path dest = dir / "file.txt";
 
-#ifdef _WIN32
-    _putenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC=1");
-#else
-    setenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC", "1", 1);
-#endif
-
     io::ExtractionSession session;
     session.set_durability_granularity(io::DurabilityGranularity::Batch);
+    session.set_test_hooks(0, 1);
     io::AtomicWriter writer;
     // The open must fail (sync failure is fail-closed).
     assert(!writer.open(session, dest));
     assert(!file_exists(dest));
     assert(find_journals(dir).empty());
 
-#ifdef _WIN32
-    _putenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC=");
-#else
-    unsetenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC");
-#endif
     std::cout << "[PASS] journal_sync_failure_fail_closed: temp not created on sync failure\n";
     rm_dir(dir);
 }
@@ -552,17 +542,12 @@ void test_window_1_equivalence() {
     const fs::path dir1 = make_test_dir("win1b1");
     const fs::path dir2 = make_test_dir("win1b32");
 
-#ifdef _WIN32
-    _putenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC=2");
-#else
-    setenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC", "2", 1);
-#endif
-
     // boundary=1: first record's boundary sync is sync #2 → fails.
     {
         io::ExtractionSession session;
         session.set_durability_granularity(io::DurabilityGranularity::Batch);
         session.set_batch_sync_boundary_for_test(1);
+        session.set_test_hooks(0, 2);
         io::AtomicWriter w;
         assert(!w.open(session, dir1 / "f0.txt")); // boundary sync fails
     }
@@ -575,12 +560,6 @@ void test_window_1_equivalence() {
         assert(w.open(session, dir2 / "f0.txt")); // no boundary sync yet
         w.abandon();
     }
-
-#ifdef _WIN32
-    _putenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC=");
-#else
-    unsetenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC");
-#endif
 
     std::cout << "[PASS] window_1_equivalence: boundary=1 syncs every record, "
                  "boundary=32 does not\n";
@@ -630,14 +609,39 @@ void test_containment_batched() {
 }
 
 void test_frozen_surface_absence() {
-    // Frozen-surface absence: the DLL frozen surface
-    // (openrar_archive_extract_file_to_path) must not be affected by the
-    // durability policy. We verify by absence: the frozen surface does not
+    // The DLL frozen surface (openrar_archive_extract_file_to_path) does not
     // call set_durability_granularity, so it always uses entry granularity.
-    // This test verifies that the default granularity is entry.
+    // We verify the default is entry; the frozen surface is exercised by the
+    // dll_* test suites which confirm it never enters batch mode.
     io::ExtractionSession session;
     assert(session.durability_granularity() == io::DurabilityGranularity::Entry);
     std::cout << "[PASS] frozen_surface_absence: default granularity is entry\n";
+}
+
+void test_batch_lru_eviction_occurs() {
+    // LRU eviction must actually occur when journals have zero in-flight
+    // temps. Open journals in more than BATCH_JOURNAL_LRU_CAP (64) distinct
+    // directories, release all temps, then open one more: the oldest
+    // journal must be evicted (unlinked) to make room.
+    const fs::path root = make_test_dir("evictoccurs");
+    io::ExtractionSession session;
+    session.set_durability_granularity(io::DurabilityGranularity::Batch);
+    const size_t cap = 64;
+    for (size_t i = 0; i < cap + 2; ++i) {
+        const fs::path d = root / ("d" + std::to_string(i));
+        std::error_code ec;
+        fs::create_directories(d, ec);
+        assert(!ec);
+        assert(session.register_temp(d, d / "f.0123456789abcdef0123456789abcdef.tmp"));
+        session.release_temp(d / "f.0123456789abcdef0123456789abcdef.tmp");
+    }
+    // The oldest journal (d0) should have been evicted after the cap was
+    // exceeded. d0's journal file should no longer exist.
+    assert(find_journals(root / "d0").empty());
+    // The newest journals should still exist.
+    assert(!find_journals(root / ("d" + std::to_string(cap + 1))).empty());
+    std::cout << "[PASS] batch_lru_eviction_occurs: oldest journal evicted at cap\n";
+    rm_dir(root);
 }
 
 void test_batch_lru_eviction_skips_in_flight() {
@@ -712,14 +716,9 @@ static std::string g_argv0;
 // arms the hook itself (from argv) so the test does not depend on the parent
 // environment being inherited across the spawn.
 static int run_crash_hook_child(int n, const fs::path& dir) {
-    const std::string crash_env = "OPENRAR_TEST_BATCH_CRASH_AFTER=" + std::to_string(n);
-#ifdef _WIN32
-    _putenv(crash_env.c_str());
-#else
-    setenv("OPENRAR_TEST_BATCH_CRASH_AFTER", std::to_string(n).c_str(), 1);
-#endif
     io::ExtractionSession session;
     session.set_durability_granularity(io::DurabilityGranularity::Batch);
+    session.set_test_hooks(static_cast<unsigned>(n), 0);
     for (int i = 0; i < n; ++i) {
         const fs::path temp =
             dir / ("f" + std::to_string(i) + ".0123456789abcdef0123456789abcdef.tmp");
@@ -839,6 +838,7 @@ int main(int argc, char* argv[]) {
     test_containment_batched();
     test_frozen_surface_absence();
     test_batch_lru_eviction_skips_in_flight();
+    test_batch_lru_eviction_occurs();
     test_late_entry_to_batch_switch();
     test_crash_hook_kills_after_nth_record();
     std::cout << "All extraction_atomic_tests passed.\n";
