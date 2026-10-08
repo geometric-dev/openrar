@@ -65,10 +65,9 @@ int main() {
     // What filesystem is %TEMP% on?
     DWORD spc = GetDriveTypeW(fs::temp_directory_path().root_name().wstring().c_str());
     printf("drive type: %lu (3=fixed)\n", spc);
-    char fsname[MAX_PATH + 1] = {};
-    ULARGE_INTEGER free_, total;
+    wchar_t fsname[MAX_PATH + 1] = {};
     GetVolumeInformationW(fs::temp_directory_path().root_path().wstring().c_str(), nullptr, 0,
-                          nullptr, nullptr, nullptr, (LPWSTR)fsname, MAX_PATH);
-    printf("fs name: %s\n", fsname);
+                          nullptr, nullptr, nullptr, fsname, MAX_PATH);
+    wprintf(L"fs name: %s\n", fsname);
     return ok ? 0 : 2;
 }
