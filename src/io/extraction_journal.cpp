@@ -334,24 +334,6 @@ void ExtractionSession::journal_name(std::filesystem::path& out) {
 
 // ── Batch-mode member helpers (v1.39.0, D1/D2/D3) ──────────────────────────
 
-void ExtractionSession::configure_test_failure_hooks() {
-    if (granularity_ != DurabilityGranularity::Batch) return;
-    const char* crash = std::getenv("OPENRAR_TEST_BATCH_CRASH_AFTER");
-    if (crash) {
-        try {
-            crash_after_ = static_cast<unsigned>(std::stoul(crash));
-        } catch (...) {
-        }
-    }
-    const char* fail = std::getenv("OPENRAR_TEST_FAIL_JOURNAL_SYNC");
-    if (fail) {
-        try {
-            fail_at_sync_ = static_cast<unsigned>(std::stoul(fail));
-        } catch (...) {
-        }
-    }
-}
-
 void ExtractionSession::touch_journal(const std::filesystem::path& key) {
     auto it = journals_.find(key);
     if (it == journals_.end()) return;
@@ -405,7 +387,7 @@ void ExtractionSession::evict_journal(const std::filesystem::path& key) {
 }
 
 // Batch mode: evict the least-recently-used journal that has no in-flight
-// temps. Scans from the LRU front (bounded by kBatchJournalLruCap = 64).
+// temps. Scans from the LRU front (bounded by BATCH_JOURNAL_LRU_CAP = 64).
 // If every journal has an in-flight temp, skips eviction — exceeding the
 // cap temporarily is safer than destroying the only recovery reference for
 // a temp that is still being written.
@@ -482,15 +464,12 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
     if (!ok) return false;
     ++register_count_;
 
-    // Test-only crash hook (D6): kill the process after the Nth record has
-    // been appended to the journal (the Nth register_temp call), before the
-    // boundary sync — the kill point is deterministic for the failure matrix.
     if (granularity_ == DurabilityGranularity::Batch && crash_after_ > 0 &&
         register_count_ >= crash_after_) {
-        std::exit(99); // test-only: simulate a hard kill mid-batch
+        std::exit(99);
     }
 
-    // Batch mode: sync at the boundary (every 32 appends).
+    // Batch mode: sync at the boundary (every batch_sync_boundary_ appends).
     if (granularity_ == DurabilityGranularity::Batch &&
         ++it->second.pending >= batch_sync_boundary_) {
         if (!sync_journal(it->second.file)) return false;
@@ -499,7 +478,7 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
     ++it->second.in_flight;
 
     // Batch mode: evict LRU journals over the cap.
-    if (granularity_ == DurabilityGranularity::Batch && journals_.size() > kBatchJournalLruCap) {
+    if (granularity_ == DurabilityGranularity::Batch && journals_.size() > BATCH_JOURNAL_LRU_CAP) {
         evict_lru_journal();
     }
 
@@ -525,11 +504,15 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
         LockedFile* lf = new LockedFile();
         if (!lf->adopt(jh)) {
             delete lf;
+            std::error_code ec;
+            std::filesystem::remove(journal_dir_key / name, ec);
             return false;
         }
         if (!lf->append(kJournalHeader)) {
             lf->close();
             delete lf;
+            std::error_code ec;
+            std::filesystem::remove(journal_dir_key / name, ec);
             return false;
         }
         // Test-only sync-failure hook (D6): the header sync is the first
@@ -537,11 +520,15 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
         if (should_fail_next_sync()) {
             lf->close();
             delete lf;
+            std::error_code ec;
+            std::filesystem::remove(journal_dir_key / name, ec);
             return false;
         }
         if (!lf->sync()) {
             lf->close();
             delete lf;
+            std::error_code ec;
+            std::filesystem::remove(journal_dir_key / name, ec);
             return false;
         }
         it = journals_.emplace(journal_dir_key, DirJournal{lf, 0, 0, lru_.end()}).first;
@@ -564,15 +551,12 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
     if (!ok) return false;
     ++register_count_;
 
-    // Test-only crash hook (D6): kill the process after the Nth record has
-    // been appended to the journal (the Nth register_temp call), before the
-    // boundary sync.
     if (granularity_ == DurabilityGranularity::Batch && crash_after_ > 0 &&
         register_count_ >= crash_after_) {
-        std::exit(99); // test-only: simulate a hard kill mid-batch
+        std::exit(99);
     }
 
-    // Batch mode: sync at the boundary (every 32 appends).
+    // Batch mode: sync at the boundary (every batch_sync_boundary_ appends).
     if (granularity_ == DurabilityGranularity::Batch &&
         ++it->second.pending >= batch_sync_boundary_) {
         if (!sync_journal(it->second.file)) return false;
@@ -581,7 +565,7 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
     ++it->second.in_flight;
 
     // Batch mode: evict LRU journals over the cap.
-    if (granularity_ == DurabilityGranularity::Batch && journals_.size() > kBatchJournalLruCap) {
+    if (granularity_ == DurabilityGranularity::Batch && journals_.size() > BATCH_JOURNAL_LRU_CAP) {
         evict_lru_journal();
     }
 

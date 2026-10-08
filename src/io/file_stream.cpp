@@ -469,9 +469,9 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
                 LONG Status;
                 ULONG_PTR Information;
             } iosb{0, 0};
-            constexpr ULONG kNtFileRenameInformationEx = 65;
+            constexpr ULONG NT_FILE_RENAME_INFORMATION_EX = 65;
             const LONG st = set_info(static_cast<HANDLE>(handle_), &iosb, ri,
-                                     static_cast<ULONG>(buf.size()), kNtFileRenameInformationEx);
+                                     static_cast<ULONG>(buf.size()), NT_FILE_RENAME_INFORMATION_EX);
             if (st == 0) {
                 last_error_ = 0;
                 CloseHandle(parent);
@@ -588,9 +588,9 @@ bool FileStream::commit_rename_in(void* parent_dir_handle, const std::string& ut
     // FILE_INFO_BY_HANDLE_CLASS: FileRenameInformationEx = 65 on the NT
     // side (13 there is FileDispositionInformation — passing it deletes the
     // file! — found by the gate-1 suite).
-    constexpr ULONG kNtFileRenameInformationEx = 65;
+    constexpr ULONG NT_FILE_RENAME_INFORMATION_EX = 65;
     const LONG st = set_info(static_cast<HANDLE>(handle_), &iosb, ri,
-                             static_cast<ULONG>(buf.size()), kNtFileRenameInformationEx);
+                             static_cast<ULONG>(buf.size()), NT_FILE_RENAME_INFORMATION_EX);
     if (st == 0) {
         last_error_ = 0;
         return true;
