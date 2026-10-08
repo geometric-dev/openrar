@@ -698,11 +698,20 @@ struct ReaderSlots {
     std::mutex mu;
     std::condition_variable cv;
 
-    bool init(const std::string& arc_path, const std::string& password, size_t n) {
+    bool init(const std::string& arc_path, const std::string& password, size_t n,
+              unsigned decode_threads, bool keep_broken, bool extract_symlinks, bool xattr_security,
+              io::DurabilityGranularity durability, bool preserve_suid, bool use_mapped_scan) {
         readers.resize(n);
         in_use.assign(n, 0);
         for (size_t i = 0; i < n; ++i) {
             readers[i] = std::make_unique<archive::ArchiveReader>();
+            readers[i]->set_decode_threads(decode_threads);
+            readers[i]->set_keep_broken(keep_broken);
+            readers[i]->set_extract_symlinks(extract_symlinks);
+            readers[i]->set_restore_xattr_security(xattr_security);
+            readers[i]->set_durability_granularity(durability);
+            readers[i]->set_preserve_suid(preserve_suid);
+            readers[i]->set_use_mapped_scan(use_mapped_scan);
             if (!readers[i]->open(arc_path, password)) return false;
         }
         return true;
@@ -1004,7 +1013,9 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
     const bool want_parallel =
         threads > 1 && jobs.size() > 1 && entries_independently_decodable(reader);
     ReaderSlots slots;
-    if (want_parallel && !slots.init(arc_path, password, std::min<size_t>(threads, jobs.size()))) {
+    if (want_parallel &&
+        !slots.init(arc_path, password, std::min<size_t>(threads, jobs.size()), decode_threads,
+                    false, false, false, io::DurabilityGranularity::Entry, false, true)) {
         // A slot failed to open what the main reader already opened
         // successfully (transient IO). Stay sequential rather than fail.
         slots.readers.clear();
@@ -2407,13 +2418,15 @@ int extract_archive(
     // silent — the contract revision is disclosed in three places: switch
     // echo, JSON field, docs).
     if (!g_quiet_mode) {
+        auto& banner_out = (g_json_stdout_only ? std::cerr : std::cout);
         if (durability == openrar::io::DurabilityGranularity::Batch &&
             !reader.durability_override()) {
-            std::cerr << "durability: batch (deferred journal sync, no temp flush; data durability "
-                         "= OS writeback)\n";
+            banner_out
+                << "durability: batch (deferred journal sync, no temp flush; data durability "
+                   "= OS writeback)\n";
         }
         if (reader.durability_override()) {
-            std::cerr << "durability: entry (OPENRAR_NO_BATCH_DURABILITY override)\n";
+            banner_out << "durability: entry (OPENRAR_NO_BATCH_DURABILITY override)\n";
         }
     }
 
@@ -2731,7 +2744,9 @@ int extract_archive(
                                !needs_sequential_prompt && entries_independently_decodable(reader);
     ReaderSlots slots;
     if (want_parallel &&
-        !slots.init(arc_path, password, std::min<size_t>(threads, extract_jobs.size()))) {
+        !slots.init(arc_path, password, std::min<size_t>(threads, extract_jobs.size()),
+                    decode_threads, keep_broken, extract_symlinks, xattr_security, durability,
+                    preserve_suid, use_mmap)) {
         // A slot failed to open what the main reader already opened
         // successfully (transient IO). Stay sequential rather than fail.
         slots.readers.clear();
