@@ -5,6 +5,59 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.1] - 2026-10-08
+
+Remediation of the v1.39.0 durability-batching release: the parallel
+extraction path silently dropped the batch durability policy (slot readers
+never received it, while the JSON report and banner claimed batch); test
+fault-injection hooks lived in production code behind environment variables
+(including `std::exit(99)`); and `tools/ren_iso.cpp` had a stack buffer
+overflow (`char` buffer passed as `LPWSTR` to `GetVolumeInformationW`).
+Also fixes the contained journal-create failure leak, the durability banner
+stream, new `k`-prefixed constants, stale comments, and a boundary-sync
+check that used the constant instead of the overridable member.
+
+### Fixed
+
+- **Parallel-path durability propagation.** `ReaderSlots::init`
+  (`src/cli/main.cpp`) now receives and applies all reader configuration
+  (durability granularity, decode threads, preserve-suid, mapped-scan,
+  keep-broken) to every slot reader, not just the main reader. Previously
+  `openrar x -db` on a multicore host ran entry durability on the parallel
+  path while reporting `"durability":"batch"`.
+- **Test hooks removed from production code.** The `OPENRAR_TEST_BATCH_CRASH_AFTER`
+  and `OPENRAR_TEST_FAIL_JOURNAL_SYNC` environment-variable hooks are replaced
+  by a runtime `set_test_hooks()` method (`src/io/extraction_journal.hpp`)
+  that is always available but inert unless explicitly called. The
+  `std::exit(99)` crash hook and sync-failure hook are no longer reachable
+  from environment variables.
+- **`tools/ren_iso.cpp` stack buffer overflow.** `char fsname[MAX_PATH + 1]`
+  was passed as `(LPWSTR)fsname` to `GetVolumeInformationW`, which writes up
+  to 260 wchar_t (520 bytes) into a 261-byte buffer. Changed to
+  `wchar_t fsname[MAX_PATH + 1]`; removed unused variables that caused
+  C4101 warnings.
+- **Contained journal-create failure leak.** `register_temp_contained`
+  (`src/io/extraction_journal.cpp`) now removes the journal file on all
+  post-create failure paths (adopt, append, sync), matching the path-based
+  `register_temp` behavior.
+- **Durability banner stream.** The batch/entry durability banner
+  (`src/cli/main.cpp`) now uses the same `(g_json_stdout_only ? std::cerr :
+  std::cout)` conditional as the surrounding banner.
+- **`k`-prefixed constants renamed.** `kBatchJournalLruCap` →
+  `BATCH_JOURNAL_LRU_CAP`, `kBatchSyncBoundary` → `BATCH_SYNC_BOUNDARY`,
+  `kNtFileRenameInformationEx` → `NT_FILE_RENAME_INFORMATION_EX`
+  (CONTRIBUTING rule 6).
+- **Boundary-sync check fix.** The batch-mode boundary check in
+  `register_temp` and `register_temp_contained` now uses the overridable
+  `batch_sync_boundary_` member instead of the `BATCH_SYNC_BOUNDARY`
+  constant, so `set_batch_sync_boundary_for_test()` actually takes effect.
+
+### Added
+
+- **`test_batch_lru_eviction_occurs`** (`tests/unit/extraction_atomic_tests.cpp`):
+  verifies LRU eviction actually unlinks the oldest journal when the cap is
+  exceeded and all temps have been released.
+
 ## [1.39.0] - 2026-10-07
 
 The durability-batching arc revised the extraction crash-consistency contract
