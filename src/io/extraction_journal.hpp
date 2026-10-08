@@ -59,8 +59,10 @@ public:
     // Called by AtomicWriter::open before the temp exists: sweeps stale
     // journals in `dir` (unless this session already holds one there),
     // creates + locks this run's journal for `dir` when absent, and appends
-    // an fsynced record naming `temp_abs`. False only on IO failure — the
-    // caller must not create the temp then (unreferenced-orphan rule).
+    // a record naming `temp_abs`. In entry mode the record is fsynced
+    // immediately; in batch mode the sync is deferred to a boundary.
+    // False only on IO failure — the caller must not create the temp then
+    // (unreferenced-orphan rule).
     bool register_temp(const std::filesystem::path& dir, const std::filesystem::path& temp_abs);
 
     // Containment variant (v1.24 M2): the journal itself is created ANCHORED
@@ -111,14 +113,20 @@ public:
     // `entry` (default) = the v1.24 contract, unchanged. `batch` = the
     // opt-in revision: deferred record sync, no temp flush, session-held
     // journals under an LRU cap. See DurabilityGranularity above.
+    // Test-only fault-injection hooks. Always available (inert unless called);
+    // production callers never invoke this, so the hooks stay dormant.
+    void set_test_hooks(unsigned crash_after, unsigned fail_at_sync) {
+        crash_after_ = crash_after;
+        fail_at_sync_ = fail_at_sync;
+    }
+
     void set_durability_granularity(DurabilityGranularity g) {
         if (g == granularity_) return;
         granularity_ = g;
         if (g == DurabilityGranularity::Batch) {
-            configure_test_failure_hooks();
             // Journals created under entry mode were never tracked in the LRU;
-            // register them (map order = creation order) so eviction and
-            // touch_journal are safe after a late entry→batch transition.
+            // register them (key order) so eviction and touch_journal are
+            // safe after a late entry→batch transition.
             for (auto& kv : journals_) {
                 if (!kv.second.lru_tracked) {
                     lru_.push_back(kv.first);
@@ -156,9 +164,9 @@ private:
     // access-order queue (front = evict next); the map stores list iterators
     // for O(1) splice-on-access. An evicted journal is synced, closed, and
     // unlinked. Teardown syncs, closes, and unlinks all.
-    static constexpr size_t kBatchJournalLruCap = 64;
-    static constexpr unsigned kBatchSyncBoundary = 32;
-    unsigned batch_sync_boundary_ = kBatchSyncBoundary; // overridable for tests
+    static constexpr size_t BATCH_JOURNAL_LRU_CAP = 64;
+    static constexpr unsigned BATCH_SYNC_BOUNDARY = 32;
+    unsigned batch_sync_boundary_ = BATCH_SYNC_BOUNDARY; // overridable for tests
     std::list<std::filesystem::path> lru_;
     DurabilityGranularity granularity_ = DurabilityGranularity::Entry;
 
@@ -218,8 +226,7 @@ public:
     // fsynced before the rename). The session's durability policy is the
     // single decision point: batch mode always elides the flush (data
     // durability is the OS writeback's — the reference-tool class), entry
-    // mode always flushes. An explicit flush_first=true from a caller is
-    // honored only in entry mode.
+    // mode flushes unless the caller explicitly passes flush_first=false.
     bool commit(CommitMode mode = CommitMode::ReplaceExisting, bool flush_first = true);
 
     // Closes and deletes the temp. The journal record becomes stale but is
