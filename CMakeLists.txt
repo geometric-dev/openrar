@@ -725,6 +725,13 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(perf_microprobe PRIVATE openrar_core)
     target_include_directories(perf_microprobe PRIVATE ${OPENRAR_INCLUDES})
 
+    # v1.40 benchmark bundle driver (not a test): the Setup= payload of
+    # openrar-bench.exe (tools/make_bench_bundle.ps1) — generates its own
+    # corpora, runs the full matrix, writes the JSON report.
+    add_executable(runbench tools/bench_run.cpp)
+    target_link_libraries(runbench PRIVATE openrar_core)
+    target_include_directories(runbench PRIVATE ${OPENRAR_INCLUDES})
+
     if(WIN32)
         add_executable(ren_iso tools/ren_iso.cpp)
         target_link_libraries(ren_iso PRIVATE openrar_core)
