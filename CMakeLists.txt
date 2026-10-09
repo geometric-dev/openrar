@@ -718,6 +718,13 @@ if(NOT EMSCRIPTEN)
     add_executable(durability_probe tools/durability_probe.cpp)
     target_link_libraries(durability_probe PRIVATE openrar_core)
     target_include_directories(durability_probe PRIVATE ${OPENRAR_INCLUDES})
+
+    # v1.40 quick-win microprobe (not a test): per-entry extraction
+    # operation costs for the quick-win scorecard.
+    add_executable(perf_microprobe tools/perf_microprobe.cpp)
+    target_link_libraries(perf_microprobe PRIVATE openrar_core)
+    target_include_directories(perf_microprobe PRIVATE ${OPENRAR_INCLUDES})
+
     if(WIN32)
         add_executable(ren_iso tools/ren_iso.cpp)
         target_link_libraries(ren_iso PRIVATE openrar_core)
