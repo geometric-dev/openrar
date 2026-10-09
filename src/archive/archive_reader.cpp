@@ -2429,6 +2429,34 @@ bool has_symlink_parent(const std::filesystem::path& dest_path) {
     }
     return false;
 }
+// v1.40: comparison key for the cached parent-chain walk. Lexically
+// normalized; on Windows separators are unified and the string is
+// case-folded (case-insensitive filesystem — two spellings of one location
+// must compare equal, distinct locations never do). On case-sensitive
+// filesystems an unconverted spelling only MISSES the cache, which falls
+// back to the full scan — never a false hit.
+std::string path_chain_key(const std::filesystem::path& p) {
+    std::string s = p.lexically_normal().string();
+#ifdef _WIN32
+    for (char& c : s) {
+        if (c == '/') c = '\\';
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+#endif
+    return s;
+}
+// True when `p` is `checked` itself or an ancestor of it — i.e. `p` sits on
+// the contiguous chain segment an earlier has_symlink_parent_cached call
+// already walked to its root break, so `p` and everything above it are
+// verified for this reader's lifetime. The root-break tail above `checked`
+// was skipped by that walk too (the same break conditions fire first here).
+bool on_checked_chain(const std::filesystem::path& p, const std::filesystem::path& checked) {
+    const std::string pk = path_chain_key(p);
+    const std::string ck = path_chain_key(checked);
+    if (ck.size() < pk.size()) return false;
+    if (ck.compare(0, pk.size(), pk) != 0) return false;
+    return ck.size() == pk.size() || ck[pk.size()] == std::filesystem::path::preferred_separator;
+}
 std::filesystem::path get_dest_root(const std::filesystem::path& dest_path,
                                     const std::string& arc_name) {
     // Collect the entry name's components the way sanitize_archive_path
@@ -2537,6 +2565,26 @@ void ArchiveReader::convert_self_links(const std::filesystem::path& dest_path) {
             if (anc == anc.root_path() || anc.parent_path() == anc) break;
         }
     }
+}
+
+// v1.40: has_symlink_parent with the session-cached upper chain (see the
+// declaration in archive_reader.hpp). Semantics per call are unchanged
+// (B3/M9: any symlink parent rejects the destination); only the segment
+// verified by the first call is not re-stat'ed.
+bool ArchiveReader::has_symlink_parent_cached(const std::filesystem::path& dest_path) {
+    const std::filesystem::path parent = dest_path.parent_path();
+    bool result = false;
+    for (auto p = parent; !p.empty(); p = p.parent_path()) {
+        if (p == p.root_path() || p.parent_path() == p) break;
+        if (p.is_absolute() && p.parent_path() == p.root_path()) break;
+        if (!symlink_chain_checked_.empty() && on_checked_chain(p, symlink_chain_checked_)) break;
+        if (is_reparse_or_symlink(p)) {
+            result = true;
+            break;
+        }
+    }
+    if (!result && symlink_chain_checked_.empty()) symlink_chain_checked_ = parent;
+    return result;
 }
 
 bool ArchiveReader::ensure_parent_dir(const std::filesystem::path& dest_path,
@@ -2877,9 +2925,12 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
     // commit rename. convert_self_links is retained: it only ever touches
     // links this reader created itself (M9 semantics). has_symlink_parent
     // stays as the shipped B3/M9 POLICY: a destination inside a pre-existing
-    // user symlink is rejected outright, regardless of containment.
+    // user symlink is rejected outright, regardless of containment. v1.40:
+    // session-cached — the root-ward chain segment is verified once per
+    // reader (the walk re-verifies it no-follow every entry), components
+    // below the recorded chain are re-scanned per call.
     convert_self_links(dest_path);
-    if (has_symlink_parent(dest_path)) {
+    if (has_symlink_parent_cached(dest_path)) {
         return false;
     }
 
@@ -3110,9 +3161,10 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
     (void)state; // no hardlink fallback on the store path itself
 
     // Same containment rationale as the compressed path above; has_symlink_parent
-    // keeps the shipped B3/M9 destination policy (see extract_entry).
+    // keeps the shipped B3/M9 destination policy (see extract_entry) — the
+    // handle-based write path uses the session-cached variant (v1.40).
     convert_self_links(dest_path);
-    if (has_symlink_parent(dest_path)) {
+    if (has_symlink_parent_cached(dest_path)) {
         return false;
     }
 

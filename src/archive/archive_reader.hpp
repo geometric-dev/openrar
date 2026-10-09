@@ -443,6 +443,17 @@ private:
     std::vector<PendingDirMeta> pending_dir_meta_;
 
     void convert_self_links(const std::filesystem::path& dest_path);
+    // v1.40 quick-win: session-cached has_symlink_parent for the handle-based
+    // destinations (regular files and stored entries). The lexical parent
+    // chain is stat'ed component-by-component only until it reaches the
+    // chain segment verified by the FIRST call (which walked it to the
+    // filesystem-root break); that segment is session-invariant for one
+    // extraction root. Components BELOW it are re-scanned on every call,
+    // and the anchored containment walk re-verifies the whole chain
+    // no-follow for the write itself. Path-based destinations (symlink
+    // creation, hardlink / FILECOPY sources) keep the full per-call scan.
+    bool has_symlink_parent_cached(const std::filesystem::path& dest_path);
+    std::filesystem::path symlink_chain_checked_;
     static bool ensure_parent_dir(const std::filesystem::path& dest_path,
                                   const std::string& entry_name);
     bool preserve_suid_{false};
