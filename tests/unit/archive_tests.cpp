@@ -652,6 +652,81 @@ void test_links_to_dirs_leaves_preexisting_links() {
     std::cout << "[PASS] LinksToDirs conversion leaves pre-existing links alone\n" << std::flush;
 }
 
+// v1.40: has_symlink_parent session caching must not weaken the B3/M9
+// destination policy. After the first entry records the checked chain, a
+// later destination whose parent sits BELOW the recorded chain and is a
+// pre-existing symlink must still be rejected (the below-chain segment is
+// re-scanned every call) — through both extraction paths (the regular
+// pre-check and the store entry's own check). Needs symlink privilege;
+// skips otherwise.
+void test_symlink_parent_cache_still_rejects() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path out_root = "build/qw_out";
+    fs::path link = out_root / "sub";
+    fs::path target = "build/qw_target";
+    fs::path arc = "build/qw_arc.rar";
+    fs::remove_all(out_root, ec);
+    fs::remove_all(target, ec);
+    fs::remove(arc, ec);
+    fs::create_directories(out_root);
+    fs::create_directories(target);
+    fs::create_directory_symlink(fs::absolute(target), link, ec);
+    if (ec) {
+        std::cout << "  Skip: no symlink privilege, cannot exercise chain cache B3\n";
+        return;
+    }
+
+    // Two stored entries.
+    {
+        io::FileStream out;
+        assert(out.open(arc, io::FileMode::CreateAlways));
+        assert(HeaderWriter::write_signature(out));
+        MainBlock mb;
+        assert(HeaderWriter::write_main_block(out, mb));
+        for (int i = 0; i < 2; ++i) {
+            FileBlock fb;
+            fb.file_name = i == 0 ? "a.txt" : "b.txt";
+            fb.unp_size = 4;
+            fb.pack_size = 4;
+            fb.method = 0;
+            fb.win_size = 0;
+            fb.has_crc32 = false;
+            assert(HeaderWriter::write_file_block(out, fb));
+            const core::byte payload[4] = {'t', 'e', 's', 't'};
+            assert(out.write(payload, 4) == 4);
+        }
+        EndArcBlock eb;
+        assert(HeaderWriter::write_end_block(out, eb));
+    }
+
+    ArchiveReader reader;
+    assert(reader.open(arc));
+    assert(reader.entries().size() == 2);
+
+    // Entry 1: plain destination — succeeds and RECORDS the checked chain.
+    assert(reader.extract_entry(reader.entries()[0], out_root / "a.txt"));
+    assert(fs::exists(out_root / "a.txt", ec));
+
+    // Entry 2: destination under the pre-existing symlink INSIDE the root.
+    // The below-chain segment (out_root/sub) must be re-scanned and reject.
+    assert(!reader.extract_entry(reader.entries()[1], link / "b.txt"));
+    // The store entry's own pre-check path rejects identically.
+    assert(!reader.extract_store_entry(reader.entries()[1], link / "b.txt"));
+
+    auto st = fs::symlink_status(link, ec);
+    assert(!ec);
+    assert(fs::is_symlink(st));                // the user's link survived
+    assert(!fs::exists(target / "b.txt", ec)); // nothing written through it
+    assert(!fs::exists(out_root / "b.txt", ec));
+
+    reader.close();
+    fs::remove_all(out_root, ec);
+    fs::remove_all(target, ec);
+    fs::remove(arc, ec);
+    std::cout << "[PASS] symlink parent chain cache keeps B3 rejection\n" << std::flush;
+}
+
 void test_solid_window_size() {
     std::cout << "Starting test_solid_window_size...\n" << std::flush;
     std::filesystem::path test_arc = "build/tiny_solid.rar";
@@ -1318,6 +1393,7 @@ int main() {
     test_truncated_data_area_clamped();
     test_filecopy_source_confined_to_root();
     test_links_to_dirs_leaves_preexisting_links();
+    test_symlink_parent_cache_still_rejects();
     test_b9_b5_corrupt_payload_fails_cleanly();
     test_b9_compressed_corrupt_fails_cleanly();
     test_b2_parent_is_file_fails_cleanly();
