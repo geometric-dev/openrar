@@ -87,3 +87,6 @@ tools/perf/out/
 # is ~50 MB of derived text/code/random. results.json records per-corpus
 # hashes precisely so the corpus itself is not version-controlled.
 tools/perf/payload/
+# Benchmark bundle output (tools/make_bench_bundle.ps1): contains package-time
+# copies of the local WinRAR install (D4) — never committed.
+/dist/
