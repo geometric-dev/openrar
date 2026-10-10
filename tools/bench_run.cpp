@@ -1206,13 +1206,28 @@ Row bench_compress(Ctx& cx, const std::string& engine_name, const std::string& c
         if (ve != "openrar") destw += L"\\";
         xargv.push_back(destw);
         ProcResult pr = run_proc(xargv, {}, cx.child_log, cx.timeout_sec);
-        std::string got = pr.spawned && pr.rc == 0 ? tree_hash_dir(dest) : std::string();
+        // Hash the tree regardless of rc: a nonzero rc with a full correct
+        // tree is a warning (e.g. attribute quirks), not a content mismatch,
+        // and rc!=0 with a partial/empty tree must be reported as the
+        // extraction failure it is - not as a bogus "hash != source".
+        std::string got = pr.spawned && !pr.timed_out ? tree_hash_dir(dest) : std::string();
         fs::remove_all(dest, ec);
-        if (got.empty() || got != src) {
+        if (!pr.spawned || pr.timed_out) {
+            row.status = "failed";
+            row.note = "verify extract " + ve + (pr.timed_out ? " timeout" : " spawn failed");
+            cx.failure(label, "verify", row.note);
+        } else if (got != src) {
             row.status = "failed";
             row.note = "verify mismatch (" + ve + ")";
-            cx.failure(label, "verify", ve + " extracted hash " + got + " != source " + src);
+            cx.failure(label, "verify",
+                       ve + " rc=" + std::to_string(pr.rc) + " extracted hash " +
+                           (got.empty() ? std::string("(none)") : got) + " != source " + src);
+            log_tail(cx.child_log);
         } else {
+            if (pr.rc != 0) {
+                row.note = (row.note.empty() ? "" : row.note + "; ") + ve +
+                           " rc=" + std::to_string(pr.rc) + " (content verified)";
+            }
             row.verified.push_back(got);
         }
     }
