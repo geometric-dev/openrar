@@ -127,6 +127,9 @@ inline bool is_vt_supported_fd(int fd) {
     DWORD mode = 0;
     if (_isatty(fd) && GetConsoleMode(out_handle, &mode)) {
         SetConsoleMode(out_handle, mode | 0x0004 /* ENABLE_VIRTUAL_TERMINAL_PROCESSING */);
+        // Same as the SFX stub: the VT renderer's UTF-8 glyphs (checkmark,
+        // bar blocks) are mojibake on an OEM console codepage.
+        if (GetConsoleOutputCP() != CP_UTF8) SetConsoleOutputCP(CP_UTF8);
         return true;
     }
     return false;
