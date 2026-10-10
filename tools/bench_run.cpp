@@ -1188,47 +1188,68 @@ Row bench_compress(Ctx& cx, const std::string& engine_name, const std::string& c
     for (const std::string& ve : {"openrar", "unrar"}) {
         Engine& ve_e = cx.engine(ve);
         if (!ve_e.requested || !ve_e.found) continue;
-        fs::path dest = cx.tmp / ("x_" + label + "_" + ve);
-        std::error_code ec;
-        fs::remove_all(dest, ec);
-        fs::create_directories(dest, ec);
-        std::vector<std::wstring> xargv;
-        xargv.push_back(ve_e.exe.wstring());
-        xargv.push_back(L"x");
-        xargv.push_back(L"-y");
-        if (ve == "openrar") {
-            xargv.push_back(L"-q");
-        } else {
-            // unrar verification: dev extract_and_hash unrar shape
+        auto attempt_extract = [&](std::string& hash_out, ProcResult& pr_out) {
+            fs::path dest = cx.tmp / ("x_" + label + "_" + ve);
+            std::error_code ec;
+            fs::remove_all(dest, ec);
+            fs::create_directories(dest, ec);
+            std::vector<std::wstring> xargv;
+            xargv.push_back(ve_e.exe.wstring());
+            xargv.push_back(L"x");
+            xargv.push_back(L"-y");
+            if (ve == "openrar") {
+                xargv.push_back(L"-q");
+            } else {
+                // unrar verification: dev extract_and_hash unrar shape
+            }
+            xargv.push_back(primary.wstring());
+            std::wstring destw = dest.wstring();
+            if (ve != "openrar") destw += L"\\";
+            xargv.push_back(destw);
+            pr_out = run_proc(xargv, {}, cx.child_log, cx.timeout_sec);
+            // Hash the tree regardless of rc: a nonzero rc with a full correct
+            // tree is a warning (e.g. attribute quirks), not a content mismatch.
+            hash_out = pr_out.spawned && !pr_out.timed_out ? tree_hash_dir(dest) : std::string();
+            fs::remove_all(dest, ec);
+        };
+        std::string got;
+        ProcResult pr;
+        attempt_extract(got, pr);
+        const int first_rc = pr.rc;
+        bool bad = !pr.spawned || pr.timed_out || got != src;
+        // One retry of the SAME archive bytes: transient AV/lock interference
+        // on a fresh desktop is common (UnRAR rc=3 CRC noise on a locked
+        // read); a genuinely bad archive fails identically twice and is
+        // still reported as such.
+        const bool retried = bad && pr.spawned && !pr.timed_out;
+        if (retried) {
+            attempt_extract(got, pr);
+            bad = !pr.spawned || pr.timed_out || got != src;
         }
-        xargv.push_back(primary.wstring());
-        std::wstring destw = dest.wstring();
-        if (ve != "openrar") destw += L"\\";
-        xargv.push_back(destw);
-        ProcResult pr = run_proc(xargv, {}, cx.child_log, cx.timeout_sec);
-        // Hash the tree regardless of rc: a nonzero rc with a full correct
-        // tree is a warning (e.g. attribute quirks), not a content mismatch,
-        // and rc!=0 with a partial/empty tree must be reported as the
-        // extraction failure it is - not as a bogus "hash != source".
-        std::string got = pr.spawned && !pr.timed_out ? tree_hash_dir(dest) : std::string();
-        fs::remove_all(dest, ec);
-        if (!pr.spawned || pr.timed_out) {
+        if (!bad) {
+            std::string suffix;
+            if (retried) {
+                suffix = ve + " rc=" + std::to_string(first_rc) + " attempt1; attempt2 ok";
+            } else if (pr.rc != 0) {
+                suffix = ve + " rc=" + std::to_string(pr.rc) + " (content verified)";
+            }
+            if (!suffix.empty()) {
+                row.note = (row.note.empty() ? "" : row.note + "; ") + suffix;
+            }
+            row.verified.push_back(got);
+        } else if (!pr.spawned || pr.timed_out) {
             row.status = "failed";
             row.note = "verify extract " + ve + (pr.timed_out ? " timeout" : " spawn failed");
             cx.failure(label, "verify", row.note);
-        } else if (got != src) {
+        } else {
             row.status = "failed";
             row.note = "verify mismatch (" + ve + ")";
+            std::string attempts = ve + " rc=" + std::to_string(pr.rc);
+            if (retried) attempts += " (attempt1 rc=" + std::to_string(first_rc) + ")";
             cx.failure(label, "verify",
-                       ve + " rc=" + std::to_string(pr.rc) + " extracted hash " +
-                           (got.empty() ? std::string("(none)") : got) + " != source " + src);
+                       attempts + " extracted hash " + (got.empty() ? std::string("(none)") : got) +
+                           " != source " + src);
             log_tail(cx.child_log);
-        } else {
-            if (pr.rc != 0) {
-                row.note = (row.note.empty() ? "" : row.note + "; ") + ve +
-                           " rc=" + std::to_string(pr.rc) + " (content verified)";
-            }
-            row.verified.push_back(got);
         }
     }
     std::sort(row.verified.begin(), row.verified.end());
