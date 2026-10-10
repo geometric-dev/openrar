@@ -432,6 +432,31 @@ static void test_process_exec_spawn_exit_code() {
     r = sfx::spawn_contained(cmd, exe, "", {});
     assert(r.spawned && r.exit_code == 0);
 
+    // Bare-name regression (the bundle's `Setup=runbench.exe`): the resolved
+    // file lives in working_dir while the command is a bare token. The old
+    // Windows path handed CreateProcess only the bare name, which is searched
+    // against the parent's CWD - not lpCurrentDirectory - so a valid
+    // resolution still failed with "CreateProcess failed".
+#ifndef OPENRAR_SFX_EMULATOR
+    const fs::path bare_dir = fs::absolute("build/sfx_bare_dest");
+    fs::create_directories(bare_dir);
+    const fs::path bare_exe = bare_dir /
+#ifdef _WIN32
+                              "sfx_bare_probe.exe";
+#else
+                              "sfx_bare_probe";
+#endif
+    fs::copy_file(fs::absolute(g_self_exe), bare_exe, fs::copy_options::overwrite_existing);
+#ifndef _WIN32
+    assert(std::system(("chmod +x \"" + bare_exe.string() + "\"").c_str()) == 0);
+#endif
+    const std::string bare_cmd = bare_exe.filename().string() + " --sfx-probe-exit 5";
+    r = sfx::spawn_contained(bare_cmd, bare_exe.string(), bare_dir.string(), {});
+    assert(r.spawned && r.contained && !r.cancelled);
+    assert(r.exit_code == 5);
+    fs::remove_all(bare_dir);
+#endif
+
     // AMSI: the contract is "functions and reports a verdict" — clean OR
     // flagged are both valid engine outcomes for a benign string; a fail-open
     // (failed=true) is the documented behavior when AMSI is unavailable.
