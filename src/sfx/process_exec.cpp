@@ -216,13 +216,20 @@ ExecResult spawn_contained(const std::string& command, const std::string& resolv
         return result;
     }
 
+    // lpApplicationName carries the resolved absolute path: a bare Setup
+    // token ("runbench.exe") would otherwise be searched against the STUB's
+    // directory and parent CWD - never lpCurrentDirectory - and fail even
+    // though resolution proved the file sits in the extraction directory.
+    // lpCommandLine stays the verbatim command so argv[0] is unchanged
+    // (mirrors the POSIX branch's execv(resolved_exe, argv)).
+    std::wstring wexe = to_wide(resolved_exe);
     std::wstring wcmd = to_wide(command);
     std::wstring wcwd = to_wide(working_dir);
     STARTUPINFOEXW si{};
     si.StartupInfo.cb = sizeof(si);
     si.lpAttributeList = attrs;
     PROCESS_INFORMATION pi{};
-    const BOOL ok = CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE,
+    const BOOL ok = CreateProcessW(wexe.c_str(), wcmd.data(), nullptr, nullptr, FALSE,
                                    CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT, nullptr,
                                    wcwd.empty() ? nullptr : wcwd.c_str(),
                                    reinterpret_cast<LPSTARTUPINFOW>(&si), &pi);
