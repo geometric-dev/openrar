@@ -43,6 +43,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -1635,6 +1636,23 @@ bool stdin_is_tty() {
     return h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &mode);
 }
 
+// Crash bookkeeping: main()'s catch and a std::terminate handler persist
+// status=fatal so an exception or crash mid-run can never leave the report
+// frozen at "running" (indistinguishable from a run still in progress).
+Report* g_live_report = nullptr;
+fs::path g_live_out;
+
+void save_fatal_live(const char* note) {
+    if (!g_live_report) return;
+    try {
+        g_live_report->status = "fatal";
+        g_live_report->note = note;
+        write_report_atomic(*g_live_report, g_live_out);
+    } catch (...) {
+        // best-effort only; never throw out of a crash path
+    }
+}
+
 int runbench_main(const Options& opt) {
     std::string run_id;
     {
@@ -1729,6 +1747,9 @@ int runbench_main(const Options& opt) {
     fs::create_directories(cx.tmp, ec);
     cx.child_log = cx.tmp / "child.log";
 
+    g_live_report = &cx.rep;
+    g_live_out = opt.out;
+
     std::printf("[runbench] OpenRAR benchmark bundle driver (%s)\n", run_id.c_str());
     std::printf("[runbench] report: %s\n", narrow(opt.out.wstring()).c_str());
     std::printf("[runbench] engines: %s\n", engines_line.c_str());
@@ -1822,6 +1843,11 @@ int runbench_main(const Options& opt) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    std::set_terminate([]() {
+        std::fprintf(stderr, "[runbench] FATAL: unhandled exception or crash\n");
+        save_fatal_live("crash: unhandled exception (terminate handler)");
+        std::abort();
+    });
     Options opt;
     if (!parse(argc, argv, opt)) {
         usage();
@@ -1842,6 +1868,8 @@ int main(int argc, char** argv) {
         return runbench_main(opt);
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "[runbench] FATAL: %s\n", ex.what());
+        save_fatal_live((std::string("unhandled exception: ") + ex.what()).c_str());
+        std::fprintf(stderr, "          report saved with status=fatal\n");
         return 2;
     }
 }
