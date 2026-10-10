@@ -199,6 +199,15 @@ static void test_e2e_no_directives_plain_extraction() {
     assert(r.exit_code == 0);
     assert(fs::exists(dest / "e2e_plain.txt"));
     assert(!contains(r.output, "[sfx]")); // no directive machinery output
+    // done() must stamp a real extraction time: without prog.init() the
+    // start_time_ default (steady_clock epoch) made the summary print
+    // system uptime as seconds ("unpacked in 77867.4s").
+    {
+        const size_t pos = r.output.find("unpacked in ");
+        assert(pos != std::string::npos);
+        const double secs = std::atof(r.output.c_str() + pos + 12);
+        assert(secs >= 0.0 && secs < 60.0);
+    }
     std::cout << "[PASS] e2e: directive-free archive extracts untouched" << std::endl;
 }
 
