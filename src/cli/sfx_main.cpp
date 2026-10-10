@@ -41,6 +41,10 @@ bool is_vt_supported() {
     DWORD mode = 0;
     if (_isatty(_fileno(stdout)) && GetConsoleMode(out_handle, &mode)) {
         SetConsoleMode(out_handle, mode | 0x0004 /* ENABLE_VIRTUAL_TERMINAL_PROCESSING */);
+        // The VT renderer emits UTF-8 glyphs (checkmark, bar blocks); on a
+        // console still set to the OEM codepage those bytes render as
+        // mojibake. Switch the console to UTF-8 alongside VT.
+        if (GetConsoleOutputCP() != CP_UTF8) SetConsoleOutputCP(CP_UTF8);
         return true;
     }
     return false;
