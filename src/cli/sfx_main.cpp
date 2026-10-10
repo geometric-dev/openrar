@@ -418,6 +418,15 @@ static int sfx_main_impl(int argc, char* argv[]) {
             std::error_code mk_ec;
             std::filesystem::create_directories(out_root, mk_ec);
 
+            // Mirror the test path: init() stamps start_time_ (an untouched
+            // default time_point would make done() print steady_clock epoch
+            // elapsed - i.e. system uptime - as the extraction time) and
+            // enables the VT progress bar for the loop below.
+            if (!extraction_silent) {
+                prog.init("EXTRACTING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
+                prog.set_totals(total_entries, total_bytes);
+            }
+
             size_t idx = 0;
             for (const auto& entry : reader.entries()) {
                 if (entry.header.is_service) continue;
