@@ -27,7 +27,7 @@
 //     unverified — rows keep dev labels for grep-ability).
 //
 // Flags: --quick  --runs N  --keep  --no-pause  --out <path>
-//        --engines openrar,unrar,winrar  --gen-only  --help
+//        --engines openrar,unrar,winrar  --gen-only  --filter SUBSTR  --help
 //        --prng-selftest (maintenance: validates the MT port against
 //        CPython ground-truth vectors)
 //
@@ -162,7 +162,9 @@ std::wstring join_cmdline(const std::vector<std::wstring>& args) {
     return s;
 }
 
-// Runs one child with stdout+stderr captured to `log` (truncated each run),
+// Runs one child with stdout+stderr captured to `log` (truncated each run,
+// prefixed with a ==== cmdline ==== banner so a stray log file is always
+// self-describing; failed-row snapshots preserve it - see Ctx::failure),
 // cwd optional, hard timeout. Wall time covers spawn->exit (dev parity:
 // python subprocess.run timing).
 ProcResult run_proc(const std::vector<std::wstring>& args, const fs::path& cwd, const fs::path& log,
@@ -185,6 +187,17 @@ ProcResult run_proc(const std::vector<std::wstring>& args, const fs::path& cwd, 
     std::wstring cmd = join_cmdline(args);
     std::vector<wchar_t> buf(cmd.begin(), cmd.end());
     buf.push_back(0);
+    { // self-describing log: banner survives in failure snapshots
+        int n = WideCharToMultiByte(CP_UTF8, 0, cmd.data(), (int)cmd.size(), nullptr, 0, nullptr,
+                                    nullptr);
+        std::string u8(n > 0 ? (size_t)n : 0, '\0');
+        if (n > 0)
+            WideCharToMultiByte(CP_UTF8, 0, cmd.data(), (int)cmd.size(), u8.data(), n, nullptr,
+                                nullptr);
+        std::string banner = "===== " + u8 + " =====\r\n";
+        DWORD wr = 0;
+        WriteFile(hLog, banner.data(), (DWORD)banner.size(), &wr, nullptr);
+    }
     PROCESS_INFORMATION pi{};
     auto t0 = std::chrono::steady_clock::now();
     BOOL ok =
@@ -224,7 +237,8 @@ std::string first_nonempty_line(const fs::path& log) {
     std::string line;
     while (std::getline(is, line)) {
         std::string t = trim(line);
-        if (!t.empty()) return t;
+        if (t.empty() || t.rfind("=====", 0) == 0) continue; // skip run_proc banners
+        return t;
     }
     return {};
 }
@@ -889,6 +903,7 @@ struct Options {
     bool runs_set = false; // --runs was passed explicitly
     int runs = -1;         // timed runs override
     fs::path out;
+    std::string filter; // label substring; empty = run everything
     std::vector<std::string> engines{"openrar", "unrar", "winrar"};
 };
 
@@ -903,6 +918,8 @@ void usage() {
                 "  --keep                keep the work directory (corpora + archives)\n"
                 "  --no-pause            do not wait for Enter at exit\n"
                 "  --gen-only            generate corpora, print fingerprints, run nothing\n"
+                "  --filter SUBSTR       only run rows whose label contains SUBSTR\n"
+                "                        (others recorded as skipped; e.g. --filter o_mix_cdc)\n"
                 "  --prng-selftest       validate the MT19937 port against CPython vectors\n"
                 "  --help                this text\n");
 }
@@ -928,6 +945,8 @@ bool parse(const int argc, char** argv, Options& o) {
             o.runs_set = true;
         } else if (a == "--out" && i + 1 < argc)
             o.out = fs::path(argv[++i]);
+        else if (a == "--filter" && i + 1 < argc)
+            o.filter = argv[++i];
         else if (a == "--engines" && i + 1 < argc) {
             o.engines.clear();
             std::stringstream ss(argv[++i]);
@@ -1032,6 +1051,10 @@ struct Ctx {
 
     Engine& engine(const std::string& n) { return *eng.by_name(n); }
     fs::path corpus_dir(const std::string& c) { return corpora / c; }
+    // --filter: label substring; unmatched rows become status=skipped.
+    bool want(const std::string& label) const {
+        return opt.filter.empty() || label.find(opt.filter) != std::string::npos;
+    }
 
     const std::string& corpus_src_hash(const std::string& c) {
         auto it = src_hash.find(c);
@@ -1052,6 +1075,14 @@ struct Ctx {
     void failure(const std::string& label, const std::string& stage, const std::string& detail) {
         rep.failures.push_back({label, stage, detail});
         std::fprintf(stdout, "  FAIL [%s/%s]: %s\n", label.c_str(), stage.c_str(), detail.c_str());
+        // child.log is truncated per process; preserve this failure's child
+        // output (cmdline banner included) so --keep runs are post-mortemable.
+        std::error_code ec;
+        if (!child_log.empty() && fs::exists(child_log, ec)) {
+            fs::path snap = tmp / ("child-fail-" + label + "-" + stage + ".log");
+            fs::copy_file(child_log, snap, fs::copy_options::overwrite_existing, ec);
+            if (!ec) std::fprintf(stdout, "  log snapshot: %s\n", snap.filename().string().c_str());
+        }
     }
     void save() { write_report_atomic(rep, opt.out); }
 };
@@ -1113,6 +1144,12 @@ Row bench_compress(Ctx& cx, const std::string& engine_name, const std::string& c
     row.engine = engine_name;
     row.label = label;
     row.corpus = corpus;
+
+    if (!cx.want(label)) {
+        row.status = "skipped";
+        row.note = "filtered out (--filter)";
+        return row;
+    }
 
     Engine& e = cx.engine(engine_name);
     if (!e.requested) {
@@ -1267,6 +1304,12 @@ Row bench_extract(Ctx& cx, const std::string& engine_name, const fs::path& arc,
     row.label = label;
     row.corpus = "canonical";
 
+    if (!cx.want(label)) {
+        row.status = "skipped";
+        row.note = "filtered out (--filter)";
+        return row;
+    }
+
     Engine& e = cx.engine(engine_name);
     if (!e.requested) {
         row.status = "skipped";
@@ -1344,6 +1387,12 @@ Row bench_many(Ctx& cx, const std::string& engine_name, const fs::path& arc,
     row.config = config;
     row.corpus = "many";
 
+    if (!cx.want(row.label)) {
+        row.status = "skipped";
+        row.note = "filtered out (--filter)";
+        return row;
+    }
+
     Engine& e = cx.engine(engine_name);
     if (!e.requested) {
         row.status = "skipped";
@@ -1417,6 +1466,21 @@ void gen_one(const char* name, const fs::path& p, void (*fn)(const fs::path&, si
     std::printf("  generated %-16s %llu bytes (%.1fs)\n", name, (unsigned long long)bytes, sec);
 }
 
+// --filter support: which corpora can any matching row need? Mirrors the
+// fixed matrix's label->corpus mapping; unknown/new labels fall back to
+// "canonical" (the default sweep corpus) so a filter can never starve a row.
+bool corpus_wanted(const Ctx& cx, const std::string& corpus) {
+    const std::string& f = cx.opt.filter;
+    if (f.empty() || cx.opt.gen_only) return true;
+    if (corpus == "mixed") return f.find("mix") != std::string::npos;
+    if (corpus == "zeros512") return f.find("zeros") != std::string::npos;
+    if (corpus == "many") return f.find("many") != std::string::npos;
+    if (corpus == "big") return f.find("big") != std::string::npos;
+    // canonical serves the method sweep / volumes / extract rows
+    return f.find("mix") == std::string::npos && f.find("zeros") == std::string::npos &&
+           f.find("many") == std::string::npos && f.find("big") == std::string::npos;
+}
+
 bool gen_corpora(Ctx& cx, std::string& err) {
     std::error_code ec;
     fs::remove_all(cx.corpora, ec);
@@ -1427,7 +1491,7 @@ bool gen_corpora(Ctx& cx, std::string& err) {
     }
 
     // canonical: 43 MB text + 43 MB synthetic code + 42 MB random
-    {
+    if (corpus_wanted(cx, "canonical")) {
         fs::path d = cx.corpora / "canonical";
         fs::create_directories(d);
         gen_one("canonical/text", d / "text.txt", write_text_file, 43ull * MB);
@@ -1440,7 +1504,7 @@ bool gen_corpora(Ctx& cx, std::string& err) {
     }
 
     // mixed: 36 files, sizes 2-6 MB, incl. duplicate pair (CDC/-oi dedup)
-    {
+    if (corpus_wanted(cx, "mixed")) {
         fs::path d = cx.corpora / "mixed";
         fs::create_directories(d);
         auto t0 = std::chrono::steady_clock::now();
@@ -1475,14 +1539,14 @@ bool gen_corpora(Ctx& cx, std::string& err) {
     }
 
     // zeros512: single 512 MB zero file (ratio highlight)
-    {
+    if (corpus_wanted(cx, "zeros512")) {
         fs::path d = cx.corpora / "zeros512";
         fs::create_directories(d);
         gen_one("zeros512/zeros", d / "zeros.bin", write_zeros_file, 512ull * MB);
     }
 
     // big: ~1 GB canonical thirds (headline; skipped by --quick)
-    if (!cx.opt.quick) {
+    if (!cx.opt.quick && corpus_wanted(cx, "big")) {
         fs::path d = cx.corpora / "big";
         fs::create_directories(d);
         gen_one("big/text", d / "text.txt", write_text_file, 340ull * MB);
@@ -1495,7 +1559,7 @@ bool gen_corpora(Ctx& cx, std::string& err) {
     }
 
     // many: 610 small files in nested dirs + deep chain (bench_extract_entries)
-    {
+    if (corpus_wanted(cx, "many")) {
         fs::path d = cx.corpora / "many";
         fs::create_directories(d);
         auto t0 = std::chrono::steady_clock::now();
@@ -1608,6 +1672,11 @@ int run_matrix(Ctx& cx) {
 
     // I. many-entry extraction (per-entry cost section)
     {
+        bool any_many = false;
+        for (const char* l :
+             {"many_m0_entry", "many_m0_batch", "many_m3_entry", "many_m3_batch", "many_m3_unrar"})
+            any_many = any_many || cx.want(l);
+        if (!any_many) return 0;
         fs::path d = cx.corpus_dir("many");
         fs::path arc0 = cx.out_dir / "many_m0.rar";
         fs::path arc3 = cx.out_dir / "many_m3.rar";
