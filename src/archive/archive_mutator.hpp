@@ -238,8 +238,9 @@ public:
     // record (FHEXTRA_REDIR, redir_type = 5, no data area) pointing to
     // target_entry_name, an earlier entry in the same archive holding the
     // same content byte-for-byte. The caller owns the duplicate detection;
-    // this only serializes the reference. The batch writer breaks solid runs
-    // around the emitted entry (compress_plan.hpp breaks_solid_chain).
+    // this only serializes the reference. The batch writer keeps the solid
+    // window running across the emitted entry (compress_plan.hpp
+    // is_filecopy_ref) — the reference encoder never breaks runs around refs.
     static bool prepare_add_filecopy(const std::filesystem::path& src_file,
                                      const std::string& arc_entry_name,
                                      const std::string& target_entry_name, PreparedAdd& out,

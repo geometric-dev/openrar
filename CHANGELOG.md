@@ -5,6 +5,30 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Solid + FILECOPY multithreaded decode corruption.** Solid archives with
+  `-oi`/`-cdc` references no longer corrupt chain-member data under the
+  reference decoder's multithreaded unpacker (`UnRAR t/x -mt5+` reported
+  checksum errors on random members; `-mt1` was always clean). Two
+  independent causes, both now corrected to match the reference encoder:
+  - **Block table reuse removed.** The encoder no longer emits bit-7-clear
+    (table-reuse) blocks. Reuse was wire-legal and tuned to our own
+    decoder's slot model, but UnRAR 7.20's MT decoder corrupts any solid
+    chain that contains both a reuse block and a zero-size REDIR
+    (file-copy) member. WinRAR emits a table description on every block;
+    we now do the same, so the bug cannot be hit. Costs a small ratio loss
+    on repetitive input. This is now a normative encoder rule, not an
+    implementation choice — see `docs/spec/03-compression-m1-m5.md`
+    §Table lifecycle and §Reopening table reuse (which requires clearing
+    every interop gate before reuse may be revisited).
+  - **Solid run no longer breaks at FILECOPY entries.** The window now
+    persists across references and the reference header carries the solid
+    bit while a chain is active — the same layout the reference encoder
+    emits (normative in `docs/spec/03-compression-m1-m5.md`).
+
 ## [1.39.1] - 2026-10-08
 
 Remediation of the v1.39.0 durability-batching release: the parallel

@@ -70,11 +70,11 @@ enum class EntryDecision {
 struct EntryPlan {
     EntryDecision decision{EntryDecision::Stored};
     uint64_t dict_size{0};
-    uint32_t method{0};             // 0–5
-    bool is_solid_chain{false};     // member continues solid state from previous compressed entry
-    bool is_dir{false};             // directory record (no data payload)
-    bool breaks_solid_chain{false}; // no-data-area entry the run breaks around (FILECOPY redir)
-    uint64_t raw_size{0};           // input uncompressed size
+    uint32_t method{0};          // 0–5
+    bool is_solid_chain{false};  // member continues solid state from previous compressed entry
+    bool is_dir{false};          // directory record (no data payload)
+    bool is_filecopy_ref{false}; // FILECOPY redir (no data area; window persists across it)
+    uint64_t raw_size{0};        // input uncompressed size
     uint64_t estimated_workspace_bytes{0}; // estimated workspace RAM to prepare/compress
 };
 
@@ -95,18 +95,19 @@ struct CompressPlan {
 
     EntryPlan plan_next_entry(const EntryPlan& req) {
         EntryPlan ep = req;
-        if (ep.breaks_solid_chain) {
-            // FILECOPY references carry no data area (v1.26 plan §2.2): they
-            // can never be solid-chain members, and the run BREAKS around
-            // them — the next data-bearing entry starts a fresh chain
-            // (pinned by the cdc_filecopy_precedence test). Directory and
-            // stored entries keep the opposite behavior: they do not break
-            // the chain, because the window state simply persists across a
-            // data area that is never decompressed.
+        if (ep.is_filecopy_ref) {
+            // FILECOPY references carry no data area (v1.26 plan §2.2) and can
+            // never BE data-bearing chain members, but since v1.40.0 they no
+            // longer BREAK the run either: the window persists across them
+            // exactly like a stored entry, and the reference header itself
+            // carries the solid bit while a chain is active. This matches the
+            // reference encoder's layout (one continuous run, refs interleaved
+            // and marked solid); breaking runs around refs produced a mid-
+            // archive run-restart pattern the reference decoder's multithreaded
+            // unpacker mishandles (checksum errors on chain members at -mt5+).
             ep.decision = EntryDecision::Stored;
-            ep.is_solid_chain = false;
+            ep.is_solid_chain = (solid || continue_solid_stream) && seen_compressed_entry;
             ep.dict_size = 0;
-            seen_compressed_entry = false;
         } else if (ep.is_dir || ep.method == 0) {
             ep.decision = EntryDecision::Stored;
             ep.is_solid_chain = false;
