@@ -221,7 +221,7 @@ Legacy RAR 1.5 Unix symlink: `HostOS==UNIX` and `(FileAttr & 0xF000)==0xA000` an
 
 *Hardlink deduplication* (`-oh`, `-oi[0-4]`): a `hardlinks` table maps inode/`FileIndex` to first archived name; later links emit `HARDLINK` (`4`) or `FILECOPY` (`5`) with `RedirName` = first file’s archived UTF-8 name. File copies use stream copy; hard links use `CreateHardLinkW`/`link()`.
 
-*Header*: `PackSize=-1`, `unpacked_size=0`, `Method 0`, `FileFlags&=~FHFL_CRC32`, `Attributes` preserves directory bit for dir-targets, `RedirType`/`RedirName`/`dir_target` stored as above, serialized via `MakeFileBody` → `WriteFileHeader50`. No `DataCRC`/`BLAKE2`.
+*Header*: `PackSize=0`, `unpacked_size=<real size>` (the logical size of the target's content), `Method 0`, `HFL_DATA` set with a **zero-length** data area, a dummy CRC32 field present (`FHFL_CRC32` set, `DataCRC=0` — no `BLAKE2`), `Attributes` preserves directory bit for dir-targets, `RedirType`/`RedirName`/`dir_target` stored as above, serialized via `MakeFileBody` → `WriteFileHeader50`. This mirrors the reference encoder's FILECOPY records exactly; sequentially-tolerated deviations (`unpacked_size=0`, no `HFL_DATA`, no CRC flag) corrupt chain-member decodes under the reference decoder's multithreaded unpacker. In a solid archive the reference header also carries the solid bit while a chain is active, and the solid window persists across the reference (no run break) — the reference encoder's layout, which that unpacker expects.
 
 ### Extraction and Safety
 
