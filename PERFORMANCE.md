@@ -9,6 +9,19 @@ so sizes are only comparable within one corpus era); harness:
 `tools/perf_vs_winrar.py`; micro-benchmarks (kernels, listing):
 `openrar_bench`.
 
+## Current tree (unreleased) — wire-format note
+
+Every table below is a **v1.31.0 measurement** and is unchanged until a new
+benchmark run lands. One wire-format fact changed in the tree *after* these
+numbers, and it is **not** reflected in them: since the multithreaded
+decode-corruption fix, the encoder emits a Huffman table description on
+**every** compressed block and never emits bit-7-clear (table-reuse) blocks
+(`docs/spec/03-compression-m1-m5.md` §Table lifecycle). On repetitive input
+this costs a small ratio loss versus the reuse-era encoder these rows were
+measured against; the ratio columns below therefore describe a tree that no
+longer exists and will move slightly on re-measure. Speed is unaffected.
+Re-benchmark before quoting any ratio for the current tree.
+
 ## Host & tools
 
 | | |
