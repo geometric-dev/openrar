@@ -2627,21 +2627,18 @@ void test_length2_match_support() {
 }
 
 
-// T11: block-header table reuse (v1.33 Design A). The invariants that matter:
-// "reuse never happens where the decoder has no tables" and the decoder-side
-// slot-seeding rule (docs/question-log.md Entry 8): a multithreaded decoder
-// hands each block to a private per-slot table state in round-robin batches of
-// 2 x decoder_threads, so the encoder must emit descriptions on the first
-// REUSE_SEED_BLOCKS (16) blocks of a member - a reuse block landing in a
-// never-seeded slot decodes against empty tables and the member comes out
-// short. So: walk the block headers and assert that bit 7 is SET on the first
-// REUSE_SEED_BLOCKS blocks, may be clear afterwards, and that the stream still
-// decodes byte-exact.
+// T11: block-header tables are carried on every block. Table reuse (bit 7
+// clear) is wire-legal and was enabled after a 16-block seed (v1.33 Design A,
+// tuned to our own decoder's slot model), but it is not interoperable: the
+// reference decoder's multithreaded unpacker corrupts a solid chain that
+// contains both a reuse block and a zero-size REDIR (file-copy) member
+// (checksum errors at -mt5..16, absent at -mt1 and when refs are removed).
+// WinRAR emits a table description on every block, so we match the reference
+// encoder and the bug cannot be hit. Invariant: bit 7 is SET on every block.
 void test_block_table_reuse() {
     // Random data hits the 32768-TOKEN quantum long before the input quantum,
-    // so it yields many blocks whose statistics repeat exactly - the case
-    // reuse is designed for. The corpus must span well past the 16-block seed
-    // window or reuse can never fire on it.
+    // so it yields many blocks - the case the old reuse rule would have fired
+    // on. The corpus must span well past a single block or this proves little.
     std::vector<core::byte> rnd = t9_rand(2 * 1024 * 1024, 7);
 
     struct Stream {
@@ -2666,7 +2663,7 @@ void test_block_table_reuse() {
 
         // Walk the block headers: flags, checksum, size (1..3 bytes), payload.
         size_t off = 0;
-        int block = 0, reused = 0;
+        int block = 0;
         while (off < packed.size()) {
             assert(off + 2 <= packed.size() && "truncated block header");
             const core::uint8 flags = packed[off];
@@ -2677,23 +2674,16 @@ void test_block_table_reuse() {
             for (core::uint8 i = 0; i < byte_cnt; ++i)
                 bsize |= static_cast<core::uint32>(packed[off + 2 + i]) << (8 * i);
             const bool tables_present = (flags & 0x80) != 0;
-
-            if (block < Compressor50TestAccess::REUSE_SEED_BLOCKS) {
-                assert(tables_present &&
-                       "blocks inside the decoder-slot seed window MUST carry their tables "
-                       "(question-log Entry 8: a reuse block in a never-seeded slot decodes "
-                       "against empty tables)");
-            } else if (!tables_present) {
-                ++reused;
-            }
+            assert(tables_present &&
+                   "every block MUST carry its table description (reference encoder "
+                   "compatibility: reuse blocks corrupt UnRAR's MT decode of a solid "
+                   "chain that also contains file-copy refs)");
             ++block;
             off += 2 + byte_cnt + bsize;
         }
         assert(block > 1 && "expected a multi-block stream for this corpus");
-        assert(reused > 0 &&
-               "table reuse never fired; the rule is inert and this test proves nothing");
-        std::cout << "[PASS] block table reuse: " << streams[s].name << " " << block << " blocks, "
-                  << reused << " reused, first block carries tables (T11)\n";
+        std::cout << "[PASS] block table reuse: " << streams[s].name << " " << block
+                  << " blocks, all carry tables (T11)\n";
     }
 }
 

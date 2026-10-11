@@ -940,11 +940,12 @@ static void test_oi_creation_side_emitted() {
     std::cout << "[PASS] oi_creation_side_emitted (plan test 1)\n";
 }
 
-// Plan test 5 (v1.26 §6): in a solid archive, FILECOPY redirs sit OUTSIDE
-// solid runs — the run breaks around them (no data area), the next
-// data-bearing entry starts a fresh chain, and the chain reforms after that
-// head. The archive stays decodable across the redir gaps and identical
-// content is never double-packed.
+// Plan test 5 (v1.26 §6, layout revised in v1.40.0): in a solid archive,
+// FILECOPY redirs sit INSIDE the solid run — the window persists across them
+// and the reference header itself carries the solid bit, matching the
+// reference encoder's layout (UnRAR's multithreaded unpacker corrupts
+// chain-member decodes when runs break around refs). Identical content is
+// never double-packed and the archive stays decodable.
 static void test_cdc_filecopy_precedence() {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -990,18 +991,20 @@ static void test_cdc_filecopy_precedence() {
         const auto* pc = by_name["c.bin"];
         const auto* pd = by_name["d.bin"];
         assert(pa && pa2 && pb && pb2 && pc && pd);
-        // References: FILECOPY, no data, FCI_SOLID unset (never a chain member).
+        // References: FILECOPY, no data area.
         assert(pa2->header.redir_type == 5 && pa2->header.redir_target == "a.bin");
-        assert(pa2->data_size == 0 && pa2->header.is_solid == 0);
+        assert(pa2->data_size == 0);
         assert(pb2->header.redir_type == 5 && pb2->header.redir_target == "b.bin");
-        assert(pb2->data_size == 0 && pb2->header.is_solid == 0);
-        // Run-breaking: the entry after each redir starts a FRESH chain
-        // (is_solid unset) even though the archive is solid — the plan §2.2
-        // pin that the writer breaks runs around no-data-area redirs.
-        assert(pa->header.is_solid == 0); // first chain head
-        assert(pb->header.is_solid == 0); // new head across the a2 redir gap
-        assert(pc->header.is_solid == 0); // new head across the b2 redir gap
-        assert(pd->header.is_solid != 0); // chain reformed: d continues c
+        assert(pb2->data_size == 0);
+        // One continuous solid run: the chain head is the only non-solid
+        // entry; refs and every later data entry carry the solid bit (the
+        // window persists across no-data-area refs — v1.40.0 layout).
+        assert(pa->header.is_solid == 0);  // first chain head
+        assert(pa2->header.is_solid != 0); // ref inside the active run
+        assert(pb->header.is_solid != 0);  // continues across the a2 ref
+        assert(pb2->header.is_solid != 0); // ref inside the active run
+        assert(pc->header.is_solid != 0);  // continues across the b2 ref
+        assert(pd->header.is_solid != 0);  // continues the run
         // Identical content never double-packed: a2/b2 carry no packed data.
         assert(pb->data_size > 0 && pc->data_size > 0);
     }

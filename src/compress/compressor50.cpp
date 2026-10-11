@@ -1059,37 +1059,17 @@ bool Compressor50::write_block(bool last_block) {
 
     make_tables();
 
-    // Table reuse. The tokens below are encoded with the tables make_tables()
-    // just produced, so we may only omit the table description when those
-    // tables are BIT-IDENTICAL to the ones the decoder is already holding -
-    // then reuse and re-emit encode the same bits. Exact equality is
-    // deliberate: an approximate "close enough" predicate would risk encoding
-    // tokens under a table the decoder does not hold, which is a corruption
-    // rather than a ratio loss.
-    //
-    // Measured effect (docs/question-log.md Entry 20): on 64 MiB of zeros
-    // (128 blocks) the seed covers 18 blocks and reuse fires on 110:
-    // 3,616 B -> 2,732 B, a 24% cut. It does NOT reach the ~85% an approximate
-    // predicate would suggest, because on run-heavy input the per-block tables
-    // really do keep moving (the rep lengths at each block boundary differ).
-    // Capturing the rest needs a content-adaptive block-size controller, not a
-    // looser equality test - see the v1.33 pre-analysis follow-up.
+    // Always emit the table description; never reuse (bit 7 clear). Reuse is
+    // wire-legal and was enabled after a 16-block seed, tuned to our own
+    // decoder's slot model, but it is not interoperable: UnRAR 7.20's
+    // multithreaded decoder corrupts a solid chain that contains both a
+    // bit-7-clear block and a zero-size REDIR (file-copy) member (checksum
+    // errors at -mt5..16, absent at -mt1 and when refs are removed). WinRAR
+    // itself emits a description on every block (verified across a full
+    // solid+ref archive), so we match the reference encoder and the bug
+    // cannot be hit. Costs a small ratio loss on repetitive input.
     const core::uint32 cur_dc = (cur_table_size_ == TABLE_SIZEX) ? DCX : DCB;
-    const bool tables_identical = prev_tables_valid_ && prev_table_size_ == cur_table_size_ &&
-                                  std::memcmp(prev_len_ld_, len_ld_, NC) == 0 &&
-                                  std::memcmp(prev_len_dd_, len_dd_, cur_dc) == 0 &&
-                                  std::memcmp(prev_len_ldd_, len_ldd_, LDC) == 0 &&
-                                  std::memcmp(prev_len_rd_, len_rd_, RC) == 0;
-
-    // A table-set change is a re-seed event: it refreshes only the decoder slot
-    // it lands in, so every other slot must be covered again before reuse is
-    // safe. See the REUSE_SEED_BLOCKS comment in the header.
-    if (!tables_identical) seed_remaining_ = REUSE_SEED_BLOCKS;
-
-    const bool tables_reusable = tables_identical && seed_remaining_ == 0;
-    if (seed_remaining_ > 0) --seed_remaining_;
-
-    if (!tables_reusable) emit_table(local_out);
+    emit_table(local_out);
     emit_tokens(local_out);
 
     // NB: what the decoder now holds is recorded at the END of write_block,
@@ -1172,11 +1152,10 @@ bool Compressor50::write_block(bool last_block) {
     if (block_bit_size > 8) block_bit_size = 8;
 
     core::uint32 byte_count = data_size < 0x100 ? 1 : (data_size < 0x10000 ? 2 : 3);
-    // Flag bit 7 is "tables present" (spec/03 block header). Clear it exactly
-    // when the table description was omitted above.
-    core::byte flags =
-        static_cast<core::byte>((tables_reusable ? 0x00 : 0x80) | (last_block ? 0x40 : 0) |
-                                ((byte_count - 1) << 3) | (block_bit_size - 1));
+    // Flag bit 7 is "tables present" (spec/03 block header). Always set: the
+    // table description is emitted on every block (see the note above).
+    core::byte flags = static_cast<core::byte>(0x80 | (last_block ? 0x40 : 0) |
+                                               ((byte_count - 1) << 3) | (block_bit_size - 1));
     core::byte check_sum =
         static_cast<core::byte>(0x5a ^ flags ^ data_size ^ (data_size >> 8) ^ (data_size >> 16));
 

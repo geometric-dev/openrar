@@ -1487,10 +1487,10 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         // FILECOPY references carry no data area: estimate them like dirs so
         // no compression workspace is budgeted for the reference.
         ep.is_dir = q.is_dir || q.is_symlink || q.is_hardlink || q.is_filecopy;
-        // Same break semantics the writer will re-plan from fb.redir_type:
+        // Same chain semantics the writer will re-plan from fb.redir_type:
         // the prepare-side chain membership (which drives the solid packer's
         // window carry) must agree with the header bits the writer emits.
-        ep.breaks_solid_chain = q.is_filecopy;
+        ep.is_filecopy_ref = q.is_filecopy;
         ep.method = ep.is_dir ? 0 : static_cast<uint32_t>(method);
         ep.raw_size = q.file_size;
         plan_reqs.push_back(ep);
