@@ -65,15 +65,27 @@ The `0x80` flag gates whether a table description follows; it does not itself re
 * **Flag clear:** the description reader consumes no bits beyond the flag and changes nothing — the previous block's tables remain in force, and this block's tokens are decoded with them. Tables change **only** when a description is read.
 * **First block of a member:** must carry a description — there is nothing to keep. A decoder that decodes a token before any description was read must treat the stream as corrupt; never decode against empty tables.
 
-**Encoder contract for flag-clear (reuse; shipped).** An encoder emitting a flag-clear block must resolve the flag against the member-level last-*emitted* description set — updated only when a description is actually written to the wire, cleared at member start — never against "the previous block": chunked/streaming encoders emit blocks out of order relative to their parse windows, and previous-block bookkeeping is a known desync source. Partial-member (streaming) encoders must refuse reuse.
+**Encoder contract (normative): always describe; never emit flag-clear.** The encoder sets `0x80` on **every** block and writes a table description on every block. Flag-clear (table reuse) is **wire-legal but never emitted by this encoder.** Reuse is retained in this document and honored by the decoder for foreign-archive tolerance only — it is not a feature this project may re-enable. Any proposal to emit flag-clear blocks again is **rejected by default** and must clear every interop gate in §Reopening table reuse below, not merely re-measure ratio.
 
-Reuse is additionally gated by **decoder-side slot seeding**, which no wire-visible rule expresses: a multithreaded decoder does not keep one table state per member — it pre-scans block headers and hands each block to a work item that owns a *private* copy of the table state (initially empty), assigning blocks round-robin in batches of `2 × decoder_threads`. A description seeds the slot it lands in; a flag-clear block inherits whatever its slot has accumulated; a reuse block landing in a never-seeded slot decodes against empty tables and the member silently comes out short. The model is behavioral — confirmed by black-box experiment at every decoder thread count (`docs/question-log.md`); no reference implementation source informs it. Therefore:
+Rationale (behavioral, black-box; no reference implementation source informs it). Two independent interop failures bound reuse:
 
-* emit descriptions on the first `2 × 8 = 16` blocks of every member — 16 is the portable seed, since decoder worker pools are capped at 8 threads;
-* treat every table-set change as a re-seed event: a change refreshes only the slot it lands in, so emit the next 16 descriptions consecutively;
-* after that, reuse is unbounded. A periodic cap ("describe every K blocks") does **not** work — a period only ever populates a single residue class; only the first `P` consecutive blocks cover all `P` slots.
+1. **Decoder-side slot seeding.** A multithreaded decoder does not keep one table state per member — it pre-scans block headers and hands each block to a work item that owns a *private* copy of the table state (initially empty), assigning blocks round-robin in batches of `2 × decoder_threads`. A description seeds the slot it lands in; a flag-clear block inherits whatever its slot has accumulated; a reuse block landing in a never-seeded slot decodes against empty tables and the member silently comes out short.
+2. **MT + file-copy (REDIR) corruption.** A reference decoder's *multithreaded* unpacker corrupts a solid chain that contains both a flag-clear block **and** a zero-size REDIR (file-copy / `-oi`/`-cdc`) member: checksum errors on random members at `-mt5..16`, absent at `-mt1` and absent when either the reuse block or the REDIR member is removed. Deterministic per (archive, thread count). The seed rule above does **not** prevent this — it is a separate failure mode, so a "describe the first 16" mitigation is insufficient on its own.
 
-Evidence and measurements: `docs/question-log.md` (root cause of the earlier interop failures and the validation matrix, Entries 8–22), `docs/v1.33-pre-analysis.md` §10 (the failed attempts) and §12 (the resolution).
+Reference producers (WinRAR) emit a description on **every** block — a sweep of tens of thousands of block headers across reference-produced RAR5 archives found `0x80` clear only in archives this project had written. Matching that is the only configuration with no known failure mode; hence "always describe."
+
+Evidence and measurements: `docs/question-log.md` (slot-seeding root cause and validation matrix, Entries 8–22), `docs/v1.33-pre-analysis.md` §10 and §12, and the MT + REDIR investigation recorded in `CHANGELOG.md` under this release.
+
+### Reopening table reuse (normative gate)
+
+Table reuse is closed. It may only be revisited if **all** of the following hold; failing any one keeps "always describe" in force:
+
+* **Reference-producer parity.** A documented reference producer must be observed emitting flag-clear blocks in the same positions our encoder would (not merely "somewhere in an archive") — otherwise we diverge from the only known-good shape.
+* **Every failure mode from the rationale is explained or reproduced-then-fixed**, including the MT + REDIR corruption (#2), not just the slot-seed rule (#1). A seed rule that satisfies #1 while #2 is open is not sufficient.
+* **Red-team matrix passes at every decoder thread count** `1, 2, 4, 8, 16+` over: solid, non-solid, and solid-with-zero-size-REDIR chains — the exact combinations that failed.
+* **The encoder invariant test stays green or is replaced.** `tests/unit/compress_tests.cpp` T11 asserts every block carries `0x80`; it must keep asserting the invariant that is actually shipped, not be relaxed to permit reuse.
+
+Until all four hold, the shipped encoder emits descriptions unconditionally and the flag-clear path exists only to decode foreign archives.
 
 ---
 
@@ -247,7 +259,7 @@ The compressed stream itself is not checksummed per block beyond the block heade
 * Honor `FCI_SOLID` persistence and `LastLength`/`OldDist`.
 * Implement distance `DBits` split (`LDD` for low 4 bits when `DBits>=4`).
 * Match admissibility: `L ≥ 2 + inc(D)` — filter unrepresentable pairs, never clamp (§Admissibility under Length encoding).
-* Flag-clear blocks keep the tables in force and consume no description bits; the first 16 blocks of a member — and the 16 after every table-set change — must describe (decoder slot seeding, §Table lifecycle); never decode against empty tables.
+* Tables: the encoder sets `0x80` and writes a description on **every** block; it never emits flag-clear (§Table lifecycle). Flag-clear blocks keep the tables in force and consume no description bits; never decode against empty tables. Do not reintroduce reuse — see §Reopening table reuse.
 * Zero bit-length = symbol absent (infinite encoder cost; corrupt stream if decoded).
 * `LDD` only when `DistSlot ≥ 10` (`DBits ≥ 4`, `distance ≥ 33`); DD slots 0–3 are the fixed distances 1–4, not rep slots.
 * Encoder must respect `MaxDist` and `AvailableAt` bounds.

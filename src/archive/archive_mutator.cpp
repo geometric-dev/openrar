@@ -1850,8 +1850,16 @@ bool ArchiveMutator::prepare_add_filecopy(const std::filesystem::path& src_file,
                                           const std::string& default_user, bool want_xattr) {
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
+    // Header layout mirrors the reference encoder's FILECOPY records exactly
+    // (observed from `rar a -oi` archives): the logical size is preserved,
+    // the data-area bit is set with a zero-length data area, and a dummy
+    // CRC32 field is present. Deviating sequentially-tolerated variants
+    // (UnpSize=0, no HFL_DATA, no CRC flag) corrupted chain-member decodes
+    // under the reference decoder's multithreaded unpacker.
     fb.unp_size = 0;
-    fb.pack_size = -1; // FILECOPY carries no data area — the content lives in the target entry
+    fb.pack_size = 0;
+    fb.has_crc32 = true;
+    fb.data_crc32 = 0;
     fb.attributes = 0x20;
     fb.method = 0;
     fb.win_size = 0;
@@ -1859,6 +1867,11 @@ bool ArchiveMutator::prepare_add_filecopy(const std::filesystem::path& src_file,
     fb.redir_type = 5; // FILECOPY
     fb.redir_dir_target = false;
     fb.redir_target = target_entry_name;
+    {
+        std::error_code ec;
+        const auto sz = std::filesystem::file_size(src_file, ec);
+        if (!ec) fb.unp_size = static_cast<core::uint64>(sz);
+    }
     FileTimes times;
     if (get_file_times(src_file, times)) {
         apply_file_times(fb, times, times_mask);
@@ -2407,9 +2420,10 @@ int ArchiveMutator::write_batch_add_ex(
             req.method = static_cast<uint32_t>(pf.fb.method);
             req.dict_size = pf.fb.win_size;
             req.raw_size = pf.fb.unp_size;
-            // FILECOPY references (-oi) carry no data area: the solid run
-            // breaks around them (v1.26 plan §2.2, test cdc_filecopy_precedence).
-            req.breaks_solid_chain = (pf.fb.redir_type == 5);
+            // FILECOPY references (-oi) carry no data area: the solid window
+            // persists across them (v1.26 plan §2.2, v1.40.0 non-breaking
+            // layout; test cdc_filecopy_precedence).
+            req.is_filecopy_ref = (pf.fb.redir_type == 5);
             compress::EntryPlan ep = plan.plan_next_entry(req);
 
             pf.fb.is_solid = ep.is_solid_chain;
@@ -2665,7 +2679,11 @@ int ArchiveMutator::write_batch_add_ex(
                         return RAR_ERR_IO;
                     }
                 }
-            } else if (pf.fb.method == 0 && pf.fb.unp_size > 0 && !pf.src_path.empty()) {
+            } else if (pf.fb.method == 0 && pf.fb.redir_type == 0 && pf.fb.unp_size > 0 &&
+                       !pf.src_path.empty()) {
+                // Stored-entry source copy. Redir records (FILECOPY etc.) are
+                // excluded: they declare the logical size but carry no data
+                // area — their content lives in the target entry.
                 io::FileStream src_in;
                 if (!src_in.open(pf.src_path, io::FileMode::ReadOnly)) {
                     out.close();
