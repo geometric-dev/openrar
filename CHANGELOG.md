@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.40.5] - 2026-10-12
+
+Benchmark-host steadying for the 1.40 line, and two encoding repairs. PATCH
+is the commit counter on this line per `docs/versioning.md` (anchor `v1.40.0`),
+so this is the fifth commit after it, not a count of defects.
+
+### Fixed
+
+- **Non-Windows CI had been red since v1.37.0.** Every Linux/macOS/arm64 leg
+  failed to compile or to run; v1.39.0 and v1.39.1 shipped red. Seven distinct
+  faults, none visible from a Windows host:
+  - `two_phase_tests.cpp` and `fuzz_roundtrip.cpp` called MSVC-only `_putenv`
+    with no platform guard.
+  - `runbench` (Windows-only by `#error`) was declared as a target
+    unconditionally; now guarded with `if(WIN32)`, matching `ren_iso`.
+  - `decode_kernel_probe`'s unreferenced `replica_block_tokens` was fatal under
+    `-Wunused-function` on the arm64 leg, the only leg building with `-Werror`.
+  - `recovery_tests` pinned `prot == 3151`, an absolute archive offset that
+    depends on the platform's header layout, and a final-chunk CRC recorded
+    over a byte range ending at that offset. Both are now derived (the RR
+    record's measured offset; the CRC of the deterministic source payload),
+    with the surrounding geometry assertions kept and made relational.
+  - macOS asserted `com.apple.ResourceFork` is never restorable, but on Apple
+    hosts it is default-restore content-class metadata; the assertion was never
+    platform-guarded.
+  - The crash-hook child in `extraction_atomic_tests` was spawned with a bare
+    `execl`, so it could not run under the cross-arch leg's emulator; it now
+    goes through `OPENRAR_RUNNER` and resolves its target from `/proc/self/exe`.
+- **Double-encoded UTF-8 in `src/format/header_writer.cpp`** — three comments
+  had their em-dashes corrupted into mojibake (UTF-8 bytes re-decoded through
+  the ANSI code page) since at least v1.11.0. Comment-only repair; a sweep of
+  all tracked text files is otherwise clean.
+
+### Added
+
+- **Benchmark host steadying** (`tools/bench_run.cpp`): standby is held for the
+  whole run (`ES_SYSTEM_REQUIRED`, display sleep deliberately not suppressed)
+  so a long measurement cannot suspend mid-flight, and the Windows 11 **Power
+  Mode** is moved to Best performance and restored on exit. This targets the
+  Power Mode overlay (`PowerSetActiveOverlayScheme`), not the legacy power
+  plan — they are independent on Windows 11, and the overlay API needs no
+  elevation, so no UAC prompt is raised. The live power rail is detected: the
+  API moves the AC overlay only, so a battery run reports that instead of
+  silently doing nothing. Every run records what was applied in the report's
+  `power` block. Flags: `--no-power`, `--keep-power`.
+
 ## [1.40.0] - 2026-10-11
 
 Multithreaded decode correctness for solid archives with file-copy
