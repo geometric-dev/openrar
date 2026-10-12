@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-10-11
+
+Multithreaded decode correctness for solid archives with file-copy
+references, plus a new self-contained benchmark bundle. The headline fix
+closes a corruption that only appeared under the reference decoder's
+multithreaded unpacker.
+
 ### Fixed
 
 - **Solid + FILECOPY multithreaded decode corruption.** Solid archives with
@@ -28,6 +35,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     persists across references and the reference header carries the solid
     bit while a chain is active — the same layout the reference encoder
     emits (normative in `docs/spec/03-compression-m1-m5.md`).
+- **SFX Setup directive reliability.** The SFX stub now resolves the
+  `Setup=` target to a full path before spawning, so a bare
+  `Setup=runbench.exe` no longer dies after the consent prompt; the
+  extraction summary no longer prints system uptime as an archive duration.
+- **Console rendering on OEM codepages.** VT glyphs no longer render as
+  mojibake when the console is an OEM codepage.
+
+### Added
+
+- **Self-contained benchmark bundle** (`tools/make_bench_bundle.ps1` →
+  `dist/openrar-bench.exe`): an SFX that packages `runbench.exe` plus the
+  engine binaries and runs the full OpenRAR vs WinRAR vs UnRAR benchmark,
+  writing a JSON report to `%USERPROFILE%\openrar-bench-results.json`.
+  Nothing proprietary is committed — `rar.exe`/`UnRAR.exe` are copied from
+  the local WinRAR install at package time and live only in the gitignored
+  `dist/` tree.
+- **Benchmark harness `--filter` flag** (`tools/bench_run.cpp`): run a
+  labelled subset of the suite; child logs are self-describing and failure
+  snapshots are captured for post-mortem.
+
+### Changed
+
+- **Extraction speed.** The containment parent-chain walk is now
+  session-cached (quick win 1), removing repeated `stat` calls per entry.
+- **Benchmark robustness.** Cross-verification retries once on a transient
+  reference-decoder failure instead of reporting a bogus hash mismatch.
 
 ## [1.39.1] - 2026-10-08
 
