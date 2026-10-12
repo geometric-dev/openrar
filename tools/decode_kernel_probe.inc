@@ -441,9 +441,12 @@ struct VFullFlat {
 
 
 // Single-block token dump for the divergence finder (debug tool).
-static std::vector<std::string> replica_block_tokens(const Decompressor50::PrescanTimeline& tl,
-                                                     uint32_t bi, const core::byte* src,
-                                                     size_t src_size, size_t win) {
+// Currently unreferenced (kept for re-diagnosis); [[maybe_unused]] because the
+// arm64 CI leg builds with -Werror and would otherwise fail on
+// -Wunused-function.
+[[maybe_unused]] static std::vector<std::string> replica_block_tokens(
+    const Decompressor50::PrescanTimeline& tl, uint32_t bi, const core::byte* src, size_t src_size,
+    size_t win) {
     (void)win;
     std::vector<std::string> out;
     const auto& expect = tl.blocks[bi];
