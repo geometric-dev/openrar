@@ -105,21 +105,56 @@ with matching hashes at `-mt4`.
 Extraction is effectively at parity with the reference decoder at `-mt4`
 (0.235 s vs 0.231 s UnRAR / 0.221 s WinRAR).
 
+### Pack reproducibility (two independent full runs)
+
+Two complete suite runs on this host (`run_id` 2026-10-11T18:33:37Z and
+2026-10-12T19:06:06Z, identical corpus fingerprints) produced **byte-identical
+archive sizes for all 21 packed configs** — every method, MT, solid, volumes,
+CDC/FILECOPY, zeros and the 1 GB corpus. `o_m3_mt` also matches `o_m3_st`
+exactly (61,042,787 B), so MT output is byte-identical to single-thread.
+
+Packing is therefore deterministic at any `-mt`, and a size difference between
+two builds is a real code difference, not run-to-run or host-dependent
+variance. (An earlier report of pack non-determinism was this property being
+violated by the table-reuse encoder; it is measured, not assumed, from here.)
+
+### Run-to-run noise floor
+
+The two runs above differ only in the CLI version string, so every timing
+delta between them is pure run-to-run variance. WinRAR — an unchanged binary
+— provides a control:
+
+| Control | Delta between runs |
+|---|---:|
+| 9 compression rows | −7.5% … +5.2% |
+| `extract_m3_winrar_mt4` | +15.3% |
+| `extract_m3_unrar_mt4` | +17.9% |
+| `w_big_m3_mt` | +29.7% |
+
+So treat **±7% as the compression noise floor** and **+15–30% for extraction
+and 1 GB** on this host. Against that: `o_big_m3_mt` moved +35.8% against its
++29.7% control (machine, not encoder); every `extract_*` row moved less than
+its control; `o_mix_cdc` moved −21.1% but with a loose run-1 spread (0.104 vs
+0.015), i.e. run 1 was disturbed rather than the row being faster. Single-row
+movements inside these bands are not results.
+
 ### Notable
 
 - **Zeros (`zeros512`): OpenRAR `-m1` is 2.6x faster** (0.66 s vs 1.68 s) and
   produces a **22% larger** archive (26.8 KB vs 21.8 KB) — the direct
   cost of no table reuse on run-heavy input.
-- **Big corpus (1 GB): `o_big_m3_mt` has one catastrophic outlier run**
-  (2080 s vs 57–61 s for the other two), so the median is fine but the
-  spread is 33.1. Suspected transient (page-file/thermal/OS stall), not a
-  throughput result — the other two runs are consistent with the 128 MB
-  scaling. Worth re-running before trusting any 1 GB figure.
+- **Big corpus (1 GB): the 1 GB row is not usable.** Both full runs produced a
+  pathological outlier on `o_big_m3_mt` (2080 s, then 453 s, against ~57–83 s
+  for the other runs), and the WinRAR control moved +29.7% between runs. Treat
+  this row as measuring host state, not throughput; do not quote it.
 - **Many small files (entry vs batch):** batch add is ~5–8x faster than
   per-entry at both m0 and m3 (e.g. m3: 4.01 s entry vs 0.512 s batch), and
   batch is faster than the reference decoder on the same corpus.
 
-Full machine-collected raw data: `dev-share/openrar-bench-results.fix.json`.
+Full machine-collected raw data: `dev-share/openrar-bench-results.fix.json`
+(run 1, the sample tabulated above) and
+`dev-share/openrar-bench-results.post-fix.json` (run 2, used for the
+reproducibility and noise-floor sections).
 
 ---
 
