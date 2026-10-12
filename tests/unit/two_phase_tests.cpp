@@ -8,6 +8,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <random>
@@ -22,6 +23,34 @@ using namespace openrar;
 using namespace openrar::compress;
 
 namespace {
+
+// Portable environment-var setter for the driver-gate matrix below. MSVC
+// exposes _putenv (single "NAME=value" string, and "NAME=" REMOVES the
+// variable); POSIX has no equivalent, so the two cases are mapped onto
+// setenv/unsetenv. Removal must be faithful, not "set to empty": every
+// production reader in parallel_decode.cpp is presence-sensitive
+// (std::getenv(...) != nullptr), so leaving the variable defined-but-empty
+// would flip the D9 kill switch and the worker-override assertions.
+//
+// (This shim also unbreaks every non-Windows CI leg: the file called
+// _putenv directly, which does not exist on Linux/macOS, so those legs
+// failed to compile.)
+void set_env(const char* assignment) {
+    assert(assignment != nullptr);
+    const char* eq = std::strchr(assignment, '=');
+    assert(eq != nullptr && "set_env expects NAME or NAME=value");
+    const std::string name(assignment, static_cast<size_t>(eq - assignment));
+#ifdef _MSC_VER
+    (void)name;
+    _putenv(assignment);
+#else
+    if (eq[1] == '\0') {
+        unsetenv(name.c_str());
+    } else {
+        setenv(name.c_str(), eq + 1, 1);
+    }
+#endif
+}
 
 std::vector<core::byte> make_text(size_t n, uint32_t seed) {
     std::mt19937 rng(seed);
@@ -404,8 +433,8 @@ int main() {
 
     // ── M3: driver gate matrix (each gate individually forces sequential) ───
     {
-        _putenv("OPENRAR_NO_PARALLEL_DECODE=");
-        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+        set_env("OPENRAR_NO_PARALLEL_DECODE=");
+        set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
 
         unsigned w = 0;
         const size_t MB = 1024 * 1024;
@@ -430,22 +459,22 @@ int main() {
         assert(!should_use_parallel_decode(32 * MB, 0, 0x200000, false, 0, nullptr));
         assert(!should_use_parallel_decode(0, 64 * MB, 0x200000, false, 0, nullptr));
         // D9 kill switch.
-        _putenv("OPENRAR_NO_PARALLEL_DECODE=1");
+        set_env("OPENRAR_NO_PARALLEL_DECODE=1");
         assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, nullptr));
-        _putenv("OPENRAR_NO_PARALLEL_DECODE=");
+        set_env("OPENRAR_NO_PARALLEL_DECODE=");
         // F7: single-thread override.
-        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=1");
+        set_env("OPENRAR_PARALLEL_DECODE_THREADS=1");
         assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, nullptr));
-        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+        set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
         // The env override is real for the unset case (v1.37.2 — the
         // sandboxed-`t` channel): 4 through the env engages 4 workers, and
         // an explicit -mt still outranks it.
-        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=4");
+        set_env("OPENRAR_PARALLEL_DECODE_THREADS=4");
         assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, &w));
         assert(w == 4);
         assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 2, &w));
         assert(w == 2);
-        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+        set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
         std::cout << "[PASS] driver gate matrix\n";
     }
 
@@ -454,7 +483,7 @@ int main() {
     // sequential decoder's emission exactly — including callback chunk
     // boundaries, which the shared apply engine makes structural.
     {
-        _putenv("OPENRAR_NO_PARALLEL_DECODE=");
+        set_env("OPENRAR_NO_PARALLEL_DECODE=");
         auto chunks_decode = [&](const std::vector<core::byte>& packed, size_t plain_size,
                                  size_t win, bool parallel, std::vector<core::byte>& out,
                                  std::vector<size_t>& chunk_sizes,
@@ -484,7 +513,7 @@ int main() {
             for (unsigned threads : thread_counts) {
                 const std::string forced =
                     "OPENRAR_PARALLEL_DECODE_THREADS=" + std::to_string(threads);
-                _putenv(forced.c_str());
+                set_env(forced.c_str());
                 ParallelDecodeDiag diag;
                 assert(chunks_decode(packed, plain.size(), 0x200000, true, par_out, par_chunks,
                                      &diag));
@@ -492,7 +521,7 @@ int main() {
                 assert(!diag.fell_back);
                 assert(par_out == seq_out);
                 assert(par_chunks == seq_chunks); // chunk-identity [R1]
-                _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+                set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
             }
             std::cout << "[PASS] driver MT/ST identity: " << name << "\n";
         };
@@ -515,7 +544,7 @@ int main() {
             // member floor to 1 MiB packed so a 32 MiB m1 member engages;
             // the default floor (4 x 4 MiB = 16 MiB packed) needs the
             // 96 MiB identity rows above.
-            _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=262144");
+            set_env("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=262144");
             auto mid32 = make_text(32u * 1024 * 1024, 0x5a5);
             std::vector<core::byte> packed32;
             assert(
@@ -558,7 +587,7 @@ int main() {
                                 &diag1, 1));
             assert(!diag1.engaged && !diag1.fell_back); // sequential, not fallback
             assert(out1 == seq_out);
-            _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=");
+            set_env("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=");
             std::cout << "[PASS] decode_entry requested-threads routing (2/4/8, mt1 sequential)\n";
         }
     }
@@ -574,8 +603,8 @@ int main() {
         // clears the G3 member floor, so the pre-scan (not the gate) is what
         // fails — at the default 16 MiB packed floor this member size would
         // fall out at the gate instead.
-        _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=262144");
-        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=2");
+        set_env("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=262144");
+        set_env("OPENRAR_PARALLEL_DECODE_THREADS=2");
         {
             std::vector<core::byte> trunc(packed.begin(), packed.begin() + packed.size() / 2);
             ParallelDecodeDiag diag;
@@ -616,7 +645,7 @@ int main() {
             assert(par_out == seq_out);
             assert(par_chunks == seq_chunks);
         }
-        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+        set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
         std::cout << "[PASS] driver hostile fallback + filter member identity\n";
     }
 
@@ -652,12 +681,12 @@ int main() {
             }
             assert(seq_out == pe);
             ParallelDecodeDiag diag;
-            _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=65536");
-            _putenv("OPENRAR_PARALLEL_DECODE_THREADS=2");
+            set_env("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=65536");
+            set_env("OPENRAR_PARALLEL_DECODE_THREADS=2");
             bool ok = decode_entry(packed.data(), packed.size(), pe.size(), 128 * 1024,
                                    collect(par_out, par_chunks), &diag);
-            _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=");
-            _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+            set_env("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=");
+            set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
             assert(ok);
             assert(par_out == seq_out);
             assert(par_chunks == seq_chunks);
