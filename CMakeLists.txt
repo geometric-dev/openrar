@@ -728,9 +728,15 @@ if(NOT EMSCRIPTEN)
     # v1.40 benchmark bundle driver (not a test): the Setup= payload of
     # openrar-bench.exe (tools/make_bench_bundle.ps1) — generates its own
     # corpora, runs the full matrix, writes the JSON report.
-    add_executable(runbench tools/bench_run.cpp)
-    target_link_libraries(runbench PRIVATE openrar_core)
-    target_include_directories(runbench PRIVATE ${OPENRAR_INCLUDES})
+    # Windows-only: bench_run.cpp spawns the three engines and is a
+    # #error on other platforms (same shape as ren_iso below), so the
+    # target must not be declared off-Windows or the Linux/macOS CI legs
+    # fail to compile.
+    if(WIN32)
+        add_executable(runbench tools/bench_run.cpp)
+        target_link_libraries(runbench PRIVATE openrar_core)
+        target_include_directories(runbench PRIVATE ${OPENRAR_INCLUDES})
+    endif()
 
     if(WIN32)
         add_executable(ren_iso tools/ren_iso.cpp)
