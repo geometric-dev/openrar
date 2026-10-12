@@ -975,7 +975,14 @@ namespace fs = std::filesystem;
 
 // Walk the common header framing to the "RR" service block and return the
 // data-area bytes (the back-to-back shard array).
-std::vector<core::byte> rr_data_area(const fs::path& arc) {
+//
+// block_start, when given, receives the file offset at which the RR *block*
+// begins (header included) — i.e. the protected prefix the shard state
+// declares. It is measured from the file rather than hard-coded because the
+// preceding header layout (Host OS byte, attribute bits, UTIME encoding) is
+// platform-dependent, so any absolute offset here would only hold on the
+// platform it was recorded on.
+std::vector<core::byte> rr_data_area(const fs::path& arc, core::uint64* block_start = nullptr) {
     io::FileStream f;
     if (!f.open(arc, io::FileMode::ReadOnly)) return {};
     core::byte sig[8];
@@ -983,6 +990,7 @@ std::vector<core::byte> rr_data_area(const fs::path& arc) {
     std::vector<core::byte> area;
     core::uint64 type = 0, flags = 0, data_sz = 0;
     while (f.tell() < f.size()) {
+        const core::uint64 block_begin = f.tell();
         std::vector<core::byte> body;
         if (format::HeaderReader::read_block_raw(f, type, flags, body, data_sz) !=
             format::HeaderResult::Ok) {
@@ -993,6 +1001,7 @@ std::vector<core::byte> rr_data_area(const fs::path& arc) {
             format::FileBlock fb;
             if (format::HeaderReader::parse_file_header(body.data(), body.size(), fb) &&
                 fb.is_service && fb.service_type == "RR") {
+                if (block_start) *block_start = block_begin;
                 core::uint64 start = f.tell();
                 area.resize(static_cast<size_t>(data_sz));
                 f.seek(static_cast<core::int64>(start), io::SeekOrigin::Begin);
@@ -1133,15 +1142,22 @@ void test_entry_emission() {
                                                         /*method=*/0));
     assert(recovery::RecoveryWriter::add_recovery_record(arc2, 5));
 
-    std::vector<core::byte> area = rr_data_area(arc);
+    core::uint64 rr_block = 0;
+    std::vector<core::byte> area = rr_data_area(arc, &rr_block);
     assert(!area.empty());
     ShardView v = parse_shard0(area);
     assert(v.D == 4);
     assert(v.NR == 1);
     assert(v.group_count == 788);
-    assert(v.prot == 3151);
-    assert(v.extent == 787); // 3151 - 3*788: unpadded final chunk
-    assert(v.seed == 0);     // fixed zero seed (D1)
+    // The declared protected prefix must equal where the RR record actually
+    // starts in the file. Measured, not hard-coded: the preceding file header
+    // differs by platform (Host OS byte, attribute bits, UTIME encoding), so
+    // an absolute offset recorded on one platform does not hold on another.
+    // The relationship assertions below are what pin the emitted geometry.
+    assert(v.prot == rr_block);
+    assert(v.prot % v.group_count == v.extent); // unpadded final chunk
+    assert(v.extent == v.prot - 3 * v.group_count);
+    assert(v.seed == 0); // fixed zero seed (D1)
     // The final chunk is payload-only (the file header with its mtime lives in
     // chunk 0), so its entry is independent of the build time and pins the
     // raw-CRC-64 model against the externally computed fixture value.
