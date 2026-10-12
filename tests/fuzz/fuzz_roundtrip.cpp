@@ -6,10 +6,43 @@
 #include <vector>
 #include <cstring>
 #include <cassert>
+#include <cstdlib>
 #include <random>
 
 using namespace openrar;
 using namespace openrar::compress;
+
+namespace {
+
+// Portable environment-var setter (the cdc_planner_tests.cpp convention).
+// MSVC exposes _putenv/_putenv_s; POSIX uses setenv/unsetenv. A "NAME="
+// assignment must REMOVE the variable, not set it empty: the production
+// readers in parallel_decode.cpp are presence-sensitive
+// (std::getenv(...) != nullptr).
+void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+    if (value == nullptr || value[0] == '\0') {
+        _putenv_s(name, "");
+    } else {
+        _putenv_s(name, value);
+    }
+#else
+    if (value == nullptr || value[0] == '\0') {
+        unsetenv(name);
+    } else {
+        setenv(name, value, 1);
+    }
+#endif
+}
+
+} // namespace
+
+// Sets an env var from a "NAME=value" assignment string.
+void set_env_assignment(const char* assignment) {
+    const char* eq = std::strchr(assignment, '=');
+    assert(eq != nullptr && "expected NAME=value");
+    set_env(std::string(assignment, static_cast<size_t>(eq - assignment)).c_str(), eq + 1);
+}
 
 // Deterministic random generator
 std::mt19937 rng(42);
@@ -134,8 +167,8 @@ static void two_phase_differential(int iteration, const std::vector<core::byte>&
             return; // sequential rejected its own encoder's stream: not ours
         }
     }
-    _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=4096");
-    _putenv("OPENRAR_PARALLEL_DECODE_THREADS=3");
+    set_env_assignment("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=4096");
+    set_env_assignment("OPENRAR_PARALLEL_DECODE_THREADS=3");
     ParallelDecodeDiag diag;
     bool ok = decode_entry(compressed.data(), compressed.size(), data.size(), win,
                            collect(par_out, par_chunks), &diag);
@@ -196,8 +229,8 @@ static void two_phase_differential(int iteration, const std::vector<core::byte>&
             std::abort();
         }
     }
-    _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=");
-    _putenv("OPENRAR_PARALLEL_DECODE_THREADS=");
+    set_env_assignment("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=");
+    set_env_assignment("OPENRAR_PARALLEL_DECODE_THREADS=");
 }
 
 int main() {
@@ -236,8 +269,8 @@ int main() {
         // real decision function (floor override + thread override active)
         // plus enough blocks to split. Everything else degrades to the
         // sequential-vs-fallback byte check (still run for the bytes).
-        _putenv("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=4096");
-        _putenv("OPENRAR_PARALLEL_DECODE_THREADS=3");
+        set_env_assignment("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=4096");
+        set_env_assignment("OPENRAR_PARALLEL_DECODE_THREADS=3");
         unsigned w = 0;
         const bool gated =
             should_use_parallel_decode(compressed.size(), data.size(), 0x200000, false, 0, &w);
