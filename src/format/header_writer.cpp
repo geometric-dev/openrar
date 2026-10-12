@@ -250,7 +250,7 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
         extra.insert(extra.end(), block.blake2sp.begin(), block.blake2sp.end());
     }
 
-    // High Precision Timestamps (FHEXTRA_HTIME) â€” spec 01-headers.md:103
+    // High Precision Timestamps (FHEXTRA_HTIME) — spec 01-headers.md:103
     {
         bool is_unix = block.htime_is_unix;
         bool has_mtime = false, has_ctime = false, has_atime = false;
@@ -275,7 +275,7 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
             has_ns = false;
             if (block.has_mtime_ns || block.has_ctime_ns || block.has_atime_ns) {
                 // ns requires unix mode, but if caller set ns without unix flag, enable unix mode
-                // Keep as FILETIME if no unix times set â€” ns will be ignored per spec
+                // Keep as FILETIME if no unix times set — ns will be ignored per spec
             }
             // If unix times present but win flag not set, switch to unix
             if (!has_mtime && !has_ctime && !has_atime &&
@@ -287,7 +287,7 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
                 has_ns = block.has_mtime_ns || block.has_ctime_ns || block.has_atime_ns;
             }
         }
-        // Also handle mixed case where caller set both win and unix times â€” prefer is_unix path already
+        // Also handle mixed case where caller set both win and unix times — prefer is_unix path already
         if (has_mtime || has_ctime || has_atime) {
             core::uint64 tflags = 0;
             if (is_unix) {
