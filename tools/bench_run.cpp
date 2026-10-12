@@ -642,6 +642,123 @@ struct Host {
     std::string os = "windows";
 };
 
+// ─── power / sleep steadying ───────────────────────────────────────────────
+// Two host-side effects dominated run-to-run variance on the laptop host. The
+// 1 GB row threw pathological outliers (2080 s against ~57 s for its sibling
+// runs) in one full suite and 453 s in the next, and an UNCHANGED WinRAR
+// control binary moved +29.7% between the two runs. Neither is reproducible
+// from the workload, so both are consistent with the machine dropping to a
+// low-power state or entering standby part-way through a measurement.
+//
+// This holds the host steady for the run and puts it back afterwards:
+//   - ES_SYSTEM_REQUIRED for the whole run, so standby cannot start while a
+//     measurement is in flight. Display sleep is deliberately NOT suppressed,
+//     so an unattended run still blanks the screen.
+//   - optionally switch to the High Performance power scheme, restoring the
+//     previous scheme on scope exit.
+//
+// Everything is best-effort and reported rather than asserted. An unelevated
+// process may not be allowed to change the power scheme (ERROR_ACCESS_DENIED),
+// and many laptops do not ship the High Performance scheme at all. Neither is
+// fatal: the run proceeds and the report records precisely what was applied.
+// The power APIs are resolved dynamically from PowrProf so the tool still
+// builds and runs where they are absent.
+struct PowerSteadyState {
+    bool sleep_held = false;
+    bool plan_switched = false;
+    bool restore_on_exit = true;
+    bool have_original = false; // an original scheme GUID is held for restore
+    GUID original{};            // the scheme active when the run started
+    std::string plan_before;    // friendly name or GUID of the active scheme
+    std::string plan_applied;   // friendly name of what we switched to
+    std::string note;
+
+    // Well-known scheme GUIDs (stable, documented in the Windows SDK headers).
+    static const GUID& balanced_guid() {
+        static const GUID g = {
+            0x381b4222, 0xf694, 0x41f0, {0x96, 0x85, 0xff, 0x5b, 0xb2, 0x60, 0xdf, 0x2e}};
+        return g;
+    }
+    static const GUID& high_performance_guid() {
+        static const GUID g = {
+            0x8c5e7fda, 0xe8bf, 0x4a96, {0x9a, 0x85, 0xa6, 0xe2, 0x3a, 0x8c, 0x63, 0x5c}};
+        return g;
+    }
+
+    PowerSteadyState(bool want_plan_switch, bool restore_plan) : restore_on_exit(restore_plan) {
+        // Sleep hold: cheap, has no persistent effect, always safe to take.
+        sleep_held = SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) != 0;
+
+        if (!want_plan_switch) {
+            note = "power scheme left unchanged (--no-power)";
+            return;
+        }
+        // Resolve the power APIs dynamically; absent means "not attempted".
+        using GetActiveFn = DWORD(WINAPI*)(UINT, GUID**);
+        using SetActiveFn = DWORD(WINAPI*)(const GUID*);
+        static HMODULE powrprof = LoadLibraryW(L"PowrProf.dll");
+        if (!powrprof) {
+            note = "PowrProf.dll unavailable; power scheme unchanged";
+            return;
+        }
+        auto p_get =
+            reinterpret_cast<GetActiveFn>(GetProcAddress(powrprof, "PowerGetActiveScheme"));
+        auto p_set =
+            reinterpret_cast<SetActiveFn>(GetProcAddress(powrprof, "PowerSetActiveScheme"));
+        if (!p_get || !p_set) {
+            note = "power scheme API unavailable; power scheme unchanged";
+            return;
+        }
+        GUID* active = nullptr;
+        if (p_get(0, &active) != ERROR_SUCCESS || active == nullptr) {
+            if (active) LocalFree(active);
+            note = "could not read the active power scheme; left unchanged";
+            return;
+        }
+        original = *active;
+        LocalFree(active);
+        have_original = true; // restored verbatim on scope exit, whatever it was
+
+        const bool was_high = (original == high_performance_guid());
+        plan_before =
+            was_high ? "high-performance" : (original == balanced_guid() ? "balanced" : "custom");
+        if (was_high) {
+            note = "High Performance was already active";
+            return;
+        }
+        if (p_set(&high_performance_guid()) != ERROR_SUCCESS) {
+            // Either the scheme is not present (it is hidden - and often
+            // removed outright - on many modern laptops) or this process is not
+            // elevated enough to activate it. Give the exact remediation:
+            // duplicating the scheme makes it selectable without a vendor
+            // power plan, and standby is held either way, so a run that cannot
+            // switch still cannot suspend mid-measurement.
+            note = "High Performance not activated (scheme absent, or elevation required); "
+                   "power scheme unchanged. To add it: powercfg -duplicatescheme "
+                   "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c";
+            return;
+        }
+        plan_switched = true;
+        plan_applied = "high-performance";
+    }
+
+    ~PowerSteadyState() {
+        // Release the system-required flag (no lasting effect).
+        if (sleep_held) SetThreadExecutionState(ES_CONTINUOUS);
+        if (!plan_switched || !restore_on_exit || !have_original) return;
+        HMODULE powrprof = LoadLibraryW(L"PowrProf.dll");
+        if (!powrprof) return;
+        using SetActiveFn = DWORD(WINAPI*)(const GUID*);
+        auto p_set =
+            reinterpret_cast<SetActiveFn>(GetProcAddress(powrprof, "PowerSetActiveScheme"));
+        if (!p_set) return;
+        p_set(&original); // exactly what was active before, not a guess
+    }
+
+    PowerSteadyState(const PowerSteadyState&) = delete;
+    PowerSteadyState& operator=(const PowerSteadyState&) = delete;
+};
+
 Host detect_host() {
     Host h;
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
@@ -786,6 +903,10 @@ struct Report {
     std::string status = "running"; // running | ok | failed | fatal | gen-only
     std::string note;
     std::string engines_line;
+    // Host steadying actually applied for this run (empty = not attempted).
+    bool pow_sleep_held = false;
+    bool pow_plan_switched = false;
+    std::string pow_plan_before, pow_plan_applied, pow_note;
 };
 
 std::string json_num(double v, int prec) {
@@ -810,6 +931,11 @@ std::string build_json(const Report& r) {
       << ",\"quick\":" << (r.quick ? "true" : "false")
       << ",\"runs_flag\":" << (r.runs_flag ? "true" : "false")
       << ",\"spread_metric\":\"(max-min)/median\",\"mt_switch\":\"-mt4\"}";
+    o << ",\"power\":{\"sleep_held\":" << (r.pow_sleep_held ? "true" : "false")
+      << ",\"plan_switched\":" << (r.pow_plan_switched ? "true" : "false") << ",\"plan_before\":\""
+      << json_escape(r.pow_plan_before) << "\"" << ",\"plan_applied\":\""
+      << json_escape(r.pow_plan_applied) << "\"" << ",\"note\":\"" << json_escape(r.pow_note)
+      << "\"}";
     o << ",\"engines\":\"" << json_escape(r.engines_line) << "\"";
     o << ",\"corpora\":{";
     {
@@ -900,8 +1026,10 @@ struct Options {
     bool gen_only = false;
     bool help = false;
     bool prng_selftest = false;
-    bool runs_set = false; // --runs was passed explicitly
-    int runs = -1;         // timed runs override
+    bool no_power = false;   // do not touch the power scheme
+    bool keep_power = false; // leave High Performance active after the run
+    bool runs_set = false;   // --runs was passed explicitly
+    int runs = -1;           // timed runs override
     fs::path out;
     std::string filter; // label substring; empty = run everything
     std::vector<std::string> engines{"openrar", "unrar", "winrar"};
@@ -920,8 +1048,15 @@ void usage() {
                 "  --gen-only            generate corpora, print fingerprints, run nothing\n"
                 "  --filter SUBSTR       only run rows whose label contains SUBSTR\n"
                 "                        (others recorded as skipped; e.g. --filter o_mix_cdc)\n"
+                "  --no-power            do not switch the power scheme (sleep is still held)\n"
+                "  --keep-power          leave High Performance active after the run\n"
+                "                        (default: the previous scheme is restored)\n"
                 "  --prng-selftest       validate the MT19937 port against CPython vectors\n"
-                "  --help                this text\n");
+                "  --help                this text\n"
+                "\n"
+                "Standby is always held for the duration of the run so a long\n"
+                "measurement cannot suspend mid-flight; display sleep is not\n"
+                "suppressed, so an unattended run still blanks the screen.\n");
 }
 
 bool parse(const int argc, char** argv, Options& o) {
@@ -936,6 +1071,10 @@ bool parse(const int argc, char** argv, Options& o) {
             o.no_pause = true;
         else if (a == "--gen-only")
             o.gen_only = true;
+        else if (a == "--no-power")
+            o.no_power = true;
+        else if (a == "--keep-power")
+            o.keep_power = true;
         else if (a == "--help" || a == "-h")
             o.help = true;
         else if (a == "--prng-selftest")
@@ -1776,6 +1915,23 @@ int runbench_main(const Options& opt) {
     rep.timed = opt.runs;
     rep.runs_flag = opt.runs_set;
     rep.status = "running";
+
+    // Hold the host steady for the whole run (scope covers corpus generation
+    // too - the 1 GB set takes minutes to build and is just as exposed to a
+    // mid-flight power-state change). Restores the previous power scheme on
+    // scope exit unless --keep-power.
+    PowerSteadyState power(!opt.no_power, !opt.keep_power);
+    rep.pow_sleep_held = power.sleep_held;
+    rep.pow_plan_switched = power.plan_switched;
+    rep.pow_plan_before = power.plan_before;
+    rep.pow_plan_applied = power.plan_applied;
+    rep.pow_note = power.note;
+    std::printf("[runbench] host steadied: standby=%s, power scheme=%s%s%s\n",
+                power.sleep_held ? "held" : "NOT held", power.plan_before.c_str(),
+                power.plan_switched ? " -> " : " (unchanged) ",
+                power.plan_switched ? power.plan_applied.c_str() : "");
+    if (!power.note.empty()) std::printf("[runbench]   %s\n", power.note.c_str());
+    std::fflush(stdout);
 
     // engines
     fs::path exe = self_exe();
