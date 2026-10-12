@@ -1159,9 +1159,23 @@ void test_entry_emission() {
     assert(v.extent == v.prot - 3 * v.group_count);
     assert(v.seed == 0); // fixed zero seed (D1)
     // The final chunk is payload-only (the file header with its mtime lives in
-    // chunk 0), so its entry is independent of the build time and pins the
-    // raw-CRC-64 model against the externally computed fixture value.
-    assert(v.entries[3] == 0xe756efd34275a6dcULL);
+    // chunk 0), so its entry is independent of the build time. It is pinned
+    // against the deterministic source payload rather than a recorded
+    // constant: the chunk is archive bytes [3*group_count, prot), and prot is
+    // platform-dependent, so a CRC recorded over that range only holds where
+    // it was recorded. Deriving it from the payload keeps the check
+    // independent of the archive layout (it never reads the archive here) and
+    // platform-independent.
+    {
+        // Payload occupies the tail of the protected prefix: [prot - size, prot).
+        const size_t header_len = static_cast<size_t>(v.prot) - data.size();
+        const size_t chunk3_start = static_cast<size_t>(3 * v.group_count);
+        assert(chunk3_start >= header_len);
+        const size_t pay_off = chunk3_start - header_len;
+        crypto::RawCrc64 crc;
+        crc.update(data.data() + pay_off, data.size() - pay_off);
+        assert(v.entries[3] == crc.get());
+    }
     // Self-consistency: every entry recomputes from the protected prefix
     // (archive bytes [0, prot)) — not from the shard area.
     {
