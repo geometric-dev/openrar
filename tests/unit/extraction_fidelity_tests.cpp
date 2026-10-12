@@ -504,7 +504,15 @@ void test_xattr_restore_policy() {
     assert(!ArchiveReader::xattr_restorable("system.posix_acl_access", true));
     assert(!ArchiveReader::xattr_restorable("com.apple.quarantine", true));
     assert(!ArchiveReader::xattr_restorable("com.apple.provenance", true));
+    // com.apple.ResourceFork is Apple content-class metadata, not transport
+    // metadata (D10), so on Apple it restores by default and the opt-in flag
+    // does not withdraw it - the predicate is true either way. Off Apple it
+    // is never restored.
+#if defined(__APPLE__)
+    assert(ArchiveReader::xattr_restorable("com.apple.ResourceFork", true));
+#else
     assert(!ArchiveReader::xattr_restorable("com.apple.ResourceFork", true));
+#endif
     assert(!ArchiveReader::xattr_restorable("btrfs.compression", true));
     std::cout << "[PASS] xattr_restore_policy: user.*/metadata.* default, security.* opt-in\n";
 }
