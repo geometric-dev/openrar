@@ -735,6 +735,10 @@ if(NOT EMSCRIPTEN)
     if(WIN32)
         add_executable(runbench tools/bench_run.cpp)
         target_link_libraries(runbench PRIVATE openrar_core)
+        # advapi32 supplies the registry read of the Power Mode overlay (the
+        # value PowerSetActiveOverlayScheme updates; reading needs no
+        # privilege, and is done via RegGetValueW).
+        target_link_libraries(runbench PRIVATE advapi32)
         target_include_directories(runbench PRIVATE ${OPENRAR_INCLUDES})
     endif()
 

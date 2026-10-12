@@ -642,117 +642,210 @@ struct Host {
     std::string os = "windows";
 };
 
-// ─── power / sleep steadying ───────────────────────────────────────────────
+// ─── power mode / sleep steadying ─────────────────────────────────────────
 // Two host-side effects dominated run-to-run variance on the laptop host. The
 // 1 GB row threw pathological outliers (2080 s against ~57 s for its sibling
 // runs) in one full suite and 453 s in the next, and an UNCHANGED WinRAR
 // control binary moved +29.7% between the two runs. Neither is reproducible
-// from the workload, so both are consistent with the machine dropping to a
-// low-power state or entering standby part-way through a measurement.
+// from the workload, so both point at the host leaving a steady state
+// mid-measurement.
 //
 // This holds the host steady for the run and puts it back afterwards:
 //   - ES_SYSTEM_REQUIRED for the whole run, so standby cannot start while a
 //     measurement is in flight. Display sleep is deliberately NOT suppressed,
-//     so an unattended run still blanks the screen.
-//   - optionally switch to the High Performance power scheme, restoring the
-//     previous scheme on scope exit.
+//     so an unattended run still blanks the screen. This needs no privilege
+//     and is the lever that does the real work.
+//   - the Windows 11 Power MODE is switched to "Best performance" and restored
+//     verbatim on scope exit.
 //
-// Everything is best-effort and reported rather than asserted. An unelevated
-// process may not be allowed to change the power scheme (ERROR_ACCESS_DENIED),
-// and many laptops do not ship the High Performance scheme at all. Neither is
-// fatal: the run proceeds and the report records precisely what was applied.
-// The power APIs are resolved dynamically from PowrProf so the tool still
-// builds and runs where they are absent.
+// Power Mode, not the legacy power plan. Windows 11 exposes Power Mode (Best
+// power efficiency / Balanced / Best performance) as an OVERLAY selected per
+// power rail, held at
+//   HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\
+//     ActiveOverlayAcPowerScheme   ("Plugged in")
+//     ActiveOverlayDcPowerScheme   ("On battery")
+// and it is independent of the active power plan - moving the plan does not
+// move the mode, so driving the plan would not set what the user sees in
+// Settings. The Best performance overlay GUID below was read off this host
+// while Settings showed Best performance selected, so it is observed rather
+// than recalled.
+//
+// The mode is moved with PowerSetActiveOverlayScheme, the overlay API behind
+// the slider. Unlike writing the registry value itself it needs no elevation,
+// so the benchmark steadies the host with no UAC prompt. Only the READ goes
+// through the registry, because reading needs no privilege and the value is
+// the same one the API updates - verified on this host by round-tripping
+// Balanced and back.
+//
+// The rail is detected, not assumed: measured on this host,
+// PowerSetActiveOverlayScheme moves the AC overlay ONLY (setting Balanced
+// left ActiveOverlayDcPowerScheme untouched), so on battery the API is a
+// no-op. The battery rail therefore falls back to the registry path, which
+// needs elevation, and says so rather than silently doing nothing.
 struct PowerSteadyState {
     bool sleep_held = false;
-    bool plan_switched = false;
+    bool mode_applied = false;
     bool restore_on_exit = true;
-    bool have_original = false; // an original scheme GUID is held for restore
-    GUID original{};            // the scheme active when the run started
-    std::string plan_before;    // friendly name or GUID of the active scheme
-    std::string plan_applied;   // friendly name of what we switched to
+    bool have_original = false;
+    std::string original_mode; // this rail's overlay GUID as found
+    std::string mode_before;   // friendly label
+    std::string mode_applied_label;
     std::string note;
 
-    // Well-known scheme GUIDs (stable, documented in the Windows SDK headers).
-    static const GUID& balanced_guid() {
-        static const GUID g = {
-            0x381b4222, 0xf694, 0x41f0, {0x96, 0x85, 0xff, 0x5b, 0xb2, 0x60, 0xdf, 0x2e}};
-        return g;
+    // Observed on this host with Settings > Power Mode showing
+    // "Best performance" selected for "Plugged in".
+    static const char* best_performance() { return "ded574b5-45a0-4f42-8737-46345c09c238"; }
+    static const wchar_t* kOverlayKey() {
+        return L"SYSTEM\\CurrentControlSet\\Control\\Power\\User\\PowerSchemes";
     }
-    static const GUID& high_performance_guid() {
-        static const GUID g = {
-            0x8c5e7fda, 0xe8bf, 0x4a96, {0x9a, 0x85, 0xa6, 0xe2, 0x3a, 0x8c, 0x63, 0x5c}};
-        return g;
+    static const wchar_t* kOverlayAcName() { return L"ActiveOverlayAcPowerScheme"; }
+    static const wchar_t* kOverlayDcName() { return L"ActiveOverlayDcPowerScheme"; }
+
+    static std::string to_utf8(const wchar_t* w) {
+        if (!w || !*w) return {};
+        const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+        if (n <= 1) return {};
+        // n includes the terminator; size the buffer to hold it, then drop it.
+        std::string s(static_cast<size_t>(n), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+        s.resize(static_cast<size_t>(n - 1));
+        return s;
     }
 
-    PowerSteadyState(bool want_plan_switch, bool restore_plan) : restore_on_exit(restore_plan) {
-        // Sleep hold: cheap, has no persistent effect, always safe to take.
+    static std::string label_for(const std::string& guid) {
+        if (guid.empty()) return "unset";
+        if (guid == best_performance()) return "best-performance";
+        if (guid == "00000000-0000-0000-0000-000000000000") return "balanced";
+        return "other";
+    }
+
+    static bool on_ac() {
+        SYSTEM_POWER_STATUS s{};
+        if (!GetSystemPowerStatus(&s)) return true; // no battery, or API absent
+        return s.ACLineStatus == 1;
+    }
+    const bool ac_rail = on_ac();
+    const wchar_t* rail_name() const { return ac_rail ? kOverlayAcName() : kOverlayDcName(); }
+    const char* rail_label() const { return ac_rail ? "plugged-in" : "battery"; }
+
+    // Parse the dashed GUID form the registry stores. Braces are tolerated.
+    static bool parse_guid(const std::string& in, GUID& g) {
+        std::string s = in;
+        if (s.size() >= 2 && s.front() == '{' && s.back() == '}') s = s.substr(1, s.size() - 2);
+        unsigned int a = 0, b = 0, c = 0, d = 0;
+        unsigned int e[6] = {0, 0, 0, 0, 0, 0};
+        // 8-4-4-4-12: four conversions for the dashed head plus six byte pairs.
+        const int got = std::sscanf(s.c_str(), "%8x-%4x-%4x-%4x-%2x%2x%2x%2x%2x%2x", &a, &b, &c, &d,
+                                    &e[0], &e[1], &e[2], &e[3], &e[4], &e[5]);
+        if (got != 10) return false;
+        g.Data1 = a;
+        g.Data2 = static_cast<WORD>(b);
+        g.Data3 = static_cast<WORD>(c);
+        g.Data4[0] = static_cast<unsigned char>(d >> 8);
+        g.Data4[1] = static_cast<unsigned char>(d & 0xFF);
+        for (int i = 0; i < 6; ++i) g.Data4[2 + i] = static_cast<unsigned char>(e[i] & 0xFF);
+        return true;
+    }
+
+    bool read_rail_mode(std::string& out) const {
+        // pcbData is in/out: on input it must carry the buffer size in bytes.
+        wchar_t buf[128] = {0};
+        DWORD type = 0;
+        DWORD n = static_cast<DWORD>(sizeof(buf));
+        const LSTATUS st = RegGetValueW(HKEY_LOCAL_MACHINE, kOverlayKey(), rail_name(),
+                                        RRF_RT_REG_SZ, &type, buf, &n);
+        if (st != ERROR_SUCCESS) return false;
+        out = to_utf8(buf);
+        return true;
+    }
+
+    // Registry write, used only for the battery rail: the overlay API is
+    // AC-only and writing HKLM needs elevation. The AC path never reaches it.
+    bool write_rail_mode_reg(const std::string& value) const {
+        if (value.empty()) return false;
+        const int need = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+        if (need <= 1) return false;
+        std::wstring w(static_cast<size_t>(need), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, w.data(), need);
+        return RegSetKeyValueW(HKEY_LOCAL_MACHINE, kOverlayKey(), rail_name(), REG_SZ, w.c_str(),
+                               static_cast<DWORD>(w.size() * sizeof(wchar_t))) == ERROR_SUCCESS;
+    }
+
+    bool set_rail_mode(const std::string& value, std::string* err) const {
+        if (!ac_rail) {
+            if (err) *err = "battery rail uses the registry path (needs elevation)";
+            return write_rail_mode_reg(value);
+        }
+        GUID guid{};
+        if (!parse_guid(value, guid)) {
+            if (err) *err = "could not parse the overlay GUID";
+            return false;
+        }
+        HMODULE powrprof = LoadLibraryW(L"PowrProf.dll");
+        if (!powrprof) {
+            if (err) *err = "PowrProf.dll not loadable";
+            return false;
+        }
+        using SetOverlayFn = DWORD(WINAPI*)(const GUID*);
+        auto p_set =
+            reinterpret_cast<SetOverlayFn>(GetProcAddress(powrprof, "PowerSetActiveOverlayScheme"));
+        if (!p_set) {
+            if (err) *err = "PowerSetActiveOverlayScheme not exported";
+            return false;
+        }
+        const DWORD rc = p_set(&guid);
+        if (err) {
+            char b[64];
+            std::snprintf(b, sizeof(b), "PowerSetActiveOverlayScheme rc=%lu",
+                          static_cast<unsigned long>(rc));
+            *err = b;
+        }
+        return rc == ERROR_SUCCESS;
+    }
+
+    // The power engine and the Settings UI both watch this broadcast.
+    static void notify_power_change() {
+        SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                            reinterpret_cast<LPARAM>(L"ActivePowerScheme"), SMTO_ABORTIFHUNG, 2000,
+                            nullptr);
+    }
+
+    PowerSteadyState(bool want_mode, bool restore) : restore_on_exit(restore) {
+        // Sleep hold: no privilege required, no persistent effect, always safe.
         sleep_held = SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) != 0;
 
-        if (!want_plan_switch) {
-            note = "power scheme left unchanged (--no-power)";
+        if (!want_mode) {
+            note = "power mode left unchanged (--no-power)";
             return;
         }
-        // Resolve the power APIs dynamically; absent means "not attempted".
-        // PowerSetActiveScheme takes TWO parameters - (HKEY RootPowerKey,
-        // const GUID*) - so the typedef must match exactly or the GUID lands
-        // in the HKEY slot and the call fails with ERROR_INVALID_PARAMETER.
-        using GetActiveFn = DWORD(WINAPI*)(UINT, GUID**);
-        using SetActiveFn = DWORD(WINAPI*)(HKEY, const GUID*);
-        static HMODULE powrprof = LoadLibraryW(L"PowrProf.dll");
-        if (!powrprof) {
-            note = "PowrProf.dll unavailable; power scheme unchanged";
+        if (!read_rail_mode(original_mode)) {
+            note = "could not read the Power Mode overlay; left unchanged";
             return;
         }
-        auto p_get =
-            reinterpret_cast<GetActiveFn>(GetProcAddress(powrprof, "PowerGetActiveScheme"));
-        auto p_set =
-            reinterpret_cast<SetActiveFn>(GetProcAddress(powrprof, "PowerSetActiveScheme"));
-        if (!p_get || !p_set) {
-            note = "power scheme API unavailable; power scheme unchanged";
+        have_original = true;
+        mode_before = label_for(original_mode);
+        if (mode_before == "best-performance") {
+            note = std::string("Power Mode was already Best performance (") + rail_label() + ")";
             return;
         }
-        GUID* active = nullptr;
-        if (p_get(0, &active) != ERROR_SUCCESS || active == nullptr) {
-            if (active) LocalFree(active);
-            note = "could not read the active power scheme; left unchanged";
+        std::string why;
+        if (!set_rail_mode(best_performance(), &why)) {
+            note = ac_rail ? "could not set the Power Mode overlay; left unchanged"
+                           : "could not set the Power Mode overlay for the BATTERY rail (the "
+                             "overlay API is AC-only and the registry needs elevation); left "
+                             "unchanged";
+            if (!why.empty()) note += " [" + why + "]";
             return;
         }
-        original = *active;
-        LocalFree(active);
-        have_original = true; // restored verbatim on scope exit, whatever it was
-
-        const bool was_high = (original == high_performance_guid());
-        plan_before =
-            was_high ? "high-performance" : (original == balanced_guid() ? "balanced" : "custom");
-        if (was_high) {
-            note = "High Performance was already active";
-            return;
-        }
-        if (p_set(nullptr, &high_performance_guid()) != ERROR_SUCCESS) {
-            // Rare: activation is normally permitted without elevation. It
-            // fails only where the scheme has been removed by OEM firmware or
-            // the platform refuses the change. Standby is held either way, so
-            // a run that cannot switch still cannot suspend mid-measurement.
-            note = "High Performance not activated (scheme removed by this image, or the "
-                   "platform refused the change); power scheme unchanged";
-            return;
-        }
-        plan_switched = true;
-        plan_applied = "high-performance";
+        notify_power_change();
+        mode_applied = true;
+        mode_applied_label = "best-performance";
     }
 
     ~PowerSteadyState() {
-        // Release the system-required flag (no lasting effect).
         if (sleep_held) SetThreadExecutionState(ES_CONTINUOUS);
-        if (!plan_switched || !restore_on_exit || !have_original) return;
-        HMODULE powrprof = LoadLibraryW(L"PowrProf.dll");
-        if (!powrprof) return;
-        using SetActiveFn = DWORD(WINAPI*)(HKEY, const GUID*);
-        auto p_set =
-            reinterpret_cast<SetActiveFn>(GetProcAddress(powrprof, "PowerSetActiveScheme"));
-        if (!p_set) return;
-        p_set(nullptr, &original); // exactly what was active before, not a guess
+        if (!mode_applied || !restore_on_exit || !have_original) return;
+        if (set_rail_mode(original_mode, nullptr)) notify_power_change();
     }
 
     PowerSteadyState(const PowerSteadyState&) = delete;
@@ -905,8 +998,9 @@ struct Report {
     std::string engines_line;
     // Host steadying actually applied for this run (empty = not attempted).
     bool pow_sleep_held = false;
-    bool pow_plan_switched = false;
-    std::string pow_plan_before, pow_plan_applied, pow_note;
+    bool pow_mode_applied = false;
+    std::string pow_mode_before, pow_mode_applied_label, pow_note;
+    std::string pow_rail; // "plugged-in" | "battery" - which overlay was touched
 };
 
 std::string json_num(double v, int prec) {
@@ -931,11 +1025,10 @@ std::string build_json(const Report& r) {
       << ",\"quick\":" << (r.quick ? "true" : "false")
       << ",\"runs_flag\":" << (r.runs_flag ? "true" : "false")
       << ",\"spread_metric\":\"(max-min)/median\",\"mt_switch\":\"-mt4\"}";
-    o << ",\"power\":{\"sleep_held\":" << (r.pow_sleep_held ? "true" : "false")
-      << ",\"plan_switched\":" << (r.pow_plan_switched ? "true" : "false") << ",\"plan_before\":\""
-      << json_escape(r.pow_plan_before) << "\"" << ",\"plan_applied\":\""
-      << json_escape(r.pow_plan_applied) << "\"" << ",\"note\":\"" << json_escape(r.pow_note)
-      << "\"}";
+    o << ",\"power\":{\"sleep_held\":" << (r.pow_sleep_held ? "true" : "false") << ",\"rail\":\""
+      << json_escape(r.pow_rail) << "\"" << ",\"mode_before\":\"" << json_escape(r.pow_mode_before)
+      << "\"" << ",\"mode_applied\":\"" << json_escape(r.pow_mode_applied_label) << "\""
+      << ",\"note\":\"" << json_escape(r.pow_note) << "\"}";
     o << ",\"engines\":\"" << json_escape(r.engines_line) << "\"";
     o << ",\"corpora\":{";
     {
@@ -1027,7 +1120,7 @@ struct Options {
     bool help = false;
     bool prng_selftest = false;
     bool no_power = false;   // do not touch the power scheme
-    bool keep_power = false; // leave High Performance active after the run
+    bool keep_power = false; // leave Best performance set after the run
     bool runs_set = false;   // --runs was passed explicitly
     int runs = -1;           // timed runs override
     fs::path out;
@@ -1048,8 +1141,9 @@ void usage() {
                 "  --gen-only            generate corpora, print fingerprints, run nothing\n"
                 "  --filter SUBSTR       only run rows whose label contains SUBSTR\n"
                 "                        (others recorded as skipped; e.g. --filter o_mix_cdc)\n"
-                "  --no-power            do not switch the power scheme (sleep is still held)\n"
-                "  --keep-power          leave High Performance active after the run\n"
+                "  --no-power            do not change the Power Mode (standby is still held)\n"
+                "  --keep-power          leave Best performance set after the run\n"
+                "                        (default: the previous Power Mode is restored)\n"
                 "                        (default: the previous scheme is restored)\n"
                 "  --prng-selftest       validate the MT19937 port against CPython vectors\n"
                 "  --help                this text\n"
@@ -1918,18 +2012,20 @@ int runbench_main(const Options& opt) {
 
     // Hold the host steady for the whole run (scope covers corpus generation
     // too - the 1 GB set takes minutes to build and is just as exposed to a
-    // mid-flight power-state change). Restores the previous power scheme on
+    // mid-flight power-state change). Restores the previous Power Mode on
     // scope exit unless --keep-power.
     PowerSteadyState power(!opt.no_power, !opt.keep_power);
     rep.pow_sleep_held = power.sleep_held;
-    rep.pow_plan_switched = power.plan_switched;
-    rep.pow_plan_before = power.plan_before;
-    rep.pow_plan_applied = power.plan_applied;
+    rep.pow_mode_applied = power.mode_applied;
+    rep.pow_mode_before = power.mode_before;
+    rep.pow_rail = power.rail_label();
+    rep.pow_mode_applied_label = power.mode_applied_label;
     rep.pow_note = power.note;
-    std::printf("[runbench] host steadied: standby=%s, power scheme=%s%s%s\n",
-                power.sleep_held ? "held" : "NOT held", power.plan_before.c_str(),
-                power.plan_switched ? " -> " : " (unchanged) ",
-                power.plan_switched ? power.plan_applied.c_str() : "");
+    std::printf("[runbench] host steadied: standby=%s, power mode (%s)=%s%s%s\n",
+                power.sleep_held ? "held" : "NOT held", power.rail_label(),
+                power.mode_before.empty() ? "(unread)" : power.mode_before.c_str(),
+                power.mode_applied ? " -> " : " (unchanged) ",
+                power.mode_applied ? power.mode_applied_label.c_str() : "");
     if (!power.note.empty()) std::printf("[runbench]   %s\n", power.note.c_str());
     std::fflush(stdout);
 
