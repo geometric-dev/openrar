@@ -694,8 +694,11 @@ struct PowerSteadyState {
             return;
         }
         // Resolve the power APIs dynamically; absent means "not attempted".
+        // PowerSetActiveScheme takes TWO parameters - (HKEY RootPowerKey,
+        // const GUID*) - so the typedef must match exactly or the GUID lands
+        // in the HKEY slot and the call fails with ERROR_INVALID_PARAMETER.
         using GetActiveFn = DWORD(WINAPI*)(UINT, GUID**);
-        using SetActiveFn = DWORD(WINAPI*)(const GUID*);
+        using SetActiveFn = DWORD(WINAPI*)(HKEY, const GUID*);
         static HMODULE powrprof = LoadLibraryW(L"PowrProf.dll");
         if (!powrprof) {
             note = "PowrProf.dll unavailable; power scheme unchanged";
@@ -726,16 +729,13 @@ struct PowerSteadyState {
             note = "High Performance was already active";
             return;
         }
-        if (p_set(&high_performance_guid()) != ERROR_SUCCESS) {
-            // Either the scheme is not present (it is hidden - and often
-            // removed outright - on many modern laptops) or this process is not
-            // elevated enough to activate it. Give the exact remediation:
-            // duplicating the scheme makes it selectable without a vendor
-            // power plan, and standby is held either way, so a run that cannot
-            // switch still cannot suspend mid-measurement.
-            note = "High Performance not activated (scheme absent, or elevation required); "
-                   "power scheme unchanged. To add it: powercfg -duplicatescheme "
-                   "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c";
+        if (p_set(nullptr, &high_performance_guid()) != ERROR_SUCCESS) {
+            // Rare: activation is normally permitted without elevation. It
+            // fails only where the scheme has been removed by OEM firmware or
+            // the platform refuses the change. Standby is held either way, so
+            // a run that cannot switch still cannot suspend mid-measurement.
+            note = "High Performance not activated (scheme removed by this image, or the "
+                   "platform refused the change); power scheme unchanged";
             return;
         }
         plan_switched = true;
@@ -748,11 +748,11 @@ struct PowerSteadyState {
         if (!plan_switched || !restore_on_exit || !have_original) return;
         HMODULE powrprof = LoadLibraryW(L"PowrProf.dll");
         if (!powrprof) return;
-        using SetActiveFn = DWORD(WINAPI*)(const GUID*);
+        using SetActiveFn = DWORD(WINAPI*)(HKEY, const GUID*);
         auto p_set =
             reinterpret_cast<SetActiveFn>(GetProcAddress(powrprof, "PowerSetActiveScheme"));
         if (!p_set) return;
-        p_set(&original); // exactly what was active before, not a guess
+        p_set(nullptr, &original); // exactly what was active before, not a guess
     }
 
     PowerSteadyState(const PowerSteadyState&) = delete;
