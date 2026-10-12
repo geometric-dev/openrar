@@ -711,6 +711,15 @@ void test_late_entry_to_batch_switch() {
 
 static std::string g_argv0;
 
+#ifdef _WIN32
+// The re-exec target for the crash-hook child. argv[0] is correct on Windows
+// (CTest launches it directly); the POSIX branch below uses /proc/self/exe,
+// where an emulator may be argv[0].
+static std::string self_exe_path(const std::string& argv0) {
+    return argv0;
+}
+#endif
+
 // Child mode for the crash-hook test: re-exec this binary with
 // `--crash-hook-test=N <dir>`; the child does N register_temp calls in
 // batch mode and the crash hook fires after the Nth record append. The child
@@ -751,10 +760,35 @@ static int spawn_child(const std::string& exe, const std::string& arg1, const st
 #else
 #include <sys/wait.h>
 #include <unistd.h>
+// The re-exec target for the crash-hook child.
+//
+// Prefer /proc/self/exe over argv[0]: on the cross-arch CI leg CTest launches
+// the test through an emulator, so argv[0] is the emulator, not this binary,
+// and exec'ing argv[0] directly would run the wrong program (or fail).
+static std::string self_exe_path(const std::string& argv0) {
+    char buf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        return std::string(buf);
+    }
+    return argv0; // macOS and anything else without procfs
+}
 static int spawn_child(const std::string& exe, const std::string& arg1, const std::string& arg2) {
     pid_t pid = fork();
     if (pid == 0) {
-        execl(exe.c_str(), exe.c_str(), arg1.c_str(), arg2.c_str(), nullptr);
+        // Cross-arch runs (CI's QEMU leg) cannot exec the target binary from the
+        // host kernel; OPENRAR_RUNNER prefixes every invocation, e.g.
+        // "qemu-aarch64-static -L /usr/aarch64-linux-gnu". It is a command
+        // line, not a path, so hand it to the shell with the target appended.
+        const char* runner = std::getenv("OPENRAR_RUNNER");
+        if (runner && *runner) {
+            const std::string cmd =
+                std::string(runner) + " '" + exe + "' '" + arg1 + "' '" + arg2 + "'";
+            execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)nullptr);
+        } else {
+            execl(exe.c_str(), exe.c_str(), arg1.c_str(), arg2.c_str(), nullptr);
+        }
         _exit(127);
     }
     if (pid < 0) return -1;
@@ -774,7 +808,7 @@ void test_crash_hook_kills_after_nth_record() {
     const int n = 3;
 
     const std::string arg1 = "--crash-hook-test=" + std::to_string(n);
-    const int rc = spawn_child(g_argv0, arg1, dir.string());
+    const int rc = spawn_child(self_exe_path(g_argv0), arg1, dir.string());
 
     // On the aarch64 QEMU leg the test binary AND this forked child run
     // emulated (OPENRAR_RUNNER prefixes every invocation). Exit-code
