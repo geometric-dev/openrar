@@ -68,7 +68,7 @@ CdcPlanResult plan_cdc_order(const std::vector<std::vector<core::uint64>>& hashe
     // hashes against earlier files; at most the first 8 earlier sharers per
     // hash are consulted (representatives) so a hash shared by many files
     // cannot blow the pass up (crafted-input bound, plan FMM row C).
-    constexpr size_t kMaxRepresentatives = 8;
+    constexpr size_t MAX_REPRESENTATIVES = 8;
     std::vector<size_t> group_of(n, n); // n = "no group yet"
     std::vector<std::vector<size_t>> groups;
     std::unordered_map<core::uint32, core::uint32> shared;
@@ -82,7 +82,7 @@ CdcPlanResult plan_cdc_order(const std::vector<std::vector<core::uint64>>& hashe
                 size_t reps = 0;
                 for (auto it = lo; it != index.end() && it->hash == h; ++it) {
                     if (it->file >= i) break; // (hash, file) order: earlier sharers exhausted
-                    if (reps++ >= kMaxRepresentatives) break;
+                    if (reps++ >= MAX_REPRESENTATIVES) break;
                     shared[it->file]++;
                 }
             }

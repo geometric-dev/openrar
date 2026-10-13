@@ -11,7 +11,7 @@
 //      runs without emsdk, so the C ABI is exercised end-to-end natively)
 //
 //  Distinct from src/wasm/wasm_api.{hpp,cpp} (block codec). The block codec
-//  is `wasm/dist/openrar.js`; the archive API is `wasm/dist/openrar_archive.js`.
+//  is `wasm/js/dist/openrar.js`; the archive API is `wasm/js/dist/openrar_archive.js`.
 //  See docs/wasm-archive-spec.md for the full contract.
 //
 //  WASM ABI_VERSION for this module is independent of the block codec's.
@@ -26,7 +26,7 @@
 namespace openrar::wasm {
 
 // ABI version of the archive module. Independent of the block codec's
-// WASM_API_VERSION (those live in different wasm/dist/ artifacts).
+// WASM_API_VERSION (those live in different wasm/js/dist/ artifacts).
 //   v1: initial.
 //   v2: export set corrected (_openrar_archive_list_free), struct-based
 //       create with mtime (create2), progress/cancel hooks (extract_all2,

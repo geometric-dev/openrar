@@ -13,7 +13,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "../core/types.hpp"
-#include "ipc.hpp" // kMaxFramePayload
+#include "ipc.hpp" // MAX_FRAME_PAYLOAD
 
 #include <cstddef>
 #include <cstdint>
@@ -44,7 +44,7 @@ struct WireEntry {
     core::uint64 _pad[2];
 };
 static_assert(sizeof(WireEntry) == 64, "WireEntry must mirror the 64-byte ABI layout");
-inline constexpr core::uint64 kWIRE_FLAG_SERVICE = 1ull;
+inline constexpr core::uint64 WIRE_FLAG_SERVICE = 1ull;
 
 struct WireScanHeader {
     core::uint32 entry_count;

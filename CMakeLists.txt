@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.16)
 # wasm/js/package.json and CHANGELOG.md are synced at release time.
 # C is enabled for tests/unit/abi_header_c_compat.c — the C-mode compile proof
 # of the frozen public C ABI (docs/abi-freeze.md); no production source is C.
-project(openrar VERSION 1.40.5 LANGUAGES C CXX)
+project(openrar VERSION 1.41.0 LANGUAGES C CXX)
 
 # Where the Windows CLI/SFX/worker binaries are written.
 #
@@ -931,9 +931,11 @@ if(NOT EMSCRIPTEN)
         if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT WIN32)
             add_test(NAME fuzz_decompress COMMAND fuzz_decompress -runs=2000 -max_len=1048576)
             add_test(NAME fuzz_archive COMMAND fuzz_archive -runs=2000 -max_len=1048576)
+            add_test(NAME fuzz_inflate COMMAND fuzz_inflate -runs=2000 -max_len=1048576)
         else()
             add_test(NAME fuzz_decompress COMMAND fuzz_decompress)
             add_test(NAME fuzz_archive COMMAND fuzz_archive)
+            add_test(NAME fuzz_inflate COMMAND fuzz_inflate)
         endif()
         add_test(NAME fuzz_file_handle COMMAND fuzz_file_handle)
     endif()

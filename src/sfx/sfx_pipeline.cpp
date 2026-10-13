@@ -23,7 +23,7 @@ namespace openrar::sfx {
 
 namespace {
 
-constexpr size_t kTempHexChars = 32; // 128-bit random hex
+constexpr size_t TEMP_HEX_CHARS = 32; // 128-bit random hex
 
 std::string user_profile_dir() {
 #ifdef _WIN32
@@ -149,7 +149,7 @@ std::string make_tempmode_dir() {
     const std::string root = temp_root();
     if (root.empty()) return "";
     for (int attempt = 0; attempt < 8; ++attempt) {
-        const std::string dir = root + "/OpenRAR-" + random_hex(kTempHexChars);
+        const std::string dir = root + "/OpenRAR-" + random_hex(TEMP_HEX_CHARS);
         std::error_code ec;
         if (fs::create_directory(dir, ec) && !ec) {
 #ifndef _WIN32

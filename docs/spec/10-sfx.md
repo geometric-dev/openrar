@@ -88,7 +88,9 @@ If built with `SFX_MODULE`, `main()` forces `Command="X"` (extract self from `Mo
 
 ### Not Implemented
 
-* The `s` command (convert existing archive to SFX) is not implemented; use `a -sfx`.
+* The `s` command converts an existing archive to SFX (implemented in
+  `src/cli/main.cpp` `convert_to_sfx`, dispatched from the `s`/`sfx` command
+  and listed in `--help`); `a -sfx` does the same at creation time.
 * No automatic 32/64-bit module selection.
 
 ---

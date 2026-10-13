@@ -122,6 +122,11 @@ public:
 // reader uses; no parallel vocabulary.
 inline bool debit_total_bytes(core::uint64 bytes, const ExtractionLimits& limits,
                               LimitState& state) {
+    // Guard the addition itself: `total_out + bytes` wraps for a hostile or
+    // corrupt stream, and a wrapped total silently satisfies the cap below.
+    // Failing closed here is safe - a stream that would overflow a uint64
+    // accumulator is over budget by any measure.
+    if (bytes > core::uint64(-1) - state.total_out) return false;
     state.total_out += bytes;
     if (limits.total_limited() && state.total_out > limits.max_total_output_bytes) return false;
     return true;

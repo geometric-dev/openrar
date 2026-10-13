@@ -24,8 +24,8 @@ const core::byte SIGMA[10][16] = {{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
                                   {6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5},
                                   {10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0}};
 
-inline void G(core::uint32& a, core::uint32& b, core::uint32& c, core::uint32& d, core::uint32 x,
-              core::uint32 y) {
+inline void mix_g(core::uint32& a, core::uint32& b, core::uint32& c, core::uint32& d,
+                  core::uint32 x, core::uint32 y) {
     a = a + b + x;
     d = rotr32(d ^ a, 16);
     c = c + d;
@@ -78,14 +78,14 @@ void Blake2sp::Blake2sState::compress(const core::byte* block) {
     v[15] = f_[1] ^ BLAKE2S_IV[7];
 
     for (int r = 0; r < 10; ++r) {
-        G(v[0], v[4], v[8], v[12], m[SIGMA[r][0]], m[SIGMA[r][1]]);
-        G(v[1], v[5], v[9], v[13], m[SIGMA[r][2]], m[SIGMA[r][3]]);
-        G(v[2], v[6], v[10], v[14], m[SIGMA[r][4]], m[SIGMA[r][5]]);
-        G(v[3], v[7], v[11], v[15], m[SIGMA[r][6]], m[SIGMA[r][7]]);
-        G(v[0], v[5], v[10], v[15], m[SIGMA[r][8]], m[SIGMA[r][9]]);
-        G(v[1], v[6], v[11], v[12], m[SIGMA[r][10]], m[SIGMA[r][11]]);
-        G(v[2], v[7], v[8], v[13], m[SIGMA[r][12]], m[SIGMA[r][13]]);
-        G(v[3], v[4], v[9], v[14], m[SIGMA[r][14]], m[SIGMA[r][15]]);
+        mix_g(v[0], v[4], v[8], v[12], m[SIGMA[r][0]], m[SIGMA[r][1]]);
+        mix_g(v[1], v[5], v[9], v[13], m[SIGMA[r][2]], m[SIGMA[r][3]]);
+        mix_g(v[2], v[6], v[10], v[14], m[SIGMA[r][4]], m[SIGMA[r][5]]);
+        mix_g(v[3], v[7], v[11], v[15], m[SIGMA[r][6]], m[SIGMA[r][7]]);
+        mix_g(v[0], v[5], v[10], v[15], m[SIGMA[r][8]], m[SIGMA[r][9]]);
+        mix_g(v[1], v[6], v[11], v[12], m[SIGMA[r][10]], m[SIGMA[r][11]]);
+        mix_g(v[2], v[7], v[8], v[13], m[SIGMA[r][12]], m[SIGMA[r][13]]);
+        mix_g(v[3], v[4], v[9], v[14], m[SIGMA[r][14]], m[SIGMA[r][15]]);
     }
 
     for (size_t i = 0; i < 8; ++i) {

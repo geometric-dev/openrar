@@ -9,7 +9,7 @@ namespace openrar::archive::foreign {
 
 namespace {
 
-constexpr size_t kBlock = 512;
+constexpr size_t BLOCK = 512;
 
 // Numeric field: octal ASCII (spaces/NUL padded) or GNU base-256 (high bit
 // of the first byte set).
@@ -122,39 +122,39 @@ ForeignStatus TarReader::open(const std::filesystem::path& path, const Extractio
     if (!file_.seek(0, io::SeekOrigin::End)) return ForeignStatus::IoError;
     const core::uint64 fsize = file_.tell();
 
-    std::vector<core::byte> hdr(kBlock);
+    std::vector<core::byte> hdr(BLOCK);
     std::string pending_long_name;                                // GNU 'L'
     std::string pending_long_link;                                // GNU 'K'
     std::vector<std::pair<std::string, std::string>> pending_pax; // 'x'
     core::uint64 offset = 0;
     core::uint64 zero_streak = 0;
 
-    while (offset + kBlock <= fsize) {
+    while (offset + BLOCK <= fsize) {
         if (hooks.cancelled()) return ForeignStatus::Aborted;
         if (!file_.seek(static_cast<int64_t>(offset), io::SeekOrigin::Begin) ||
-            file_.read(hdr.data(), kBlock) != kBlock) {
+            file_.read(hdr.data(), BLOCK) != BLOCK) {
             detail = "cannot read tar header";
             return ForeignStatus::IoError;
         }
         // End-of-archive: zero blocks.
         bool all_zero = true;
-        for (size_t i = 0; i < kBlock; ++i) {
+        for (size_t i = 0; i < BLOCK; ++i) {
             if (hdr[i] != core::byte(0)) {
                 all_zero = false;
                 break;
             }
         }
         if (all_zero) {
-            zero_streak += kBlock;
-            offset += kBlock;
-            if (zero_streak >= 2 * kBlock) break; // documented end
+            zero_streak += BLOCK;
+            offset += BLOCK;
+            if (zero_streak >= 2 * BLOCK) break; // documented end
             continue;
         }
         zero_streak = 0;
 
         // Checksum validation (also the dispatch-time identity test).
         core::uint32 sum = 0;
-        for (size_t i = 0; i < kBlock; ++i) {
+        for (size_t i = 0; i < BLOCK; ++i) {
             sum += (i >= 148 && i < 156) ? 0x20u : static_cast<core::uint32>(hdr[i]);
         }
         core::uint64 stored = 0;
@@ -167,11 +167,16 @@ ForeignStatus TarReader::open(const std::filesystem::path& path, const Extractio
             return ForeignStatus::Unparseable;
         }
 
-        const core::uint64 size = [&] {
-            core::uint64 v = 0;
-            parse_tar_num(hdr.data() + 124, 12, v);
-            return v;
-        }();
+        // Size is load-bearing (it drives how much is read and allocated), so
+        // a malformed size field is Unparseable, not a silent zero. The
+        // metadata fields below default to 0 on a malformed value: the
+        // checksum already passed, and a wrong mtime/uid/gid is cosmetic
+        // where a wrong size would mis-frame the stream.
+        core::uint64 size = 0;
+        if (!parse_tar_num(hdr.data() + 124, 12, size)) {
+            detail = "bad tar size field";
+            return ForeignStatus::Unparseable;
+        }
         const core::uint64 mtime = [&] {
             core::uint64 v = 0;
             parse_tar_num(hdr.data() + 136, 12, v);
@@ -200,13 +205,21 @@ ForeignStatus TarReader::open(const std::filesystem::path& path, const Extractio
         }
 
         // Size vs remaining file (declared extents are verified, D5).
-        if (offset + kBlock + size > fsize) {
+        //
+        // Expressed as subtractions, not `offset + BLOCK + size > fsize`.
+        // parse_tar_num (base-256 path) accepts the whole uint64 range, so a
+        // hostile size near 2^64 made that sum wrap to a small value that
+        // passed the check; the next statement then allocated `size` bytes and
+        // threw length_error/bad_alloc straight out of the cv path. The loop
+        // guard above already guarantees the header block fits, so
+        // fsize - data_offset cannot underflow.
+        const core::uint64 data_offset = offset + BLOCK;
+        if (size > fsize - data_offset) {
             detail = "tar member extends past end of file";
             return ForeignStatus::Truncated;
         }
 
-        const core::uint64 data_offset = offset + kBlock;
-        const core::uint64 padded = (size + kBlock - 1) / kBlock * kBlock;
+        const core::uint64 padded = (size + BLOCK - 1) / BLOCK * BLOCK;
 
         // Meta headers: consume and continue.
         if (typeflag == 'L' || typeflag == 'K') {

