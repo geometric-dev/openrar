@@ -74,8 +74,8 @@ using namespace openrar::compress;
 
 namespace {
 
-constexpr size_t kBlock = 64u * 1024; // per-update block size (rs16)
-constexpr size_t kUpdates = 256;      // blocks per pass (16 MiB folded)
+constexpr size_t BLOCK = 64u * 1024; // per-update block size (rs16)
+constexpr size_t kUpdates = 256;     // blocks per pass (16 MiB folded)
 constexpr size_t kMatchBuf = 64u * 1024;
 constexpr size_t kMatchDist = 4096;
 constexpr size_t kMatchCap = 4096;
@@ -121,7 +121,7 @@ struct BenchCorpora {
         fs::create_directories(dir, ec);
 
         // rs16 noise block
-        rs16_data.resize(kBlock);
+        rs16_data.resize(BLOCK);
         uint32_t st = 0xBEEF;
         for (auto& b : rs16_data) b = lcg_byte(st);
 
@@ -319,18 +319,18 @@ BenchCorpora g_corpora;
 double pass_rs16(bool dispatched) {
     recovery::ReedSolomon16 rs;
     if (!rs.init(4, 2)) return 0.0;
-    std::vector<core::byte> ecc(kBlock, core::byte(0x3C));
+    std::vector<core::byte> ecc(BLOCK, core::byte(0x3C));
     const auto t0 = std::chrono::steady_clock::now();
     for (size_t i = 0; i < kUpdates; ++i) {
         if (dispatched)
-            rs.update_ecc(i % 4, 0, g_corpora.rs16_data.data(), ecc.data(), kBlock);
+            rs.update_ecc(i % 4, 0, g_corpora.rs16_data.data(), ecc.data(), BLOCK);
         else
-            rs.update_ecc_scalar(i % 4, 0, g_corpora.rs16_data.data(), ecc.data(), kBlock);
+            rs.update_ecc_scalar(i % 4, 0, g_corpora.rs16_data.data(), ecc.data(), BLOCK);
     }
     const auto t1 = std::chrono::steady_clock::now();
     const double sec = std::chrono::duration<double>(t1 - t0).count();
     g_sink += ecc[0];
-    return sec > 0 ? static_cast<double>(kUpdates) * kBlock / sec / (1024.0 * 1024.0) : 0.0;
+    return sec > 0 ? static_cast<double>(kUpdates) * BLOCK / sec / (1024.0 * 1024.0) : 0.0;
 }
 
 double pass_match(arch::MatchFn fn) {

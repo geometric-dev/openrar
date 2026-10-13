@@ -73,7 +73,7 @@ bool parse_part_number(const std::filesystem::path& p, long& num) {
     return true;
 }
 
-constexpr size_t kStreamChunk = 64 * 1024; // stored/decrypt slice (multiple of 16)
+constexpr size_t STREAM_CHUNK = 64 * 1024; // stored/decrypt slice (multiple of 16)
 
 // v1.26 M3 (security-arch §4.4): the entry's archived mtime as unix seconds.
 // Precedence matches the deferred dir-meta builder: FHEXTRA_HTIME first,
@@ -334,17 +334,17 @@ bool ArchiveReader::xattr_restorable(const std::string& name, bool security_opt_
     // are transport metadata owned by the local OS, not by the archive.
     // The Apple content names restore only on Apple hosts (D10): on Linux,
     // setxattr would happily create alien com.apple.* namespaces.
-    static constexpr const char* kDefaultNamespaces[] = {
+    static constexpr const char* DEFAULT_NAMESPACES[] = {
         "user.", "com.apple.metadata:", "com.apple.metadata."};
-    for (const char* prefix : kDefaultNamespaces) {
+    for (const char* prefix : DEFAULT_NAMESPACES) {
         if (name.rfind(prefix, 0) == 0) return true;
     }
 #if defined(__APPLE__)
     if (name == "com.apple.ResourceFork" || name == "com.apple.FinderInfo") return true;
 #endif
     if (security_opt_in) {
-        static constexpr const char* kPrivilegedNamespaces[] = {"security.", "trusted."};
-        for (const char* prefix : kPrivilegedNamespaces) {
+        static constexpr const char* PRIVILEGED_NAMESPACES[] = {"security.", "trusted."};
+        for (const char* prefix : PRIVILEGED_NAMESPACES) {
             if (name.rfind(prefix, 0) == 0) return true;
         }
     }
@@ -1546,7 +1546,7 @@ public:
         else
             exts_ = entry.extents;
         if (keys_) std::memcpy(iv_, entry.header.init_v.data(), 16);
-        staging_.resize(kStreamChunk);
+        staging_.resize(STREAM_CHUNK);
     }
 
     size_t pull(core::byte* dest, size_t want) {
@@ -1694,7 +1694,7 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
             std::memcpy(iv, entry.header.init_v.data(), 16);
             aes = std::make_unique<crypto::Aes256>(keys->aes_key);
         }
-        std::vector<core::byte> buf(kStreamChunk);
+        std::vector<core::byte> buf(STREAM_CHUNK);
         for (const auto& ext : exts) {
             io::FileStream vs;
             if (!open_extent_source(ext.volume_path, vs)) {
@@ -1983,13 +1983,14 @@ bool ArchiveReader::read_archive_comment(std::vector<core::byte>& out) {
     // Decode cap (plan §3): a decoded comment over 1 MiB disables directives,
     // it never aborts extraction. extract_entry_to_memory enforces the same
     // cap pre-work via max_bytes.
-    constexpr core::uint64 kMaxCommentBytes = 1ULL << 20;
+    constexpr core::uint64 MAX_COMMENT_BYTES = 1ULL << 20;
     for (size_t i = 0; i < entries_.size(); ++i) {
         const ArchiveEntry& e = entries_[i];
         if (!e.header.is_service || e.header.service_type != "CMT") continue;
-        if (e.header.unp_size == 0 || e.header.unp_size > kMaxCommentBytes) return false;
+        if (e.header.unp_size == 0 || e.header.unp_size > MAX_COMMENT_BYTES) return false;
         std::vector<core::byte> decoded;
-        if (extract_entry_to_memory(i, decoded, kMaxCommentBytes, {}, nullptr, nullptr) != RAR_OK) {
+        if (extract_entry_to_memory(i, decoded, MAX_COMMENT_BYTES, {}, nullptr, nullptr) !=
+            RAR_OK) {
             return false;
         }
         if (decoded.empty()) return false;
@@ -2238,10 +2239,19 @@ bool ArchiveReader::test_entry(const ArchiveEntry& entry) {
     // non-encrypted entry) doesn't see a stale failure from a prior call.
     bad_password_ = false;
     if (entry.header.is_encrypted) {
-        // Encrypted entries are not verified here (password-gated decode);
-        // skipping the decode abandons the shared solid LZ stream position.
+        // Encrypted payloads cannot be verified here: this overload takes no
+        // password. It used to return true without decoding anything, so
+        // `if (reader.test_entry(e))` reported an ENCRYPTED, never-decoded
+        // entry as healthy - a fail-open trap for the callers that use the
+        // bool directly (recovery_writer's health check, the SFX self-test).
+        // Return false: "not verified" must never read as "verified good".
+        // Callers with a password use test_entry_stream, which decrypts and
+        // applies the full hash policy (the CLI does exactly this).
+        //
+        // Skipping the decode also abandons the shared solid LZ stream
+        // position, so the chain is marked unusable either way.
         solid_chain_ok_ = false;
-        return true;
+        return false;
     }
     if (entry.header.has_blake2sp) {
         // A present BLAKE2sp record is authoritative; the header CRC32

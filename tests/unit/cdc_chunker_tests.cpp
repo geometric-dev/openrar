@@ -73,9 +73,9 @@ int main() {
         size_t expected_off = 0;
         for (const auto& c : chunks) {
             assert(c.offset == expected_off);
-            assert(c.length >= compress::CdcChunker::kMinChunk ||
+            assert(c.length >= compress::CdcChunker::MIN_CHUNK ||
                    c.offset + c.length == data.size()); // tail may be short
-            assert(c.length <= compress::CdcChunker::kMaxChunk);
+            assert(c.length <= compress::CdcChunker::MAX_CHUNK);
             expected_off += c.length;
         }
         assert(expected_off == data.size());
@@ -92,9 +92,9 @@ int main() {
         chunker.chunk(reinterpret_cast<const core::byte*>(tiny.data()), tiny.size(), chunks);
         assert(chunks.size() == 1 && chunks[0].length == 3);
 
-        const std::string exact(compress::CdcChunker::kMinChunk, 'z');
+        const std::string exact(compress::CdcChunker::MIN_CHUNK, 'z');
         chunker.chunk(reinterpret_cast<const core::byte*>(exact.data()), exact.size(), chunks);
-        assert(chunks.size() == 1 && chunks[0].length == compress::CdcChunker::kMinChunk);
+        assert(chunks.size() == 1 && chunks[0].length == compress::CdcChunker::MIN_CHUNK);
         std::cout << "[PASS] degenerate inputs (empty/tiny/exact-min)\n";
     }
 
@@ -161,14 +161,14 @@ int main() {
             chunker.chunk(reinterpret_cast<const core::byte*>(data.data()), data.size(), whole);
 
             for (size_t block : {size_t(1), size_t(7), size_t(1000), size_t(1) << 10,
-                                 size_t(1) << 16, size_t(compress::CdcChunker::kMinChunk),
-                                 size_t(compress::CdcChunker::kMinChunk) + 1,
-                                 size_t(compress::CdcChunker::kAvgChunk) - 1,
-                                 size_t(compress::CdcChunker::kAvgChunk),
-                                 size_t(compress::CdcChunker::kAvgChunk) + 1,
-                                 size_t(compress::CdcChunker::kMaxChunk) - 1,
-                                 size_t(compress::CdcChunker::kMaxChunk),
-                                 size_t(compress::CdcChunker::kMaxChunk) + 123}) {
+                                 size_t(1) << 16, size_t(compress::CdcChunker::MIN_CHUNK),
+                                 size_t(compress::CdcChunker::MIN_CHUNK) + 1,
+                                 size_t(compress::CdcChunker::AVG_CHUNK) - 1,
+                                 size_t(compress::CdcChunker::AVG_CHUNK),
+                                 size_t(compress::CdcChunker::AVG_CHUNK) + 1,
+                                 size_t(compress::CdcChunker::MAX_CHUNK) - 1,
+                                 size_t(compress::CdcChunker::MAX_CHUNK),
+                                 size_t(compress::CdcChunker::MAX_CHUNK) + 123}) {
                 compress::CdcStreamChunker stream(chunker);
                 std::vector<compress::CdcChunk> streamed;
                 for (size_t off = 0; off < data.size(); off += block) {

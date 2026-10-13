@@ -316,8 +316,8 @@ static void plant_call(std::vector<core::byte>& d, size_t pos) {
 
 void test_e8_filter_chunk_boundary_symmetry() {
     std::cout << "[+] test_e8_filter_chunk_boundary_symmetry" << std::endl;
-    const size_t kChunk = 65536;
-    std::vector<core::byte> data(kChunk * 2, 0);
+    const size_t CHUNK = 65536;
+    std::vector<core::byte> data(CHUNK * 2, 0);
     plant_call(data, 1000);        // interior of chunk 1: transform fires
     plant_call(data, 65534);       // operand [65535, 65539) crosses the boundary: stays raw
     plant_call(data, 65540 + 100); // interior of chunk 2: transform fires
@@ -327,18 +327,18 @@ void test_e8_filter_chunk_boundary_symmetry() {
     // Encode exactly the way compress_buffer() pre-transforms (per-chunk,
     // file_offset = chunk start), decode exactly the way the decoder applies
     // one filter-token region per token.
-    for (size_t off = 0; off < data.size(); off += kChunk) {
-        Filters50::encode_e8(data.data() + off, kChunk, off, false);
+    for (size_t off = 0; off < data.size(); off += CHUNK) {
+        Filters50::encode_e8(data.data() + off, CHUNK, off, false);
     }
     // Guard against a vacuous identity: interior sites must have been
     // transformed (their operands moved).
     assert(std::memcmp(data.data() + 1001, orig.data() + 1001, 4) != 0);
     assert(std::memcmp(data.data() + 65641, orig.data() + 65641, 4) != 0);
-    // The boundary-crossing site must NOT be transformed by a kChunk window.
+    // The boundary-crossing site must NOT be transformed by a CHUNK window.
     assert(std::memcmp(data.data() + 65535, orig.data() + 65535, 4) == 0);
 
-    for (size_t off = 0; off < data.size(); off += kChunk) {
-        Filters50::apply_e8(data.data() + off, kChunk, off, false);
+    for (size_t off = 0; off < data.size(); off += CHUNK) {
+        Filters50::apply_e8(data.data() + off, CHUNK, off, false);
     }
     assert(data.size() == orig.size() && std::memcmp(data.data(), orig.data(), data.size()) == 0);
     std::cout << "[PASS] E8 filter chunk-boundary encode/decode symmetry\n";

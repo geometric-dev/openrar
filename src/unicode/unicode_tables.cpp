@@ -9,10 +9,10 @@
 
 namespace openrar::unicode {
 
-static const core::uint32 kUnicodeVersionCp = 0x150100u;
+static const core::uint32 UNICODE_VERSION_CP = 0x150100u;
 
 // case-fold pairs (cp, folded): 1457 entries
-static const core::uint32 kCaseFold[] = {
+static const core::uint32 CASE_FOLD[] = {
     0x0041u,  0x0061u,  0x0042u,  0x0062u,  0x0043u,  0x0063u,  0x0044u,  0x0064u,  0x0045u,
     0x0065u,  0x0046u,  0x0066u,  0x0047u,  0x0067u,  0x0048u,  0x0068u,  0x0049u,  0x0069u,
     0x004Au,  0x006Au,  0x004Bu,  0x006Bu,  0x004Cu,  0x006Cu,  0x004Du,  0x006Du,  0x004Eu,
@@ -340,7 +340,7 @@ static const core::uint32 kCaseFold[] = {
 };
 
 // canonical decomposition triples (cp, a, b): 2061 entries
-static const core::uint32 kDecomposition[] = {
+static const core::uint32 DECOMPOSITION[] = {
     0x00C0u,  0x0041u,  0x0300u,  0x00C1u,  0x0041u,  0x0301u,  0x00C2u,  0x0041u,  0x0302u,
     0x00C3u,  0x0041u,  0x0303u,  0x00C4u,  0x0041u,  0x0308u,  0x00C5u,  0x0041u,  0x030Au,
     0x00C7u,  0x0043u,  0x0327u,  0x00C8u,  0x0045u,  0x0300u,  0x00C9u,  0x0045u,  0x0301u,
@@ -1031,7 +1031,7 @@ static const core::uint32 kDecomposition[] = {
 };
 
 // composition triples (a, b, composite): 1980 entries
-static const core::uint32 kComposition[] = {
+static const core::uint32 COMPOSITION[] = {
     0x003Bu,  0x0000u,  0x037Eu,  0x003Cu,  0x0338u,  0x226Eu,  0x003Du,  0x0338u,  0x2260u,
     0x003Eu,  0x0338u,  0x226Fu,  0x0041u,  0x0300u,  0x00C0u,  0x0041u,  0x0301u,  0x00C1u,
     0x0041u,  0x0302u,  0x00C2u,  0x0041u,  0x0303u,  0x00C3u,  0x0041u,  0x0304u,  0x0100u,
@@ -1695,7 +1695,7 @@ static const core::uint32 kComposition[] = {
 };
 
 // combining classes (cp, ccc): 922 entries
-static const core::uint32 kCombiningClass[] = {
+static const core::uint32 COMBINING_CLASS[] = {
     0x0300u,  0x00E6u, 0x0301u,  0x00E6u, 0x0302u,  0x00E6u, 0x0303u,  0x00E6u, 0x0304u,  0x00E6u,
     0x0305u,  0x00E6u, 0x0306u,  0x00E6u, 0x0307u,  0x00E6u, 0x0308u,  0x00E6u, 0x0309u,  0x00E6u,
     0x030Au,  0x00E6u, 0x030Bu,  0x00E6u, 0x030Cu,  0x00E6u, 0x030Du,  0x00E6u, 0x030Eu,  0x00E6u,
@@ -1885,22 +1885,22 @@ static const core::uint32 kCombiningClass[] = {
 
 const core::uint32* case_fold_table(int& count) {
     count = 2914 / 2;
-    return kCaseFold;
+    return CASE_FOLD;
 }
 
 const core::uint32* decomposition_table(int& count) {
     count = 6183 / 3;
-    return kDecomposition;
+    return DECOMPOSITION;
 }
 
 const core::uint32* composition_table(int& count) {
     count = 5940 / 3;
-    return kComposition;
+    return COMPOSITION;
 }
 
 const core::uint32* combining_class_table(int& count) {
     count = 1844 / 2;
-    return kCombiningClass;
+    return COMBINING_CLASS;
 }
 
 } // namespace openrar::unicode

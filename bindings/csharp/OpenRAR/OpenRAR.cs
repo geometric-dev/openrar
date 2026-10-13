@@ -82,13 +82,23 @@ namespace OpenRAR
             try
             {
                 var outEntries = new EntryInfo[count];
-                byte[] raw = new byte[count * 64];
-                Marshal.Copy(entries, raw, 0, raw.Length);
+                // (long) before the multiply: `count * 64` was uint arithmetic,
+                // so count > 67,108,863 wrapped to a small value and Marshal.Copy
+                // then copied a truncated prefix with no error.
+                byte[] raw = new byte[(long)count * 64];
+                if (raw.Length > 0) Marshal.Copy(entries, raw, 0, raw.Length);
                 byte[] pathBlob = new byte[(long)pathsSize];
-                if (paths != IntPtr.Zero) Marshal.Copy(paths, pathBlob, 0, pathBlob.Length);
+                if (paths != IntPtr.Zero && pathBlob.Length > 0) Marshal.Copy(paths, pathBlob, 0, pathBlob.Length);
                 for (uint i = 0; i < count; i++)
                 {
-                    var e = BytesToEntry(raw, i * 64);
+                    var e = BytesToEntry(raw, (int)(i * 64));
+                    // path_offset/path_len come from the (possibly crafted)
+                    // archive. Bound them before slicing: an over-long range
+                    // threw ArgumentOutOfRangeException out of List() - and a
+                    // 32-bit offset+length sum can itself overflow.
+                    if ((ulong)e.PathOffset + e.PathLen > (ulong)pathBlob.Length)
+                        throw new OpenRARException(Native.RarErrInvalidArg,
+                            $"entry {i}: path range [{e.PathOffset},{e.PathOffset + e.PathLen}) exceeds blob size {pathBlob.Length}");
                     string name = Encoding.UTF8.GetString(
                         pathBlob, (int)e.PathOffset, (int)e.PathLen);
                     outEntries[i] = new EntryInfo
@@ -168,6 +178,13 @@ namespace OpenRAR
 
         private const string Lib = "openrar";
 
+        // Every `char*` in this ABI is UTF-8 (dll_api.cpp uses
+        // std::filesystem::u8path). Do NOT declare them as `string`: the CLR
+        // marshals a string parameter as ANSI (system code page) on .NET
+        // Framework and UTF-8 only on .NET Core+, so a non-ASCII path would be
+        // silently mangled for every .NET Framework consumer of this
+        // netstandard2.0 package. `Marshal.StringToCoTaskMemUTF8` is Core-only,
+        // so the UTF-8 buffers are built by hand below.
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         private static extern int openrar_version();
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
@@ -175,10 +192,10 @@ namespace OpenRAR
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr openrar_package_version_string();
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        private static extern int openrar_archive_get_error(StringBuilder buf, int len);
+        private static extern int openrar_archive_get_error([Out] byte[] buf, int len);
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         private static extern uint openrar_archive_open_file(
-            string path, string password, IntPtr progress, IntPtr cancel, IntPtr user);
+            IntPtr path, IntPtr password, IntPtr progress, IntPtr cancel, IntPtr user);
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         private static extern void openrar_archive_close(uint handle);
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
@@ -189,7 +206,7 @@ namespace OpenRAR
             IntPtr entries, IntPtr paths, UIntPtr pathsSize);
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         private static extern int openrar_archive_handle_extract_to_path(
-            uint handle, uint index, string dest, IntPtr progress, IntPtr cancel, IntPtr user);
+            uint handle, uint index, IntPtr dest, IntPtr progress, IntPtr cancel, IntPtr user);
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         private static extern int openrar_archive_handle_test(
             uint handle, uint index, IntPtr progress, IntPtr cancel, IntPtr user);
@@ -198,23 +215,88 @@ namespace OpenRAR
             uint handle, ulong member, ulong total, ulong headerCount, ulong headerBytes);
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         private static extern int openrar_archive_create_file(
-            string arcPath, string[] srcPaths, string[] arcNames, uint fileCount,
+            IntPtr arcPath, IntPtr[] srcPaths, IntPtr[] arcNames, uint fileCount,
             int method, ulong dictSize);
+
+        /// <summary>Allocate a NUL-terminated UTF-8 buffer. Caller frees.</summary>
+        private static IntPtr AllocUtf8Z(string s)
+        {
+            byte[] b = Encoding.UTF8.GetBytes(s ?? "");
+            IntPtr p = Marshal.AllocHGlobal(b.Length + 1);
+            if (b.Length > 0) Marshal.Copy(b, 0, p, b.Length);
+            Marshal.WriteByte(p, b.Length, 0);
+            return p;
+        }
+
+        /// <summary>Read a NUL-terminated UTF-8 C string.</summary>
+        private static string Utf8ZToString(IntPtr p)
+        {
+            if (p == IntPtr.Zero) return "";
+            int len = 0;
+            while (Marshal.ReadByte(p, len) != 0) len++;
+            if (len == 0) return "";
+            byte[] b = new byte[len];
+            Marshal.Copy(p, b, 0, len);
+            return Encoding.UTF8.GetString(b);
+        }
 
         internal static int HandleList(uint h, ref uint c, ref IntPtr e, ref IntPtr p, ref UIntPtr s) =>
             openrar_archive_handle_list(h, ref c, ref e, ref p, ref s);
         internal static void ListFree(IntPtr e, IntPtr p, UIntPtr s) => openrar_archive_list_free(e, p, s);
-        internal static int HandleExtractToPath(uint h, uint i, string d, IntPtr pr, IntPtr ca, IntPtr us) =>
-            openrar_archive_handle_extract_to_path(h, i, d, pr, ca, us);
+        internal static int HandleExtractToPath(uint h, uint i, string d, IntPtr pr, IntPtr ca, IntPtr us)
+        {
+            IntPtr dp = AllocUtf8Z(d);
+            try { return openrar_archive_handle_extract_to_path(h, i, dp, pr, ca, us); }
+            finally { Marshal.FreeHGlobal(dp); }
+        }
         internal static int HandleTest(uint h, uint i, IntPtr pr, IntPtr ca, IntPtr us) =>
             openrar_archive_handle_test(h, i, pr, ca, us);
         internal static int HandleSetLimits(uint h, ulong m, ulong t, ulong hc, ulong hb) =>
             openrar_archive_handle_set_limits(h, m, t, hc, hb);
-        internal static uint OpenFile(string path, string password) =>
-            openrar_archive_open_file(path, password ?? "", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        internal static uint OpenFile(string path, string password)
+        {
+            IntPtr pp = AllocUtf8Z(path);
+            IntPtr pw = AllocUtf8Z(password ?? "");
+            try { return openrar_archive_open_file(pp, pw, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero); }
+            finally { Marshal.FreeHGlobal(pp); Marshal.FreeHGlobal(pw); }
+        }
         internal static void Close(uint h) => openrar_archive_close(h);
-        internal static void CreateFile_(string arc, string[] src, string[] names, int method, ulong dict) =>
-            Check(openrar_archive_create_file(arc, src, names, (uint)src.Length, method, dict));
+
+        internal static void CreateFile_(string arc, string[] src, string[] names, int method, ulong dict)
+        {
+            if (src == null || names == null)
+                throw new ArgumentNullException(src == null ? nameof(src) : nameof(names));
+            if (src.Length != names.Length)
+                throw new ArgumentException(
+                    $"srcPaths ({src.Length}) and arcNames ({names.Length}) must be the same length");
+            if (src.Length == 0)
+                throw new ArgumentException("at least one file is required");
+            IntPtr arcP = AllocUtf8Z(arc);
+            IntPtr[] srcP = AllocUtf8ZArray(src);
+            IntPtr[] nameP = AllocUtf8ZArray(names);
+            try
+            {
+                Check(openrar_archive_create_file(arcP, srcP, nameP, (uint)src.Length, method, dict));
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(arcP);
+                FreeUtf8ZArray(srcP);
+                FreeUtf8ZArray(nameP);
+            }
+        }
+
+        private static IntPtr[] AllocUtf8ZArray(string[] values)
+        {
+            var ptrs = new IntPtr[values.Length];
+            for (int i = 0; i < values.Length; i++) ptrs[i] = AllocUtf8Z(values[i]);
+            return ptrs;
+        }
+
+        private static void FreeUtf8ZArray(IntPtr[] ptrs)
+        {
+            foreach (IntPtr p in ptrs) Marshal.FreeHGlobal(p);
+        }
 
         /// <summary>Spec §3 startup probes: strict-equality version check +
         /// the feature mask. Throws OpenRARException on mismatch.</summary>
@@ -223,7 +305,7 @@ namespace OpenRAR
             int v = openrar_version();
             if (v != DllApiVersion)
                 throw new OpenRARException(-2, $"ABI version mismatch: host={DllApiVersion} library={v}");
-            PackageVersion = Marshal.PtrToStringAnsi(openrar_package_version_string()) ?? "";
+            PackageVersion = Utf8ZToString(openrar_package_version_string());
             Features = openrar_abi_features();
         }
 
@@ -237,9 +319,9 @@ namespace OpenRAR
 
         internal static string LastError()
         {
-            var buf = new StringBuilder(1024);
-            int n = openrar_archive_get_error(buf, 1024);
-            return n > 0 ? buf.ToString(0, n) : "";
+            byte[] buf = new byte[1024];
+            int n = openrar_archive_get_error(buf, buf.Length);
+            return n > 0 ? Encoding.UTF8.GetString(buf, 0, n) : "";
         }
     }
 }

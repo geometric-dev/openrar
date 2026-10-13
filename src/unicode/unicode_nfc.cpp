@@ -49,11 +49,11 @@ TableResult lookup_triple_first(const core::uint32* table, int count, core::uint
 }
 
 // --- Hangul (UAX #15 constants) ---------------------------------------------
-constexpr core::uint32 kSBase = 0xAC00, kLBase = 0x1100, kVBase = 0x1161, kTBase = 0x11A7;
-constexpr int kLCount = 19, kVCount = 21, kTCount = 28;
-constexpr int kNCount = kVCount * kTCount;
-constexpr int kSCount = kLCount * kNCount;
-constexpr core::uint32 kSLast = kSBase + kSCount - 1;
+constexpr core::uint32 SBASE = 0xAC00, LBASE = 0x1100, VBASE = 0x1161, TBASE = 0x11A7;
+constexpr int LCOUNT = 19, VCOUNT = 21, TCOUNT = 28;
+constexpr int NCOUNT = VCOUNT * TCOUNT;
+constexpr int SCOUNT = LCOUNT * NCOUNT;
+constexpr core::uint32 SLAST = SBASE + SCOUNT - 1;
 
 bool is_decomposition_sentinel(core::uint32 b) {
     return b == 0; // singleton decomposition marker
@@ -90,8 +90,8 @@ size_t utf8_decode(const std::string& s, size_t i, core::uint32& cp) {
         v = (v << 6) | (cont & 0x3F);
     }
     // overlong / surrogate / out-of-range rejection
-    static const core::uint32 kMin[4] = {0u, 0u, 0x80u, 0x800u};
-    if (v < kMin[len] || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return 0;
+    static const core::uint32 min_cp[4] = {0u, 0u, 0x80u, 0x800u};
+    if (v < min_cp[len] || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return 0;
     cp = v;
     return len;
 }
@@ -125,14 +125,14 @@ int combining_class_of(core::uint32 cp) {
 // Canonical decomposition of one codepoint (Hangul algorithmic; table
 // otherwise; unknown codepoints stand alone).
 void decompose_one(core::uint32 cp, std::vector<core::uint32>& out) {
-    if (cp >= kSBase && cp <= kSLast) {
-        const core::uint32 s_index = cp - kSBase;
-        const core::uint32 l = kLBase + s_index / kNCount;
-        const core::uint32 v = kVBase + (s_index % kNCount) / kTCount;
-        const core::uint32 t = kTBase + (s_index % kTCount);
+    if (cp >= SBASE && cp <= SLAST) {
+        const core::uint32 s_index = cp - SBASE;
+        const core::uint32 l = LBASE + s_index / NCOUNT;
+        const core::uint32 v = VBASE + (s_index % NCOUNT) / TCOUNT;
+        const core::uint32 t = TBASE + (s_index % TCOUNT);
         out.push_back(l);
         out.push_back(v);
-        if (t != kTBase) out.push_back(t);
+        if (t != TBASE) out.push_back(t);
         return;
     }
     static const core::uint32* table = nullptr;
@@ -204,13 +204,12 @@ std::string compose_sequence(const std::vector<core::uint32>& seq) {
 
 bool compose_pair(core::uint32 a, core::uint32 b, core::uint32& out) {
     // Hangul composition first (algorithmic).
-    if (a >= kLBase && a < kLBase + kLCount && b >= kVBase && b < kVBase + kVCount) {
-        out = kSBase + ((a - kLBase) * kVCount + (b - kVBase)) * kTCount;
+    if (a >= LBASE && a < LBASE + LCOUNT && b >= VBASE && b < VBASE + VCOUNT) {
+        out = SBASE + ((a - LBASE) * VCOUNT + (b - VBASE)) * TCOUNT;
         return true;
     }
-    if (a >= kSBase && a <= kSLast && (a - kSBase) % kTCount == 0 && b > kTBase &&
-        b < kTBase + kTCount) {
-        out = a + (b - kTBase);
+    if (a >= SBASE && a <= SLAST && (a - SBASE) % TCOUNT == 0 && b > TBASE && b < TBASE + TCOUNT) {
+        out = a + (b - TBASE);
         return true;
     }
     static const core::uint32* table = nullptr;

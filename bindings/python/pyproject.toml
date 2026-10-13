@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openrar"
-version = "1.31.0"
+version = "1.41.0"
 description = "OpenRAR Python SDK — ctypes binding over the frozen OpenRAR C ABI (RAR 5.0 read/create/mutate)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -21,7 +21,10 @@ classifiers = [
 [tool.setuptools]
 packages = ["openrar"]
 
-# Wheel packaging note (plan M4): the platform wheels bundle the built
-# shared library beside the package; the conformance suite runs against the
-# packaged artifact at least once per platform in CI (auditwheel/delocate
-# policy gates live in the release workflow).
+# Platform wheels bundle the built shared library beside the package (the
+# release workflow copies it into openrar/ before `python -m build`). Without
+# this declaration the wheel never contains the library, and load_native()
+# fails for every installed user - which is what the previous state did (the
+# note below described the mechanism but nothing implemented it).
+[tool.setuptools.package-data]
+openrar = ["*.so", "*.so.*", "*.dylib", "*.dll"]

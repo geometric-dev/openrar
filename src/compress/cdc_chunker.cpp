@@ -18,7 +18,7 @@ core::uint64 splitmix64(core::uint64& state) {
     return z ^ (z >> 31);
 }
 
-constexpr core::uint32 kNormalizationBits = [] {
+constexpr core::uint32 NORMALIZATION_BITS = [] {
     // target avg 64 KiB → cutting mask width ≈ log2(64 KiB) = 16 bits;
     // FastCDC normalization: two levels around the target.
     core::uint32 bits = 0;
@@ -32,9 +32,9 @@ CdcChunker::CdcChunker() {
     core::uint64 state = 0x243F6A8885A308D3ull; // fixed seed
     for (int i = 0; i < 256; ++i) table_[i] = splitmix64(state);
 
-    // Cutting mask: kNormalizationBits ones at the top of the 64-bit hash.
+    // Cutting mask: NORMALIZATION_BITS ones at the top of the 64-bit hash.
     mask_ = 0;
-    for (core::uint32 b = 0; b < kNormalizationBits; ++b) mask_ |= (1ull << 63) >> b;
+    for (core::uint32 b = 0; b < NORMALIZATION_BITS; ++b) mask_ |= (1ull << 63) >> b;
 }
 
 core::uint64 CdcChunker::hash_range(const core::byte* data, size_t n) const {
@@ -58,18 +58,18 @@ void CdcStreamChunker::feed(const core::byte* data, size_t n, std::vector<CdcChu
         pending_[pending_size_++] = data[i];
         ++fed_;
         const size_t pos = pending_size_;
-        if (pos < CdcChunker::kMinChunk) continue;
+        if (pos < CdcChunker::MIN_CHUNK) continue;
         // FastCDC two-level normalization: the strict mask below the avg
-        // point, the lighter one above it. (At a buffer end within kAvgChunk
+        // point, the lighter one above it. (At a buffer end within AVG_CHUNK
         // of the chunk start, chunk() applied the strict mask to every
         // scanned position and the light mask at most at the final byte,
         // where "cut" and "tail to EOF" coincide — the streaming decisions
         // are byte-identical without knowing where EOF is.)
         const core::uint64 active_mask =
-            pos < CdcChunker::kAvgChunk ? owner_.mask_ : (owner_.mask_ >> 1);
+            pos < CdcChunker::AVG_CHUNK ? owner_.mask_ : (owner_.mask_ >> 1);
         if ((h_ & active_mask) == 0) {
             emit(out); // natural boundary
-        } else if (pos == CdcChunker::kMaxChunk) {
+        } else if (pos == CdcChunker::MAX_CHUNK) {
             emit(out); // no boundary within the max window: cut at the cap
         }
     }

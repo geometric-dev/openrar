@@ -69,7 +69,7 @@
     {
       "name": "wasm",
       "displayName": "WASM Release (Emscripten)",
-      "description": "Requires emsdk env (emcmake). Produces wasm/dist/openrar.{js,wasm} via src/wasm/wasm_api.cpp. Keep separate from native presets.",
+      "description": "Requires emsdk env (emcmake). Produces wasm/js/dist/openrar.{js,wasm} via src/wasm/wasm_api.cpp. Keep separate from native presets.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/wasm",
       "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
@@ -100,7 +100,7 @@
     {
       "name": "wasm-archive",
       "displayName": "WASM Archive API (Emscripten)",
-      "description": "Block codec + in-memory RAR5 archive API. Produces wasm/dist/openrar_archive.{js,wasm}.",
+      "description": "Block codec + in-memory RAR5 archive API. Produces wasm/js/dist/openrar_archive.{js,wasm}.",
       "inherits": "wasm",
       "binaryDir": "${sourceDir}/build/wasm-archive",
       "cacheVariables": {
