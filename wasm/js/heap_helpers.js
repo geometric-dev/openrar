@@ -55,9 +55,21 @@ export function safeRead(m, ptr, len) {
   if (!Number.isInteger(ptr) || !Number.isInteger(len) || len < 0) {
     throw new RangeError(`safeRead: invalid args ptr=${ptr} len=${len}`);
   }
+  // Enforce the bound the helper exists for. Without this, a (ptr, len) pair
+  // that came from a crafted C return could index past the heap; the
+  // ArrayBuffer constructor would throw a bare RangeError, or worse, a
+  // mid-heap pointer with an over-long len would silently read the wrong
+  // region. pointerInBounds was documented for exactly this and never called.
+  if (!pointerInBounds(m, ptr, len)) {
+    throw new RangeError(
+      `safeRead: out-of-bounds ptr=${ptr} len=${len} ` +
+      `heap=[${m.HEAPU8.byteOffset}, ${m.HEAPU8.byteOffset + m.HEAPU8.length})`);
+  }
   // `.slice()` copies the bytes (does not share storage), even if the
-  // buffer is later reallocated.
-  return new Uint8Array(m.HEAPU8.buffer, ptr, len).slice();
+  // buffer is later reallocated. Indexed relative to the heap view so the
+  // arithmetic matches pointerInBounds even if HEAPU8 is mounted at a base.
+  const off = ptr - m.HEAPU8.byteOffset;
+  return m.HEAPU8.slice(off, off + len);
 }
 
 /**

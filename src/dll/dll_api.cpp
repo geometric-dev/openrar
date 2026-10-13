@@ -840,6 +840,16 @@ struct FileArchiveHandle : ArchiveHandleBase {
         *out = openrar_archive_info_t{};
         *comment_out = nullptr;
         *comment_size_out = 0;
+        // info() seeks and reads the shared reader stream for the CMT payload,
+        // so it serializes against extract/test/list like every other
+        // stream-touching method. Without this guard a host calling
+        // openrar_archive_handle_info concurrently with handle_test raced on
+        // the file position and could return garbage comment bytes.
+        BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         const auto& mb = reader->main_block();
         out->flags = static_cast<uint32_t>(mb.arc_flags);
         out->volume_index = static_cast<uint32_t>(mb.vol_number);

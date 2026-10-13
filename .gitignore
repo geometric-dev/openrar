@@ -5,6 +5,7 @@ build_fuzz/
 Testing/
 bin/
 lib/
+obj/
 
 # CMake artifacts
 CMakeCache.txt
@@ -47,8 +48,11 @@ tests/out_*/
 # Generated coverage output
 tools/coverage-report.json
 
-# WASM build outputs (keep republishable dist out of git; CI builds it)
+# WASM build outputs. These land INSIDE the npm package (wasm/js/dist/) so
+# the published tarball can actually resolve the './dist/*.js' its glue
+# imports; see cmake/wasm.cmake. Never committed - CI rebuilds them.
 wasm/dist/
+wasm/js/dist/
 
 # Local test runs (fixture trees, extracted files, token logs)
 testrun/

@@ -14,8 +14,8 @@ namespace openrar::archive::foreign {
 
 namespace {
 
-constexpr core::uint32 kZipLfhSig = 0x04034b50;  // PK\x03\x04
-constexpr core::uint32 kZipEocdSig = 0x06054b50; // PK\x05\x06
+constexpr core::uint32 ZIP_LFH_SIG = 0x04034b50;  // PK\x03\x04
+constexpr core::uint32 ZIP_EOCD_SIG = 0x06054b50; // PK\x05\x06
 
 core::uint32 le32(const core::byte* p) {
     return static_cast<core::uint32>(p[0]) | (static_cast<core::uint32>(p[1]) << 8) |
@@ -67,10 +67,10 @@ SourceFormat detect_foreign_format(const std::filesystem::path& path) {
     // 2. Legacy RAR — OUT OF SCOPE (explicit refusal, never "not an archive").
     if (got >= 7 && std::memcmp(b8, "Rar!\x1a\x07\x00", 7) == 0) return SourceFormat::LegacyRar;
     // 3. ZIP: local header signature, or an EOCD-only (empty) archive.
-    if (got >= 4 && le32(b8) == kZipLfhSig) return SourceFormat::Zip;
+    if (got >= 4 && le32(b8) == ZIP_LFH_SIG) return SourceFormat::Zip;
     if (fsize >= 22) {
         core::byte tail[22];
-        if (read_exact(f, fsize - 22, tail, 22) && le32(tail) == kZipEocdSig && tail[20] == 0 &&
+        if (read_exact(f, fsize - 22, tail, 22) && le32(tail) == ZIP_EOCD_SIG && tail[20] == 0 &&
             tail[21] == 0) {
             return SourceFormat::Zip;
         }
@@ -157,16 +157,16 @@ size_t utf8_sequence_len(const std::string& s, size_t i) {
 }
 
 void append_percent_encoded_byte(std::string& out, unsigned char b) {
-    static const char* kHex = "0123456789ABCDEF";
+    static const char* hex = "0123456789ABCDEF";
     out.push_back('%');
-    out.push_back(kHex[b >> 4]);
-    out.push_back(kHex[b & 0xF]);
+    out.push_back(hex[b >> 4]);
+    out.push_back(hex[b & 0xF]);
 }
 } // namespace
 
 std::string cp437_to_utf8(const std::string& raw) {
     // CP437 → Unicode (total map; in-tree table — CONTRIBUTING ground rule 2).
-    static const core::uint16 kMap[128] = {
+    static const core::uint16 map[128] = {
         0xC7,   0xFC,   0xE9,   0xE2,   0xE4,   0xE0,   0xE5,   0xE7,   0xEA,   0xEB,   0xE8,
         0xEF,   0xEE,   0xEC,   0xC4,   0xC5,   0xC9,   0xE6,   0xC6,   0xF4,   0xF6,   0xF2,
         0xFB,   0xF9,   0xFF,   0xD6,   0xDC,   0xA2,   0xA3,   0xA5,   0x20A7, 0x192,  0xE1,
@@ -183,7 +183,7 @@ std::string cp437_to_utf8(const std::string& raw) {
     out.reserve(raw.size());
     char buf[4];
     for (unsigned char c : raw) {
-        const core::uint32 cp = c < 0x80 ? c : kMap[c - 0x80];
+        const core::uint32 cp = c < 0x80 ? c : map[c - 0x80];
         if (cp < 0x80) {
             out.push_back(static_cast<char>(cp));
         } else if (cp < 0x800) {

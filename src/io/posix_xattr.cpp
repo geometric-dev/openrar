@@ -39,7 +39,7 @@ int lset(const std::filesystem::path& p, const char* name, const void* buf, size
 // every legal size (Linux XATTR_LIST_MAX / XATTR_SIZE_MAX are 64 KiB each);
 // a source beyond the cap is treated as unreadable rather than growing
 // without bound.
-constexpr size_t kProbeMax = 1u << 20;
+constexpr size_t PROBE_MAX = 1u << 20;
 
 } // namespace
 
@@ -49,7 +49,7 @@ bool list_xattrs(const std::filesystem::path& path, std::vector<std::string>& ou
     // the two calls, so ERANGE means "grow and retry" — beyond the cap the
     // attribute list is treated as unreadable (fail-soft, plan FMM row C).
     std::vector<char> buf;
-    for (size_t size = 512; size <= kProbeMax; size *= 2) {
+    for (size_t size = 512; size <= PROBE_MAX; size *= 2) {
         buf.assign(size, '\0');
         const ssize_t got = llist(path, buf.data(), size);
         if (got < 0) {
@@ -79,7 +79,7 @@ bool get_xattr(const std::filesystem::path& path, const std::string& name,
     out_value.clear();
     // Size probe, then read with one grow retry (the value can change
     // between calls).
-    for (size_t size = 256; size <= kProbeMax; size *= 2) {
+    for (size_t size = 256; size <= PROBE_MAX; size *= 2) {
         std::vector<char> buf(size);
         const ssize_t got = lget(path, name.c_str(), buf.data(), size);
         if (got < 0) {

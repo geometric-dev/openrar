@@ -278,8 +278,8 @@ inline MatchFn resolve_match_fn() noexcept {
 }
 
 inline size_t match_length_simd(const core::byte* p, const core::byte* q, size_t cap) noexcept {
-    static const MatchFn MATCH_FN = resolve_match_fn();
-    size_t r = MATCH_FN(p, q, cap);
+    static const MatchFn match_fn = resolve_match_fn();
+    size_t r = match_fn(p, q, cap);
     return r > cap ? cap : r;
 }
 

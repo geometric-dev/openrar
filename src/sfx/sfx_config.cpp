@@ -41,8 +41,8 @@ bool is_valid_utf8(const std::string& s) {
             if ((cc & 0xC0) != 0x80) return false;
             cp = (cp << 6) | (cc & 0x3Fu);
         }
-        static constexpr core::uint32 kMinCp[5] = {0, 0, 0x80, 0x800, 0x10000};
-        if (cp < kMinCp[len] || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu)) return false;
+        static constexpr core::uint32 MIN_CP[5] = {0, 0, 0x80, 0x800, 0x10000};
+        if (cp < MIN_CP[len] || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu)) return false;
         i += static_cast<size_t>(len);
     }
     return true;
@@ -122,11 +122,11 @@ SfxConfig parse_sfx_config(const std::vector<core::byte>& comment) {
             continue;
         }
 
-        if (++directive_count > kMaxDirectiveLines) {
+        if (++directive_count > MAX_DIRECTIVE_LINES) {
             cfg.truncated = true;
             continue;
         }
-        if (value.size() > kMaxValueBytes) {
+        if (value.size() > MAX_VALUE_BYTES) {
             cfg.ignored_over_limit_lines++;
             continue;
         }
@@ -156,16 +156,16 @@ SfxConfig parse_sfx_config(const std::vector<core::byte>& comment) {
         } else if (key == "tempmode") {
             cfg.tempmode = true; // presence wins; the optional value is v1-ignored
         } else if (key == "shortcut") {
-            // Comma-separated fields; at most kMaxShortcutFields, each at most
-            // kMaxShortcutFieldBytes. More fields than allowed = malformed line.
-            std::array<std::string, kMaxShortcutFields> fields;
+            // Comma-separated fields; at most MAX_SHORTCUT_FIELDS, each at most
+            // MAX_SHORTCUT_FIELD_BYTES. More fields than allowed = malformed line.
+            std::array<std::string, MAX_SHORTCUT_FIELDS> fields;
             size_t count = 0;
             size_t start = 0;
             bool over = false;
             for (size_t i = 0; i <= value.size(); ++i) {
                 if (i == value.size() || value[i] == ',') {
                     const std::string field = value.substr(start, i - start);
-                    if (count >= kMaxShortcutFields || field.size() > kMaxShortcutFieldBytes) {
+                    if (count >= MAX_SHORTCUT_FIELDS || field.size() > MAX_SHORTCUT_FIELD_BYTES) {
                         over = true;
                         break;
                     }

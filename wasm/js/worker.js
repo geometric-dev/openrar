@@ -6,10 +6,16 @@
 //    const c = await wr.compress(bytes);
 //    wr.terminate();
 //
-//  Protocol: { id, op, args } in; { id, ok, result } | { id, ok, error } out;
+// Protocol: { id, op, args } in; { id, ok, result } | { id, ok, error } out;
 //  optional { id, type: 'progress', done, total } events during extractAll.
 //  Binary results are transferred (zero-copy) to the main thread; inputs are
 //  structured-cloned (copied) unless the host passes { transfer: true }.
+//
+//  Progress is requested with a plain boolean `wantsProgress` in the message,
+//  NOT by posting the caller's callback: functions cannot be structured-
+//  cloned, so postMessage would throw DataCloneError before this file ever
+//  ran. The host keeps the real callback and routes the events it receives
+//  back to it.
 //
 //  This file must run as `new Worker(new URL('./worker.js', import.meta.url),
 //  { type: 'module' })` — never import it directly from the main thread.
@@ -29,8 +35,19 @@ async function getBlock() {
 
 self.onmessage = async (ev) => {
   const { id, op, args } = ev.data || {};
-  if (typeof id !== 'number' || typeof op !== 'string') return;
-  const onProgress = args && args.onProgress
+  if (typeof id !== 'number' || typeof op !== 'string') {
+    // Reply even to a malformed message: the host parks a pending promise on
+    // every id it sends, so returning silently leaked that promise forever.
+    if (typeof id === 'number') {
+      self.postMessage({
+        id,
+        ok: false,
+        error: { code: 'IO', message: 'openrar-worker: malformed message', name: 'TypeError' },
+      });
+    }
+    return;
+  }
+  const onProgress = args && args.wantsProgress
     ? (done, total) => self.postMessage({ id, type: 'progress', done, total })
     : undefined;
   try {

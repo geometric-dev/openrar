@@ -1,6 +1,6 @@
 {
   "name": "openrar-wasm",
-  "version": "1.40.5",
+  "version": "1.41.0",
   "description": "OpenRAR RAR5 block codec + in-memory archive API — WASM build (Emscripten MODULARIZE)",
   "type": "module",
   "main": "./openrar.js",
@@ -16,14 +16,20 @@
     },
     "./quickjs": {
       "import": "./quickjs-host.mjs"
-    }
+    },
+    "./index": {
+      "import": "./index.mjs"
+    },
+    "./dist/*": "./dist/*"
   },
   "files": [
+    "./dist",
     "./openrar.js",
     "./openrar.d.ts",
     "./openrar-archive.js",
     "./openrar-archive.d.ts",
     "./heap_helpers.js",
+    "./index.mjs",
     "./worker.js",
     "./worker-host.mjs",
     "./worker.test.mjs",
@@ -32,7 +38,7 @@
     "./test.mjs",
     "./helpers.test.mjs",
     "./archive.test.mjs",
-    "./README.md"
+    "./package.json"
   ],
   "scripts": {
     "build": "emcmake cmake --preset wasm && cmake --build --preset wasm && emcmake cmake --preset wasm-archive && cmake --build --preset wasm-archive",

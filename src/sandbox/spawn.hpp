@@ -48,14 +48,27 @@ enum class SpawnProfile {
 // until a model ships.
 bool platform_sandbox_available();
 
+// Handles the worker legitimately needs. Windows passes these through
+// PROC_THREAD_ATTRIBUTE_HANDLE_LIST so NOTHING else in the broker process is
+// duplicated into the child (bInheritHandles=TRUE otherwise leaks every
+// inheritable handle). POSIX ignores this: the broker marks all other ends
+// FD_CLOEXEC via set_handle_inheritable(), so only these three cross exec.
+// Null entries are skipped.
+struct ChildHandles {
+    void* cmd_read = nullptr;
+    void* res_write = nullptr;
+    void* volume = nullptr;
+};
+
 // Spawns the worker with `argv_tail` (the arguments after the executable
 // path; quoting is the platform impl's job). Sets proc_out (HANDLE / pid as
 // void*). The CHANNEL and VOLUME handles are the caller's concern (created
-// inheritable before this call); this function only wraps the OS privilege
-// layer. `sandboxed=false` must behave exactly like the plain spawn the
-// unsandboxed e2e exercises.
+// inheritable before this call); this function wraps the OS privilege layer
+// and scopes inheritance to `child_handles`. `profile == Unsandboxed` must
+// behave exactly like the plain spawn the unsandboxed e2e exercises.
 bool spawn_worker_process(const std::string& exe, const std::vector<std::string>& argv_tail,
-                          SpawnProfile profile, void** proc_out, std::string& err);
+                          const ChildHandles& child_handles, SpawnProfile profile, void** proc_out,
+                          std::string& err);
 
 // Absolute path of the openrar_worker executable that ships beside the CLI
 // binary (same directory; GetModuleFileName / /proc/self/exe). Empty when it

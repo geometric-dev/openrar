@@ -66,31 +66,31 @@ std::filesystem::path recovery_temp_path(const std::filesystem::path& arc_path, 
 // between the last file entry and the End-Of-Archive block. The service
 // header's `SubData` extra field carries a single vint = recovery percent
 // (informational; used by archive listers for display). The service
-// header's data area contains `NR` back-to-back parity "shards".
+// header's data area contains `nr` back-to-back parity "shards".
 //
 // Each shard has the following layout (in bytes from the shard's start):
 //
 //     +0x00..+0x03   "{RB}" magic  (0x7B 0x52 0x42 0x7D)
 //     +0x04..+0x0B   CRC-64/XZ over bytes +0x0C..+shard_size (u64 LE)
 //     +0x0C..+0x0F   total_size == shard_size                (u32 LE)
-//     +0x10..+0x13   header_size == D*8 + 0x48               (u32 LE)
+//     +0x10..+0x13   header_size == d*8 + 0x48               (u32 LE)
 //     +0x14          version_a = 0x01                        (u8)
 //     +0x15          version_b = 0x01                        (u8)
 //     +0x16..+0x1D   chunk_position = 0 for inline RR        (u64 LE)
 //     +0x1E..+0x21   chunk_data_extent: unpadded byte count  (u32 LE)
 //                    of the final data chunk (0 impossible:
-//                    archive_size > (D-1)*group_count)
+//                    archive_size > (d-1)*group_count)
 //     +0x22..+0x29   protected_archive_size                  (u64 LE)
 //     +0x2A..+0x31   group_count = parity bytes per shard    (u64 LE)
 //     +0x32..+0x39   shard_size (repeated as u64)            (u64 LE)
-//     +0x3A..+0x3B   D  (data-shard count per group)         (u16 LE)
-//     +0x3C..+0x3D   NR (parity-shard count in this record)  (u16 LE)
-//     +0x3E..+0x3F   shard_index (0..NR-1)                   (u16 LE)
-//     +0x40..+0x40+D*8-1   D * u64 LE   per-data-chunk checksum
+//     +0x3A..+0x3B   d  (data-shard count per group)         (u16 LE)
+//     +0x3C..+0x3D   nr (parity-shard count in this record)  (u16 LE)
+//     +0x3E..+0x3F   shard_index (0..nr-1)                   (u16 LE)
+//     +0x40..+0x40+d*8-1   d * u64 LE   per-data-chunk checksum
 //                    (raw CRC-64: init 0, NO final XOR) over the chunk's
 //                    unpadded bytes — the reference repairer's erasure
 //                    locator (v1.35.0; docs/v1.35.0-rr-probe.md §5)
-//     +0x40+D*8..+0x47+D*8 u64 LE     per-run seed in the reference
+//     +0x40+d*8..+0x47+d*8 u64 LE     per-run seed in the reference
 //                    writer (crypto-random; the sole source of its
 //                    record nondeterminism). We emit a fixed zero —
 //                    the validator ignores it (expA/expC).
@@ -107,21 +107,21 @@ std::filesystem::path recovery_temp_path(const std::filesystem::path& arc_path, 
 // Sizing formula, matching standard RAR5 encoder output and format spec §4.6.2:
 //
 //   pct         = clamp(rec_pct, 0, 1000)
-//   D           = archive_size >= 200 KiB  ? 200
+//   d           = archive_size >= 200 KiB  ? 200
 //                                          : max(1, ceil(archive_size/1024))
-//   NR_raw      = 2*pct*D / 200 = pct*D / 100
-//   NR          = min(NR_raw, 10*D)
-//   if NR == 0 and archive_size < 200 KiB: NR = 1
-//   group_count = ceil(archive_size / D)      then rounded up to even
+//   NR_raw      = 2*pct*d / 200 = pct*d / 100
+//   nr          = min(NR_raw, 10*d)
+//   if nr == 0 and archive_size < 200 KiB: nr = 1
+//   group_count = ceil(archive_size / d)      then rounded up to even
 //   scale       = max(1, ceil(group_count / 65536))
-//   header_size = (D*8 + 0x48) * scale
+//   header_size = (d*8 + 0x48) * scale
 //   shard_size  = header_size + group_count
 //
 // Reed-Solomon parity is computed over the protected byte range (bytes
-// 0 .. archive_size), split into D contiguous chunks of group_count bytes
-// each (last chunk zero-padded). For each parity shard j = 0..NR-1:
+// 0 .. archive_size), split into d contiguous chunks of group_count bytes
+// each (last chunk zero-padded). For each parity shard j = 0..nr-1:
 //   parity[j][k] = XOR_i ( MX[j][i] * data[i][k] )   in GF(2^16)
-// with the Cauchy matrix MX[j][i] = 1 / ((j+D) XOR i). Bytes within a
+// with the Cauchy matrix MX[j][i] = 1 / ((j+d) XOR i). Bytes within a
 // group_count buffer are consumed as consecutive uint16 little-endian words
 // (group_count is always even).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,8 +147,8 @@ constexpr size_t SHARD_STATE_ARR = 0x40;
 
 struct RecoveryGeometry {
     core::uint32 pct;
-    core::uint32 D;
-    core::uint32 NR;
+    core::uint32 d;
+    core::uint32 nr;
     core::uint64 group_count;
     core::uint32 scale;
     core::uint64 header_size;
@@ -162,26 +162,26 @@ RecoveryGeometry compute_geometry(core::uint64 archive_size, core::uint32 rec_pc
     g.pct = rec_pct > 1000 ? 1000 : rec_pct;
 
     if (archive_size >= 200ULL * 1024) {
-        g.D = 200;
+        g.d = 200;
     } else {
         core::uint64 k = (archive_size + 1023) / 1024;
         if (k == 0) k = 1;
         if (k > 200) k = 200;
-        g.D = static_cast<core::uint32>(k);
+        g.d = static_cast<core::uint32>(k);
     }
-    core::uint64 nr_raw = 2ULL * g.pct * g.D / 200; // = pct * D / 100
-    core::uint32 cap = 10u * g.D;
-    g.NR = static_cast<core::uint32>(nr_raw > cap ? cap : nr_raw);
-    if (g.NR == 0 && archive_size < 200ULL * 1024) g.NR = 1;
+    core::uint64 nr_raw = 2ULL * g.pct * g.d / 200; // = pct * d / 100
+    core::uint32 cap = 10u * g.d;
+    g.nr = static_cast<core::uint32>(nr_raw > cap ? cap : nr_raw);
+    if (g.nr == 0 && archive_size < 200ULL * 1024) g.nr = 1;
 
-    core::uint64 gc = (archive_size + g.D - 1) / g.D;
+    core::uint64 gc = (archive_size + g.d - 1) / g.d;
     gc += (gc & 1);
     g.group_count = gc;
 
     core::uint64 scale = (gc + 0xFFFF) / 0x10000;
     if (scale < 1) scale = 1;
     g.scale = static_cast<core::uint32>(scale);
-    g.header_size = (static_cast<core::uint64>(g.D) * 8 + 0x48) * g.scale;
+    g.header_size = (static_cast<core::uint64>(g.d) * 8 + 0x48) * g.scale;
     g.shard_size = g.header_size + g.group_count;
     return g;
 }
@@ -391,11 +391,11 @@ RrLocation find_rr(io::FileStream& stream, core::uint64 sfx_offset) {
 
     // Fallback 2: Search backwards for SHARD_MAGIC ("RAR_RR\0\0")
     if (!info.found && file_size > SHARD_MAGIC_SIZE) {
-        const size_t CHUNK = 65536;
-        std::vector<core::byte> buf(CHUNK + SHARD_MAGIC_SIZE);
+        const size_t chunk = 65536;
+        std::vector<core::byte> buf(chunk + SHARD_MAGIC_SIZE);
         core::int64 cur_pos = static_cast<core::int64>(file_size);
         while (cur_pos > static_cast<core::int64>(start) && !info.found) {
-            size_t to_read = static_cast<size_t>(std::min<core::int64>(CHUNK, cur_pos - start));
+            size_t to_read = static_cast<size_t>(std::min<core::int64>(chunk, cur_pos - start));
             cur_pos -= to_read;
             stream.seek(cur_pos, io::SeekOrigin::Begin);
             size_t read_bytes = stream.read(buf.data(), to_read + SHARD_MAGIC_SIZE - 1);
@@ -440,8 +440,8 @@ std::vector<core::byte> build_shard(core::uint32 shard_index, const RecoveryGeom
     core::write_le64(shard.data() + SHARD_PROT_SIZE, g.archive_size);
     core::write_le64(shard.data() + SHARD_GROUP_CNT, g.group_count);
     core::write_le64(shard.data() + SHARD_SIZE_U64, g.shard_size);
-    core::write_le16(shard.data() + SHARD_D_FIELD, static_cast<core::uint16>(g.D));
-    core::write_le16(shard.data() + SHARD_NR_FIELD, static_cast<core::uint16>(g.NR));
+    core::write_le16(shard.data() + SHARD_D_FIELD, static_cast<core::uint16>(g.d));
+    core::write_le16(shard.data() + SHARD_NR_FIELD, static_cast<core::uint16>(g.nr));
     core::write_le16(shard.data() + SHARD_INDEX, static_cast<core::uint16>(shard_index));
     // Per-data-chunk raw CRC-64 entries (init 0, no final XOR, unpadded
     // bytes) + fixed-zero seed. Identical in every shard of the record.
@@ -449,12 +449,12 @@ std::vector<core::byte> build_shard(core::uint32 shard_index, const RecoveryGeom
     // scale remainder stays zero. A header too small to hold them (hostile
     // geometry) leaves the region zeroed rather than spilling into the
     // payload (D13).
-    if (g.header_size >= SHARD_STATE_ARR + static_cast<size_t>(g.D + 1) * 8) {
-        for (core::uint32 i = 0; i < g.D; ++i) {
+    if (g.header_size >= SHARD_STATE_ARR + static_cast<size_t>(g.d + 1) * 8) {
+        for (core::uint32 i = 0; i < g.d; ++i) {
             core::write_le64(shard.data() + SHARD_STATE_ARR + static_cast<size_t>(i) * 8,
                              entries[i]);
         }
-        core::write_le64(shard.data() + SHARD_STATE_ARR + static_cast<size_t>(g.D) * 8, 0);
+        core::write_le64(shard.data() + SHARD_STATE_ARR + static_cast<size_t>(g.d) * 8, 0);
     }
 
     // Parity payload.
@@ -615,7 +615,14 @@ bool splice_repair(const std::filesystem::path& arc_path,
         if (out.write(repaired_prefix.data(), repaired_prefix.size()) != repaired_prefix.size()) {
             in.close();
             out.close();
-            std::filesystem::remove(tmp_path);
+            // Non-throwing overload: the throwing one raises
+            // filesystem_error, and RecoveryWriter::repair has no try/catch,
+            // so a locked/AV-scanned temp on Windows would throw out of the
+            // recovery layer - which s5 says returns bool.
+            {
+                std::error_code ec;
+                std::filesystem::remove(tmp_path, ec);
+            }
             return false;
         }
     }
@@ -633,7 +640,14 @@ bool splice_repair(const std::filesystem::path& arc_path,
         if (!copy_stream_region(in, out, tail_off, tail_len)) {
             in.close();
             out.close();
-            std::filesystem::remove(tmp_path);
+            // Non-throwing overload: the throwing one raises
+            // filesystem_error, and RecoveryWriter::repair has no try/catch,
+            // so a locked/AV-scanned temp on Windows would throw out of the
+            // recovery layer - which s5 says returns bool.
+            {
+                std::error_code ec;
+                std::filesystem::remove(tmp_path, ec);
+            }
             return false;
         }
     }
@@ -654,7 +668,14 @@ bool splice_repair_with_rr(const std::filesystem::path& arc_path,
     if (!repaired_prefix.empty()) {
         if (out.write(repaired_prefix.data(), repaired_prefix.size()) != repaired_prefix.size()) {
             out.close();
-            std::filesystem::remove(tmp_path);
+            // Non-throwing overload: the throwing one raises
+            // filesystem_error, and RecoveryWriter::repair has no try/catch,
+            // so a locked/AV-scanned temp on Windows would throw out of the
+            // recovery layer - which s5 says returns bool.
+            {
+                std::error_code ec;
+                std::filesystem::remove(tmp_path, ec);
+            }
             return false;
         }
     }
@@ -819,10 +840,10 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
 
     // Stream the volumes through the RS encoder, one even-sized chunk at a
     // time, appending parity to each .rev file while its CRC accumulates.
-    const size_t CHUNK = 1u << 20; // 1 MiB, even
+    const size_t chunk = 1u << 20; // 1 MiB, even
     std::vector<std::vector<core::byte>> parity(static_cast<size_t>(nr),
-                                                std::vector<core::byte>(CHUNK));
-    std::vector<core::byte> data(CHUNK);
+                                                std::vector<core::byte>(chunk));
+    std::vector<core::byte> data(chunk);
     std::vector<crypto::Crc32> rev_crc(static_cast<size_t>(nr));
 
     struct RevOut {
@@ -911,7 +932,7 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
     }
 
     while (processed < shard && ok) {
-        size_t chunk = static_cast<size_t>(std::min<core::uint64>(CHUNK, shard - processed));
+        size_t chunk = static_cast<size_t>(std::min<core::uint64>(chunk, shard - processed));
         for (core::uint32 j = 0; j < nr; ++j) {
             std::memset(parity[j].data(), 0, chunk);
         }
@@ -1122,17 +1143,17 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     }
 
     RecoveryGeometry g = compute_geometry(archive_size, percent);
-    if (g.NR == 0 || g.D == 0 || g.group_count == 0) {
+    if (g.nr == 0 || g.d == 0 || g.group_count == 0) {
         return false;
     }
 
     // Reopen the tmp file for read+write so we can stream the protected
     // prefix one shard at a time into the RS encoder without buffering the
     // whole archive. Peak transient memory drops from
-    //   O(archive_size + D * group_count + NR * group_count)
+    //   O(archive_size + d * group_count + nr * group_count)
     // to
-    //   O((1 + NR) * group_count)
-    // For a 1 GiB archive with 10 % RR (D = 200, NR ≈ 20) that's ~5 MiB per
+    //   O((1 + nr) * group_count)
+    // For a 1 GiB archive with 10 % RR (d = 200, nr ≈ 20) that's ~5 MiB per
     // shard × 21 buffers ≈ 105 MiB, down from ~2.1 GiB.
     out.flush();
     out.close();
@@ -1141,17 +1162,17 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     }
 
     ReedSolomon16 rs;
-    if (!rs.init(g.D, g.NR)) {
+    if (!rs.init(g.d, g.nr)) {
         return false;
     }
 
     std::vector<std::vector<core::byte>> parity(
-        g.NR, std::vector<core::byte>(static_cast<size_t>(g.group_count), 0));
+        g.nr, std::vector<core::byte>(static_cast<size_t>(g.group_count), 0));
 
-    // Byte-column tiling: with (NR * group_count) mostly-exceeding LLC, the
-    // per-shard sweep of all NR parity buffers re-streams the whole parity
+    // Byte-column tiling: with (nr * group_count) mostly-exceeding LLC, the
+    // per-shard sweep of all nr parity buffers re-streams the whole parity
     // set from DRAM for every data shard. Processing ~256 KiB column stripes
-    // for all (i, j) pairs keeps the active parity window (NR * stripe_len)
+    // for all (i, j) pairs keeps the active parity window (nr * stripe_len)
     // cache-resident, cutting parity memory traffic to ~2x the parity size.
     // Stripe length stays even so update_ecc's read_le16 blocks stay aligned.
     constexpr size_t STRIPE = 256u * 1024u;
@@ -1162,23 +1183,23 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     // running state is updated with exactly the unpadded stripe take. Only
     // unpadded bytes feed the checksum (D2); the i-axis is serial regardless
     // of the parity pool, so entries are identical at any thread count (D12).
-    std::vector<crypto::RawCrc64> entry_crc(g.D);
+    std::vector<crypto::RawCrc64> entry_crc(g.d);
     // Unpadded byte count of the final data chunk (chunk_data_extent).
-    core::uint64 chunk_extent = archive_size - static_cast<core::uint64>(g.D - 1) * g.group_count;
+    core::uint64 chunk_extent = archive_size - static_cast<core::uint64>(g.d - 1) * g.group_count;
 
     // The inner fold loop parallelizes cleanly: every parity shard j has its
     // own buffer (parity[j]) and update_ecc only reads the shared matrix and
     // scratch stripe. Output bytes are identical to the serial run because
     // each fold is an independent GF(2^16) XOR accumulation.
     std::unique_ptr<core::ThreadPool> pool;
-    if (threads > 1 && g.NR > 1) {
-        pool = std::make_unique<core::ThreadPool>(std::min<unsigned>(threads, g.NR));
+    if (threads > 1 && g.nr > 1) {
+        pool = std::make_unique<core::ThreadPool>(std::min<unsigned>(threads, g.nr));
     }
 
     for (core::uint64 base = 0; base < g.group_count; base += STRIPE) {
         size_t stripe_len =
             static_cast<size_t>(std::min<core::uint64>(STRIPE, g.group_count - base));
-        for (core::uint32 i = 0; i < g.D; ++i) {
+        for (core::uint32 i = 0; i < g.d; ++i) {
             core::uint64 shard_off = static_cast<core::uint64>(i) * g.group_count;
             core::uint64 avail = 0;
             if (shard_off < archive_size) {
@@ -1187,7 +1208,7 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
             // Zero-fill scratch, then overlay whatever's actually there. Data
             // shards past archive_size (only the last one in practice) are pure
             // padding, which matches how compute_geometry rounds group_count up
-            // to even and covers up to D*group_count total bytes.
+            // to even and covers up to d*group_count total bytes.
             std::memset(scratch.data(), 0, stripe_len);
             if (base < avail) {
                 core::uint64 take = std::min<core::uint64>(stripe_len, avail - base);
@@ -1200,12 +1221,12 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
                 entry_crc[i].update(scratch.data(), static_cast<size_t>(take));
             }
             if (pool) {
-                core::parallel_for(*pool, 0, g.NR, [&](size_t j) {
+                core::parallel_for(*pool, 0, g.nr, [&](size_t j) {
                     rs.update_ecc(i, static_cast<core::uint32>(j), scratch.data(),
                                   parity[j].data() + base, stripe_len);
                 });
             } else {
-                for (core::uint32 j = 0; j < g.NR; ++j) {
+                for (core::uint32 j = 0; j < g.nr; ++j) {
                     rs.update_ecc(i, j, scratch.data(), parity[j].data() + base, stripe_len);
                 }
             }
@@ -1219,15 +1240,15 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
 
     // Serialise the shards back-to-back.
     auto data_area_size =
-        calculate_parity_buffer_size(g.NR, static_cast<core::uint32>(g.shard_size));
+        calculate_parity_buffer_size(g.nr, static_cast<core::uint32>(g.shard_size));
     if (!data_area_size) {
         return false;
     }
     std::vector<core::byte> data_area;
     data_area.reserve(static_cast<size_t>(*data_area_size));
-    std::vector<core::uint64> rr_entries(g.D);
-    for (core::uint32 i = 0; i < g.D; ++i) rr_entries[i] = entry_crc[i].get();
-    for (core::uint32 j = 0; j < g.NR; ++j) {
+    std::vector<core::uint64> rr_entries(g.d);
+    for (core::uint32 i = 0; i < g.d; ++i) rr_entries[i] = entry_crc[i].get();
+    for (core::uint32 j = 0; j < g.nr; ++j) {
         auto s = build_shard(j, g, parity[j].data(), static_cast<size_t>(g.group_count),
                              rr_entries.data(), chunk_extent);
         data_area.insert(data_area.end(), s.begin(), s.end());
@@ -1310,8 +1331,8 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         if (!f.open(e.path(), io::FileMode::ReadOnly)) continue;
         core::byte head[16];
         if (f.read(head, 16) != 16) continue;
-        static const core::byte SIGN[8] = {'R', 'a', 'r', '!', 0x1a, 'R', 'e', 'v'};
-        if (std::memcmp(head, SIGN, 8) != 0) continue;
+        static const core::byte sign[8] = {'R', 'a', 'r', '!', 0x1a, 'R', 'e', 'v'};
+        if (std::memcmp(head, sign, 8) != 0) continue;
         core::uint32 stored_crc = core::read_le32(head + 8);
         core::uint32 hsize = core::read_le32(head + 12);
         // Minimum 11: version(1) + dc(2) + rc(2) + rn(2) + payload_crc(4).
@@ -1533,7 +1554,7 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     // RS16::init plus `missing` MiB of scratch, and the .rev writer's nd is
     // the volume-chain length (up to 65535), so nd itself cannot be capped.
     // The inline-RR writer never needs more than 200 erasures (compute_geometry
-    // caps D at 200); anything larger is hostile geometry and is refused
+    // caps d at 200); anything larger is hostile geometry and is refused
     // before the decoder allocates.
     if (missing > 200) return false;
 
@@ -1642,13 +1663,13 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         out[i] = f;
     }
 
-    const size_t CHUNK = 1u << 20; // 1 MiB, even
-    std::vector<core::byte> srcbuf(CHUNK);
-    std::vector<std::vector<core::byte>> recon(missing, std::vector<core::byte>(CHUNK));
+    const size_t chunk = 1u << 20; // 1 MiB, even
+    std::vector<core::byte> srcbuf(chunk);
+    std::vector<std::vector<core::byte>> recon(missing, std::vector<core::byte>(chunk));
     core::uint64 processed = 0;
     bool ok = true;
     while (processed < shard && ok) {
-        size_t chunk = static_cast<size_t>(std::min<core::uint64>(CHUNK, shard - processed));
+        size_t chunk = static_cast<size_t>(std::min<core::uint64>(chunk, shard - processed));
         for (core::uint32 e = 0; e < missing; ++e) {
             std::memset(recon[e].data(), 0, chunk);
         }
@@ -1740,7 +1761,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     struct RrSlice {
         core::uint64 offset; // within each data chunk
         core::uint32 len;
-        std::vector<core::uint64> entries; // D values
+        std::vector<core::uint64> entries; // d values
     };
     std::vector<RrSlice> t0_slices;
 
@@ -1751,13 +1772,13 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     if (std::memcmp(rr.raw_data.data(), SHARD_MAGIC, SHARD_MAGIC_SIZE) != 0) return false;
 
     // ─── Multi-physical reassembly (v1.35.0, Gate 0 E3 / D8+D13) ────────────────
-    // Above D*64 KiB protected size the reference writer packages each logical
-    // parity shard as multiple physical chunk-shards: unscaled D*8+0x48 headers,
+    // Above d*64 KiB protected size the reference writer packages each logical
+    // parity shard as multiple physical chunk-shards: unscaled d*8+0x48 headers,
     // chunk_position advancing in 64 KiB steps, the logical fields repeated per
     // piece (docs/v1.35.0-rr-probe.md §6). Our repair pipeline assumes one
     // physical shard per logical index (total == header + group). Reassemble
     // those records into that canonical single-shape form — byte-count neutral,
-    // because scale*(D*8+0x48) equals the scaled header our writer would emit —
+    // because scale*(d*8+0x48) equals the scaled header our writer would emit —
     // so every downstream check runs unchanged. Any validation failure refuses
     // the whole record (all-or-nothing, D8).
     {
@@ -1835,7 +1856,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                     break;
                 }
             }
-            if (idxs.size() > 2000) canonical = false; // D/NR cap pre-check (D8)
+            if (idxs.size() > 2000) canonical = false; // d/nr cap pre-check (D8)
         }
 
         if (!canonical) {
@@ -1843,7 +1864,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         }
         if (multiphysical) {
             // Group pieces by logical index with the D8 bounds, then rewrite
-            // raw_data as NR canonical single-scaled shards.
+            // raw_data as nr canonical single-scaled shards.
             struct LogicalShard {
                 std::vector<std::pair<core::uint64, core::uint32>> pieces; // (off, total)
             };
@@ -1932,7 +1953,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                     }
                 }
             }
-            // Rewrite canonical: NR single shards, scaled header, full payload.
+            // Rewrite canonical: nr single shards, scaled header, full payload.
             // The canonical entries region stays ZERO: it cannot hold the
             // per-slice sets of a multi-row record, and zero is the established
             // "no whole-chunk entries" marker — T0 localization runs from
@@ -1983,42 +2004,42 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     core::uint64 group_count = core::read_le64(rr.raw_data.data() + SHARD_GROUP_CNT);
     core::uint64 shard_size_u = core::read_le64(rr.raw_data.data() + SHARD_SIZE_U64);
     core::uint64 prot_size = core::read_le64(rr.raw_data.data() + SHARD_PROT_SIZE);
-    core::uint16 D_u16 = core::read_le16(rr.raw_data.data() + SHARD_D_FIELD);
-    core::uint16 NR_u16 = core::read_le16(rr.raw_data.data() + SHARD_NR_FIELD);
+    core::uint16 d_u16 = core::read_le16(rr.raw_data.data() + SHARD_D_FIELD);
+    core::uint16 nr_u16 = core::read_le16(rr.raw_data.data() + SHARD_NR_FIELD);
 
     if (total_size == 0 || shard_size_u != total_size) return false;
-    if (D_u16 == 0 || NR_u16 == 0) return false;
+    if (d_u16 == 0 || nr_u16 == 0) return false;
     if (header_size32 == 0 || header_size32 >= total_size) return false;
     if (group_count == 0 || (group_count & 1u)) return false; // must be even
     if (static_cast<core::uint64>(total_size) !=
         static_cast<core::uint64>(header_size32) + group_count)
         return false;
-    if (static_cast<core::uint64>(NR_u16) * total_size > rr.data_size) return false;
+    if (static_cast<core::uint64>(nr_u16) * total_size > rr.data_size) return false;
     // Writer invariant: the record's data shards cover exactly
     // ceil(prot_size/group_count)*group_count bytes, so prot_size can never
-    // exceed D*group_count. Enforcing it here keeps a crafted record from
+    // exceed d*group_count. Enforcing it here keeps a crafted record from
     // driving the unbounded file_bytes resize below (report M2).
-    if (prot_size > static_cast<core::uint64>(D_u16) * group_count) return false;
+    if (prot_size > static_cast<core::uint64>(d_u16) * group_count) return false;
 
-    core::uint32 D = D_u16;
-    core::uint32 NR = NR_u16;
-    // Resource cap (report M3): the writer never emits D > 200 or NR > 10*D
+    core::uint32 d = d_u16;
+    core::uint32 nr = nr_u16;
+    // Resource cap (report M3): the writer never emits d > 200 or nr > 10*d
     // (compute_geometry), and RS16::init allocates ne*nd cells with Gauss-
-    // Jordan costing ~ne²·nd GF ops. Hostile records with huge D/NR must be
+    // Jordan costing ~ne²·nd GF ops. Hostile records with huge d/nr must be
     // rejected before init instead of attempting a multi-GB allocation and
     // hours of decode.
-    if (D > 200 || NR > 10u * 200) return false;
+    if (d > 200 || nr > 10u * 200) return false;
     core::uint64 shard_size = total_size;
 
     // Validate every parity shard by magic + CRC-64/XZ. A shard that fails
     // either check is treated as an erased parity unit.
-    std::vector<core::byte> parity_valid(NR, 0);
+    std::vector<core::byte> parity_valid(nr, 0);
     core::uint32 parity_valid_count = 0;
-    if (rr.raw_data.size() < static_cast<size_t>(NR) * static_cast<size_t>(shard_size)) {
+    if (rr.raw_data.size() < static_cast<size_t>(nr) * static_cast<size_t>(shard_size)) {
         // Fewer shards on disk than declared. Anything past the truncation
         // point is invalid; keep going with what we have.
     }
-    for (core::uint32 j = 0; j < NR; ++j) {
+    for (core::uint32 j = 0; j < nr; ++j) {
         size_t off = static_cast<size_t>(j) * static_cast<size_t>(shard_size);
         if (off + shard_size > rr.raw_data.size()) break;
         const core::byte* s = rr.raw_data.data() + off;
@@ -2031,8 +2052,8 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         // to be usable.
         if (core::read_le32(s + SHARD_TOTAL_OFF) != total_size) continue;
         if (core::read_le32(s + SHARD_HEADER_OFF) != header_size32) continue;
-        if (core::read_le16(s + SHARD_D_FIELD) != D_u16) continue;
-        if (core::read_le16(s + SHARD_NR_FIELD) != NR_u16) continue;
+        if (core::read_le16(s + SHARD_D_FIELD) != d_u16) continue;
+        if (core::read_le16(s + SHARD_NR_FIELD) != nr_u16) continue;
         parity_valid[j] = 1;
         ++parity_valid_count;
     }
@@ -2072,9 +2093,9 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
 
     // Data-shard validity: shard i covers bytes [i*group_count, (i+1)*group_count).
     // Valid iff every byte of that range is inside `available`.
-    std::vector<core::byte> data_valid(D, 0);
+    std::vector<core::byte> data_valid(d, 0);
     core::uint32 data_valid_count = 0;
-    for (core::uint32 i = 0; i < D; ++i) {
+    for (core::uint32 i = 0; i < d; ++i) {
         core::uint64 shard_end = static_cast<core::uint64>(i + 1) * group_count;
         core::uint64 shard_end_capped = std::min<core::uint64>(shard_end, prot_size);
         if (shard_end_capped <= available) {
@@ -2083,7 +2104,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         }
     }
 
-    core::uint32 missing_data = D - data_valid_count;
+    core::uint32 missing_data = d - data_valid_count;
 
     // ─── T0: entry-based erasure localization (v1.35.0, Gate 0 E2 / D5+D13) ────
     // Trustworthy per-chunk entry sets (t0_slices) identify damaged chunks
@@ -2096,25 +2117,25 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     // zeroed entries, too-small headers, disagreeing sets) falls through to
     // the syndrome tiers exactly as v1.33.5 (F7).
     bool t0_applied = false;
-    if (t0_slices.empty() && header_size32 >= SHARD_STATE_ARR + static_cast<size_t>(D + 1) * 8) {
+    if (t0_slices.empty() && header_size32 >= SHARD_STATE_ARR + static_cast<size_t>(d + 1) * 8) {
         const core::byte* entries_shard = nullptr;
         RrSlice whole;
         whole.offset = 0;
         whole.len = static_cast<core::uint32>(std::min<core::uint64>(group_count, prot_size));
-        whole.entries.resize(D);
-        for (core::uint32 j = 0; j < NR; ++j) {
+        whole.entries.resize(d);
+        for (core::uint32 j = 0; j < nr; ++j) {
             if (!parity_valid[j]) continue;
             const core::byte* s =
                 rr.raw_data.data() + static_cast<size_t>(j) * static_cast<size_t>(shard_size);
             if (entries_shard == nullptr) {
-                for (core::uint32 i = 0; i < D; ++i) {
+                for (core::uint32 i = 0; i < d; ++i) {
                     whole.entries[i] = core::read_le64(s + SHARD_STATE_ARR + i * 8);
                 }
                 entries_shard = s;
                 continue;
             }
             if (std::memcmp(entries_shard + SHARD_STATE_ARR, s + SHARD_STATE_ARR,
-                            static_cast<size_t>(D) * 8) != 0) {
+                            static_cast<size_t>(d) * 8) != 0) {
                 entries_shard = nullptr; // disagreeing entries: unusable
                 break;
             }
@@ -2128,7 +2149,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         bool usable = true;
         for (const auto& slice : t0_slices) {
             bool all_zero = true;
-            for (core::uint32 i = 0; i < D; ++i) {
+            for (core::uint32 i = 0; i < d; ++i) {
                 if (slice.entries[i] != 0) {
                     all_zero = false;
                     break;
@@ -2141,7 +2162,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         }
         if (usable) {
             core::uint32 t0_missing = 0;
-            for (core::uint32 i = 0; i < D; ++i) {
+            for (core::uint32 i = 0; i < d; ++i) {
                 if (!data_valid[i]) {
                     ++t0_missing; // truncation erasure
                     continue;
@@ -2190,8 +2211,8 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     }
     if (!t0_applied && missing_data > parity_valid_count) return false;
 
-    // Pad file_bytes up to D * group_count so each shard can be read contiguously.
-    auto full_data_size = calculate_parity_buffer_size(D, group_count);
+    // Pad file_bytes up to d * group_count so each shard can be read contiguously.
+    auto full_data_size = calculate_parity_buffer_size(d, group_count);
     if (!full_data_size) return false;
     if (file_bytes.size() < *full_data_size) {
         file_bytes.resize(static_cast<size_t>(*full_data_size), 0);
@@ -2205,37 +2226,37 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
 
     // Initialize Cauchy RS encoder to compute syndromes and evaluate parity.
     ReedSolomon16 rs_enc;
-    if (!rs_enc.init(D, NR)) return false;
+    if (!rs_enc.init(d, nr)) return false;
 
-    std::vector<std::vector<core::byte>> recomputed_parity(NR);
-    for (core::uint32 j = 0; j < NR; ++j) {
+    std::vector<std::vector<core::byte>> recomputed_parity(nr);
+    for (core::uint32 j = 0; j < nr; ++j) {
         if (parity_valid[j]) {
             recomputed_parity[j].assign(static_cast<size_t>(group_count), 0);
         }
     }
-    for (core::uint32 i = 0; i < D; ++i) {
+    for (core::uint32 i = 0; i < d; ++i) {
         const core::byte* data_ptr =
             file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
-        for (core::uint32 j = 0; j < NR; ++j) {
+        for (core::uint32 j = 0; j < nr; ++j) {
             if (!parity_valid[j]) continue;
             rs_enc.update_ecc(i, j, data_ptr, recomputed_parity[j].data(),
                               static_cast<size_t>(group_count));
         }
     }
 
-    std::vector<std::vector<core::byte>> syndromes(NR);
+    std::vector<std::vector<core::byte>> syndromes(nr);
     core::uint32 non_zero_syndromes = 0;
     core::int32 first_non_zero_j = -1;
 
-    for (core::uint32 j = 0; j < NR; ++j) {
+    for (core::uint32 j = 0; j < nr; ++j) {
         if (!parity_valid[j]) continue;
         syndromes[j].resize(static_cast<size_t>(group_count));
-        const core::byte* P_j = rr.raw_data.data() +
+        const core::byte* p_j = rr.raw_data.data() +
                                 static_cast<size_t>(j) * static_cast<size_t>(shard_size) +
                                 static_cast<size_t>(header_size32);
         bool all_zero = true;
         for (size_t b = 0; b < group_count; ++b) {
-            core::byte diff = static_cast<core::byte>(P_j[b] ^ recomputed_parity[j][b]);
+            core::byte diff = static_cast<core::byte>(p_j[b] ^ recomputed_parity[j][b]);
             syndromes[j][b] = diff;
             if (diff != 0) all_zero = false;
         }
@@ -2246,7 +2267,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     }
 
     if (missing_data == 0) {
-        if (non_zero_syndromes == 0 && parity_valid_count == NR) {
+        if (non_zero_syndromes == 0 && parity_valid_count == nr) {
             // Already completely intact
             return headers_verify(arc_path, sfx_off);
         }
@@ -2270,13 +2291,13 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
 
         if (all_data_ok) {
             // Parity-Only Corruption branch:
-            // Recompute all NR parity shards from file_bytes
+            // Recompute all nr parity shards from file_bytes
             std::vector<std::vector<core::byte>> all_new_parity(
-                NR, std::vector<core::byte>(static_cast<size_t>(group_count), 0));
-            for (core::uint32 i = 0; i < D; ++i) {
+                nr, std::vector<core::byte>(static_cast<size_t>(group_count), 0));
+            for (core::uint32 i = 0; i < d; ++i) {
                 const core::byte* data_ptr =
                     file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
-                for (core::uint32 j = 0; j < NR; ++j) {
+                for (core::uint32 j = 0; j < nr; ++j) {
                     rs_enc.update_ecc(i, j, data_ptr, all_new_parity[j].data(),
                                       static_cast<size_t>(group_count));
                 }
@@ -2286,9 +2307,9 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
             g.archive_size = prot_size;
             g.pct = rr.rec_pct > 0
                         ? rr.rec_pct
-                        : static_cast<core::uint32>((static_cast<core::uint64>(NR) * 100) / D);
-            g.D = D;
-            g.NR = NR;
+                        : static_cast<core::uint32>((static_cast<core::uint64>(nr) * 100) / d);
+            g.d = d;
+            g.nr = nr;
             g.group_count = group_count;
             g.header_size = header_size32;
             g.shard_size = shard_size;
@@ -2296,8 +2317,8 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
             // Entries for the re-emitted record come from the verified prefix
             // (D2 frame); a hostile header too small to hold them keeps the
             // region zeroed (build_shard's central guard, D13).
-            std::vector<core::uint64> rebuild_entries(D);
-            for (core::uint32 i = 0; i < D; ++i) {
+            std::vector<core::uint64> rebuild_entries(d);
+            for (core::uint32 i = 0; i < d; ++i) {
                 core::uint64 off = static_cast<core::uint64>(i) * group_count;
                 core::uint64 end = std::min<core::uint64>(off + group_count, prot_size);
                 crypto::RawCrc64 crc;
@@ -2307,14 +2328,14 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                 rebuild_entries[i] = crc.get();
             }
             core::uint64 rebuild_extent =
-                prot_size - static_cast<core::uint64>(D - 1) * group_count;
+                prot_size - static_cast<core::uint64>(d - 1) * group_count;
 
             auto data_area_size =
-                calculate_parity_buffer_size(NR, static_cast<core::uint32>(shard_size));
+                calculate_parity_buffer_size(nr, static_cast<core::uint32>(shard_size));
             if (!data_area_size) return false;
             std::vector<core::byte> data_area;
             data_area.reserve(static_cast<size_t>(*data_area_size));
-            for (core::uint32 j = 0; j < NR; ++j) {
+            for (core::uint32 j = 0; j < nr; ++j) {
                 auto s =
                     build_shard(j, g, all_new_parity[j].data(), static_cast<size_t>(group_count),
                                 rebuild_entries.data(), rebuild_extent);
@@ -2334,14 +2355,14 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
             core::uint32 j0 = static_cast<core::uint32>(first_non_zero_j);
             size_t num_words = static_cast<size_t>(group_count / 2);
 
-            for (core::uint32 e = 0; e < D; ++e) {
+            for (core::uint32 e = 0; e < d; ++e) {
                 if (!data_valid[e]) continue;
-                core::uint32 c0 = rs_enc.gf_inv(rs_enc.gf_add(j0 + D, e));
+                core::uint32 c0 = rs_enc.gf_inv(rs_enc.gf_add(j0 + d, e));
                 bool candidate_matches = true;
 
-                for (core::uint32 j = 0; j < NR && candidate_matches; ++j) {
+                for (core::uint32 j = 0; j < nr && candidate_matches; ++j) {
                     if (!parity_valid[j] || j == j0) continue;
-                    core::uint32 cj = rs_enc.gf_inv(rs_enc.gf_add(j + D, e));
+                    core::uint32 cj = rs_enc.gf_inv(rs_enc.gf_add(j + d, e));
 
                     for (size_t w = 0; w < num_words; ++w) {
                         core::uint16 s0 = static_cast<core::uint16>(
@@ -2381,7 +2402,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                         if (format::HeaderReader::read_block_raw(
                                 stream, type, flags, body, data_sz) != format::HeaderResult::Ok) {
                             core::uint64 bad_shard = head_start / group_count;
-                            if (bad_shard < D && data_valid[bad_shard]) {
+                            if (bad_shard < d && data_valid[bad_shard]) {
                                 data_valid[bad_shard] = 0;
                                 ++missing_data;
                                 --data_valid_count;
@@ -2411,26 +2432,26 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                         core::uint64 s_end =
                             (entry.data_offset + entry.data_size + group_count - 1) / group_count;
                         if (s_end <= s_start) s_end = s_start + 1;
-                        if (s_end > D) s_end = D;
+                        if (s_end > d) s_end = d;
 
-                        core::uint32 found_single_shard = D;
+                        core::uint32 found_single_shard = d;
                         if (s_end - s_start == 1) {
                             found_single_shard = static_cast<core::uint32>(s_start);
                         } else if (first_non_zero_j >= 0 && parity_valid_count >= 1) {
                             core::uint32 j0 = static_cast<core::uint32>(first_non_zero_j);
                             size_t num_words = static_cast<size_t>(group_count / 2);
                             core::uint32 match_count = 0;
-                            core::uint32 candidate_shard = D;
+                            core::uint32 candidate_shard = d;
 
                             for (core::uint64 s = s_start; s < s_end; ++s) {
                                 if (!data_valid[s]) continue;
                                 core::uint32 inv_c0 = rs_enc.gf_inv(
-                                    rs_enc.gf_add(j0 + D, static_cast<core::uint32>(s)));
+                                    rs_enc.gf_add(j0 + d, static_cast<core::uint32>(s)));
                                 bool consistent = true;
-                                for (core::uint32 j = 0; j < NR && consistent; ++j) {
+                                for (core::uint32 j = 0; j < nr && consistent; ++j) {
                                     if (!parity_valid[j] || j == j0) continue;
                                     core::uint32 cj = rs_enc.gf_inv(
-                                        rs_enc.gf_add(j + D, static_cast<core::uint32>(s)));
+                                        rs_enc.gf_add(j + d, static_cast<core::uint32>(s)));
                                     for (size_t w = 0; w < num_words; ++w) {
                                         core::uint16 s0 = static_cast<core::uint16>(
                                             syndromes[j0][2 * w] | (syndromes[j0][2 * w + 1] << 8));
@@ -2459,7 +2480,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                                                 (syndromes[j0][2 * w + 1] << 8));
                                             core::uint16 err_word =
                                                 static_cast<core::uint16>(rs_enc.gf_mul(
-                                                    rs_enc.gf_add(j0 + D,
+                                                    rs_enc.gf_add(j0 + d,
                                                                   static_cast<core::uint32>(s)),
                                                     s0));
                                             core::byte err_byte =
@@ -2485,7 +2506,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                             }
                         }
 
-                        if (found_single_shard < D) {
+                        if (found_single_shard < d) {
                             if (data_valid[found_single_shard]) {
                                 data_valid[found_single_shard] = 0;
                                 ++missing_data;
@@ -2511,25 +2532,25 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
         return false;
     }
 
-    // Combined valid_flags vector for ReedSolomon16::init(D, NR, flags).
-    std::vector<core::byte> valid(D + NR, 0);
-    for (core::uint32 i = 0; i < D; ++i) valid[i] = data_valid[i];
-    for (core::uint32 j = 0; j < NR; ++j) valid[D + j] = parity_valid[j];
+    // Combined valid_flags vector for ReedSolomon16::init(d, nr, flags).
+    std::vector<core::byte> valid(d + nr, 0);
+    for (core::uint32 i = 0; i < d; ++i) valid[i] = data_valid[i];
+    for (core::uint32 j = 0; j < nr; ++j) valid[d + j] = parity_valid[j];
 
     ReedSolomon16 rs_dec;
-    if (!rs_dec.init(D, NR, valid.data())) return false;
+    if (!rs_dec.init(d, nr, valid.data())) return false;
 
     // Map ND source rows: valid data shards contribute themselves,
     // missing data shards are substituted by the next valid parity shard.
-    std::vector<const core::byte*> src(D, nullptr);
-    core::uint32 r_idx = D;
-    for (core::uint32 i = 0; i < D; ++i) {
+    std::vector<const core::byte*> src(d, nullptr);
+    core::uint32 r_idx = d;
+    for (core::uint32 i = 0; i < d; ++i) {
         if (data_valid[i]) {
             src[i] = file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
         } else {
-            while (r_idx < D + NR && !valid[r_idx]) ++r_idx;
-            if (r_idx >= D + NR) return false;
-            core::uint32 pj = r_idx - D;
+            while (r_idx < d + nr && !valid[r_idx]) ++r_idx;
+            if (r_idx >= d + nr) return false;
+            core::uint32 pj = r_idx - d;
             size_t poff = static_cast<size_t>(pj) * static_cast<size_t>(shard_size) +
                           static_cast<size_t>(header_size32);
             src[i] = rr.raw_data.data() + poff;
@@ -2541,7 +2562,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     auto recon_size = calculate_parity_buffer_size(missing_data, group_count);
     if (!recon_size) return false;
     std::vector<core::byte> recon(static_cast<size_t>(*recon_size), 0);
-    for (core::uint32 j = 0; j < D; ++j) {
+    for (core::uint32 j = 0; j < d; ++j) {
         for (core::uint32 e = 0; e < missing_data; ++e) {
             core::byte* dst =
                 recon.data() + static_cast<size_t>(e) * static_cast<size_t>(group_count);
@@ -2551,7 +2572,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
 
     // Splice reconstructed shards back into file_bytes.
     core::uint32 cur = 0;
-    for (core::uint32 i = 0; i < D; ++i) {
+    for (core::uint32 i = 0; i < d; ++i) {
         if (data_valid[i]) continue;
         core::uint64 off = static_cast<core::uint64>(i) * group_count;
         core::uint64 end = off + group_count;
@@ -2565,15 +2586,15 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     }
 
     // Post-repair syndrome verification: recompute parity from repaired file_bytes.
-    for (core::uint32 j = 0; j < NR; ++j) {
+    for (core::uint32 j = 0; j < nr; ++j) {
         if (parity_valid[j]) {
             std::memset(recomputed_parity[j].data(), 0, static_cast<size_t>(group_count));
         }
     }
-    for (core::uint32 i = 0; i < D; ++i) {
+    for (core::uint32 i = 0; i < d; ++i) {
         const core::byte* data_ptr =
             file_bytes.data() + static_cast<size_t>(i) * static_cast<size_t>(group_count);
-        for (core::uint32 j = 0; j < NR; ++j) {
+        for (core::uint32 j = 0; j < nr; ++j) {
             if (!parity_valid[j]) continue;
             rs_enc.update_ecc(i, j, data_ptr, recomputed_parity[j].data(),
                               static_cast<size_t>(group_count));
@@ -2581,13 +2602,13 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     }
 
     bool post_repair_syndromes_zero = true;
-    for (core::uint32 j = 0; j < NR; ++j) {
+    for (core::uint32 j = 0; j < nr; ++j) {
         if (!parity_valid[j]) continue;
-        const core::byte* P_j = rr.raw_data.data() +
+        const core::byte* p_j = rr.raw_data.data() +
                                 static_cast<size_t>(j) * static_cast<size_t>(shard_size) +
                                 static_cast<size_t>(header_size32);
         for (size_t b = 0; b < group_count; ++b) {
-            if ((P_j[b] ^ recomputed_parity[j][b]) != 0) {
+            if ((p_j[b] ^ recomputed_parity[j][b]) != 0) {
                 post_repair_syndromes_zero = false;
                 break;
             }

@@ -201,12 +201,12 @@ wasm surface, not part of the native export list.)
 
 ## 7. WASM module surfaces (frozen as-shipped)
 
-- **Block codec** (`wasm/dist/openrar.js`): `WASM_API_VERSION 2`
+- **Block codec** (`wasm/js/dist/openrar.js`): `WASM_API_VERSION 2`
   (`src/wasm/wasm_api.hpp:16`; "v2 was never shipped as embind — the module
   surface is the raw C ABI"). Exports: version/alloc/free,
   compress/decompress ×plain/2, streaming encoder (+ `*_compress_*` aliases)
   and the streaming decoder family.
-- **Archive module** (`wasm/dist/openrar-archive.js`):
+- **Archive module** (`wasm/js/dist/openrar-archive.js`):
   `ARCHIVE_WASM_API_VERSION 2` (`src/wasm/archive_api.hpp:34`); v1→v2
   corrected the export set (`_openrar_archive_list_free`) and added
   struct-based create + hooks + numeric error getter — THE cautionary tale

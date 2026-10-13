@@ -40,7 +40,7 @@ bool is_strict_component_prefix(const std::vector<std::string>& prefix,
 } // namespace
 
 const char* CollisionDetector::unicode_version() {
-    return unicode::kUnicodeVersion;
+    return unicode::UNICODE_VERSION;
 }
 
 bool CollisionDetector::detect(const std::vector<CollisionEntry>& entries,

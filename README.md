@@ -107,14 +107,12 @@ openrar a -m5 -r best.rar ./src
 | `-ams` | Store archive metadata (original name + creation FILETIME) as `MHEXTRA_METADATA`. |
 | `-ts[m][c][a][4]` | High-precision times: `-tsm4 -tsc4 -tsa4` adds `FHEXTRA_HTIME` with `ctime`/`atime`. Default stores `mtime` only. |
 | `-qo-` | Disable quick-open. Default writes `QO` + locator. |
-| `-htb` / `-htc` | File checksum: BLAKE2sp or CRC32 (`FHEXTRA_HASH`). Default CRC32. |
-| `-log[fmt][=name]` | Write archive (`A`) and processed file/dir (`F`) names to `name` (default `rarinfo.log`); `P` appends, `U` writes UTF-16LE. Create path. |
 | `-tk[<date>]` / `-tl` | Archive mtime: keep original on update, set `YYYYMMDDHHMMSS`, or set to newest stored file. Applied by `a` on close. |
 | `-p[<pwd>]` / `-hp[<pwd>]` | Encryption: AES-256 CBC with PBKDF2 (`crypt5`). `-p` encrypts file data; `-hp` encrypts headers and file data. |
 | `-rr[N[%]]` | In-archive recovery record: Reed-Solomon GF(2¹⁶) parity (`rs16`) protecting up to RR header; repaired via `openrar r`. Since v1.35.0 the record carries per-chunk checksums (the reference repairer's erasure locator; fixed zero seed keeps it deterministic) and `r` restores any set of up to NR damaged chunks, including records written by RAR 7.x (both shard packagings). |
 | `-rv` | External `.rev` recovery volumes for multi-volume sets (`-v` required); rebuilt data volumes via `openrar r`. |
-| `-ow` | Save and restore NTFS file security and access control lists (ACLs) via `win32acl.cpp`. |
-| `-os` | Save and restore NTFS Alternate Data Streams (ADS) as `STM` service blocks via `win32stm.cpp`. Zone.Identifier is excluded: it is transport provenance, not content — propagation is the `-oz` policy. |
+| `-ow` | Save and restore NTFS file security and access control lists (ACLs) via `src/io/win32_meta.cpp`. |
+| `-os` | Save and restore NTFS Alternate Data Streams (ADS) as `STM` service blocks via `src/io/win32_meta.cpp`. Zone.Identifier is excluded: it is transport provenance, not content — propagation is the `-oz` policy. |
 | `-ol` | Save symbolic links and junctions as `FHEXTRA_REDIR` records. Links are default-deny on extraction; `-ol` opts in (v1.24 §6.1). |
 | `-ox` | Save POSIX/macOS extended attributes into the header's `FHEXTRA_XATTR` (0x08) record: `user.*`, `security.*`, `trusted.*`, `com.apple.metadata.*` (Finder tags), and since v1.35.0 `com.apple.ResourceFork` / `com.apple.FinderInfo` (macOS content metadata; restore on Apple hosts only). `system.*` (ACL side door) and quarantine/provenance namespaces are never stored. Over-cap attributes (name > 255 B, value > 64 KiB, > 1 MiB per file) are skipped, never truncated. Symlinks/hardlinks carry no records. Restore is automatic for `user.*`/`com.apple.metadata.*`; `--xattr-security` additionally restores `security.*`/`trusted.*` (admin opt-in, the `--preserve-suid` model). Stock WinRAR/UnRAR skip the record without error. |
 | `-oz` / `-oz-` | Mark-of-the-Web propagation at extraction (default ON; `-oz-` disables). When the archive file itself carries a Zone.Identifier ADS (Windows) or `com.apple.quarantine` (macOS), each extracted file receives a freshly generated mark — content is generated locally (`[ZoneTransfer]
@@ -285,7 +283,7 @@ source ./emsdk/emsdk_env.sh
 
 # Build
 emcmake cmake --preset wasm
-cmake --build --preset wasm          # → wasm/dist/openrar.{js,wasm}
+cmake --build --preset wasm          # → wasm/js/dist/openrar.{js,wasm}
 
 # Debug
 emcmake cmake --preset wasm-debug
@@ -293,7 +291,7 @@ cmake --build --preset wasm-debug
 
 # Full CLI with MEMFS (for archive-level a/x/t from the JS host)
 emcmake cmake --preset wasm-cli -DOPENRAR_WASM_CLI=ON
-cmake --build --preset wasm-cli      # → wasm/dist/openrar_cli.{js,wasm}
+cmake --build --preset wasm-cli      # → wasm/js/dist/openrar_cli.{js,wasm}
 
 # Makefile-only path (no CMake needed)
 make wasm                            # same outputs as `--preset wasm`
@@ -303,7 +301,7 @@ make wasm-cli
 Usage from Node:
 
 ```js
-import createOpenRAR from '../wasm/dist/openrar.js';
+import createOpenRAR from '../wasm/js/dist/openrar.js';
 const m = await createOpenRAR();
 const compressed = m.compress(new TextEncoder().encode('hello'), 3);
 const restored   = m.decompress(compressed);

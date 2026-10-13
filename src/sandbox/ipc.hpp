@@ -11,13 +11,13 @@
 //  SECURITY POSTURE (Gate 0 directives 4/8, plan §1.3): the worker is
 //  UNTRUSTED. The broker validates every frame with the same hostile-input
 //  standard as the archive parser itself:
-//    - payload_len > kMaxFramePayload  → the stream is POISONED (fail-closed:
+//    - payload_len > MAX_FRAME_PAYLOAD  → the stream is POISONED (fail-closed:
 //      no resync, ever — a length lie means the byte stream's framing can no
 //      longer be trusted);
 //    - type outside the registry       → POISONED;
 //    - a truncated tail                → incomplete, NOT poisoned (the next
 //      feed() may complete it);
-//    - no dynamic allocation grows past kMaxFramePayload per frame — a
+//    - no dynamic allocation grows past MAX_FRAME_PAYLOAD per frame — a
 //      hostile length claim cannot reserve memory before the bytes arrive.
 //
 //  Codes carried in ERROR frames are the shared RarError values
@@ -43,7 +43,7 @@ enum class FrameType : core::uint8 {
     Key = 4,         // broker→worker: derived key material (NEVER the password)
     ScanResult = 5,  // worker→broker: packed entries (ArchiveEntryOut layout)
     ExtractReq = 6,  // broker→worker: entry index to decode
-    DataChunk = 7,   // worker→broker: decoded bytes (≤ kMaxFramePayload)
+    DataChunk = 7,   // worker→broker: decoded bytes (≤ MAX_FRAME_PAYLOAD)
     EntryResult = 8, // worker→broker: per-entry status/metadata
     Error = 9,       // worker→broker: RarError code + UTF-8 detail
     Cancel = 10,     // broker→worker: abort current entry (cooperative)
@@ -54,22 +54,22 @@ enum class FrameType : core::uint8 {
     SelftestResult = 13, // worker→broker: probe outcomes (worker_protocol.hpp)
 };
 
-inline constexpr core::uint32 kMaxFramePayload = 4u * 1024 * 1024; // 4 MiB
-inline constexpr size_t kFrameHeaderSize = 5;                      // u32le + u8
+inline constexpr core::uint32 MAX_FRAME_PAYLOAD = 4u * 1024 * 1024; // 4 MiB
+inline constexpr size_t FRAME_HEADER_SIZE = 5;                      // u32le + u8
 
 struct Frame {
     FrameType type = FrameType::Ping;
     std::vector<core::byte> payload;
 };
 
-// Wire size: header + payload. Frames larger than kMaxFramePayload are
+// Wire size: header + payload. Frames larger than MAX_FRAME_PAYLOAD are
 // rejected by encode() — a caller-side bug must not become a wire lie.
 inline size_t frame_wire_size(const Frame& f) {
-    return kFrameHeaderSize + f.payload.size();
+    return FRAME_HEADER_SIZE + f.payload.size();
 }
 
 // Appends the wire bytes. Returns false (and writes nothing) when the frame
-// exceeds kMaxFramePayload or the type is unregistered.
+// exceeds MAX_FRAME_PAYLOAD or the type is unregistered.
 bool encode_frame(const Frame& f, std::vector<core::byte>& out);
 
 enum class FeedResult {
@@ -89,8 +89,8 @@ public:
     // for an incomplete tail — do not reuse them).
     FeedResult feed(const core::byte* data, size_t len, std::vector<Frame>& out);
 
-    // Bytes currently buffered toward an incomplete frame (≤ kFrameHeaderSize
-    // + kMaxFramePayload by construction). Testability hook for the bounded-
+    // Bytes currently buffered toward an incomplete frame (≤ FRAME_HEADER_SIZE
+    // + MAX_FRAME_PAYLOAD by construction). Testability hook for the bounded-
     // memory guarantee: a hostile length claim must not grow this.
     size_t buffered() const { return pending_.size(); }
 

@@ -29,7 +29,7 @@ namespace openrar::archive {
 // v2 (v1.29): appends the transcode fields after `abort_reason` when the run
 // is a `cv` migration (has_transcode_fields) — additive, documented order;
 // v1 consumer keys are unchanged in position (plan D3).
-inline constexpr int kExtractionReportSchemaVersion = 2;
+inline constexpr int EXTRACTION_REPORT_SCHEMA_VERSION = 2;
 
 struct ExtractionReportEntry {
     std::string name;   // post-sanitization name == on-disk name
@@ -39,7 +39,7 @@ struct ExtractionReportEntry {
 };
 
 struct ExtractionReport {
-    int schema_version = kExtractionReportSchemaVersion;
+    int schema_version = EXTRACTION_REPORT_SCHEMA_VERSION;
     std::string archive;
     int exit_code = 0;
     std::vector<ExtractionReportEntry> entries;

@@ -32,7 +32,7 @@ namespace {
 //    distinct entry names collapse onto one file. Trimmed; a component that
 //    trims to nothing becomes '_'.
 std::string make_safe_component(std::string item) {
-    static const char* RESERVED_NAMES[] = {
+    static const char* reserved_names[] = {
         "con",  "prn",  "aux",  "nul",  "com0", "com1", "com2", "com3",
         "com4", "com5", "com6", "com7", "com8", "com9", "lpt0", "lpt1",
         "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
@@ -70,7 +70,7 @@ std::string make_safe_component(std::string item) {
     for (char& c : stem) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
-    for (const char* r : RESERVED_NAMES) {
+    for (const char* r : reserved_names) {
         if (stem == r) {
             item.insert(item.begin(), '_');
             break;
@@ -107,15 +107,15 @@ bool is_valid_utf8(const std::string& s) {
             v = (v << 6) | (cont & 0x3F);
         }
         // overlong and surrogate rejection
-        static const unsigned kMin[5] = {0, 0, 0x80, 0x800, 0x10000};
-        if (v < kMin[len] || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return false;
+        static const unsigned min_cp[5] = {0, 0, 0x80, 0x800, 0x10000};
+        if (v < min_cp[len] || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return false;
         i += len;
     }
     return true;
 }
 
 std::string percent_encode_invalid_utf8(const std::string& s) {
-    static const char* kHex = "0123456789ABCDEF";
+    static const char* hex = "0123456789ABCDEF";
     std::string out;
     out.reserve(s.size() + 8);
     size_t i = 0;
@@ -145,21 +145,31 @@ std::string percent_encode_invalid_utf8(const std::string& s) {
                 v = (v << 6) | (cont & 0x3F);
             }
             if (ok) {
-                static const unsigned kMin[5] = {0, 0, 0x80, 0x800, 0x10000};
-                if (v < kMin[len] || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) ok = false;
+                static const unsigned min_cp[5] = {0, 0, 0x80, 0x800, 0x10000};
+                if (v < min_cp[len] || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) ok = false;
             }
         }
         if (len == 0) len = 1; // invalid lead byte: escape it and move on
         if (ok) {
             out.append(s, i, len);
         } else {
-            // each byte of the broken sequence becomes %XX
-            for (size_t k = 0; k < len; ++k) {
+            // each byte of the broken sequence becomes %XX.
+            //
+            // Clamp to the bytes actually present. A truncated multi-byte lead
+            // (a lone "\xF0" finishing the string, say) sets len = 4 above but
+            // leaves fewer than len bytes; reading s[i + k] past size() is an
+            // out-of-bounds read, and its bytes were being written into the
+            // produced filename. `ok` is false on exactly this path, so the
+            // clamp is load-bearing.
+            const size_t avail = s.size() - i;
+            const size_t esc = len < avail ? len : avail;
+            for (size_t k = 0; k < esc; ++k) {
                 const auto b = static_cast<unsigned char>(s[i + k]);
                 out += '%';
-                out += kHex[(b >> 4) & 0xF];
-                out += kHex[b & 0xF];
+                out += hex[(b >> 4) & 0xF];
+                out += hex[b & 0xF];
             }
+            len = esc;
         }
         i += len;
     }

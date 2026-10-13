@@ -85,10 +85,17 @@ The POSIX `makefile` and plain MSBuild also work. WASM builds via
 
 - **No `k`-prefixed constants** (no Google-style `kFoo`); constants are
   UPPER_SNAKE at every scope — namespace, class (`static constexpr`
-  members included), and function-local `constexpr`. `.clang-tidy`
-  enforces this (`GlobalConstantCase`, `ClassConstantCase`,
-  `ConstexprVariableCase`); plain function-local `const` stays
-  lower_snake and is unpoliced.
+  members included), and function-local `constexpr`. Plain function-local
+  `const` stays lower_snake.
+  **Enforced in CI**: the gate leg runs `tools/clang_tidy_check.sh`
+  (clang-tidy `readability-identifier-naming` via `.clang-tidy`) over every
+  TU the build compiled. Run it locally with
+  `tools/clang_tidy_check.sh build` after a
+  `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` configure. The one sanctioned
+  exception is the frozen C-ABI error enum (`RAR_*` in `rar_errors.hpp` /
+  `openrar_dll.h`) — `EnumConstantCase` is deliberately left unset because
+  clang-tidy 18 does not honour `EnumConstantIgnoredRegexp` for unscoped
+  enums; scoped enums stay enforced.
 - Fixed-width ints: use `core::uint8…uint64`, `core::byte` (`src/core/types.hpp`),
   not bare `uint32_t`, in project code. Two areas keep stdint types on
   purpose: the C ABI / WASM boundary (`src/dll/`, `src/wasm/`,

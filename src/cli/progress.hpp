@@ -84,8 +84,8 @@ inline std::string sanitize_for_display(const std::string& name) {
             }
             cp = (cp << 6) | (cc & 0x3Fu);
         }
-        static const core::uint32 kMinCp[5] = {0, 0, 0x80, 0x800, 0x10000};
-        if (!ok || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu) || cp < kMinCp[len]) {
+        static const core::uint32 min_cp[5] = {0, 0, 0x80, 0x800, 0x10000};
+        if (!ok || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu) || cp < min_cp[len]) {
             out += '?';
             ++i;
             continue;

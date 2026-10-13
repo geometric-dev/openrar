@@ -138,37 +138,38 @@ aesni_expand_key(const core::byte* key, core::byte* enc_buf, core::byte* dec_buf
     ek[0] = t1;
     ek[1] = t2;
 
-#define KE1(rc)                                                                                    \
+#define OPENRAR_KE1(rc)                                                                            \
     t1 = aes_xor_assist(t1, _mm_shuffle_epi32(_mm_aeskeygenassist_si128(t2, (rc)), 0xFF))
-#define KE2() t2 = aes_xor_assist(t2, _mm_shuffle_epi32(_mm_aeskeygenassist_si128(t1, 0x00), 0xAA))
-    KE1(0x01);
+#define OPENRAR_KE2()                                                                              \
+    t2 = aes_xor_assist(t2, _mm_shuffle_epi32(_mm_aeskeygenassist_si128(t1, 0x00), 0xAA))
+    OPENRAR_KE1(0x01);
     ek[2] = t1;
-    KE2();
+    OPENRAR_KE2();
     ek[3] = t2;
-    KE1(0x02);
+    OPENRAR_KE1(0x02);
     ek[4] = t1;
-    KE2();
+    OPENRAR_KE2();
     ek[5] = t2;
-    KE1(0x04);
+    OPENRAR_KE1(0x04);
     ek[6] = t1;
-    KE2();
+    OPENRAR_KE2();
     ek[7] = t2;
-    KE1(0x08);
+    OPENRAR_KE1(0x08);
     ek[8] = t1;
-    KE2();
+    OPENRAR_KE2();
     ek[9] = t2;
-    KE1(0x10);
+    OPENRAR_KE1(0x10);
     ek[10] = t1;
-    KE2();
+    OPENRAR_KE2();
     ek[11] = t2;
-    KE1(0x20);
+    OPENRAR_KE1(0x20);
     ek[12] = t1;
-    KE2();
+    OPENRAR_KE2();
     ek[13] = t2;
-    KE1(0x40);
+    OPENRAR_KE1(0x40);
     ek[14] = t1;
-#undef KE1
-#undef KE2
+#undef OPENRAR_KE1
+#undef OPENRAR_KE2
 
     dk[0] = ek[14];
     for (int i = 1; i <= 13; ++i) {

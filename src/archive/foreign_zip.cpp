@@ -12,21 +12,21 @@ namespace openrar::archive::foreign {
 
 namespace {
 
-constexpr core::uint32 kLfhSig = 0x04034b50;    // PK\x03\x04
-constexpr core::uint32 kCdhSig = 0x02014b50;    // PK\x01\x02
-constexpr core::uint32 kEocdSig = 0x06054b50;   // PK\x05\x06
-constexpr core::uint32 kEocd64Sig = 0x06064b50; // PK\x06\x06
-constexpr core::uint32 kEocd64LocSig = 0x07064b50;
+constexpr core::uint32 LFH_SIG = 0x04034b50;    // PK\x03\x04
+constexpr core::uint32 CDH_SIG = 0x02014b50;    // PK\x01\x02
+constexpr core::uint32 EOCD_SIG = 0x06054b50;   // PK\x05\x06
+constexpr core::uint32 EOCD64_SIG = 0x06064b50; // PK\x06\x06
+constexpr core::uint32 EOCD64_LOC_SIG = 0x07064b50;
 
-constexpr size_t kCdhFixed = 46;
-constexpr size_t kLfhFixed = 30;
-constexpr size_t kEocdFixed = 22;
-constexpr size_t kEocd64Fixed = 56;
-constexpr size_t kEocd64LocFixed = 20;
+constexpr size_t CDH_FIXED = 46;
+constexpr size_t LFH_FIXED = 30;
+constexpr size_t EOCD_FIXED = 22;
+constexpr size_t EOCD64_FIXED = 56;
+constexpr size_t EOCD64_LOC_FIXED = 20;
 
 // Bounded EOCD backward-scan window (prepended SFX stubs tolerated; the
 // shipped MAX_SFX_SIZE bound is the precedent).
-constexpr core::uint64 kEocdScanWindow = 4 * 1024 * 1024;
+constexpr core::uint64 EOCD_SCAN_WINDOW = 4 * 1024 * 1024;
 
 core::uint16 rd16(const core::byte* p) {
     return static_cast<core::uint16>(p[0] | (p[1] << 8));
@@ -84,11 +84,11 @@ ForeignStatus ZipReader::open(const std::filesystem::path& path, const Extractio
 ForeignStatus ZipReader::locate_eocd(const ExtractionLimits& limits, std::string& detail) {
     (void)limits;
     const core::uint64 fsize = file_.size();
-    if (fsize < kEocdFixed) {
+    if (fsize < EOCD_FIXED) {
         detail = "file too small for an EOCD";
         return ForeignStatus::Unparseable;
     }
-    const core::uint64 window = std::min<core::uint64>(fsize, kEocdScanWindow + kEocdFixed);
+    const core::uint64 window = std::min<core::uint64>(fsize, EOCD_SCAN_WINDOW + EOCD_FIXED);
     std::vector<core::byte> buf(static_cast<size_t>(window));
     if (!file_.seek(static_cast<int64_t>(fsize - window), io::SeekOrigin::Begin) ||
         file_.read(buf.data(), buf.size()) != buf.size()) {
@@ -96,10 +96,10 @@ ForeignStatus ZipReader::locate_eocd(const ExtractionLimits& limits, std::string
         return ForeignStatus::IoError;
     }
     // EOCD is the LAST occurrence of the signature that field-validates.
-    for (int64_t i = static_cast<int64_t>(buf.size()) - kEocdFixed; i >= 0; --i) {
-        if (rd32(buf.data() + i) != kEocdSig) continue;
+    for (int64_t i = static_cast<int64_t>(buf.size()) - EOCD_FIXED; i >= 0; --i) {
+        if (rd32(buf.data() + i) != EOCD_SIG) continue;
         const core::uint16 comment_len = rd16(buf.data() + i + 20);
-        if (static_cast<core::uint64>(i) + kEocdFixed + comment_len != buf.size()) continue;
+        if (static_cast<core::uint64>(i) + EOCD_FIXED + comment_len != buf.size()) continue;
         const core::byte* e = buf.data() + i;
         cd_offset_ = rd32(e + 16);
         cd_size_ = rd32(e + 16 - 4); // offset 12: size of CD
@@ -108,24 +108,24 @@ ForeignStatus ZipReader::locate_eocd(const ExtractionLimits& limits, std::string
         if (cd_offset_ == 0xFFFFFFFFu || cd_size_ == 0xFFFFFFFFu || total_entries_ == 0xFFFF ||
             rd32(e + 8) == 0xFFFFFFFFu) {
             // Locator is 20 bytes directly before the EOCD.
-            if (static_cast<core::uint64>(i) < kEocd64LocFixed) {
+            if (static_cast<core::uint64>(i) < EOCD64_LOC_FIXED) {
                 detail = "EOCD64 locator out of range";
                 return ForeignStatus::Unparseable;
             }
-            const core::byte* loc = buf.data() + i - kEocd64LocFixed;
-            if (rd32(loc) != kEocd64LocSig) {
+            const core::byte* loc = buf.data() + i - EOCD64_LOC_FIXED;
+            if (rd32(loc) != EOCD64_LOC_SIG) {
                 detail = "ZIP64 fields set but locator missing";
                 return ForeignStatus::Unparseable;
             }
             const core::uint64 eocd64_off = rd64(loc + 8);
-            if (eocd64_off + kEocd64Fixed > fsize) {
+            if (eocd64_off + EOCD64_FIXED > fsize) {
                 detail = "EOCD64 out of range";
                 return ForeignStatus::Unparseable;
             }
-            std::vector<core::byte> b64(static_cast<size_t>(kEocd64Fixed));
+            std::vector<core::byte> b64(static_cast<size_t>(EOCD64_FIXED));
             if (!file_.seek(static_cast<int64_t>(eocd64_off), io::SeekOrigin::Begin) ||
                 file_.read(b64.data(), b64.size()) != b64.size() ||
-                rd32(b64.data()) != kEocd64Sig) {
+                rd32(b64.data()) != EOCD64_SIG) {
                 detail = "cannot read EOCD64";
                 return ForeignStatus::IoError;
             }
@@ -140,7 +140,7 @@ ForeignStatus ZipReader::locate_eocd(const ExtractionLimits& limits, std::string
         }
         // Archive comment (EOCD tail) — sanitized downstream (§7.1).
         if (comment_len > 0) {
-            archive_comment_.assign(reinterpret_cast<const char*>(e + kEocdFixed), comment_len);
+            archive_comment_.assign(reinterpret_cast<const char*>(e + EOCD_FIXED), comment_len);
         }
         return ForeignStatus::Ok;
     }
@@ -191,17 +191,17 @@ ForeignStatus ZipReader::walk_central_directory(const ExtractionLimits& limits, 
     core::uint64 header_bytes = 0;
     for (core::uint64 idx = 0; idx < total_entries_; ++idx) {
         if (hooks.cancelled()) return ForeignStatus::Aborted;
-        core::byte hdr[kCdhFixed];
-        if (file_.read(hdr, kCdhFixed) != kCdhFixed) {
+        core::byte hdr[CDH_FIXED];
+        if (file_.read(hdr, CDH_FIXED) != CDH_FIXED) {
             detail = "central directory truncated";
             return ForeignStatus::Truncated;
         }
-        header_bytes += kCdhFixed;
+        header_bytes += CDH_FIXED;
         if (limits.hdr_bytes_limited() && header_bytes > limits.max_header_bytes) {
             detail = "header-bytes cap exceeded";
             return ForeignStatus::LimitExceeded;
         }
-        if (rd32(hdr) != kCdhSig) {
+        if (rd32(hdr) != CDH_SIG) {
             detail = "bad central-directory signature";
             return ForeignStatus::Unparseable;
         }
@@ -345,17 +345,17 @@ ForeignStatus ZipReader::preflight_cd_vs_lfh(std::string& detail) {
     // flag subset {0,3,11} compared. ANY other mismatch is an integrity
     // failure — abort before any output exists.
     for (Cdh& e : entries_) {
-        if (e.lfh_offset > file_.size() || e.lfh_offset + kLfhFixed > file_.size()) {
+        if (e.lfh_offset > file_.size() || e.lfh_offset + LFH_FIXED > file_.size()) {
             detail = "local header out of range: " + e.meta.name_raw;
             return ForeignStatus::StructuralMismatch;
         }
-        core::byte hdr[kLfhFixed];
+        core::byte hdr[LFH_FIXED];
         if (!file_.seek(static_cast<int64_t>(e.lfh_offset), io::SeekOrigin::Begin) ||
-            file_.read(hdr, kLfhFixed) != kLfhFixed) {
+            file_.read(hdr, LFH_FIXED) != LFH_FIXED) {
             detail = "cannot read local header: " + e.meta.name_raw;
             return ForeignStatus::IoError;
         }
-        if (rd32(hdr) != kLfhSig) {
+        if (rd32(hdr) != LFH_SIG) {
             detail = "local header signature mismatch: " + e.meta.name_raw;
             return ForeignStatus::StructuralMismatch;
         }
@@ -426,7 +426,7 @@ ForeignStatus ZipReader::preflight_cd_vs_lfh(std::string& detail) {
         }
         // Data starts after the LFH (name + extra are variable — recompute
         // from the fields we just validated).
-        e.data_offset = e.lfh_offset + kLfhFixed + lfh_name_len + lfh_extra_len;
+        e.data_offset = e.lfh_offset + LFH_FIXED + lfh_name_len + lfh_extra_len;
         if (e.data_offset + e.packed_size > file_.size()) {
             detail = "member data out of range: " + e.meta.name_raw;
             return ForeignStatus::StructuralMismatch;

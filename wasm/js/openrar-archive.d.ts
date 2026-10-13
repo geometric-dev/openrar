@@ -10,6 +10,20 @@ import type { InputData } from './openrar.js';
 
 export const ARCHIVE_WASM_API_VERSION: number;
 
+/**
+ * Runtime map (frozen object) of error name -> name. Also usable as a type.
+ * openrar-archive.js exports this as a value; without the value declaration
+ * `import { RarErrorCode }` type-checked but evaluated to undefined.
+ */
+export const RarErrorCode: Readonly<Record<string, string>>;
+
+/**
+ * Default decompression-bomb guard for extractAll: archives whose claimed
+ * uncompressed total exceeds this are refused (0 = unlimited).
+ * Exported at runtime by openrar-archive.js.
+ */
+export const DEFAULT_MAX_OUTPUT_BYTES: number;
+
 export type RarErrorCode =
   | 'NOT_RAR'
   | 'UNSUPPORTED_FEATURE'

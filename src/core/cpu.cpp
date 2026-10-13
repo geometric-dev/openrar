@@ -204,11 +204,11 @@ AccelerationReport describe_acceleration() {
     // intrinsics, so match_simd keeps x86-64-only SIMD there (L14).
     const CpuFeatures& f = get_cpu_features();
 #if defined(_MSC_VER) && !defined(_M_X64)
-    constexpr bool match_simd_x86 = false;
+    constexpr bool MATCH_SIMD_X86 = false;
 #else
-    constexpr bool match_simd_x86 = true;
+    constexpr bool MATCH_SIMD_X86 = true;
 #endif
-    if (match_simd_x86) {
+    if (MATCH_SIMD_X86) {
 #if defined(OPENRAR_HAS_AVX512_KERNEL)
         if (f.avx512f)
             r.tags.push_back("AVX512 LZ");

@@ -36,9 +36,11 @@ export interface RawModule {
   // Streaming encoder (additive in v2). feed() copies bytes in; finish()
   // returns byte-identical output to compress2 of the same input.
   _openrar_stream_create(method: number, winSize: number): number;
-  _openrar_stream_create_ex?(method: number, winSize: number, filterFlags: number): number;
+  // Not optional: both are in REQUIRED_EXPORTS and called unconditionally.
+  // The `?` here hid the fact that the boot check did not cover them.
+  _openrar_stream_create_ex(method: number, winSize: number, filterFlags: number): number;
   _openrar_stream_feed(handle: number, src: number, n: number): number;
-  _openrar_stream_pull?(handle: number, outPtr: number, outLen: number): number;
+  _openrar_stream_pull(handle: number, outPtr: number, outLen: number): number;
   _openrar_stream_finish(handle: number, outPtr: number, outLen: number): number;
   _openrar_stream_free(handle: number): void;
   // Streaming decoder (v1.11).

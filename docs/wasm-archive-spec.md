@@ -33,9 +33,9 @@
 >   extraction (bounded peak memory without the double round-trip).
 
 **Status:** Target ship: separate build
-artifact `wasm/dist/openrar_archive.js`. `WASM_API_VERSION` bumps 2 → 3.
+artifact `wasm/js/dist/openrar_archive.js`. `WASM_API_VERSION` bumps 2 → 3.
 
-The block codec (`wasm/dist/openrar.js`) is **not** broken — the new
+The block codec (`wasm/js/dist/openrar.js`) is **not** broken — the new
 module ships alongside, lazy-loaded so consumers who don't need RAR5 I/O
 still pay ~250 KiB for block codec only.
 
@@ -403,9 +403,9 @@ existing internals untouched. Save/restore shape in §7.2.
 
 | Artifact | Size budget | Contents |
 |---|---|---|
-| `wasm/dist/openrar.js` | ≤ 512 KiB (existing) | Block codec only — identical to v2 |
-| `wasm/dist/openrar_archive.js` | ≤ 1.5 MiB | Block codec + `archive_api.cpp` + `stream_encoder.cpp` |
-| `wasm/dist/openrar_cli.js` | optional, MEMFS | Conformance only (default OFF) |
+| `wasm/js/dist/openrar.js` | ≤ 512 KiB (existing) | Block codec only — identical to v2 |
+| `wasm/js/dist/openrar_archive.js` | ≤ 1.5 MiB | Block codec + `archive_api.cpp` + `stream_encoder.cpp` |
+| `wasm/js/dist/openrar_cli.js` | optional, MEMFS | Conformance only (default OFF) |
 
 `cmake/wasm.cmake` adds `openrar_wasm_archive` linking `openrar_wasm_core`
 plus `src/wasm/archive_api.cpp`. Flags: `MODULARIZE=1`, `EXPORT_ES6=1`,
@@ -680,7 +680,7 @@ silent fall-through.
 12. Progress callback fires monotonically.
 
 **JS** — `wasm/js/archive.test.mjs` (~200 LOC): `node --test`, mirrors
-1–6, 8, 11, 12. Auto-skips if `wasm/dist/openrar_archive.{js,wasm}`
+1–6, 8, 11, 12. Auto-skips if `wasm/js/dist/openrar_archive.{js,wasm}`
 missing (same pattern as `helpers.test.mjs`).
 
 **Interop smoke** — extend `tools/interop_gate.py` with `[6/6] archive_api_buffer`:
@@ -758,7 +758,7 @@ offsets table adds ~150; budget is bounded.
   same `.d.ts`. A v2 consumer continues to load `openrar.js` without
   modification.
 - New functionality ships in a **separate file**
-  (`wasm/dist/openrar_archive.js`), not a rebuilt `openrar.js`.
+  (`wasm/js/dist/openrar_archive.js`), not a rebuilt `openrar.js`.
 - Bumping `WASM_API_VERSION` to 3 lets the block-codec loader detect a
   v3 build and warn if `openrar_archive.js` is missing — a coercion
   signal for consumers trying archive APIs with only block codec loaded.

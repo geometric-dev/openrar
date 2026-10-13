@@ -27,7 +27,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import createOpenRARRaw from '../dist/openrar.js';
+import createOpenRARRaw from './dist/openrar.js';
 import { safeRead, heapU8Base, pointerInBounds, requireExports } from './heap_helpers.js';
 
 // Re-export the raw factory so advanced users can opt out of the wrapper.
@@ -81,10 +81,21 @@ function assertMethod(method) {
 
 // Exports the wrapper requires on the raw module. Enforced at boot by
 // requireExports so a stale dist fails with a rebuild hint, not a TypeError.
+//
+// This list must mirror every export the wrapper actually calls. It previously
+// omitted the whole openrar_stream_* family plus cwrap/UTF8ToString, so a
+// build missing them passed the boot check and then failed deep inside a
+// streaming call (or, worse, silently fell back - see the filter path below).
 const REQUIRED_EXPORTS = [
   '_openrar_version', '_openrar_alloc', '_openrar_free',
   '_openrar_compress2', '_openrar_decompress2',
-  '_malloc', '_free', 'ccall', 'HEAPU8', 'HEAPU32',
+  '_openrar_stream_create', '_openrar_stream_create_ex',
+  '_openrar_stream_feed', '_openrar_stream_pull', '_openrar_stream_finish',
+  '_openrar_stream_free',
+  '_openrar_stream_decompress_create', '_openrar_stream_decompress_feed',
+  '_openrar_stream_decompress_pull', '_openrar_stream_decompress_finish',
+  '_openrar_stream_decompress_free',
+  '_malloc', '_free', 'ccall', 'cwrap', 'UTF8ToString', 'HEAPU8', 'HEAPU32',
 ];
 
 // ── Module bootstrap (singleton) ────────────────────────────────────────────
@@ -371,7 +382,12 @@ export class OpenRAR {
     assertWinSize(winSize);
     const filterFlags = filterModeToFlags(opts.filterMode);
     let handle = 0;
-    if (filterFlags !== 0 && typeof m._openrar_stream_create_ex === 'function') {
+    // create_ex is in REQUIRED_EXPORTS, so the boot check already guarantees
+    // it exists. The old `&& typeof m._openrar_stream_create_ex === 'function'`
+    // guard meant a stale build silently produced a filter-less stream when
+    // the caller had explicitly asked for a filter - silent degradation with
+    // no diagnostic.
+    if (filterFlags !== 0) {
       handle = m.ccall('openrar_stream_create_ex', 'number', ['number', 'number', 'number'], [method, winSize, filterFlags]);
     } else {
       handle = m.ccall('openrar_stream_create', 'number', ['number', 'number'], [method, winSize]);
@@ -432,7 +448,12 @@ export class OpenRAR {
     assertWinSize(winSize);
     const filterFlags = filterModeToFlags(opts.filterMode);
     let handle = 0;
-    if (filterFlags !== 0 && typeof m._openrar_stream_create_ex === 'function') {
+    // create_ex is in REQUIRED_EXPORTS, so the boot check already guarantees
+    // it exists. The old `&& typeof m._openrar_stream_create_ex === 'function'`
+    // guard meant a stale build silently produced a filter-less stream when
+    // the caller had explicitly asked for a filter - silent degradation with
+    // no diagnostic.
+    if (filterFlags !== 0) {
       handle = m.ccall('openrar_stream_create_ex', 'number', ['number', 'number', 'number'], [method, winSize, filterFlags]);
     } else {
       handle = m.ccall('openrar_stream_create', 'number', ['number', 'number'], [method, winSize]);

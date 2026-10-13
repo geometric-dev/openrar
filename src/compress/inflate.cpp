@@ -11,13 +11,13 @@ struct LengthEntry {
     core::uint16 base;
     core::uint8 extra;
 };
-constexpr LengthEntry kLengthTable[29] = {
+constexpr LengthEntry LENGTH_TABLE[29] = {
     {3, 0},  {4, 0},  {5, 0},  {6, 0},   {7, 0},   {8, 0},   {9, 0},   {10, 0},  {11, 1}, {13, 1},
     {15, 1}, {17, 1}, {19, 2}, {23, 2},  {27, 2},  {31, 2},  {35, 3},  {43, 3},  {51, 3}, {59, 3},
     {67, 4}, {83, 4}, {99, 4}, {115, 4}, {131, 5}, {163, 5}, {195, 5}, {227, 5}, {258, 0}};
 
 // RFC 1951 §3.2.5 distance codes 0..29: base distance and extra bits.
-constexpr LengthEntry kDistTable[30] = {
+constexpr LengthEntry DIST_TABLE[30] = {
     {1, 0},     {2, 0},     {3, 0},     {4, 0},      {5, 1},      {7, 1},
     {9, 2},     {13, 2},    {17, 3},    {25, 3},     {33, 4},     {49, 4},
     {65, 5},    {97, 5},    {129, 6},   {193, 6},    {257, 7},    {385, 7},
@@ -25,12 +25,12 @@ constexpr LengthEntry kDistTable[30] = {
     {4097, 11}, {6145, 11}, {8193, 12}, {12289, 12}, {16385, 13}, {24577, 13}};
 
 // RFC 1951 §3.2.6 code-length alphabet transmit order.
-constexpr core::uint8 kCodeLengthOrder[19] = {16, 17, 18, 0, 8,  7, 9,  6, 10, 5,
-                                              11, 4,  12, 3, 13, 2, 14, 1, 15};
+constexpr core::uint8 CODE_LENGTH_ORDER[19] = {16, 17, 18, 0, 8,  7, 9,  6, 10, 5,
+                                               11, 4,  12, 3, 13, 2, 14, 1, 15};
 
-constexpr size_t kInChunk = 65536;
-constexpr size_t kOutChunk = 65536;
-constexpr core::uint32 kStoredChunk = 4096;
+constexpr size_t IN_CHUNK = 65536;
+constexpr size_t OUT_CHUNK = 65536;
+constexpr core::uint32 STORED_CHUNK = 4096;
 
 } // namespace
 
@@ -135,7 +135,7 @@ core::uint32 Inflate::HuffmanTable::decode_canonical(core::uint32 peek15) const 
 // ------------------------------------------------------------------
 
 Inflate::Inflate(core::uint64 max_inflight_output)
-    : max_out_(max_inflight_output), in_buf_(kInChunk), out_buf_(kOutChunk), window_(WINDOW_SIZE) {}
+    : max_out_(max_inflight_output), in_buf_(IN_CHUNK), out_buf_(OUT_CHUNK), window_(WINDOW_SIZE) {}
 
 void Inflate::reset() {
     in_pos_ = in_end_ = 0;
@@ -264,7 +264,7 @@ bool Inflate::read_dynamic_tables() {
 
     core::uint8 clen_lengths[19] = {0};
     for (unsigned int i = 0; i < hclen; ++i) {
-        clen_lengths[kCodeLengthOrder[i]] = static_cast<core::uint8>(get_bits(3));
+        clen_lengths[CODE_LENGTH_ORDER[i]] = static_cast<core::uint8>(get_bits(3));
         if (truncated_) return false;
     }
     HuffmanTable clen;
@@ -424,10 +424,10 @@ InflateError Inflate::decode(const InputFn& in, const SinkFn& sink) {
             const core::uint32 nlen = get_bits(16);
             if (truncated_) return InflateError::TruncatedInput;
             if ((len ^ 0xFFFF) != nlen) return InflateError::BadStoredLen;
-            core::byte scratch[kStoredChunk];
+            core::byte scratch[STORED_CHUNK];
             core::uint32 left = len;
             while (left > 0) {
-                const core::uint32 take = left < kStoredChunk ? left : kStoredChunk;
+                const core::uint32 take = left < STORED_CHUNK ? left : STORED_CHUNK;
                 for (core::uint32 r = 0; r < take; ++r) {
                     core::byte b = 0;
                     if (!read_byte(b)) return InflateError::TruncatedInput;
@@ -470,7 +470,7 @@ InflateError Inflate::decode_block_body(const HuffmanTable& lit, const HuffmanTa
         } else if (sym == 256) {
             return InflateError::Ok; // end of block
         } else if (sym <= 285) {
-            const LengthEntry& le = kLengthTable[sym - 257];
+            const LengthEntry& le = LENGTH_TABLE[sym - 257];
             core::uint32 mlen = le.base;
             if (le.extra) {
                 mlen += get_bits(le.extra);
@@ -480,7 +480,7 @@ InflateError Inflate::decode_block_body(const HuffmanTable& lit, const HuffmanTa
             if (!next_symbol(dist_tbl, dsym))
                 return truncated_ ? InflateError::TruncatedInput : InflateError::BadHuffmanCode;
             if (dsym > 29) return InflateError::BadLiteralCode;
-            const LengthEntry& dt = kDistTable[dsym];
+            const LengthEntry& dt = DIST_TABLE[dsym];
             core::uint32 dist = dt.base;
             if (dt.extra) {
                 dist += get_bits(dt.extra);

@@ -9,7 +9,7 @@
 
 namespace openrar::unicode {
 
-inline constexpr const char* kUnicodeVersion = "15.1.0";
+inline constexpr const char* UNICODE_VERSION = "15.1.0";
 
 // Raw table accessors (defined in unicode_tables.cpp).
 const core::uint32* case_fold_table(int& count);       // (cp, folded) pairs

@@ -879,7 +879,7 @@ Options: `-DOPENRAR_INMEM_ARCHIVE=ON` also builds `buffer_archive_tests` but DLL
 | `openrar_alloc` / `_malloc` mix | single `openrar_alloc` ↔ `openrar_free` |
 | `ArchiveEntryOut` 64B with `path_offset` | same `openrar_archive_entry_t` |
 | `openrar_archive_list(data,size, …)` | same — drop `HEAPU8_BASE` / `safeRead` |
-| `wasm/dist/openrar_archive.js` 1.5M | `openrar.dll` ~2M, no Emscripten |
+| `wasm/js/dist/openrar_archive.js` 1.5M | `openrar.dll` ~2M, no Emscripten |
 
 ---
 

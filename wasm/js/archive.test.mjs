@@ -1,5 +1,5 @@
 // wasm/js/archive.test.mjs — exercises the archive API contract.
-// Skipped if wasm/dist/openrar_archive.js is missing.
+// Skipped if wasm/js/dist/openrar_archive.js is missing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -7,10 +7,10 @@ import path from 'node:path';
 import url from 'node:url';
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));
-const distJs = path.join(here, '../dist/openrar_archive.js');
+const distJs = path.join(here, './dist/openrar_archive.js');
 
 if (!existsSync(distJs)) {
-  test('wasm/dist/openrar_archive.js missing — run `emcmake cmake --preset wasm-archive` first', { skip: true }, () => {});
+  test('wasm/js/dist/openrar_archive.js missing — run `emcmake cmake --preset wasm-archive` first', { skip: true }, () => {});
 } else {
   const { createArchive, listArchive, extractFile, extractAll, openArchive, RarError, validateArchivePath } = await import('./openrar-archive.js');
 

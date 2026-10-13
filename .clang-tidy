@@ -13,12 +13,26 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.EnumCase
     value: CamelCase
-  - key: readability-identifier-naming.EnumConstantCase
+  # The frozen C ABI surface uses an UNSCOPED enum (`enum BufferArchiveError
+  # : int` in src/archive/rar_errors.hpp, re-exported via abi_contract.hpp and
+  # the C header include/openrar/openrar_dll.h). Its RAR_* enumerators are part
+  # of the published ABI and must not be renamed. `EnumConstantCase` is
+  # therefore left UNSET on purpose: clang-tidy 18 does not honour
+  # EnumConstantIgnoredRegexp for unscoped enums (verified empirically), so the
+  # only way to exempt the ABI enum is to not enforce a case on unscoped enum
+  # constants at all. Scoped enums (enum class) stay enforced below, and
+  # ARCHITECTURE.md s3.2 requires enum class everywhere else anyway.
+  - key: readability-identifier-naming.ScopedEnumConstantCase
     value: CamelCase
+  - key: readability-identifier-naming.ScopedEnumConstantIgnoredRegexp
+    value: '^RAR_'
   - key: readability-identifier-naming.TypeAliasCase
     value: lower_case
   - key: readability-identifier-naming.TypeAliasIgnoredRegexp
-    value: '^(ReedSolomon16|OutputCallback|InputCallback|MatchFn)$'
+    # Callback / function-type aliases stay PascalCase: they are types, and
+    # ARCHITECTURE.md s3.2 types are PascalCase. The original list was
+    # incomplete; RarError and ArchiveEntryOut are the shared-ABI aliases.
+    value: '^(ReedSolomon16|OutputCallback|InputCallback|MatchFn|InputFn|SinkFn|ParallelSinkFn|ParallelProgressCb|ParallelCancelCb|RarError|ArchiveEntryOut)$'
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
   - key: readability-identifier-naming.ParameterCase
@@ -41,9 +55,8 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.UnionMemberCase
     value: lower_case
-  # Frozen C-ABI enum surface (openrar_dll.h) keeps its RAR_* names.
-  - key: readability-identifier-naming.EnumConstantIgnoredRegexp
-    value: '^RAR_'
+  # The frozen ABI enum is handled by leaving EnumConstantCase unset (see the
+  # EnumCase block above); no EnumConstantIgnoredRegexp is needed.
   # System-convention macros (e.g. WIN32_LEAN_AND_MEAN before windows.h).
   - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
     value: '^WIN32_'
@@ -57,6 +70,11 @@ CheckOptions:
     value: UPPER_CASE
   - key: readability-identifier-naming.GlobalConstantCase
     value: UPPER_CASE
+  # Note: a file-scope const TABLE is a global constant, so UPPER_CASE applies
+  # (crc32.cpp CRC_TABLE, compressor50.cpp LENGTH_SLOT_TABLE). clang-tidy 18
+  # does not honour GlobalConstantIgnoredRegexp (verified empirically), so the
+  # g_ prefix is not exempted here - const tables use UPPER, mutable globals
+  # keep the g_ prefix below.
   - key: readability-identifier-naming.MacroDefinitionCase
     value: UPPER_CASE
   - key: readability-identifier-naming.MacroDefinitionPrefix

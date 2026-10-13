@@ -5,7 +5,7 @@
 namespace openrar::archive {
 
 std::string json_escape(const std::string& s) {
-    static const char* kHex = "0123456789abcdef";
+    static const char* hex = "0123456789abcdef";
     std::string out;
     out.reserve(s.size() + 8);
     size_t i = 0;
@@ -38,8 +38,8 @@ std::string json_escape(const std::string& s) {
             default:
                 if (c < 0x20) {
                     out += "\\u00";
-                    out += kHex[(c >> 4) & 0xF];
-                    out += kHex[c & 0xF];
+                    out += hex[(c >> 4) & 0xF];
+                    out += hex[c & 0xF];
                 } else {
                     out += static_cast<char>(c);
                 }
@@ -74,8 +74,8 @@ std::string json_escape(const std::string& s) {
                                                   : 0x07u))
                               : ((cp << 6) | (cc & 0x3Fu));
             }
-            static const uint32_t kMinCp[5] = {0, 0, 0x80, 0x800, 0x10000};
-            if (cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu) || cp < kMinCp[len]) {
+            static const uint32_t min_cp[5] = {0, 0, 0x80, 0x800, 0x10000};
+            if (cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu) || cp < min_cp[len]) {
                 ok = false;
             }
         }

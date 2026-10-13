@@ -37,10 +37,10 @@ namespace openrar::sandbox {
 using native_io_handle = HANDLE; // anonymous-pipe read/write ends (inheritable)
 // INVALID_HANDLE_VALUE is a reinterpret cast, not a constant expression on
 // MSVC — inline const, not constexpr.
-inline const native_io_handle kInvalidIoHandle = INVALID_HANDLE_VALUE;
+inline const native_io_handle INVALID_IO_HANDLE = INVALID_HANDLE_VALUE;
 #else
 using native_io_handle = int; // pipe fd (-1 = none)
-inline constexpr native_io_handle kInvalidIoHandle = -1;
+inline constexpr native_io_handle INVALID_IO_HANDLE = -1;
 #endif
 
 // One process pair as viewed by the OWNER of all four ends (the spawn site).
@@ -48,10 +48,10 @@ inline constexpr native_io_handle kInvalidIoHandle = -1;
 // (inherited/duplicated at spawn; the broker closes its copies of the
 // worker-side ends immediately after spawn so EOF semantics stay exact).
 struct ChannelPair {
-    native_io_handle cmd_read = kInvalidIoHandle; // broker → worker
-    native_io_handle cmd_write = kInvalidIoHandle;
-    native_io_handle res_read = kInvalidIoHandle; // worker → broker
-    native_io_handle res_write = kInvalidIoHandle;
+    native_io_handle cmd_read = INVALID_IO_HANDLE; // broker → worker
+    native_io_handle cmd_write = INVALID_IO_HANDLE;
+    native_io_handle res_read = INVALID_IO_HANDLE; // worker → broker
+    native_io_handle res_write = INVALID_IO_HANDLE;
 };
 
 // Creates both pipes (Windows: anonymous inheritable pipes; POSIX: pipe(2)).
@@ -64,6 +64,18 @@ bool create_channel_pair(ChannelPair& out);
 size_t read_some(native_io_handle h, core::byte* buf, size_t max);
 bool write_all(native_io_handle h, const core::byte* buf, size_t len);
 void close_io_handle(native_io_handle& h);
+
+// Toggle whether `h` crosses the worker spawn boundary. Windows: the
+// HANDLE_FLAG_INHERIT bit. POSIX: FD_CLOEXEC (inverted). Used by the broker to
+// keep its OWN pipe ends (cmd_write/res_read) out of the worker, so only the
+// worker's ends (cmd_read/res_write) and the volume handle are inherited.
+//
+// Without this the worker inherited a copy of cmd_write - the last writer on
+// the command pipe - so its cmd_read NEVER observed EOF when the broker died,
+// and a broker crash leaked an eternal worker blocked in recv() while holding
+// the volume handle. It also handed the worker the res_read end, letting it
+// impersonate the broker's own read side.
+bool set_handle_inheritable(native_io_handle h, bool inheritable);
 
 // Closes all four handles (safe on already-invalid ones).
 void close_channel_pair(ChannelPair& p);
