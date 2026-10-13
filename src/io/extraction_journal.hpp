@@ -139,10 +139,11 @@ public:
     DurabilityGranularity durability_granularity() const { return granularity_; }
 
     // Test-only failure hooks (v1.39.0 M2; failure-adding only, no-ops in
-    // entry mode): OPENRAR_TEST_BATCH_CRASH_AFTER=N kills the process after
-    // the Nth register_temp in batch mode; OPENRAR_TEST_FAIL_JOURNAL_SYNC=N
-    // fails the Nth journal sync. Both are read once at session creation.
-    void configure_test_failure_hooks();
+    // entry mode). Driven by set_test_hooks() above, which is called directly
+    // by the extraction_atomic_tests. There is no environment-variable path:
+    // the previous `configure_test_failure_hooks()` declaration had no
+    // definition and no caller (removed), and the OPENRAR_TEST_* env names its
+    // comment advertised were never read by anything.
 
 private:
     struct DirJournal {

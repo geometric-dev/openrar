@@ -19,6 +19,8 @@
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/archive/rar_errors.hpp"
 #include "../../src/core/types.hpp"
+#include "../../src/sandbox/channel.hpp"
+#include "../../src/sandbox/spawn.hpp"
 #include "../../src/sandbox/worker_broker.hpp"
 
 #include <atomic>
@@ -30,6 +32,15 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <csignal>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #ifndef OPENRAR_WORKER_EXE
 #define OPENRAR_WORKER_EXE ""
@@ -199,6 +210,90 @@ int main() {
         CHECK(rc != RAR_OK);      // a dead worker is a clean failure, never a hang
         CHECK(!broker.is_open()); // torn down
         broker.shutdown();        // idempotent
+    }
+
+    // ── Broker death → worker observes EOF and exits ──────────────────────
+    // Regression for the inherited-handle leak: the worker must NOT hold a
+    // copy of the broker's command WRITE end. If it does, its cmd_read never
+    // sees EOF when the broker dies, and the worker outlives the broker
+    // forever - blocked in recv() and still holding the volume handle. Drives
+    // the raw spawn so the broker's own ends can be closed on demand.
+    std::cout << "[+] worker_exits_when_broker_command_end_closes\n";
+    {
+        ChannelPair pair;
+        CHECK(create_channel_pair(pair));
+        // Mirror the broker: its own ends must not cross the spawn boundary.
+        CHECK(set_handle_inheritable(pair.cmd_write, false));
+        CHECK(set_handle_inheritable(pair.res_read, false));
+
+#if defined(_WIN32)
+        // HANDLE_LIST requires every listed handle to be inheritable.
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+        native_io_handle volume = CreateFileW(arc.c_str(), GENERIC_READ, FILE_SHARE_READ, &sa,
+                                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const ChildHandles child_handles{pair.cmd_read, pair.res_write, volume};
+        const auto hstr = [](native_io_handle h) {
+            return std::to_string(reinterpret_cast<uintptr_t>(h));
+        };
+#else
+        native_io_handle volume = ::open(arc.c_str(), O_RDONLY);
+        const ChildHandles child_handles{
+            reinterpret_cast<void*>(static_cast<intptr_t>(pair.cmd_read)),
+            reinterpret_cast<void*>(static_cast<intptr_t>(pair.res_write)),
+            reinterpret_cast<void*>(static_cast<intptr_t>(volume))};
+        const auto hstr = [](native_io_handle h) {
+            return std::to_string(h);
+        };
+#endif
+        CHECK(volume != INVALID_IO_HANDLE);
+
+        std::vector<std::string> argv_tail;
+        argv_tail.push_back("--openrar-sandbox-worker");
+        argv_tail.push_back(hstr(pair.cmd_read));
+        argv_tail.push_back(hstr(pair.res_write));
+        argv_tail.push_back(hstr(volume));
+
+        void* proc = nullptr;
+        std::string sdetail;
+        CHECK(spawn_worker_process(worker_exe, argv_tail, child_handles, SpawnProfile::Unsandboxed,
+                                   &proc, sdetail));
+
+        // Broker side drops its copies of the worker ends.
+        close_io_handle(pair.cmd_read);
+        close_io_handle(pair.res_write);
+        close_io_handle(volume);
+
+        FramedChannel res(pair.res_read);
+        std::vector<Frame> in;
+        CHECK(res.recv(in) == 1); // Ping: the worker is up and looping
+
+        // "Broker dies": close the only command write end.
+        close_io_handle(pair.cmd_write);
+
+        bool exited = false;
+#if defined(_WIN32)
+        HANDLE ph = static_cast<HANDLE>(proc);
+        exited = WaitForSingleObject(ph, 5000) == WAIT_OBJECT_0;
+        CloseHandle(ph);
+#else
+        const pid_t pid = static_cast<pid_t>(reinterpret_cast<intptr_t>(proc));
+        for (int i = 0; i < 100 && !exited; ++i) {
+            int st = 0;
+            if (::waitpid(pid, &st, WNOHANG) == pid) {
+                exited = true;
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        }
+        if (!exited) {
+            ::kill(pid, SIGKILL);
+            ::waitpid(pid, nullptr, 0);
+        }
+#endif
+        CHECK(exited); // must not hang holding cmd_write
+        close_io_handle(pair.res_read);
     }
 
     std::error_code ec;

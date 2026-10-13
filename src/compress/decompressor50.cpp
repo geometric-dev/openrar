@@ -429,9 +429,14 @@ bool Decompressor50::ApplyEngine::flush_plain_up_to(size_t target, size_t total_
         if (chunk > max_contig) chunk = max_contig;
 
         if (chunk == 0) {
-            std::fprintf(stderr, "FLUSH CHUNK0 last_flushed=%zu target=%zu total=%zu\n",
-                         last_flushed_, target, total_written);
-            std::abort();
+            // Defensive: unreachable while win_size_ > 0 (the ctor substitutes
+            // a default for 0, so max_contig >= 1). Fail closed by returning
+            // false; the caller propagates it. This used to fprintf to stderr
+            // and std::abort() unconditionally - a process-termination helper
+            // in the decode hot path, which ARCHITECTURE.md s5 replaced with
+            // a bool return plus a recorded DecompressErrorCode, and which
+            // would kill a fuzzing or embedding process outright.
+            return false;
         }
         if (cb && !cb(&window_[circ_start], chunk)) {
             return false;
@@ -625,10 +630,10 @@ bool Decompressor50::read_tables(BitReader& reader, BlockHeader& header) {
     }
     if (!bd_decoder_.build(bitlen, 20)) return false;
 
-    const size_t TABLE_SIZE = cur_table_size_; // 430 RAR5 or 446 RAR7 ExtraDist
+    const size_t table_size = cur_table_size_; // 430 RAR5 or 446 RAR7 ExtraDist
     const size_t cur_dc = use_extra_dist_ ? 80 : 64;
     size_t pos = 0;
-    while (pos < TABLE_SIZE) {
+    while (pos < table_size) {
         if (reader.bits_remaining() < 1) return false;
         core::uint32 num = bd_decoder_.decode(reader);
         if (num < 16) {
@@ -644,7 +649,7 @@ bool Decompressor50::read_tables(BitReader& reader, BlockHeader& header) {
                 n = reader.get_bits(7) + 11;
             }
             if (pos == 0) return false;
-            while (n-- > 0 && pos < TABLE_SIZE) {
+            while (n-- > 0 && pos < table_size) {
                 table_[pos] = table_[pos - 1];
                 ++pos;
             }
@@ -657,9 +662,9 @@ bool Decompressor50::read_tables(BitReader& reader, BlockHeader& header) {
                 if (reader.bits_remaining() < 7) return false;
                 n = reader.get_bits(7) + 11;
             }
-            while (n-- > 0 && pos < TABLE_SIZE) table_[pos++] = 0;
+            while (n-- > 0 && pos < table_size) table_[pos++] = 0;
         }
-        assert(pos <= TABLE_SIZE && "Table size overrun");
+        assert(pos <= table_size && "Table size overrun");
     }
 
     if (!ld_decoder_.build(table_, 306)) return false;

@@ -17,8 +17,10 @@
 #   tools\ci-watch.ps1 -TimeoutMin 60 -Quiet    # less chatter
 #
 # Exit codes: 0 = all jobs green (or skipped, e.g. release-assets off-tag)
-#             1 = at least one job failed
-#             2 = timed out, or no run could be resolved
+#             1 = at least one job failed, or the run's own conclusion was
+#                 failure/cancelled while the job list showed no failure
+#             2 = timed out, no run could be resolved, or the run's job list
+#                 could not be read (NEVER reported as green - fail closed)
 
 [CmdletBinding()]
 param(
@@ -43,6 +45,13 @@ function Write-Status([string] $msg, [string] $color = 'Gray') {
 # a sha and no run matches, watching some other run and reporting ITS result is
 # the exact push-and-pray failure this script exists to remove. Absence is
 # reported as absence.
+#
+# Resolution is strict about which field identifies a run:
+#   - a sha argument matches on headSha ONLY. When the caller passes a sha
+#     (explicitly, or auto-filled from git HEAD), falling back to a headBranch
+#     match would watch an older commit's run on the same branch and report its
+#     result as ours - the bug this file exists to prevent.
+#   - ref-only matching is the documented tag/branch mode (-Ref v1.40.5).
 function Get-RunById([string] $id) {
     $json = & gh run view $id --json databaseId,headBranch,headSha,status,conclusion,workflowName 2>$null | Out-String
     if ($LASTEXITCODE -ne 0) { return $null }
@@ -61,8 +70,15 @@ function Get-Runs([string] $ref, [string] $sha) {
     try { $runs = @($json | ConvertFrom-Json) } catch { return @() }
     if ($runs.Count -eq 0) { return @() }
     if ($sha -ne '') {
+        # A run id (-Sha accepted a paste of `gh run view <id>` output) has no
+        # headSha of its own; the dedicated Get-RunById loop handles it, so
+        # skip list-based sha matching for that shape rather than reporting a
+        # spurious "no match" while the id lookup is still the live path.
+        if ($sha -match '^\d{6,}$') { return @() }
         $s = $runs | Where-Object { $_.headSha -like "$sha*" } | Select-Object -First 1
         if ($s) { return @($s) }
+        # No sha match is final; do NOT fall through to $ref below.
+        return @()
     }
     if ($ref -ne '') {
         # A tag shows up under headBranch too, so this covers both.
@@ -124,8 +140,29 @@ if ($target.status -ne 'completed') {
 
 # Per-job breakdown.
 $jobsJson = & gh run view $target.databaseId --json jobs 2>$null | Out-String
+$ghJobsExit = $LASTEXITCODE
 $jobs = @()
 try { $jobs = @(($jobsJson | ConvertFrom-Json).jobs) } catch { $jobs = @() }
+
+# FAIL CLOSED. This tool's only job is to turn "CI went red" into a non-zero
+# exit, so an inability to READ the job list must not produce "ALL GREEN".
+# That was the bug: a non-zero gh exit here was ignored, $jobs stayed empty,
+# the failed filter matched nothing, and the script exited 0. A gh auth
+# blip, rate limit or network drop was reported as a green build. An empty
+# job list is treated the same way: a completed run with zero resolved jobs
+# is not information that the build is green, it is missing information.
+$canAssessJobs = ($ghJobsExit -eq 0 -and $jobs.Count -gt 0)
+if (-not $canAssessJobs) {
+    Write-Host ""
+    if ($ghJobsExit -ne 0) {
+        Write-Host "Could not read the run's job list (gh exit $ghJobsExit)." -ForegroundColor Red
+    } else {
+        Write-Host "The run's job list is empty or unparseable." -ForegroundColor Red
+    }
+    Write-Host ("Run conclusion was '{0}' (id {1}); refusing to claim ALL GREEN." -f $target.conclusion, $target.databaseId) -ForegroundColor Red
+    Write-Host ("Inspect it:  gh run view {0}" -f $target.databaseId) -ForegroundColor Yellow
+    exit 2
+}
 
 Write-Host ""
 Write-Host "run $($target.databaseId) - $($target.conclusion)" -ForegroundColor Cyan
@@ -143,6 +180,16 @@ foreach ($j in $jobs) {
 $failed = @($jobs | Where-Object { $_.conclusion -ne 'success' -and $_.conclusion -ne 'skipped' -and $_.conclusion -ne '' })
 
 if ($failed.Count -eq 0) {
+    # The run-level conclusion is the independent cross-check: a workflow that
+    # reported failure with no failed job means the job list does not describe
+    # what happened (e.g. a job-level failure outside the normal conclusion
+    # flow). Trust the run verdict over the derived one.
+    if ($target.conclusion -ne 'success') {
+        Write-Host ""
+        Write-Host ("Run concluded '{0}' but no failing job was found in the job list - not treating as green." -f $target.conclusion) -ForegroundColor Red
+        Write-Host ("Inspect it:  gh run view {0}" -f $target.databaseId) -ForegroundColor Yellow
+        exit 1
+    }
     Write-Host ""
     Write-Host "ALL GREEN" -ForegroundColor Green
     exit 0

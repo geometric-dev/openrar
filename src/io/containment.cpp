@@ -43,32 +43,32 @@ std::vector<std::string> split_components(const std::string& rel) {
 #if defined(_WIN32)
 
 // ── NT runtime plumbing (dynamically loaded; no ntdll link dependency) ──────
-constexpr ULONG kObjCaseInsensitive = 0x00000040;
+constexpr ULONG NT_OBJ_CASE_INSENSITIVE = 0x00000040;
 
-constexpr ACCESS_MASK kDirAccess = FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY |
-                                   FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE;
+constexpr ACCESS_MASK NT_DIR_ACCESS = FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY |
+                                      FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE;
 // Full GENERIC_WRITE|DELETE mapping (as CreateFileW would grant): a narrower
 // mask changes rename-commit semantics (deferral) for POSIX-semantics
 // renames — found by the gate-1 suite.
-constexpr ACCESS_MASK kFileWriteAccess = FILE_GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES;
-constexpr ACCESS_MASK kJournalAccess =
+constexpr ACCESS_MASK NT_FILE_WRITE_ACCESS = FILE_GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES;
+constexpr ACCESS_MASK NT_JOURNAL_ACCESS =
     FILE_GENERIC_READ | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE;
 
 // Directories are shared like kernel32's FILE_FLAG_BACKUP_SEMANTICS opens:
 // a too-restrictive share mode here would block every later write-intent
 // open of the same directory (found by the gate-1 suite).
-constexpr ULONG kDirShare = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+constexpr ULONG NT_DIR_SHARE = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
-constexpr ULONG kFileOpen = 0x00000001;   // disposition: fail if missing
-constexpr ULONG kFileCreate = 0x00000002; // disposition: fail if exists
-constexpr ULONG kFileDirectoryFile = 0x00000001;
-constexpr ULONG kFileNonDirectoryFile = 0x00000040;
-constexpr ULONG kFileSynchronousIoNonAlert = 0x00000020;
-constexpr ULONG kFileOpenReparsePoint = 0x00200000;
+constexpr ULONG NT_FILE_OPEN = 0x00000001;   // disposition: fail if missing
+constexpr ULONG NT_FILE_CREATE = 0x00000002; // disposition: fail if exists
+constexpr ULONG NT_FILE_DIRECTORY_FILE = 0x00000001;
+constexpr ULONG NT_FILE_NON_DIRECTORY_FILE = 0x00000040;
+constexpr ULONG NT_FILE_SYNCHRONOUS_IO_NON_ALERT = 0x00000020;
+constexpr ULONG NT_FILE_OPEN_REPARSE_POINT = 0x00200000;
 
-constexpr LONG kStatusSuccess = 0;
-constexpr LONG kStatusObjectNameCollision = static_cast<LONG>(0xC0000035u);
-constexpr LONG kStatusObjectNameNotFound = static_cast<LONG>(0xC0000034u);
+constexpr LONG NT_STATUS_SUCCESS = 0;
+constexpr LONG NT_STATUS_OBJECT_NAME_COLLISION = static_cast<LONG>(0xC0000035u);
+constexpr LONG NT_STATUS_OBJECT_NAME_NOT_FOUND = static_cast<LONG>(0xC0000034u);
 
 struct NtUnicodeString {
     USHORT Length;
@@ -121,11 +121,11 @@ LONG nt_open_anchored(HANDLE root, const std::wstring& name, ACCESS_MASK access,
     oa.Length = sizeof(oa);
     oa.RootDirectory = root;
     oa.ObjectName = &us;
-    oa.Attributes = kObjCaseInsensitive;
+    oa.Attributes = NT_OBJ_CASE_INSENSITIVE;
     oa.SecurityDescriptor = nullptr;
     oa.SecurityQualityOfService = nullptr;
     NtIoStatusBlock iosb{};
-    const ULONG share = (create_options & kFileDirectoryFile) ? kDirShare : FILE_SHARE_READ;
+    const ULONG share = (create_options & NT_FILE_DIRECTORY_FILE) ? NT_DIR_SHARE : FILE_SHARE_READ;
     return create(out, access, &oa, &iosb, nullptr, FILE_ATTRIBUTE_NORMAL, share, disposition,
                   create_options, nullptr, 0);
 }
@@ -163,8 +163,8 @@ std::wstring to_wide(const std::string& utf8) {
 #endif
 #if defined(SYS_openat2)
 #define OPENRAR_HAS_OPENAT2 1
-constexpr uint64_t kResolveBeneath = 0x02;
-constexpr uint64_t kResolveNoSymlinks = 0x04;
+constexpr uint64_t RESOLVE_BENEATH = 0x02;
+constexpr uint64_t RESOLVE_NO_SYMLINKS = 0x04;
 struct OpenHow {
     uint64_t flags;
     uint64_t mode;
@@ -204,7 +204,7 @@ bool openat2_available() {
 #if defined(OPENRAR_HAS_OPENAT2)
     static int cached = -1;
     if (cached < 0) {
-        OpenHow how{O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0, kResolveBeneath | kResolveNoSymlinks};
+        OpenHow how{O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0, RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS};
         const long rv = ::syscall(SYS_openat2, AT_FDCWD, ".", &how, sizeof(how));
         cached = (rv >= 0 || (errno != ENOSYS && errno != EPERM)) ? 1 : 0;
     }
@@ -217,7 +217,7 @@ bool openat2_available() {
 bool openat2_resolve(int root_fd, const char* rel, bool directory, int& out_fd) {
 #if defined(OPENRAR_HAS_OPENAT2)
     const int flags = (directory ? O_RDONLY | O_DIRECTORY : O_RDONLY) | O_CLOEXEC;
-    OpenHow how{static_cast<uint64_t>(flags), 0, kResolveBeneath | kResolveNoSymlinks};
+    OpenHow how{static_cast<uint64_t>(flags), 0, RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS};
     const long rv = ::syscall(SYS_openat2, root_fd, rel, &how, sizeof(how));
     if (rv < 0) return false;
     out_fd = static_cast<int>(rv);
@@ -383,7 +383,7 @@ void ContainmentRoot::cache_put(const std::string& key, void* handle) {
     handle = reinterpret_cast<void*>(static_cast<intptr_t>(dup));
 #endif
     cache_.push_front(CacheEntry{key, handle});
-    if (cache_.size() > kCacheCapacity) {
+    if (cache_.size() > CACHE_CAPACITY) {
         close_os_handle(cache_.back().handle);
         cache_.pop_back();
     }
@@ -437,7 +437,7 @@ bool ContainmentRoot::resolve_dir(const std::string& rel_dir, bool create, Verif
 
 #if defined(_WIN32)
     // Windows walk: component-by-component anchored NtCreateFile; every
-    // component opened WITH FILE_OPEN_REPARSE_POINT (not traversed) and
+    // component opened WITH NT_FILE_OPEN_REPARSE_POINT (not traversed) and
     // verified reparse-free (plan §1.1.1).
     void* current = nullptr; // owned handle for the current component
     void* parent = pinned_;
@@ -445,26 +445,26 @@ bool ContainmentRoot::resolve_dir(const std::string& rel_dir, bool create, Verif
     for (const std::string& c :
          rel_dir.empty() ? std::vector<std::string>{} : split_components(rel_dir)) {
         HANDLE next = INVALID_HANDLE_VALUE;
-        LONG st = nt_open_anchored(static_cast<HANDLE>(parent), to_wide(c), kDirAccess,
-                                   kFileDirectoryFile | kFileOpenReparsePoint |
-                                       kFileSynchronousIoNonAlert,
-                                   kFileOpen, &next);
-        if (st != kStatusSuccess && create && st == kStatusObjectNameNotFound) {
+        LONG st = nt_open_anchored(static_cast<HANDLE>(parent), to_wide(c), NT_DIR_ACCESS,
+                                   NT_FILE_DIRECTORY_FILE | NT_FILE_OPEN_REPARSE_POINT |
+                                       NT_FILE_SYNCHRONOUS_IO_NON_ALERT,
+                                   NT_FILE_OPEN, &next);
+        if (st != NT_STATUS_SUCCESS && create && st == NT_STATUS_OBJECT_NAME_NOT_FOUND) {
             // Directory-creation race protocol (plan §1.1.4): anchored
             // create-exclusive; if a concurrent creator wins the race
             // (COLLISION), open the winner's directory no-follow instead —
             // the reparse/dir verification below applies either way.
-            st = nt_open_anchored(static_cast<HANDLE>(parent), to_wide(c), kDirAccess,
-                                  kFileDirectoryFile | kFileSynchronousIoNonAlert, kFileCreate,
-                                  &next);
-            if (st == kStatusObjectNameCollision) {
-                st = nt_open_anchored(static_cast<HANDLE>(parent), to_wide(c), kDirAccess,
-                                      kFileDirectoryFile | kFileOpenReparsePoint |
-                                          kFileSynchronousIoNonAlert,
-                                      kFileOpen, &next);
+            st = nt_open_anchored(static_cast<HANDLE>(parent), to_wide(c), NT_DIR_ACCESS,
+                                  NT_FILE_DIRECTORY_FILE | NT_FILE_SYNCHRONOUS_IO_NON_ALERT,
+                                  NT_FILE_CREATE, &next);
+            if (st == NT_STATUS_OBJECT_NAME_COLLISION) {
+                st = nt_open_anchored(static_cast<HANDLE>(parent), to_wide(c), NT_DIR_ACCESS,
+                                      NT_FILE_DIRECTORY_FILE | NT_FILE_OPEN_REPARSE_POINT |
+                                          NT_FILE_SYNCHRONOUS_IO_NON_ALERT,
+                                      NT_FILE_OPEN, &next);
             }
         }
-        if (st != kStatusSuccess) {
+        if (st != NT_STATUS_SUCCESS) {
             close_handle(current);
             return false;
         }
@@ -590,10 +590,10 @@ bool ContainmentRoot::anchored_create(const VerifiedDir& dir, const std::string&
     if (!dir.valid() || !component_ok(leaf)) return false;
 #if defined(_WIN32)
     HANDLE h = INVALID_HANDLE_VALUE;
-    const LONG st =
-        nt_open_anchored(static_cast<HANDLE>(dir.raw()), to_wide(leaf), kFileWriteAccess,
-                         kFileNonDirectoryFile | kFileSynchronousIoNonAlert, kFileCreate, &h);
-    if (st != kStatusSuccess) return false;
+    const LONG st = nt_open_anchored(
+        static_cast<HANDLE>(dir.raw()), to_wide(leaf), NT_FILE_WRITE_ACCESS,
+        NT_FILE_NON_DIRECTORY_FILE | NT_FILE_SYNCHRONOUS_IO_NON_ALERT, NT_FILE_CREATE, &h);
+    if (st != NT_STATUS_SUCCESS) return false;
     out_handle = h;
     return true;
 #else
@@ -610,9 +610,10 @@ bool ContainmentRoot::anchored_create_journal(const VerifiedDir& dir, const std:
     if (!dir.valid() || !component_ok(leaf)) return false;
 #if defined(_WIN32)
     HANDLE h = INVALID_HANDLE_VALUE;
-    const LONG st = nt_open_anchored(static_cast<HANDLE>(dir.raw()), to_wide(leaf), kJournalAccess,
-                                     kFileSynchronousIoNonAlert, kFileCreate, &h);
-    if (st != kStatusSuccess) return false;
+    const LONG st =
+        nt_open_anchored(static_cast<HANDLE>(dir.raw()), to_wide(leaf), NT_JOURNAL_ACCESS,
+                         NT_FILE_SYNCHRONOUS_IO_NON_ALERT, NT_FILE_CREATE, &h);
+    if (st != NT_STATUS_SUCCESS) return false;
     out_handle = h;
     return true;
 #else
@@ -706,12 +707,13 @@ bool ContainmentRoot::leaf_is_reparse(const VerifiedDir& dir, const std::string&
     if (!dir.valid() || !component_ok(leaf)) return false;
 #if defined(_WIN32)
     HANDLE h = INVALID_HANDLE_VALUE;
-    // FILE_OPEN_REPARSE_POINT: open the leaf itself, never its target.
+    // NT_FILE_OPEN_REPARSE_POINT: open the leaf itself, never its target.
     // Attributes-only open: no synchronous-IO option (it would require
     // SYNCHRONIZE access, which a read-attributes open does not carry).
-    const LONG st = nt_open_anchored(static_cast<HANDLE>(dir.raw()), to_wide(leaf),
-                                     FILE_READ_ATTRIBUTES, kFileOpenReparsePoint, kFileOpen, &h);
-    if (st != kStatusSuccess) return false; // not there / IO error: out stays false
+    const LONG st =
+        nt_open_anchored(static_cast<HANDLE>(dir.raw()), to_wide(leaf), FILE_READ_ATTRIBUTES,
+                         NT_FILE_OPEN_REPARSE_POINT, NT_FILE_OPEN, &h);
+    if (st != NT_STATUS_SUCCESS) return false; // not there / IO error: out stays false
     BY_HANDLE_FILE_INFORMATION info;
     const bool ok = GetFileInformationByHandle(h, &info) != FALSE;
     CloseHandle(h);
@@ -733,10 +735,10 @@ bool ContainmentRoot::anchored_unlink_leaf(const VerifiedDir& dir, const std::st
     HANDLE h = INVALID_HANDLE_VALUE;
     // Open the link itself (no traverse) and delete THAT object on close.
     // DELETE covers the disposition; no synchronous-IO option needed.
-    const LONG st =
-        nt_open_anchored(static_cast<HANDLE>(dir.raw()), to_wide(leaf),
-                         DELETE | FILE_READ_ATTRIBUTES, kFileOpenReparsePoint, kFileOpen, &h);
-    if (st != kStatusSuccess) return false;
+    const LONG st = nt_open_anchored(static_cast<HANDLE>(dir.raw()), to_wide(leaf),
+                                     DELETE | FILE_READ_ATTRIBUTES, NT_FILE_OPEN_REPARSE_POINT,
+                                     NT_FILE_OPEN, &h);
+    if (st != NT_STATUS_SUCCESS) return false;
     using NtSetInfoFn = LONG(NTAPI*)(HANDLE, PVOID, PVOID, ULONG, ULONG);
     static NtSetInfoFn set_info = []() -> NtSetInfoFn {
         const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");

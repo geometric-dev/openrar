@@ -139,7 +139,7 @@ void test_malformed_frames_poison() {
     // Length claim one past the cap → poisoned, permanently.
     {
         std::vector<core::byte> wire;
-        append_raw_header(wire, kMaxFramePayload + 1,
+        append_raw_header(wire, MAX_FRAME_PAYLOAD + 1,
                           static_cast<core::uint8>(FrameType::DataChunk));
         FrameReader rd;
         std::vector<Frame> got;
@@ -198,17 +198,17 @@ void test_bounded_memory() {
     // A VALID 4 MiB claim followed by only 10 real bytes: the reader counts
     // REAL buffered bytes (10), not the claimed length, and does not poison —
     // the claim is legal, just unfinished. Capacity never exceeds
-    // header + kMaxFramePayload by construction (the >cap claim poisons
+    // header + MAX_FRAME_PAYLOAD by construction (the >cap claim poisons
     // before any reserve).
     std::vector<core::byte> wire;
-    append_raw_header(wire, kMaxFramePayload, static_cast<core::uint8>(FrameType::DataChunk));
+    append_raw_header(wire, MAX_FRAME_PAYLOAD, static_cast<core::uint8>(FrameType::DataChunk));
     for (int i = 0; i < 10; ++i) wire.push_back(core::byte(static_cast<core::uint8>(i)));
     FrameReader rd;
     std::vector<Frame> got;
     CHECK(rd.feed(wire.data(), wire.size(), got) == FeedResult::Incomplete);
     CHECK(got.empty());
     CHECK(rd.buffered() == 10);
-    CHECK(rd.buffered() <= kFrameHeaderSize + kMaxFramePayload);
+    CHECK(rd.buffered() <= FRAME_HEADER_SIZE + MAX_FRAME_PAYLOAD);
 }
 
 void test_encode_rejections() {
@@ -216,7 +216,7 @@ void test_encode_rejections() {
     std::vector<core::byte> out;
     Frame big;
     big.type = FrameType::DataChunk;
-    big.payload.resize(kMaxFramePayload + 1);
+    big.payload.resize(MAX_FRAME_PAYLOAD + 1);
     CHECK(!encode_frame(big, out));
     CHECK(out.empty());
     Frame bad;

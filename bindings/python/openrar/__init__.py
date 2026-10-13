@@ -19,17 +19,21 @@ from ._native import (  # noqa: F401
     RAR_ERR_ENCRYPTED,
     RAR_ERR_INVALID_ARG,
     RAR_ERR_IO,
+    RAR_ERR_LIB_NOT_FOUND,
     RAR_ERR_LIMIT_EXCEEDED,
     RAR_ERR_MISSING_VOLUME,
     RAR_ERR_NOMEM,
     RAR_ERR_NOT_RAR,
+    RAR_ERR_PARTIAL_OK,
     RAR_ERR_TRUNCATED,
     RAR_ERR_UNSUPPORTED_FEATURE,
     RAR_OK,
     load_native,
 )
 
-__version__ = "1.30.0"
+# Kept in lockstep with pyproject.toml by the CI version gate. This literal
+# had drifted to 1.30.0 while the project was at 1.40.5.
+__version__ = "1.41.0"
 
 
 class Archive:

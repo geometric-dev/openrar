@@ -46,9 +46,9 @@ public:
     // Output sink: return false to abort decode (cancel/limit paths).
     using SinkFn = std::function<bool(const core::byte* data, size_t size)>;
 
-    static constexpr core::uint64 kUnlimited = ~core::uint64(0);
+    static constexpr core::uint64 UNLIMITED = ~core::uint64(0);
 
-    explicit Inflate(core::uint64 max_inflight_output = kUnlimited);
+    explicit Inflate(core::uint64 max_inflight_output = UNLIMITED);
 
     // Decode ONE complete DEFLATE stream (runs to the BFINAL block's end).
     // Reusable across streams via reset(). The sink receives 64 KiB chunks

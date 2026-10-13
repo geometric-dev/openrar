@@ -579,7 +579,7 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
     return 0;
 }
 
-static DualProgress Prog;
+static DualProgress g_prog;
 
 // ── v1.28 M2: disk-hook plumbing ──
 // Feeds the TUI's current-file bar from the reader's per-chunk hook and
@@ -593,8 +593,8 @@ struct TuiHookCtx {
     std::atomic<size_t>* files_done; // completed-file counter
 };
 
-static long long tui_cancel_after_bytes = -1; // < 0 disables
-static long long tui_cancel_after_files = -1;
+static long long g_tui_cancel_after_bytes = -1; // < 0 disables
+static long long g_tui_cancel_after_files = -1;
 
 static void tui_disk_progress(uint64_t done, uint64_t total, void* user) {
     auto* ctx = static_cast<TuiHookCtx*>(user);
@@ -605,14 +605,15 @@ static void tui_disk_progress(uint64_t done, uint64_t total, void* user) {
 static int tui_disk_cancel(void* user) {
     auto* ctx = static_cast<TuiHookCtx*>(user);
     if (g_tui_cancel.load(std::memory_order_relaxed) != 0) return 1;
-    if (tui_cancel_after_bytes >= 0) {
+    if (g_tui_cancel_after_bytes >= 0) {
         const long long total_done =
             static_cast<long long>(ctx->prog->processed_bytes()) +
             static_cast<long long>(ctx->cur_done->load(std::memory_order_relaxed));
-        if (total_done >= tui_cancel_after_bytes) return 1;
+        if (total_done >= g_tui_cancel_after_bytes) return 1;
     }
-    if (tui_cancel_after_files >= 0 && static_cast<long long>(ctx->files_done->load(
-                                           std::memory_order_relaxed)) >= tui_cancel_after_files) {
+    if (g_tui_cancel_after_files >= 0 &&
+        static_cast<long long>(ctx->files_done->load(std::memory_order_relaxed)) >=
+            g_tui_cancel_after_files) {
         return 1;
     }
     return 0;
@@ -621,10 +622,10 @@ static int tui_disk_cancel(void* user) {
 static void tui_parse_cancel_env() {
     // An empty value means unset (tests clear the hooks with VAR=).
     if (const char* s = std::getenv("OPENRAR_TEST_CANCEL_AFTER_BYTES")) {
-        if (*s) tui_cancel_after_bytes = std::atoll(s);
+        if (*s) g_tui_cancel_after_bytes = std::atoll(s);
     }
     if (const char* s = std::getenv("OPENRAR_TEST_CANCEL_AFTER_FILES")) {
-        if (*s) tui_cancel_after_files = std::atoll(s);
+        if (*s) g_tui_cancel_after_files = std::atoll(s);
     }
 }
 
@@ -632,13 +633,13 @@ static void tui_parse_cancel_env() {
 // restored for the prompt, and the keyboard thread is parked — ESC during an
 // overwrite query must not cancel the run.
 static void pause_tui_for_prompt() {
-    Prog.pause_for_prompt();
+    g_prog.pause_for_prompt();
     KeyboardCancel::instance().pause();
 }
 
 static void resume_tui_after_prompt() {
     KeyboardCancel::instance().resume();
-    Prog.resume();
+    g_prog.resume();
 }
 
 // — parallel entry processing for x/e/t —
@@ -865,15 +866,15 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
         for (const auto& j : jobs) s += j.entry->wire.size;
         return s;
     }();
-    Prog.init("TESTING", "[38;2;95;184;176m", "[48;2;19;37;35m");
-    Prog.set_totals(jobs.size(), total_bytes);
+    g_prog.init("TESTING", "[38;2;95;184;176m", "[48;2;19;37;35m");
+    g_prog.set_totals(jobs.size(), total_bytes);
 
     size_t error_count = 0;
     size_t skipped_count = 0;
     size_t idx = 0;
     for (const auto& job : jobs) {
         idx++;
-        Prog.start_file(job.entry->path, idx);
+        g_prog.start_file(job.entry->path, idx);
         if (!g_quiet_mode && !is_vt_supported()) {
             std::cout << "Testing     " << sanitize_for_display(job.entry->path) << "... ";
         }
@@ -886,7 +887,7 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
             if (!g_quiet_mode && !is_vt_supported())
                 std::cout << "SKIPPED (encrypted - no password)" << "\n";
             error_count++;
-            Prog.update_bytes(job.entry->wire.size);
+            g_prog.update_bytes(job.entry->wire.size);
             continue;
         }
         std::string edetail;
@@ -897,10 +898,10 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
         const bool okv = rc == archive::RAR_OK;
         if (!okv) error_count++;
         if (!g_quiet_mode && !is_vt_supported()) std::cout << (okv ? "OK" : "FAILED") << "\n";
-        Prog.update_bytes(job.entry->wire.size);
+        g_prog.update_bytes(job.entry->wire.size);
     }
-    Prog.done(jobs.size(), "tested", "", total_bytes, 0,
-              error_count == 0 ? "all OK" : (std::to_string(error_count) + " errors"));
+    g_prog.done(jobs.size(), "tested", "", total_bytes, 0,
+                error_count == 0 ? "all OK" : (std::to_string(error_count) + " errors"));
     if (error_count == 0) return EXIT_OK;
     return skipped_count > 0 ? EXIT_BAD_PASSWORD : EXIT_CRC;
 }
@@ -958,8 +959,8 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         }
     }
 
-    Prog.init("TESTING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
-    Prog.set_totals(total_entries, total_bytes);
+    g_prog.init("TESTING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
+    g_prog.set_totals(total_entries, total_bytes);
 
     // v1.28 M2: cancel scope for the test operation (between-entries for the
     // plain test path; the encrypted stream path also gets the hook).
@@ -970,7 +971,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
     tui_parse_cancel_env();
     std::atomic<uint64_t> hook_cur_done{0};
     std::atomic<size_t> hook_files_done{0};
-    TuiHookCtx hook_ctx{&Prog, &hook_cur_done, &hook_files_done};
+    TuiHookCtx hook_ctx{&g_prog, &hook_cur_done, &hook_files_done};
 
     size_t error_count = 0;
     size_t idx = 0;
@@ -1072,7 +1073,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
                 std::cerr << "User break\n";
                 return EXIT_USER_BREAK;
             }
-            Prog.start_file(job.entry->header.file_name, idx);
+            g_prog.start_file(job.entry->header.file_name, idx);
 
             if (!g_quiet_mode && !is_vt_supported()) {
                 std::cout << "Testing     " << sanitize_for_display(job.entry->header.file_name)
@@ -1083,7 +1084,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
             if (res == TestResult::SkippedNoPassword) skipped_count++;
             if (!g_quiet_mode && !is_vt_supported()) std::cout << test_verdict_str(res) << "\n";
             if (res != TestResult::Ok) error_count++;
-            Prog.update_bytes(job.entry->header.unp_size);
+            g_prog.update_bytes(job.entry->header.unp_size);
         }
     } else {
         EntryFlags flags;
@@ -1111,8 +1112,8 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
                 if (res == TestResult::SkippedNoPassword) skipped_count++;
                 flags.finish(i, res == TestResult::Ok);
                 try {
-                    Prog.note_file_done(jobs[i].entry->header.file_name,
-                                        jobs[i].entry->header.unp_size);
+                    g_prog.note_file_done(jobs[i].entry->header.file_name,
+                                          jobs[i].entry->header.unp_size);
                 } catch (...) {
                 }
             });
@@ -1134,8 +1135,8 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         }
     }
 
-    Prog.done(total_entries, "tested", "", total_bytes, 0,
-              error_count == 0 ? "all OK" : (std::to_string(error_count) + " errors"));
+    g_prog.done(total_entries, "tested", "", total_bytes, 0,
+                error_count == 0 ? "all OK" : (std::to_string(error_count) + " errors"));
     if (error_count == 0) return EXIT_OK;
     // Taxonomy: unverified encrypted entries / BADPSW are password
     // failures (11); other verification failures are checksum- or
@@ -1234,22 +1235,23 @@ static core::uint64 resolve_effective_dict_size(core::uint64 dict_size, int meth
 // One streaming CDC pass over a file (v1.26 M2b): 1 MiB buffered reads
 // through CdcStreamChunker — bounded memory, byte-identical chunk sequence
 // to whole-buffer chunking (pinned by cdc_chunker_tests streaming gate).
-// Returns CDC_FP_OK, CDC_FP_UNREADABLE (open failure — caller reports W and
-// packs without affinity), or CDC_FP_OVER_CAP (the file's fingerprints would
+// Returns CdcFingerprintResult::Ok, ::Unreadable (open failure — caller reports W and
+// packs without affinity), or ::OverCap (the file's fingerprints would
 // push the index past max_chunks; hashes_out emptied — the caller packs that
 // file and the index tail in original order, reported per directive 5).
-enum CdcFingerprintResult {
-    CDC_FP_OK = 0,
-    CDC_FP_UNREADABLE = 1,
-    CDC_FP_OVER_CAP = 2,
+enum class CdcFingerprintResult {
+    Ok = 0,
+    Unreadable = 1,
+    OverCap = 2,
 };
-static int fingerprint_file_cdc(const std::filesystem::path& p, compress::CdcChunker& chunker,
-                                std::vector<core::uint64>& hashes_out, size_t max_chunks,
-                                core::uint64& chunk_count) {
+static CdcFingerprintResult fingerprint_file_cdc(const std::filesystem::path& p,
+                                                 compress::CdcChunker& chunker,
+                                                 std::vector<core::uint64>& hashes_out,
+                                                 size_t max_chunks, core::uint64& chunk_count) {
     hashes_out.clear();
     chunk_count = 0;
     io::FileStream f;
-    if (!f.open(p, io::FileMode::ReadOnly)) return CDC_FP_UNREADABLE;
+    if (!f.open(p, io::FileMode::ReadOnly)) return CdcFingerprintResult::Unreadable;
     compress::CdcStreamChunker stream(chunker);
     std::vector<core::byte> buf(1024 * 1024);
     std::vector<compress::CdcChunk> chunks;
@@ -1261,7 +1263,7 @@ static int fingerprint_file_cdc(const std::filesystem::path& p, compress::CdcChu
         for (const auto& c : chunks) hashes_out.push_back(c.hash);
         if (hashes_out.size() > max_chunks) {
             hashes_out.clear();
-            return CDC_FP_OVER_CAP;
+            return CdcFingerprintResult::OverCap;
         }
     }
     chunks.clear();
@@ -1269,10 +1271,10 @@ static int fingerprint_file_cdc(const std::filesystem::path& p, compress::CdcChu
     for (const auto& c : chunks) hashes_out.push_back(c.hash);
     if (hashes_out.size() > max_chunks) {
         hashes_out.clear();
-        return CDC_FP_OVER_CAP;
+        return CdcFingerprintResult::OverCap;
     }
     chunk_count = hashes_out.size();
-    return CDC_FP_OK;
+    return CdcFingerprintResult::Ok;
 }
 
 static core::uint64 get_total_physical_memory() {
@@ -1448,7 +1450,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         }
         prepared[0].delete_source = delete_source || g_delete_sources;
         prepared[0].delete_mode = g_src_delete_mode;
-        Prog.note_file_done(queue[0].entry_name, queue[0].file_size);
+        g_prog.note_file_done(queue[0].entry_name, queue[0].file_size);
         if (!archive::ArchiveMutator::write_batch_add(
                 arc_path, prepared, sfx_stub, password, encrypt_headers, {}, solid,
                 comment ? *comment : std::vector<core::byte>(), want_qo, want_ams, filter_cfg,
@@ -1584,7 +1586,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                         prepared[i].delete_mode = g_delete_sources
                                                       ? g_src_delete_mode
                                                       : openrar::io::SourceDeleteMode::Plain;
-                        Prog.note_file_done(queue[i].entry_name, queue[i].file_size);
+                        g_prog.note_file_done(queue[i].entry_name, queue[i].file_size);
                     }
 
                     lk.lock();
@@ -1733,9 +1735,9 @@ int add_to_archive(
     const bool volume_add = vol_size != 0;
     size_t skipped_dirs = 0;
 
-    Prog.init(method == 0 ? "STORING" : "COMPRESSING",
-              method == 0 ? "\x1b[38;2;139;147;216m" : "\x1b[38;2;224;164;88m",
-              method == 0 ? "\x1b[48;2;28;30;46m" : "\x1b[48;2;45;33;18m");
+    g_prog.init(method == 0 ? "STORING" : "COMPRESSING",
+                method == 0 ? "\x1b[38;2;139;147;216m" : "\x1b[38;2;224;164;88m",
+                method == 0 ? "\x1b[48;2;28;30;46m" : "\x1b[48;2;45;33;18m");
 
     for (const auto& f : files) {
         std::filesystem::path p(f);
@@ -1783,7 +1785,7 @@ int add_to_archive(
                                     pf.is_dir_target = is_dir_target;
                                     pf.symlink_target = target_str;
                                     queue.push_back(std::move(pf));
-                                    Prog.spin("Scanning files…", queue.size());
+                                    g_prog.spin("Scanning files…", queue.size());
                                 }
                             }
                         }
@@ -1806,7 +1808,7 @@ int add_to_archive(
                         if (!should_include(rel, dir_entry.path())) continue;
                         queue.push_back({dir_entry.path(), rel, sz});
                         total_unp += sz;
-                        Prog.spin("Scanning files…", queue.size());
+                        g_prog.spin("Scanning files…", queue.size());
                     }
                 }
             } else {
@@ -1839,7 +1841,7 @@ int add_to_archive(
                                     pf.is_dir_target = is_dir_target;
                                     pf.symlink_target = target_str;
                                     queue.push_back(std::move(pf));
-                                    Prog.spin("Scanning files…", queue.size());
+                                    g_prog.spin("Scanning files…", queue.size());
                                 }
                             }
                         }
@@ -1860,7 +1862,7 @@ int add_to_archive(
                         if (!should_include(rel, dir_entry.path())) continue;
                         queue.push_back({dir_entry.path(), rel, sz});
                         total_unp += sz;
-                        Prog.spin("Scanning files…", queue.size());
+                        g_prog.spin("Scanning files…", queue.size());
                     }
                 }
             }
@@ -1896,7 +1898,7 @@ int add_to_archive(
                                 pf.is_dir_target = is_dir_target;
                                 pf.symlink_target = target_str;
                                 queue.push_back(std::move(pf));
-                                Prog.spin("Scanning files…", queue.size());
+                                g_prog.spin("Scanning files…", queue.size());
                             }
                         }
                     }
@@ -1925,7 +1927,7 @@ int add_to_archive(
                     queue.push_back({dir_entry.path(), rel, sz});
                     total_unp += sz;
                 }
-                Prog.spin("Scanning files…", queue.size());
+                g_prog.spin("Scanning files…", queue.size());
             };
             if (recurse_subdirs) {
                 for (const auto& dir_entry :
@@ -1962,7 +1964,7 @@ int add_to_archive(
                             pf.is_dir_target = is_dir_target;
                             pf.symlink_target = target_str;
                             queue.push_back(std::move(pf));
-                            Prog.spin("Scanning files…", queue.size());
+                            g_prog.spin("Scanning files…", queue.size());
                         }
                     }
                 }
@@ -1984,7 +1986,7 @@ int add_to_archive(
             if (should_include(entry, p)) {
                 queue.push_back({p, entry, sz});
                 total_unp += sz;
-                Prog.spin("Scanning files…", queue.size());
+                g_prog.spin("Scanning files…", queue.size());
             }
         }
     }
@@ -2216,15 +2218,15 @@ int add_to_archive(
                 break;
             }
             core::uint64 file_chunks = 0;
-            const int fp_result = fingerprint_file_cdc(item.src_path, chunker, hashes[i],
-                                                       fp_cap - total_chunks, file_chunks);
-            if (fp_result == CDC_FP_OVER_CAP) {
+            const CdcFingerprintResult fp_result = fingerprint_file_cdc(
+                item.src_path, chunker, hashes[i], fp_cap - total_chunks, file_chunks);
+            if (fp_result == CdcFingerprintResult::OverCap) {
                 // Index full: this file and the tail keep original order.
                 cdc_cap_hit = true;
                 first_unfingerprinted = i;
                 break;
             }
-            if (fp_result == CDC_FP_UNREADABLE) {
+            if (fp_result == CdcFingerprintResult::Unreadable) {
                 std::cerr << "W: cannot read " << sanitize_for_display(item.src_path.string())
                           << " for CDC fingerprinting; packing it without affinity\n";
                 continue;
@@ -2251,7 +2253,7 @@ int add_to_archive(
         cdc_flag = plan.reordered ? "reordered" : "original-order";
     }
 
-    Prog.set_totals(queue.size(), total_unp);
+    g_prog.set_totals(queue.size(), total_unp);
 
     if (!g_quiet_mode && !is_vt_supported()) {
         std::cout << "Creating archive " << arc_path << "\n";
@@ -2264,7 +2266,7 @@ int add_to_archive(
         // stay sequential.
         for (size_t i = 0; i < queue.size(); ++i) {
             const auto& item = queue[i];
-            Prog.start_file(item.entry_name, i + 1);
+            g_prog.start_file(item.entry_name, i + 1);
 
             if (!g_quiet_mode && !is_vt_supported()) {
                 std::cout << "Adding    " << sanitize_for_display(item.entry_name) << " ... ";
@@ -2285,7 +2287,7 @@ int add_to_archive(
                 return EXIT_FATAL;
             }
             if (!g_quiet_mode && !is_vt_supported()) std::cout << "OK\n";
-            Prog.update_bytes(item.file_size);
+            g_prog.update_bytes(item.file_size);
         }
     } else {
         int rc = run_batch_add(arc_path, queue, method, sfx_stub, password, encrypt_headers,
@@ -2296,13 +2298,13 @@ int add_to_archive(
         if (rc != 0) return rc;
     }
 
-    Prog.spin("Writing archive index…");
+    g_prog.spin("Writing archive index…");
 
     core::uint64 final_arc_size = 0;
     if (vol_size != 0 && vol_size != archive::volume::VOLSIZE_AUTO) {
-        auto firstVol = archive::volume::first_volume_name(arc_path);
-        if (std::filesystem::exists(firstVol))
-            final_arc_size = std::filesystem::file_size(firstVol);
+        auto first_vol = archive::volume::first_volume_name(arc_path);
+        if (std::filesystem::exists(first_vol))
+            final_arc_size = std::filesystem::file_size(first_vol);
         else if (std::filesystem::exists(arc_path))
             final_arc_size = std::filesystem::file_size(arc_path);
     } else {
@@ -2310,7 +2312,7 @@ int add_to_archive(
             final_arc_size = std::filesystem::file_size(arc_path);
     }
 
-    Prog.done(queue.size(), "packed", arc_path, total_unp, final_arc_size);
+    g_prog.done(queue.size(), "packed", arc_path, total_unp, final_arc_size);
 
     // -cdc pack-time report (plan §1b directive 3): logical/packed/window +
     // the planner flag. The three-number plain-solid baseline gate lives in
@@ -2483,8 +2485,8 @@ int extract_archive(
         total_bytes += entry.header.unp_size;
     }
 
-    Prog.init("DECOMPRESSING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
-    Prog.set_totals(total_entries, total_bytes);
+    g_prog.init("DECOMPRESSING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
+    g_prog.set_totals(total_entries, total_bytes);
 
     // v1.28 M2: interactive-cancel scope — armed only here (long TUI
     // operation); the RAII guard disarms on EVERY exit path (directive 3:
@@ -2496,7 +2498,7 @@ int extract_archive(
     tui_parse_cancel_env();
     std::atomic<uint64_t> hook_cur_done{0};
     std::atomic<size_t> hook_files_done{0};
-    TuiHookCtx hook_ctx{&Prog, &hook_cur_done, &hook_files_done};
+    TuiHookCtx hook_ctx{&g_prog, &hook_cur_done, &hook_files_done};
     archive::ReaderHooks disk_hooks{tui_disk_progress, &hook_ctx, tui_disk_cancel, &hook_ctx};
 
     std::filesystem::path out_root =
@@ -2909,7 +2911,7 @@ int extract_archive(
                 report.abort_reason = "user break";
                 return emit_json(EXIT_USER_BREAK);
             }
-            Prog.start_file(job.entry->header.file_name, idx);
+            g_prog.start_file(job.entry->header.file_name, idx);
             hook_cur_done.store(0, std::memory_order_relaxed);
 
             if (!g_quiet_mode && !is_vt_supported()) {
@@ -3006,7 +3008,7 @@ int extract_archive(
                     reader.has_bad_password() ? "incorrect password / BADPSW" : "extraction failed";
                 return emit_json(EXIT_FATAL);
             }
-            Prog.update_bytes(job.entry->header.unp_size);
+            g_prog.update_bytes(job.entry->header.unp_size);
         }
     } else {
         EntryFlags flags;
@@ -3065,7 +3067,7 @@ int extract_archive(
                     try {
                         s = slots.acquire();
                         acquired = true;
-                        Prog.flash_current(extract_jobs[idx].display_name);
+                        g_prog.flash_current(extract_jobs[idx].display_name);
                         hook_cur_done.store(0, std::memory_order_relaxed);
                         okv = slots.readers[s]->extract_entry(*extract_jobs[idx].entry,
                                                               extract_jobs[idx].target,
@@ -3089,8 +3091,8 @@ int extract_archive(
                 if (okv) hook_files_done.fetch_add(1, std::memory_order_relaxed);
                 flags.finish(idx, okv);
                 try {
-                    Prog.note_file_done(extract_jobs[idx].entry->header.file_name,
-                                        extract_jobs[idx].entry->header.unp_size);
+                    g_prog.note_file_done(extract_jobs[idx].entry->header.file_name,
+                                          extract_jobs[idx].entry->header.unp_size);
                 } catch (...) {
                 }
                 {
@@ -3131,8 +3133,8 @@ int extract_archive(
             }
             flags.finish(idx, okv);
             try {
-                Prog.note_file_done(extract_jobs[idx].entry->header.file_name,
-                                    extract_jobs[idx].entry->header.unp_size);
+                g_prog.note_file_done(extract_jobs[idx].entry->header.file_name,
+                                      extract_jobs[idx].entry->header.unp_size);
             } catch (...) {
             }
         }
@@ -3156,8 +3158,8 @@ int extract_archive(
             }
             flags.finish(idx, okv);
             try {
-                Prog.note_file_done(extract_jobs[idx].entry->header.file_name,
-                                    extract_jobs[idx].entry->header.unp_size);
+                g_prog.note_file_done(extract_jobs[idx].entry->header.file_name,
+                                      extract_jobs[idx].entry->header.unp_size);
             } catch (...) {
             }
         }
@@ -3227,10 +3229,10 @@ int extract_archive(
     for (auto& r : slots.readers) r->apply_deferred_dir_metadata();
 
     if (any_failed) {
-        Prog.done(extract_jobs.size(), "unpacked", arc_path, total_bytes, 0);
+        g_prog.done(extract_jobs.size(), "unpacked", arc_path, total_bytes, 0);
         return emit_json(badpw_flag.load() ? EXIT_BAD_PASSWORD : EXIT_FATAL);
     }
-    Prog.done(total_entries, "unpacked", arc_path, total_bytes, 0);
+    g_prog.done(total_entries, "unpacked", arc_path, total_bytes, 0);
     return emit_json(0);
 }
 
@@ -3834,8 +3836,8 @@ static int cli_main(int argc, char* argv[]) {
                     std::cerr << "Error: invalid dictionary size '" << s << "'\n";
                     return 7;
                 }
-                const double kMaxDict = 1024.0 * 1024.0 * 1024.0 * 1024.0; // 1 TB
-                if (dval * static_cast<double>(mult) > kMaxDict) {
+                const double max_dict = 1024.0 * 1024.0 * 1024.0 * 1024.0; // 1 TB
+                if (dval * static_cast<double>(mult) > max_dict) {
                     std::cerr << "Error: dictionary size > 1 TB not allowed\n";
                     return 7;
                 }
@@ -4061,12 +4063,9 @@ static int cli_main(int argc, char* argv[]) {
             return 7;
         }
     }
-    // RecoveryWriter now handles -rr (0x1100B Cauchy). Keep rejection only
-    // for vintage 0x11D if ever requested
-    // For now all -rr goes via RecoveryWriter; vintage detection would be via archive version flag
-    if ((cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m") && want_rr) {
-        // defer to handler below; no early rejection
-    }
+    // RecoveryWriter now handles -rr (0x1100B Cauchy) for every command that
+    // packs; there is no early rejection here (a vintage-0x11D check would
+    // live in the handler if ever needed).
     // Read the -z comment payload up front so a bad file fails before any
     // archive work starts.
     std::vector<openrar::core::byte> comment;

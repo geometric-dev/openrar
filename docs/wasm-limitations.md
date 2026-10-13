@@ -229,7 +229,7 @@ block compressor (passthrough). Documented in `openrar.js` docstring.
 
 ## 5. Testing / CI
 
-### 5.1 `helpers.test.mjs` auto-skips if `wasm/dist/` is missing
+### 5.1 `helpers.test.mjs` auto-skips if `wasm/js/dist/` is missing
 
 This is intentional (no emsdk in normal CI), but a regression in the
 JS wrapper isn't caught unless someone manually runs `emcmake`.
@@ -252,7 +252,7 @@ A regression that bloats the binary from 250 KiB to 800 KiB (e.g.
 accidentally enabling LZ4 fallback) wasn't caught.
 
 - **Status:** Added CI step in `.github/workflows/build.yml` asserting
-  `wasm/dist/openrar.wasm ≤ 512000` bytes. 2× headroom over the current
+  `wasm/js/dist/openrar.wasm ≤ 512000` bytes. 2× headroom over the current
   250 KiB build.
 
 ---

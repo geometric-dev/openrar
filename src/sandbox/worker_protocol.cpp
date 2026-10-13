@@ -24,7 +24,7 @@ bool pack_scan_result(const ScanView& view, std::vector<core::byte>& payload) {
         payload.insert(payload.end(), eb, eb + sizeof(e));
     }
     payload.insert(payload.end(), view.paths.begin(), view.paths.end());
-    return payload.size() <= kMaxFramePayload;
+    return payload.size() <= MAX_FRAME_PAYLOAD;
 }
 
 bool unpack_scan_result(const core::byte* payload, size_t len, ScanView& out) {
@@ -47,8 +47,8 @@ bool unpack_scan_result(const core::byte* payload, size_t len, ScanView& out) {
     for (core::uint32 i = 0; i < hdr.entry_count; ++i) {
         WireEntry e;
         std::memcpy(&e, eb + static_cast<size_t>(i) * sizeof(WireEntry), sizeof(WireEntry));
-        if (e._pad[1] != 0) return false;                  // reserved
-        if (e._pad[0] & ~kWIRE_FLAG_SERVICE) return false; // unknown wire flags
+        if (e._pad[1] != 0) return false;                 // reserved
+        if (e._pad[0] & ~WIRE_FLAG_SERVICE) return false; // unknown wire flags
         const core::uint64 end = static_cast<core::uint64>(e.path_offset) + e.path_len;
         if (end > hdr.paths_bytes) return false;
         out.entries.push_back(e);
@@ -100,7 +100,7 @@ bool pack_error(core::int32 rc, const std::string& detail, std::vector<core::byt
     const core::byte* eb = reinterpret_cast<const core::byte*>(&e);
     payload.insert(payload.end(), eb, eb + sizeof(e));
     payload.insert(payload.end(), detail.begin(), detail.end());
-    return payload.size() <= kMaxFramePayload;
+    return payload.size() <= MAX_FRAME_PAYLOAD;
 }
 
 bool unpack_error(const core::byte* payload, size_t len, core::int32& rc, std::string& detail) {

@@ -33,7 +33,11 @@ std::filesystem::path make_staging_dir() {
     std::filesystem::path base = std::filesystem::temp_directory_path();
     for (unsigned attempt = 0; attempt < 64; ++attempt) {
         core::byte rnd[8];
-        crypto::secure_random_bytes(rnd, sizeof(rnd));
+        // Fail closed on CSPRNG failure. The return value used to be ignored,
+        // so a failure left rnd uninitialised and produced a predictable
+        // staging-directory name in a shared temp dir. Contrast
+        // extraction_journal.cpp, which rejects empty entropy outright.
+        if (!crypto::secure_random_bytes(rnd, sizeof(rnd))) return {};
         char name[64];
         std::snprintf(name, sizeof(name), "openrar-cv-%02x%02x%02x%02x%02x%02x%02x%02x", rnd[0],
                       rnd[1], rnd[2], rnd[3], rnd[4], rnd[5], rnd[6], rnd[7]);
@@ -92,10 +96,10 @@ std::string sanitize_comment_utf8(const std::string& raw) {
                  (static_cast<unsigned char>(raw[i + 3]) & 0xC0) == 0x80)
             len = 4;
         if (len == 0) {
-            static const char* kHex = "0123456789ABCDEF";
+            static const char* hex = "0123456789ABCDEF";
             out.push_back('%');
-            out.push_back(kHex[c >> 4]);
-            out.push_back(kHex[c & 0xF]);
+            out.push_back(hex[c >> 4]);
+            out.push_back(hex[c & 0xF]);
             ++i;
         } else {
             out.append(raw, i, len);
@@ -244,6 +248,11 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
     // master did not migrate (skipped/refused) cannot resolve and is skipped
     // with a report instead of emitting a dangling record.
     std::set<std::string> migrated_names;
+    // Cumulative-output accounting spans the WHOLE session, so it lives
+    // outside the per-entry loop. Declared inside, total_out reset for every
+    // entry and max_total_output_bytes degraded to a per-entry cap - contrary
+    // to the LimitState contract in extraction_limits.hpp.
+    LimitState state;
     for (size_t i = 0; i < reader->entry_count(); ++i) {
         if (hooks.cancelled()) {
             result.status = ForeignStatus::Aborted;
@@ -363,7 +372,6 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
                 hash.update(data, size);
                 return true;
             };
-            LimitState state;
             const ForeignStatus ds = reader->decode(i, sink, options.limits, state, hooks);
             if (ds != ForeignStatus::Ok) {
                 out_file.close();
@@ -482,8 +490,14 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
         for (size_t i = 0; i < payload_indices.size(); ++i) {
             if (hooks.cancelled()) return ForeignStatus::Aborted;
             std::vector<core::byte> payload;
-            if (verify_reader.extract_entry_to_memory(payload_indices[i], payload, ~core::uint64(0),
-                                                      ReaderHooks{}) != 0) {
+            // Verify re-extracts every migrated member; it must honour the
+            // same budget as the forward pass. This used to pass an unlimited
+            // budget, so a crafted member was materialised in RAM twice with
+            // no cap on the verify leg.
+            LimitState verify_state;
+            if (verify_reader.extract_entry_to_memory(
+                    payload_indices[i], payload, options.limits.max_member_output_bytes,
+                    ReaderHooks{}, &options.limits, &verify_state) != 0) {
                 result.status = ForeignStatus::CrcMismatch;
                 result.detail = "verify: cannot extract " +
                                 verify_reader.entries()[payload_indices[i]].header.file_name;
