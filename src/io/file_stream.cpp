@@ -122,8 +122,38 @@ bool FileStream::open(const std::filesystem::path& path, FileMode mode) {
         break;
     }
 
-    HANDLE h = CreateFileW(path.wstring().c_str(), access, share, nullptr, disposition,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    // Windows scanners and indexers (Defender, Search, backup services) hold a
+    // just-created file for a few milliseconds. A CreateFileW issued inside that
+    // window fails with ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION, which is
+    // transient and externally caused - retrying briefly turns it into a success
+    // instead of failing the whole operation. Only those two codes are retried, so
+    // a genuine permission or path error still fails immediately, and the retry is
+    // bounded (~375 ms) so a hard lock costs little. Read-only opens are not
+    // retried: a scanner holding a file we are about to read is far rarer, and
+    // widening this would change read-path timing for no observed failure.
+    constexpr DWORD kTransientOpenErrors[] = {ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION};
+    constexpr int kOpenAttempts = 25;
+    constexpr DWORD kOpenRetryMs = 15;
+
+    const bool retry_on_transient =
+        (disposition == CREATE_ALWAYS || disposition == CREATE_NEW || disposition == OPEN_ALWAYS);
+    HANDLE h = INVALID_HANDLE_VALUE;
+    const int attempts = retry_on_transient ? kOpenAttempts : 1;
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        h = CreateFileW(path.wstring().c_str(), access, share, nullptr, disposition,
+                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) break;
+        const DWORD err = GetLastError();
+        bool transient = false;
+        for (const DWORD e : kTransientOpenErrors) {
+            if (err == e) {
+                transient = true;
+                break;
+            }
+        }
+        if (!transient) break; // real error: report it, do not mask it
+        if (attempt + 1 < attempts) Sleep(kOpenRetryMs);
+    }
 
     if (h == INVALID_HANDLE_VALUE) {
         handle_ = nullptr;
