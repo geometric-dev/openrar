@@ -1679,14 +1679,34 @@ static void test_cdc_packed_rr_repair() {
     }
     fs::path arc = temp_dir / "cdc_rr.rar";
     std::string exe = get_cli_path();
+    // Capture the child's output instead of discarding it. This pack fails
+    // intermittently on windows-2022 x64 (docs/followup-cli-tests-flake.md) and
+    // a bare assert(res == 0) hid the cause: the log is printed on failure so
+    // the next occurrence is diagnosable rather than a bare assertion.
+    fs::path pack_log = temp_dir / "pack.log";
     std::string cmd = exe + " a -cdc -md1m -rr5 -q " + arc.string() + " " + base.string() + " " +
-                      u1.string() + " " + v1.string() + " > " DEVNULL " 2>&1";
+                      u1.string() + " " + v1.string() + " > " + pack_log.string() + " 2>&1";
     int res = std::system(cmd.c_str());
+    if (res != 0) {
+        std::ifstream el(pack_log, std::ios::binary);
+        std::cerr << "[FAIL] cdc_packed_rr_repair: pack rc=" << res << "\n[FAIL] child output:\n"
+                  << std::string((std::istreambuf_iterator<char>(el)),
+                                 std::istreambuf_iterator<char>())
+                  << std::endl;
+    }
     assert(res == 0);
 
     // Control: the intact archive tests clean and has an inline RR.
-    cmd = exe + " t " + arc.string() + " > " DEVNULL " 2>&1";
+    fs::path test_log = temp_dir / "test.log";
+    cmd = exe + " t " + arc.string() + " > " + test_log.string() + " 2>&1";
     res = std::system(cmd.c_str());
+    if (res != 0) {
+        std::ifstream el(test_log, std::ios::binary);
+        std::cerr << "[FAIL] cdc_packed_rr_repair: t rc=" << res << "\n[FAIL] child output:\n"
+                  << std::string((std::istreambuf_iterator<char>(el)),
+                                 std::istreambuf_iterator<char>())
+                  << std::endl;
+    }
     assert(res == 0);
 
     // Damage the packed region: flip 8 bytes at ~40% of the archive size
