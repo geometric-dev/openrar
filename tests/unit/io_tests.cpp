@@ -4,11 +4,17 @@
 #include "../../src/io/path_util.hpp"
 #include "../../src/io/win32_meta.hpp"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <cassert>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <vector>
+#include <chrono>
+#include <thread>
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #include <cstdlib>
@@ -425,6 +431,66 @@ void test_reparse_point_hardening() {
 #endif
 }
 
+#ifdef _WIN32
+// A Windows scanner (Defender, Search, a backup agent) holds a just-created
+// file for a few milliseconds; a CreateFileW inside that window fails with
+// ERROR_SHARING_VIOLATION. FileStream::open retries those two transient codes
+// for a bounded time. This pins both halves of that contract: a short external
+// lock must NOT fail the open, and a lock held past the retry budget must
+// still fail promptly rather than retrying forever.
+static void test_transient_share_lock_retry() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path() / "openrar_io_sharelock";
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    const fs::path target = dir / "held.bin";
+
+    // Pre-create so the lock can be taken on an existing file.
+    {
+        io::FileStream seed;
+        assert(seed.open(target, io::FileMode::CreateAlways));
+        assert(seed.write("seed", 4) == 4);
+    }
+
+    // Case 1: lock released well inside the retry budget -> open must succeed.
+    {
+        HANDLE hold = CreateFileW(target.c_str(), GENERIC_READ, 0 /* no sharing */, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        assert(hold != INVALID_HANDLE_VALUE);
+        std::thread releaser([hold]() {
+            Sleep(120); // ~8x the per-attempt sleep: must be ridden out
+            CloseHandle(hold);
+        });
+        io::FileStream f;
+        const bool ok = f.open(target, io::FileMode::CreateAlways);
+        releaser.join();
+        assert(ok && "transient share lock should be retried, not failed");
+    }
+
+    // Case 2: lock held well past the budget -> open must FAIL, and quickly.
+    // Proves the retry is bounded and that a genuine lock still surfaces.
+    {
+        HANDLE hold = CreateFileW(target.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+        assert(hold != INVALID_HANDLE_VALUE);
+        const auto t0 = std::chrono::steady_clock::now();
+        io::FileStream f;
+        const bool ok = f.open(target, io::FileMode::CreateAlways);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+        CloseHandle(hold);
+        assert(!ok && "a lock held past the retry budget must still fail");
+        assert(ms < 3000 && "retry budget must stay bounded");
+    }
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] transient share-lock retry: brief lock ridden out, "
+                 "sustained lock still fails\n";
+}
+#endif
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr: under ctest (piped stdio) the MSVC
@@ -448,6 +514,7 @@ int main() {
     test_motw_values();
 #ifdef _WIN32
     test_motw_zone_write_rules();
+    test_transient_share_lock_retry();
 #endif
     std::cout << "All Milestone 2 I/O & Platform Primitives PASSED!\n";
     return 0;
