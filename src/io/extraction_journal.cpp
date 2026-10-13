@@ -42,9 +42,9 @@ namespace {
 // validation in sweep_directory is what keeps a forged journal from naming
 // arbitrary victims.
 
-constexpr const char* kJournalHeader = "OPENRAR-JOURNAL 1\n";
-constexpr size_t kJournalHeaderLen = 18;
-constexpr size_t kMaxRecordPathLen = 32768;
+constexpr const char* JOURNAL_HEADER = "OPENRAR-JOURNAL 1\n";
+constexpr size_t JOURNAL_HEADER_LEN = 18;
+constexpr size_t MAX_RECORD_PATH_LEN = 32768;
 
 std::string hex8(uint32_t v) {
     static const char* d = "0123456789abcdef";
@@ -286,7 +286,7 @@ std::filesystem::path normalize_dir(const std::filesystem::path& dir) {
 // mode — the caller tracks pending count and syncs at the boundary).
 bool append_record(LockedFile& f, const std::filesystem::path& temp_abs, bool sync_now = true) {
     std::string path_bytes = u8_str(temp_abs);
-    if (path_bytes.size() > kMaxRecordPathLen) return false;
+    if (path_bytes.size() > MAX_RECORD_PATH_LEN) return false;
     std::string rec = "T ";
     rec += std::to_string(path_bytes.size());
     rec += " ";
@@ -305,13 +305,13 @@ ExtractionSession::ExtractionSession() = default;
 
 bool ExtractionSession::matches_temp_shape(const std::string& name) {
     // <name>.<32 lowercase hex>.tmp  (name part non-empty)
-    constexpr size_t kHexLen = 32;
-    constexpr size_t kSuffixLen = 4; // ".tmp"
-    if (name.size() < 1 + 1 + kHexLen + kSuffixLen) return false;
-    if (name.compare(name.size() - kSuffixLen, kSuffixLen, ".tmp") != 0) return false;
-    const size_t hex_pos = name.size() - kSuffixLen - kHexLen;
+    constexpr size_t HEX_LEN = 32;
+    constexpr size_t SUFFIX_LEN = 4; // ".tmp"
+    if (name.size() < 1 + 1 + HEX_LEN + SUFFIX_LEN) return false;
+    if (name.compare(name.size() - SUFFIX_LEN, SUFFIX_LEN, ".tmp") != 0) return false;
+    const size_t hex_pos = name.size() - SUFFIX_LEN - HEX_LEN;
     if (name[hex_pos - 1] != '.') return false;
-    for (size_t i = 0; i < kHexLen; ++i) {
+    for (size_t i = 0; i < HEX_LEN; ++i) {
         const char c = name[hex_pos + i];
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
     }
@@ -421,7 +421,7 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
             delete lf;
             return false; // locked by someone else should not happen (fresh name)
         }
-        if (!lf->append(kJournalHeader)) {
+        if (!lf->append(JOURNAL_HEADER)) {
             lf->close();
             delete lf;
             std::error_code rm_ec;
@@ -508,7 +508,7 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
             std::filesystem::remove(journal_dir_key / name, ec);
             return false;
         }
-        if (!lf->append(kJournalHeader)) {
+        if (!lf->append(JOURNAL_HEADER)) {
             lf->close();
             delete lf;
             std::error_code ec;
@@ -678,12 +678,12 @@ bool ExtractionSession::sweep_directory(const std::filesystem::path& dir) {
         if (!lf.open_existing(jpath)) continue; // locked: a live extractor owns it
         std::string content;
         if (!lf.read_all(content)) continue;
-        if (content.size() < kJournalHeaderLen ||
-            content.compare(0, kJournalHeaderLen, kJournalHeader) != 0) {
+        if (content.size() < JOURNAL_HEADER_LEN ||
+            content.compare(0, JOURNAL_HEADER_LEN, JOURNAL_HEADER) != 0) {
             continue; // garbage or unknown journal version: leave it alone
         }
 
-        size_t pos = kJournalHeaderLen;
+        size_t pos = JOURNAL_HEADER_LEN;
         bool any = false;
         while (pos < content.size()) {
             // "T <len> <crc8hex>\n" + <len> path bytes
@@ -693,7 +693,7 @@ bool ExtractionSession::sweep_directory(const std::filesystem::path& dir) {
             bool have_len = false;
             while (p < content.size() && content[p] >= '0' && content[p] <= '9') {
                 len = len * 10 + static_cast<size_t>(content[p] - '0');
-                if (len > kMaxRecordPathLen) break;
+                if (len > MAX_RECORD_PATH_LEN) break;
                 ++p;
                 have_len = true;
             }

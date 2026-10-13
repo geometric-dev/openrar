@@ -1,6 +1,6 @@
 # OpenRAR WASM — Browser Deployment Guide
 
-How to ship `wasm/dist/*.js|*.wasm` so it loads fast and doesn't get blocked
+How to ship `wasm/js/dist/*.js|*.wasm` so it loads fast and doesn't get blocked
 by browser security policy. Versions of everything below are pinned to the
 emsdk build described in `wasm/README.md`.
 
@@ -28,7 +28,7 @@ The artifacts compress extremely well; serve brotli where available:
 | `openrar_archive.js` | ~21 KB | ~7 KB |
 
 nginx: `brotli on; brotli_types application/wasm text/javascript;`
-(Or precompress: `brotli -f wasm/dist/*.wasm` + serve `.wasm.br` with
+(Or precompress: `brotli -f wasm/js/dist/*.wasm` + serve `.wasm.br` with
 `Content-Encoding: br`.)
 
 Cache hard, content-hash filenames: the artifacts are immutable for a given
@@ -73,7 +73,7 @@ not use dynamic code generation beyond wasm itself.
 verify one of two ways:
 
 1. **Release checksums.** Every release publishes `checksums.txt`
-   (`sha256sum wasm/dist/*`). Verify at deploy time:
+   (`sha256sum wasm/js/dist/*`). Verify at deploy time:
 
    ```bash
    sha256sum -c checksums.txt

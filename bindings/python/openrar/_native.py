@@ -15,6 +15,7 @@ package; source builds find it via OPENRAR_LIB or the build tree):
 import ctypes
 import os
 import sys
+import threading
 from pathlib import Path
 
 __all__ = ["RarError", "OpenRARError", "ArchiveEntry", "Native", "load_native"]
@@ -36,6 +37,10 @@ RAR_ERR_ENCRYPTED = -12
 RAR_ERR_MISSING_VOLUME = -13
 RAR_ERR_BUSY = -14
 RAR_ERR_LIMIT_EXCEEDED = -15
+# Not a RAR error code: raised when the shared library itself cannot be
+# loaded. Kept out of the -1..-15 range so it can never be confused with an
+# archive-format failure ("NOT_RAR" sent people hunting a corrupt archive).
+RAR_ERR_LIB_NOT_FOUND = -100
 
 # Error-name mirror (CODE_MAP parity, minus OK/PARTIAL_OK which are never
 # raised as errors).
@@ -53,6 +58,7 @@ _ERRORS = {
     RAR_ERR_MISSING_VOLUME: "MISSING_VOLUME",
     RAR_ERR_BUSY: "BUSY",
     RAR_ERR_LIMIT_EXCEEDED: "LIMIT_EXCEEDED",
+    RAR_ERR_LIB_NOT_FOUND: "LIB_NOT_FOUND",
 }
 
 _DLL_API_VERSION = 1
@@ -123,7 +129,8 @@ class Native:
             else:
                 tried.append(str(c))
         if self.lib is None:
-            raise OpenRARError(RAR_ERR_NOT_RAR, "OpenRAR shared library not found: " + "; ".join(tried))
+            raise OpenRARError(RAR_ERR_LIB_NOT_FOUND,
+                               "OpenRAR shared library not found: " + "; ".join(tried))
         self._declare()
         self._probe()
 
@@ -198,6 +205,14 @@ class Native:
             ctypes.POINTER(ctypes.c_uint32),
             ctypes.c_uint32,
         ]
+        # Was called but never declared, so ctypes inferred the signature and
+        # read a garbage int return from a void function.
+        lib.openrar_archive_list_free.restype = None
+        lib.openrar_archive_list_free.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+        ]
         lib.openrar_last_error.restype = ctypes.c_int
         lib.openrar_last_error.argtypes = [ctypes.c_char_p, ctypes.c_int]
 
@@ -251,6 +266,14 @@ class Native:
             out = []
             for i in range(count.value):
                 e = ArchiveEntry.from_buffer_copy(raw, i * ctypes.sizeof(ArchiveEntry))
+                # path_offset/path_len come from the (possibly crafted)
+                # archive. Python slicing clamps silently, so an out-of-range
+                # range used to yield "" instead of an error - reject it.
+                if e.path_offset + e.path_len > len(blob):
+                    raise OpenRARError(
+                        RAR_ERR_TRUNCATED,
+                        f"entry {i}: path range [{e.path_offset},"
+                        f"{e.path_offset + e.path_len}) exceeds blob size {len(blob)}")
                 path = blob[e.path_offset:e.path_offset + e.path_len].decode("utf-8", "replace")
                 out.append({
                     "path": path,
@@ -271,9 +294,23 @@ class Native:
             handle, index, os.fspath(dest).encode("utf-8"), None, None, None))
 
     def test(self, handle: int, index: int) -> bool:
-        return self.lib.openrar_archive_handle_test(handle, index, None, None, None) == RAR_OK
+        return self.test_code(handle, index) == RAR_OK
+
+    def test_code(self, handle: int, index: int) -> int:
+        """Raw return code. Use this when the distinction between
+        CRC_MISMATCH / BAD_PASSWORD / TRUNCATED / UNSUPPORTED_FEATURE matters;
+        test() collapses them all to False."""
+        return self.lib.openrar_archive_handle_test(handle, index, None, None, None)
 
     def set_limits(self, handle: int, member: int, total: int, hdr_count: int, hdr_bytes: int):
+        # Reject negatives before ctypes masks them into c_uint64. A caller
+        # passing -1 for "unlimited" silently produced 2**64-1, which happens
+        # to mean unlimited here - but -1 for a real budget silently became
+        # the LARGEST possible budget instead of an error.
+        limits = (member, total, hdr_count, hdr_bytes)
+        if any(v < 0 for v in limits):
+            raise OpenRARError(RAR_ERR_INVALID_ARG,
+                               f"limits must be non-negative (got {limits})")
         self.check(self.lib.openrar_archive_handle_set_limits(
             handle, member, total, hdr_count, hdr_bytes))
 
@@ -281,7 +318,15 @@ class Native:
         self.lib.openrar_archive_close(handle)
 
     def create(self, arc_path: str, src_paths, arc_names, method: int = 3, dict_size: int = 0):
+        src_paths = list(src_paths)
+        arc_names = list(arc_names)
         n = len(src_paths)
+        if n == 0:
+            raise OpenRARError(RAR_ERR_INVALID_ARG, "at least one file is required")
+        if len(arc_names) != n:
+            raise OpenRARError(
+                RAR_ERR_INVALID_ARG,
+                f"src_paths ({n}) and arc_names ({len(arc_names)}) must be the same length")
         src_arr = (ctypes.c_char_p * n)(*(os.fspath(p).encode("utf-8") for p in src_paths))
         name_arr = (ctypes.c_char_p * n)(*(nm.encode("utf-8") for nm in arc_names))
         self.check(self.lib.openrar_archive_create_file(
@@ -295,10 +340,15 @@ class Native:
 
 
 _cached = None
+_cached_lock = threading.Lock()
 
 
 def load_native(path: str = "") -> Native:
     global _cached
-    if _cached is None or path:
-        _cached = Native(path)
-    return _cached
+    # Guard first-use: two threads racing here previously constructed two
+    # Native objects (two CDLL handles). An explicit path still replaces the
+    # process-wide default, which is the documented behaviour.
+    with _cached_lock:
+        if _cached is None or path:
+            _cached = Native(path)
+        return _cached

@@ -179,19 +179,19 @@ def emit(out_path: Path, casefold: dict, decomps: dict, ccc: dict, exclusions: s
 
 namespace openrar::unicode {
       {
-          static const core::uint32 kUnicodeVersionCp = 0x {UNICODE_VERSION.replace(".", "0")} u;
+          static const core::uint32 UNICODE_VERSION_CP = 0x {UNICODE_VERSION.replace(".", "0")} u;
 
 '''
 #split tables into their own section to keep this readable
     tables = (
         f"// case-fold pairs (cp, folded): {len(folds)} entries\n"
-        + hexarr("kCaseFold", flat_fold, 6)
+        + hexarr("CASE_FOLD", flat_fold, 6)
         + f"\n// canonical decomposition triples (cp, a, b): {len(decomps)} entries\n"
-        + hexarr("kDecomposition", flat_decomp, 6)
+        + hexarr("DECOMPOSITION", flat_decomp, 6)
         + f"\n// composition triples (a, b, composite): {len(pairs)} entries\n"
-        + hexarr("kComposition", flat_pairs, 6)
+        + hexarr("COMPOSITION", flat_pairs, 6)
         + f"\n// combining classes (cp, ccc): {len(classes)} entries\n"
-        + hexarr("kCombiningClass", flat_ccc, 8)
+        + hexarr("COMBINING_CLASS", flat_ccc, 8)
     )
 
     cpp = (
@@ -201,25 +201,25 @@ namespace openrar::unicode {
 const core::uint32* case_fold_table(int& count) {
             {
                 count = {len(flat_fold)} / 2;
-                return kCaseFold;
+                return CASE_FOLD;
             }}
 
 const core::uint32* decomposition_table(int& count) {
             {
                 count = {len(flat_decomp)} / 3;
-                return kDecomposition;
+                return DECOMPOSITION;
             }}
 
 const core::uint32* composition_table(int& count) {
             {
                 count = {len(flat_pairs)} / 3;
-                return kComposition;
+                return COMPOSITION;
             }}
 
 const core::uint32* combining_class_table(int& count) {
             {
                 count = {len(flat_ccc)} / 2;
-                return kCombiningClass;
+                return COMBINING_CLASS;
             }}
       }
   } // namespace openrar::unicode
@@ -265,7 +265,7 @@ def main() -> None:
 
 namespace openrar::unicode {
     {
-        inline constexpr const char* kUnicodeVersion = "{UNICODE_VERSION}";
+        inline constexpr const char* UNICODE_VERSION = "{UNICODE_VERSION}";
 
         // Raw table accessors (defined in unicode_tables.cpp).
         const core::uint32* case_fold_table(int& count);       // (cp, folded) pairs

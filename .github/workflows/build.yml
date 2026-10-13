@@ -14,6 +14,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Default-deny. Only release-assets widens this (it needs contents/id-token/
+# attestations: write to publish and attest). Previously no workflow-level
+# default existed, so every other job inherited the repository default, which
+# for older repos is a read-write GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     name: ${{ matrix.os }} - ${{ matrix.compiler }} (${{ matrix.build_type }})${{ matrix.arch_suffix }}
@@ -71,7 +78,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
 
-      - name: Set up Ninja & Ccache (Linux/macOS)
+      - name: Set up Ninja (Linux/macOS)
         if: runner.os != 'Windows'
         uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
 
@@ -85,6 +92,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
             -DOPENRAR_DLL_SUFFIX=${{ matrix.dll_suffix }} \
             -DOPENRAR_INMEM_ARCHIVE=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             $WARN_FLAG
 
       - name: Formatting check (clang-format, gate leg only)
@@ -103,17 +111,45 @@ jobs:
         if: matrix.format_check == true
         run: python3 tools/layer_check.py
 
+      - name: Install clang-tidy (gate leg only)
+        if: matrix.format_check == true
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy
+
+      - name: Naming check (clang-tidy, gate leg only)
+        # CONTRIBUTING.md "Code style": readability-identifier-naming via the
+        # repository .clang-tidy, over the TUs this build compiled. This is the
+        # gate that the "no k-prefix" / UPPER_SNAKE / g_ rules were documented
+        # as having but never did until now.
+        if: matrix.format_check == true
+        run: bash tools/clang_tidy_check.sh build
+
       - name: Version consistency check (gate leg only)
         if: matrix.format_check == true
         shell: bash
         run: |
           CMAKE_VER=$(grep -E 'project\(openrar VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | sed -E 's/.*VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
           PKG_VER=$(node -e "console.log(require('./wasm/js/package.json').version)")
-          echo "CMake version: $CMAKE_VER, wasm/js package.json version: $PKG_VER"
-          if [ "$CMAKE_VER" != "$PKG_VER" ]; then
-            echo "ERROR: CMake project version ($CMAKE_VER) does not match wasm/js/package.json ($PKG_VER)!"
-            exit 1
-          fi
+          PY_VER=$(grep -E '^version[[:space:]]*=' bindings/python/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          CS_VER=$(grep -E '<Version>' bindings/csharp/OpenRAR/OpenRAR.NET.csproj | sed -E 's/.*<Version>([^<]+)<.*/\1/')
+          PYI_VER=$(grep -E '^__version__[[:space:]]*=' bindings/python/openrar/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "CMake=$CMAKE_VER  wasm/js=$PKG_VER  bindings/python=$PY_VER  bindings/python/__init__=$PYI_VER  bindings/csharp=$CS_VER"
+          # Every copy of the version must move with the project. They had all
+          # drifted to 1.31.0/1.30.0 against a 1.40.5 project because this gate
+          # only compared CMake and the npm package.
+          for pair in "wasm/js/package.json:$PKG_VER" \
+                      "bindings/python/pyproject.toml:$PY_VER" \
+                      "bindings/python/openrar/__init__.py:$PYI_VER" \
+                      "bindings/csharp/OpenRAR/OpenRAR.NET.csproj:$CS_VER"; do
+            path="${pair%%:*}"; ver="${pair##*:}"
+            if [ -z "$ver" ]; then
+              echo "ERROR: could not parse a version out of $path"
+              exit 1
+            fi
+            if [ "$CMAKE_VER" != "$ver" ]; then
+              echo "ERROR: CMake project version ($CMAKE_VER) does not match $path ($ver)"
+              exit 1
+            fi
+          done
 
 
 
@@ -451,13 +487,13 @@ jobs:
         # Catch accidental binary bloat. Block codec ≤ 500 KiB (2× headroom),
         # archive module ≤ 1.5 MiB (spec §4 budget, currently ~120 KiB).
         run: |
-          SIZE=$(stat -c %s wasm/dist/openrar.wasm)
+          SIZE=$(stat -c %s wasm/js/dist/openrar.wasm)
           echo "openrar.wasm size: $SIZE bytes"
           if [ "$SIZE" -gt 512000 ]; then
             echo "FAIL: block codec wasm exceeds 500 KiB budget"
             exit 1
           fi
-          ASIZE=$(stat -c %s wasm/dist/openrar_archive.wasm)
+          ASIZE=$(stat -c %s wasm/js/dist/openrar_archive.wasm)
           echo "openrar_archive.wasm size: $ASIZE bytes"
           if [ "$ASIZE" -gt 1572864 ]; then
             echo "FAIL: archive wasm exceeds 1.5 MiB budget"
@@ -467,12 +503,12 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: openrar-wasm
-          path: wasm/dist/
+          path: wasm/js/dist/
 
       - name: SIMD128 variant — configure & build (OPENRAR_WASM_SIMD=ON)
         # Opt-in kernel build: same sources with -msimd128, so the SIMD128
         # match finder in match_simd.hpp compiles in. Runs last because it
-        # overwrites wasm/dist; baseline checks and artifacts already ran.
+        # overwrites wasm/js/dist; baseline checks and artifacts already ran.
         run: |
           emcmake cmake -B build-simd -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -486,7 +522,7 @@ jobs:
         run: |
           node wasm/js/check-exports.mjs
           node --test wasm/js/test.mjs wasm/js/helpers.test.mjs wasm/js/archive.test.mjs wasm/js/worker.test.mjs
-          SIZE=$(stat -c %s wasm/dist/openrar.wasm)
+          SIZE=$(stat -c %s wasm/js/dist/openrar.wasm)
           echo "openrar.wasm (simd128) size: $SIZE bytes"
           if [ "$SIZE" -gt 512000 ]; then
             echo "FAIL: simd128 block codec exceeds 500 KiB budget"
@@ -508,11 +544,19 @@ jobs:
           cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
       - name: Build
         run: cmake --build build --parallel $(nproc)
-      # Exclusions (verification-legs.md documents each): the SFX spawn
-      # suites set RLIMIT_AS in the child (incompatible with the child ASan
-      # shadow); the sandbox e2e spawns child processes (instrumented-parent
-      # false findings); python_conformance loads the DLL from
-      # non-instrumented python.
+      # Exclusions, and why each one is excluded (docs/verification-legs.md):
+      #   sfx_tests / sfx_e2e_tests / sandbox_sandboxed_e2e_tests - spawn
+      #     child processes; the SFX containment sets RLIMIT_AS in the child,
+      #     which is incompatible with the child ASan shadow. A sanitizer
+      #     spawn limitation, not a finding.
+      #   python_conformance - loads the DLL from non-instrumented python.
+      #   transcode_tests / archive_tests - excluded on wall-clock budget,
+      #     not because they are known-dirty.
+      #
+      # KNOWN GAP: archive_tests exercises the in-memory archive engine, which
+      # parses untrusted headers, and it is therefore not covered by the
+      # primary sanitizer leg. It IS covered by the normal matrix legs. Do not
+      # widen this list without adding the justification above.
       - name: Unit suite under sanitizers
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
@@ -537,7 +581,16 @@ jobs:
       - name: Threaded suites under TSan
         env:
           TSAN_OPTIONS: halt_on_error=1
-        run: ctest --test-dir build --output-on-failure -R 'parallel_compress_tests|writer_conformance' || ctest --test-dir build --output-on-failure -R 'parallel_compress_tests'
+        # No retry fallback. A TSan report is a real race finding, and races
+        # are nondeterministic by construction - retrying until green turns
+        # a primary gate into a coin flip. This previously read
+        #   ... -R 'parallel_compress_tests|writer_conformance' || ... -R 'parallel_compress_tests'
+        # where the second alternative re-ran the same suite and passed if the
+        # retry happened to be clean, and `writer_conformance` matched nothing
+        # because it is the Node suite in the separate job above, not a ctest
+        # test. Coverage here is the parallel compress pipeline only; the TUI
+        # and slot-reader paths are not yet instrumented under TSan.
+        run: ctest --test-dir build --output-on-failure -R 'parallel_compress_tests'
 
   msan:
     # v1.30 M5: MSan is BEST-EFFORT on the Linux/clang leg (§7.2 revised):
@@ -557,8 +610,52 @@ jobs:
       - name: Build (best-effort)
         run: cmake --build build --parallel $(nproc) || true
       - name: Report
+        # Non-gating by design (continue-on-error above), but it must still
+        # be loud. This used to be a single `if [ -d build ]; then ... fi`,
+        # so a failed configure left build/ absent, skipped the whole body,
+        # and exited 0 printing nothing at all - a green step that carried
+        # zero information. Distinguish the three outcomes explicitly.
         run: |
-          if [ -d build ]; then ctest --test-dir build --output-on-failure -R 'compress_tests' ||             echo "MSan findings reported (best-effort leg, non-gating)"; fi
+          set -uo pipefail
+          if [ ! -f build/CMakeCache.txt ]; then
+            echo "::warning::MSan leg: CMake never configured - no MSan coverage was obtained"
+            exit 0
+          fi
+          if ! ctest --test-dir build --output-on-failure -R 'compress_tests'; then
+            echo "::warning::MSan reported findings (best-effort leg, non-gating)"
+          else
+            echo "MSan leg completed clean (best-effort leg, non-gating)"
+          fi
+
+  # bindings/csharp previously had NO automated verification of any kind:
+  # neither workflow had a dotnet step, and the library did not even compile
+  # (a C# 8 switch expression against the netstandard2.0 default of C# 7.3).
+  # Uses the .NET SDK preinstalled on ubuntu-latest - no new action pin.
+  #
+  # Runs on every push/PR so problems surface immediately. NOT yet in
+  # release-assets.needs: it has never had a green run, and gating releases on
+  # an unproven job is its own failure mode. Promote it into `needs` once it
+  # has passed on master.
+  csharp:
+    name: C# binding (build + xUnit conformance)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
+      - name: Build the native shared library
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPENRAR_INMEM_ARCHIVE=ON
+          cmake --build build --parallel $(nproc) --target openrar_dll
+      - name: Build the C# binding
+        run: dotnet build bindings/csharp/OpenRAR/OpenRAR.NET.csproj -c Release
+      - name: Run the xUnit conformance suite
+        env:
+          # [DllImport("openrar")] resolves libopenrar.so from here.
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build
+        run: dotnet test bindings/csharp/OpenRAR.Tests/OpenRAR.Tests.csproj -c Release
 
   release-assets:
     name: Attach release artifacts
@@ -566,7 +663,7 @@ jobs:
     # attaches it to the GitHub release named after the tag (creating the
     # release with generated notes if it does not exist yet).
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-and-test, linux-arm64-qemu, writer-conformance, wasm, sanitizers, tsan]
+    needs: [build-and-test, linux-arm64-qemu, writer-conformance, wasm, sanitizers, tsan, simd-validation]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -607,12 +704,23 @@ jobs:
           # Supply chain (v1.30 M6; freeze prereq 5): checksums + SBOM.
           sha256sum openrar-${VER}-*.zip > SHA256SUMS
           gh release upload "$TAG" --clobber SHA256SUMS
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          # SBOM tool. Pinned to an exact release AND checksum-verified.
+          # This used to be `curl .../anchore/syft/main/install.sh | sh`: a
+          # floating branch piped into a root shell, in the one job holding
+          # contents/id-token/attestations: write, immediately before the
+          # provenance attestation. Anyone able to push to anchore/syft would
+          # have had code execution here. Bump both values together.
+          SYFT_VERSION=1.54.1
+          SYFT_SHA256=c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47
+          curl -sSfL -o /tmp/syft.tar.gz \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  /tmp/syft.tar.gz" | sha256sum --check --strict
+          tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft
           syft dir:. -o cyclonedx-json > openrar-${VER}-sbom.json
           gh release upload "$TAG" --clobber openrar-${VER}-sbom.json
 
       - name: Attest build provenance (Sigstore keyless)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |
             openrar-*/openrar-*.zip

@@ -34,11 +34,11 @@ bool is_zone_stream_name(const std::string& stream_name) {
     lower.reserve(stream_name.size());
     for (char c : stream_name)
         lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-    static const char kSuffix[] = ":$data"; // compared against the lowercased copy
-    constexpr size_t kSuffixLen = sizeof(kSuffix) - 1;
-    if (lower.size() >= kSuffixLen &&
-        lower.compare(lower.size() - kSuffixLen, kSuffixLen, kSuffix) == 0) {
-        lower.resize(lower.size() - kSuffixLen);
+    static const char suffix[] = ":$data"; // compared against the lowercased copy
+    constexpr size_t SUFFIX_LEN = sizeof(suffix) - 1;
+    if (lower.size() >= SUFFIX_LEN &&
+        lower.compare(lower.size() - SUFFIX_LEN, SUFFIX_LEN, suffix) == 0) {
+        lower.resize(lower.size() - SUFFIX_LEN);
     }
     return lower == ":zone.identifier";
 }
@@ -52,11 +52,11 @@ bool parse_zone_id(const std::vector<core::byte>& content, int& out_zone) {
     text.reserve(content.size());
     for (core::byte b : content)
         text.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(b))));
-    static const char kKey[] = "zoneid=";
-    constexpr size_t kKeyLen = sizeof(kKey) - 1;
-    size_t pos = text.find(kKey);
+    static const char key[] = "zoneid=";
+    constexpr size_t KEY_LEN = sizeof(key) - 1;
+    size_t pos = text.find(key);
     if (pos == std::string::npos) return false;
-    pos += kKeyLen;
+    pos += KEY_LEN;
     // The value runs to the next control character / separator.
     size_t end = pos;
     while (end < text.size() && text[end] >= '0' && text[end] <= '9') ++end;
@@ -139,10 +139,15 @@ MotwProvenance probe_archive_motw(const std::filesystem::path& archive_file) {
 bool write_file_zone_id(const std::filesystem::path& file, int zone) {
     // Never remove or downgrade an existing stronger mark.
     std::vector<core::byte> existing;
-    int existing_zone = 0;
-    if (read_zone_ads(file, existing) && parse_zone_id(existing, existing_zone) &&
-        existing_zone >= zone) {
-        return false;
+    if (read_zone_ads(file, existing)) {
+        int existing_zone = 0;
+        // An existing ADS we cannot parse still means "came from the web"
+        // (same fail-safe as probe_archive_motw): treat it as the strongest
+        // zone so a malformed mark is never overwritten with a weaker one.
+        // Previously an unparseable value left existing_zone == 0, the guard
+        // fell through, and the mark was downgraded.
+        if (!parse_zone_id(existing, existing_zone)) existing_zone = 3;
+        if (existing_zone >= zone) return false;
     }
     const std::vector<core::byte> content = generate_zone_identifier_content(zone);
     return write_alternate_stream(file, ":Zone.Identifier", content.data(), content.size());

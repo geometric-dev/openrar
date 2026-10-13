@@ -176,14 +176,14 @@ inline std::string render_tui(const TuiState& st, int width) {
 
     // 2. overall bar (fixed 28-block bar like the shipped renderer; the
     // clamp below bounds the WHOLE line so narrow terminals never wrap).
-    const int kBarWidth = 28;
-    int filled = static_cast<int>((pct / 100.0) * kBarWidth + 0.5);
-    filled = std::max(0, std::min(kBarWidth, filled));
+    const int bar_width = 28;
+    int filled = static_cast<int>((pct / 100.0) * bar_width + 0.5);
+    filled = std::max(0, std::min(bar_width, filled));
     std::string bar_line = "[";
     bar_line += st.fg_color;
     for (int i = 0; i < filled; ++i) bar_line += "\xe2\x96\x88"; // █
     bar_line += "\x1b[38;2;69;73;85m";
-    for (int i = 0; i < kBarWidth - filled; ++i) bar_line += "\xe2\x96\x91"; // ░
+    for (int i = 0; i < bar_width - filled; ++i) bar_line += "\xe2\x96\x91"; // ░
     bar_line += "\x1b[0m]  \x1b[38;2;231;229;223m" + std::to_string(static_cast<int>(pct + 0.5)) +
                 "%\x1b[0m";
 
@@ -197,12 +197,12 @@ inline std::string render_tui(const TuiState& st, int width) {
                    100.0;
         }
         fpct = std::max(0.0, std::min(100.0, fpct));
-        const int kFileBar = 12;
-        int ffilled = static_cast<int>((fpct / 100.0) * kFileBar + 0.5);
-        ffilled = std::max(0, std::min(kFileBar, ffilled));
+        const int file_bar = 12;
+        int ffilled = static_cast<int>((fpct / 100.0) * file_bar + 0.5);
+        ffilled = std::max(0, std::min(file_bar, ffilled));
         file_line += "\x1b[38;2;95;184;176m[";
         for (int i = 0; i < ffilled; ++i) file_line += "\xe2\x96\x88";
-        for (int i = 0; i < kFileBar - ffilled; ++i) file_line += "\xc2\xb7"; // ·
+        for (int i = 0; i < file_bar - ffilled; ++i) file_line += "\xc2\xb7"; // ·
         file_line += "]\x1b[0m ";
         file_line += sanitize_for_display(st.current_name);
     }

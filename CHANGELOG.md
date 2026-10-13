@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-10-13
+
+Remediation release: a full-tree code review (security, correctness, dead code,
+architecture, conventions, CI) and the fixes for everything it found at
+severity P1–P3. The theme is **gates that were not actually gating** — several
+checks (CI version pin, TSan, export contract, worker tests, packaging) either
+passed without testing anything or were never wired up at all.
+
+### Security
+
+- **CI supply chain**: the release job ran
+  `curl …/anchore/syft/main/install.sh | sh` — an unpinned `main`-branch script
+  into a root shell in the job that holds `contents`/`id-token`/`attestations:
+  write` and mints Sigstore provenance. Pinned to the released `v1.54.1` with a
+  verified SHA256; `actions/attest-build-provenance` is now SHA-pinned like
+  every other action.
+- **Worker inherits its own command-write end** (`src/sandbox`): the worker held
+  a copy of the broker's `cmd_write`, so its `cmd_read` never saw EOF when the
+  broker died — an orphaned worker blocked in `recv()`, holding the volume
+  handle. The broker now marks its own ends non-inheritable; Windows passes the
+  child's three handles through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, POSIX
+  closes every other fd in the child. Regression test added.
+- **Out-of-bounds read** in `percent_encode_invalid_utf8` on a truncated
+  multi-byte lead byte (reachable from any archive entry name); the escaping
+  loop is now clamped to the bytes present.
+- **Integer overflow → unbounded allocation** in the tar reader: a base-256
+  `size` near 2^64 wrapped the extent check and drove
+  `std::vector(size)` past `length_error`.
+- **gzip**: FHCRC compared the full 32-bit CRC against a 16-bit field (rejected
+  every valid `gzip -H` file, now masked); the cumulative total-output cap was
+  never enforced within a member; the member-count check was off by one; and
+  FNAME/FCOMMENT were read one byte at a time (≈2×10⁸ syscalls on a 100 MiB
+  header — algorithmic DoS, now chunked).
+- **`ArchiveReader::test_entry` reported encrypted entries as verified** without
+  decrypting them (fail-open for the recovery health check and the SFX
+  self-test). It now returns false; the CLI already routed through the
+  password-aware `test_entry_stream`.
+- **`dll_api info()` had no `BusyGuard`** and raced the shared stream against
+  concurrent `test`/`extract`.
+- CSPRNG failure in the foreign-transcode staging name is no longer ignored;
+  the SHA-256 HMAC key staging buffer is wiped; the gzip member-total cap and
+  `LimitState` lifetime (was re-created per entry) are fixed.
+
+### Fixed
+
+- **The npm package could not be imported**: every glue module resolved
+  `../dist/openrar.js`, which npm cannot package. The wasm build now emits into
+  `wasm/js/dist/`, imports are `./dist/`, and `files`/`exports` include it.
+- **`worker-host.mjs` threw `DataCloneError`** on `onProgress`/`signal`
+  (functions cannot be structured-cloned): the documented progress/cancel
+  options were uncallable. Host-only keys are stripped, progress is signalled
+  as a boolean, `signal` aborts the host promise, and calls after
+  `terminate()` reject instead of hanging forever.
+- `wasm/js/index.mjs` called embind helpers that were removed in ABI v2 (both
+  threw); rewritten against the real wrapper.
+- `RAR_ERR_PARTIAL_OK` (a success code) was treated as `IO` by the wasm bulk
+  extract, discarding successfully-extracted entries.
+- `parseEntries` now bounds-checks archive-controlled path offsets; `safeRead`
+  enforces `pointerInBounds` (previously defined and never called).
+- The C# binding never compiled (a C# 8 switch expression against the
+  netstandard2.0 default of C# 7.3) and the test project could not compile (no
+  `InternalsVisibleTo`). Both build; P/Invoke strings are marshalled as UTF-8
+  (was ANSI on .NET Framework); a `csharp` CI job runs the xUnit suite.
+- Python wheel packaging declares `package-data` (the shared library was never
+  bundled); `openrar_archive_list_free` is declared; a library-load failure no
+  longer reports `NOT_RAR`; negative limits are rejected.
+- `write_file_zone_id` no longer downgrades an existing unparseable MOTW mark.
+- The decoder's live `fprintf`+`std::abort()` in the hot path is removed (fail
+  closed via the `bool` return); recovery's throwing `std::filesystem::remove`
+  uses the `error_code` overload.
+
+### Changed
+
+- **CI**: the TSan step no longer retries on failure (it masked nondeterministic
+  races) or names a non-existent ctest target; `simd-validation` gates the
+  release; default-deny `permissions`; `release-assets` no longer runs an
+  unpinned script; `workflow_dispatch` fuzz duration is validated (was injected
+  into the shell); `fuzz_inflate` actually runs; `msan` reports instead of
+  silently passing; the version gate covers all five version copies.
+- **Style debt paid down and enforced**: `tools/clang_tidy_check.sh` runs the
+  naming rules (`.clang-tidy`) over every compiled TU on the gate leg — the
+  enforcement CONTRIBUTING.md had always claimed. ~100 `k`-prefixed constants
+  renamed to UPPER/lower snake, the `CdcFingerprintResult` enum is now
+  `enum class`, file-scope tables are UPPER, `Prog`/`tui_cancel_*` are `g_`
+  globals, and the AES macros carry the `OPENRAR_` prefix.
+- Documentation drift corrected (ARCHITECTURE/SFX spec/README switches that did
+  not exist, non-existent `win32acl.cpp`/`win32stm.cpp`).
+
+
 ## [1.40.5] - 2026-10-12
 
 Benchmark-host steadying for the 1.40 line, and two encoding repairs. PATCH

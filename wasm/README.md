@@ -5,8 +5,8 @@ the same version CI uses). Two artifacts:
 
 | Artifact | Emscripten preset | Contents | Size (wasm) |
 |---|---|---|---|
-| `wasm/dist/openrar.{js,wasm}` | `wasm` | RAR5 v0 block codec (`compress` / `decompress`), no filesystem | ~70 KB |
-| `wasm/dist/openrar_archive.{js,wasm}` | `wasm-archive` | Block codec + in-memory RAR5 archive reader/writer (`createArchive`, `listArchive`, `extract*`, handles, progress/cancel) | ~125 KB |
+| `wasm/js/dist/openrar.{js,wasm}` | `wasm` | RAR5 v0 block codec (`compress` / `decompress`), no filesystem | ~70 KB |
+| `wasm/js/dist/openrar_archive.{js,wasm}` | `wasm-archive` | Block codec + in-memory RAR5 archive reader/writer (`createArchive`, `listArchive`, `extract*`, handles, progress/cancel) | ~125 KB |
 
 Both are `MODULARIZE` + `EXPORT_ES6` + `ALLOW_MEMORY_GROWTH` + `FILESYSTEM=0`.
 
@@ -23,7 +23,7 @@ wasm/js/openrar-archive.d.ts    Archive TS contract
 wasm/js/heap_helpers.js         safeRead / requireExports shared utilities
 wasm/js/check-exports.mjs       Contract gate: required exports present on built modules
 wasm/js/{test,helpers.test,archive.test}.mjs   node --test suites
-wasm/dist/                      Build artifacts (gitignored — rebuild with make/npm)
+wasm/js/dist/                      Build artifacts (gitignored — rebuild with make/npm)
 ```
 
 ## Stability

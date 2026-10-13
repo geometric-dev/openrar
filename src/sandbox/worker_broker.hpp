@@ -37,7 +37,7 @@ namespace openrar::sandbox {
 struct BrokerEntry {
     WireEntry wire{};
     std::string path; // resolved from the paths blob at unpack time
-    bool is_service() const { return (wire._pad[0] & kWIRE_FLAG_SERVICE) != 0; }
+    bool is_service() const { return (wire._pad[0] & WIRE_FLAG_SERVICE) != 0; }
 };
 
 class WorkerBroker {
@@ -92,7 +92,7 @@ private:
 
     ChannelPair pair_{};
     void* proc_ = nullptr; // platform process handle (HANDLE / pid as void*)
-    native_io_handle volume_ = kInvalidIoHandle;
+    native_io_handle volume_ = INVALID_IO_HANDLE;
     std::unique_ptr<FramedChannel> cmd_; // broker → worker
     std::unique_ptr<FramedChannel> res_; // worker → broker
     Phase phase_ = Phase::Closed;

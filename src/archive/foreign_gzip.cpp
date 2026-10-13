@@ -16,6 +16,42 @@ bool read_exact(io::FileStream& f, core::uint64 offset, void* dst, size_t n) {
     return f.read(dst, n) == n;
 }
 
+// Upper bound on an FNAME/FCOMMENT field. The stream is also bounded by
+// fsize, but a huge unterminated field would otherwise be copied into memory
+// in full before that bound is reached.
+constexpr size_t MAX_GZIP_HEADER_FIELD = 64 * 1024;
+
+// Scan forward for the terminating NUL, reading in chunks.
+//
+// This replaced a byte-at-a-time loop. read_exact() seeks before every read,
+// so the old code issued two syscalls per byte of FNAME/FCOMMENT - roughly
+// 2*10^8 for a 100 MiB header field with no NUL, i.e. a trivially cheap
+// denial of service against any tool that sniffs a .gz.
+//
+// Appends the bytes before the NUL to `out` when non-null; on success leaves
+// `pos` just past the NUL.
+bool read_until_nul(io::FileStream& f, core::uint64& pos, core::uint64 fsize, std::string* out) {
+    constexpr size_t CHUNK = 4096;
+    core::byte buf[CHUNK];
+    while (pos < fsize) {
+        const size_t want = static_cast<size_t>(std::min<core::uint64>(CHUNK, fsize - pos));
+        if (!read_exact(f, pos, buf, want)) return false;
+        for (size_t k = 0; k < want; ++k) {
+            if (buf[k] == 0) {
+                if (out) out->append(reinterpret_cast<const char*>(buf), k);
+                pos += k + 1;
+                return true;
+            }
+        }
+        if (out) {
+            out->append(reinterpret_cast<const char*>(buf), want);
+            if (out->size() > MAX_GZIP_HEADER_FIELD) return false;
+        }
+        pos += want;
+    }
+    return false; // ran off the end without a NUL
+}
+
 // Parses one member header at `offset`. On success returns the data start
 // and consumes FEXTRA/FCOMMENT (bounded skips), FNAME and FHCRC.
 bool parse_member_header(io::FileStream& f, core::uint64 offset, core::uint64 fsize,
@@ -35,27 +71,13 @@ bool parse_member_header(io::FileStream& f, core::uint64 offset, core::uint64 fs
         pos += 2 + xlen;
         if (pos > fsize) return false;
     }
-    if (flg & 0x08) { // FNAME: zero-terminated
-        std::string name;
-        for (;;) {
-            if (pos >= fsize) return false;
-            core::byte c = 0;
-            if (!read_exact(f, pos, &c, 1)) return false;
-            ++pos;
-            if (c == 0) break;
-            name.push_back(static_cast<char>(c));
-        }
-        fname_out = name;
+    if (flg & 0x08) {      // FNAME: zero-terminated
+        fname_out.clear(); // read_until_nul appends
+        if (!read_until_nul(f, pos, fsize, &fname_out)) return false;
     }
     if (flg & 0x10) { // FCOMMENT: present → skipped with report downstream
         fcomment_present = true;
-        for (;;) {
-            if (pos >= fsize) return false;
-            core::byte c = 0;
-            if (!read_exact(f, pos, &c, 1)) return false;
-            ++pos;
-            if (c == 0) break;
-        }
+        if (!read_until_nul(f, pos, fsize, nullptr)) return false;
     }
     if (flg & 0x02) { // FHCRC: CRC16 over the header bytes so far
         if (pos + 2 > fsize) return false;
@@ -66,7 +88,11 @@ bool parse_member_header(io::FileStream& f, core::uint64 offset, core::uint64 fs
         if (!read_exact(f, offset, hdr.data(), hdr.size())) return false;
         crc.update(hdr.data(), hdr.size());
         const core::uint16 stored = static_cast<core::uint16>(hc[0] | (hc[1] << 8));
-        if (crc.get() != stored) return false;
+        // RFC 1952 s2.3.1: FHCRC is the low 16 bits of the CRC32 over the
+        // header. crc.get() returns the full 32-bit value, so compare the
+        // masked low half - testing the full value against a uint16 rejected
+        // every valid `gzip -H` file (all but 1 in 65536).
+        if ((crc.get() & 0xFFFFu) != stored) return false;
         pos += 2;
     }
     data_start = pos;
@@ -146,7 +172,10 @@ ForeignStatus GzipReader::decode(size_t index, const SinkFn& sink, const Extract
         if (!parse_member_header(file_, member_offset, fsize, fname, fcomment, data_start))
             return ForeignStatus::Unparseable;
         ++member_count;
-        if (limits.hdr_count_limited() && member_count >= limits.max_header_count) {
+        // "exactly max" is the convention the other readers follow
+        // (foreign_zip.cpp / foreign_tar.cpp / archive_reader.cpp); testing
+        // >= after the increment made the effective cap max - 1.
+        if (limits.hdr_count_limited() && member_count > limits.max_header_count) {
             return ForeignStatus::LimitExceeded;
         }
 
@@ -159,11 +188,17 @@ ForeignStatus GzipReader::decode(size_t index, const SinkFn& sink, const Extract
         };
         core::uint64 member_out = 0;
         auto capped_sink = [&](const core::byte* data, size_t size) -> bool {
+            if (size > core::uint64(-1) - member_out) return false; // size arithmetic
             member_out += size;
             if (limits.member_limited() && member_out > limits.max_member_output_bytes)
                 return false;
-            if (limits.total_limited() && state.total_out + size > limits.max_total_output_bytes)
-                return false;
+            // Debit the cumulative budget PER CHUNK. This used to be
+            // `state.total_out + size > ...` while state.total_out was only
+            // advanced once per member (below), so a single member could emit
+            // arbitrarily far past the cap - the check compared against the
+            // total from BEFORE this member. debit_total_bytes advances state
+            // as it goes, and guards its own overflow.
+            if (!debit_total_bytes(size, limits, state)) return false;
             crc.update(data, size);
             if (hooks.cancelled()) return false;
             if (sink && !sink(data, size)) return false;
@@ -193,7 +228,8 @@ ForeignStatus GzipReader::decode(size_t index, const SinkFn& sink, const Extract
         if (crc.get() != stored_crc) return ForeignStatus::CrcMismatch;
         if (static_cast<core::uint32>(member_out & 0xFFFFFFFFu) != stored_isize)
             return ForeignStatus::CrcMismatch;
-        state.total_out += member_out;
+        // state.total_out was already advanced per chunk by capped_sink above;
+        // only the local running total remains to update here.
         logical_out += member_out;
 
         // Next member: a fresh header at the trailer position; anything

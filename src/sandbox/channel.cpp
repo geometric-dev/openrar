@@ -4,10 +4,14 @@
 #include <cerrno>
 #include <cstring>
 
+#if !defined(_WIN32)
+#include <fcntl.h> // fcntl / FD_CLOEXEC for set_handle_inheritable
+#endif
+
 namespace openrar::sandbox {
 
 namespace {
-constexpr size_t kReadChunk = 256 * 1024; // recv staging granularity (≤ 4 MiB frames)
+constexpr size_t READ_CHUNK = 256 * 1024; // recv staging granularity (≤ 4 MiB frames)
 } // namespace
 
 #if defined(_WIN32)
@@ -29,7 +33,7 @@ bool create_channel_pair(ChannelPair& p) {
     p.res_write = res_w;
     return true;
 fail:
-    p.cmd_read = p.cmd_write = p.res_read = p.res_write = kInvalidIoHandle;
+    p.cmd_read = p.cmd_write = p.res_read = p.res_write = INVALID_IO_HANDLE;
     return false;
 }
 
@@ -56,10 +60,15 @@ bool write_all(native_io_handle h, const core::byte* buf, size_t len) {
     return true;
 }
 
+bool set_handle_inheritable(native_io_handle h, bool inheritable) {
+    if (h == INVALID_IO_HANDLE) return true; // nothing to do
+    return SetHandleInformation(h, HANDLE_FLAG_INHERIT, inheritable ? HANDLE_FLAG_INHERIT : 0) != 0;
+}
+
 void close_io_handle(native_io_handle& h) {
-    if (h != kInvalidIoHandle) {
+    if (h != INVALID_IO_HANDLE) {
         CloseHandle(h);
-        h = kInvalidIoHandle;
+        h = INVALID_IO_HANDLE;
     }
 }
 
@@ -80,7 +89,7 @@ bool create_channel_pair(ChannelPair& p) {
     p.res_write = res[1];
     return true;
 fail:
-    p.cmd_read = p.cmd_write = p.res_read = p.res_write = kInvalidIoHandle;
+    p.cmd_read = p.cmd_write = p.res_read = p.res_write = INVALID_IO_HANDLE;
     return false;
 }
 
@@ -108,10 +117,24 @@ bool write_all(native_io_handle h, const core::byte* buf, size_t len) {
 }
 
 void close_io_handle(native_io_handle& h) {
-    if (h != kInvalidIoHandle) {
+    if (h != INVALID_IO_HANDLE) {
         ::close(h);
-        h = kInvalidIoHandle;
+        h = INVALID_IO_HANDLE;
     }
+}
+
+bool set_handle_inheritable(native_io_handle h, bool inheritable) {
+    if (h == INVALID_IO_HANDLE) return true; // nothing to do
+    const int fd = h;
+    int flags = ::fcntl(fd, F_GETFD);
+    if (flags < 0) return false;
+    // FD_CLOEXEC is the inverse: inherit == clear it.
+    if (inheritable) {
+        flags &= ~FD_CLOEXEC;
+    } else {
+        flags |= FD_CLOEXEC;
+    }
+    return ::fcntl(fd, F_SETFD, flags) == 0;
 }
 
 #endif
@@ -131,7 +154,7 @@ bool FramedChannel::send(const Frame& f) {
 
 int FramedChannel::recv(std::vector<Frame>& out) {
     if (reader_.poisoned()) return -2;
-    if (chunk_.size() < kReadChunk) chunk_.resize(kReadChunk);
+    if (chunk_.size() < READ_CHUNK) chunk_.resize(READ_CHUNK);
     for (;;) {
         const size_t got = read_some(h_, chunk_.data(), chunk_.size());
         if (got == static_cast<size_t>(-1)) return -1;

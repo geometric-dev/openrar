@@ -16,16 +16,16 @@ bool type_registered(core::uint8 t) {
 bool encode_frame(const Frame& f, std::vector<core::byte>& out) {
     const core::uint8 t = static_cast<core::uint8>(f.type);
     if (!type_registered(t)) return false;
-    if (f.payload.size() > kMaxFramePayload) return false;
+    if (f.payload.size() > MAX_FRAME_PAYLOAD) return false;
     const core::uint32 len = static_cast<core::uint32>(f.payload.size());
-    core::byte header[kFrameHeaderSize];
+    core::byte header[FRAME_HEADER_SIZE];
     std::memcpy(header, &len, sizeof(len)); // little-endian hosts only: the
     // protocol runs over the worker's local process pair on x86-64/aarch64
     // (both little-endian); a big-endian target would need explicit LE
     // serialization here and in feed() — pinned by the wasm32 layout rules
     // of the shared contract (see abi-freeze.md §3 note on endianness).
     header[4] = t;
-    out.insert(out.end(), header, header + kFrameHeaderSize);
+    out.insert(out.end(), header, header + FRAME_HEADER_SIZE);
     out.insert(out.end(), f.payload.begin(), f.payload.end());
     return true;
 }
@@ -36,11 +36,11 @@ FeedResult FrameReader::feed(const core::byte* data, size_t len, std::vector<Fra
     size_t pos = 0;
     while (true) {
         if (!header_done_) {
-            const size_t need = kFrameHeaderSize - pending_.size();
+            const size_t need = FRAME_HEADER_SIZE - pending_.size();
             const size_t take = (len - pos) < need ? (len - pos) : need;
             pending_.insert(pending_.end(), data + pos, data + pos + take);
             pos += take;
-            if (pending_.size() < kFrameHeaderSize) {
+            if (pending_.size() < FRAME_HEADER_SIZE) {
                 return pos == len ? FeedResult::Incomplete : FeedResult::Ok;
             }
             core::uint32 len32;
@@ -51,7 +51,7 @@ FeedResult FrameReader::feed(const core::byte* data, size_t len, std::vector<Fra
                 pending_.clear();
                 return FeedResult::Poisoned;
             }
-            if (len32 > kMaxFramePayload) {
+            if (len32 > MAX_FRAME_PAYLOAD) {
                 poisoned_ = true;
                 pending_.clear();
                 return FeedResult::Poisoned;

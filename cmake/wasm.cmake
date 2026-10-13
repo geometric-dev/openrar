@@ -49,9 +49,16 @@ target_link_options(openrar_wasm PRIVATE
     "-sFILESYSTEM=0"
 )
 
-# Output to wasm/dist/ (repo-relative) so wasm/js package can reference it
+# Output lands INSIDE the npm package (wasm/js/dist/), not beside it.
+# The glue modules in wasm/js/ import these as './dist/<name>.js', and npm
+# cannot package a path outside its own root ('../dist/*' in "files" is
+# rejected). Emitting into wasm/dist/ - a sibling of the package - is what
+# made the published tarball unimportable: every entry point resolved
+# '../dist/openrar.js', which did not exist in the installed package.
+# One canonical location means local dev and the published package resolve
+# identically, with no pack-time staging step that can silently be skipped.
 set_target_properties(openrar_wasm PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/wasm/dist"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/wasm/js/dist"
     OUTPUT_NAME "openrar"
     SUFFIX ".js"
 )
@@ -73,7 +80,7 @@ if(OPENRAR_WASM_CLI)
         "-sNODERAWFS=0"
     )
     set_target_properties(openrar_cli PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/wasm/dist"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/wasm/js/dist"
         OUTPUT_NAME "openrar_cli"
         SUFFIX ".js"
     )
@@ -81,7 +88,7 @@ endif()
 
 # ── Optional in-memory archive API (wasm-archive preset) ────────────────────
 # Enable with -DOPENRAR_INMEM_ARCHIVE=ON. Builds a separate artifact
-# `wasm/dist/openrar_archive.js` that wraps `BufferArchive` with C exports
+# `wasm/js/dist/openrar_archive.js` that wraps `BufferArchive` with C exports
 # (`openrar_archive_*`). Kept OFF by default so the block codec stays lean.
 # This target wires `buffer_archive.cpp` (from OPENRAR_INMEM_ARCHIVE_SOURCES)
 # directly — it does NOT include src/cli/main.cpp, so no MEMFS.
@@ -102,7 +109,7 @@ if(OPENRAR_INMEM_ARCHIVE)
     target_compile_options(openrar_wasm_archive PRIVATE ${WASM_COMMON_FLAGS})
     # 3) Output path.
     set_target_properties(openrar_wasm_archive PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/wasm/dist"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/wasm/js/dist"
         OUTPUT_NAME "openrar_archive"
         SUFFIX ".js")
     # 4) Link options — distinct EXPORT_NAME so the archive module doesn't

@@ -225,6 +225,37 @@ void test_percent_encoded_undecodable() {
     rm(dir);
 }
 
+// Regression: percent_encode_invalid_utf8 over-read the buffer (and copied the
+// out-of-bounds bytes into the produced name) when a string ENDED in a
+// truncated multi-byte sequence. A lone "\xF0" set len=4 but left one byte, so
+// the escape loop indexed s[1..3] past size(). The bug was reachable from any
+// archive entry name via sanitize_archive_path.
+void test_percent_encode_truncated() {
+    using io::percent_encode_invalid_utf8;
+    // 4-byte lead, nothing after it.
+    assert(percent_encode_invalid_utf8("\xF0") == "%F0");
+    // 3-byte lead, nothing after it.
+    assert(percent_encode_invalid_utf8("\xE2") == "%E2");
+    // 3-byte lead with one continuation, still short of three.
+    assert(percent_encode_invalid_utf8("\xE2\x82") == "%E2%82");
+    // 4-byte lead with two continuations, short of four.
+    assert(percent_encode_invalid_utf8("\xF0\x9F\x98") == "%F0%9F%98");
+    // Truncated sequence not at the very start.
+    assert(percent_encode_invalid_utf8("a\xF0") == "a%F0");
+    assert(percent_encode_invalid_utf8("dir/\xE2") == "dir/%E2");
+    // Well-formed sequences are still passed through untouched.
+    assert(percent_encode_invalid_utf8("\xC3\xA9") == "\xC3\xA9");                 // é (2-byte)
+    assert(percent_encode_invalid_utf8("\xE2\x82\xAC") == "\xE2\x82\xAC");         // € (3-byte)
+    assert(percent_encode_invalid_utf8("\xF0\x9F\x98\x80") == "\xF0\x9F\x98\x80"); // emoji (4-byte)
+    // A truncated lead still *claims* `len` bytes, matching the escaping
+    // semantics used for a fully-present-but-invalid sequence, so the claimed
+    // run is escaped as far as the buffer allows and no further. The fix is
+    // that the read stops at end-of-string; it does not change how many bytes
+    // a broken lead claims.
+    assert(percent_encode_invalid_utf8("\xF0\xC3\xA9") == "%F0%C3%A9");
+    std::cout << "[PASS] percent_encode_truncated: no OOB read on truncated lead\n";
+}
+
 } // namespace
 
 int main() {
@@ -239,6 +270,7 @@ int main() {
     test_json_stdout_purity();
     test_displayed_equals_extracted();
     test_percent_encoded_undecodable();
+    test_percent_encode_truncated();
     std::cout << "All extraction_report_tests passed.\n";
     return 0;
 }

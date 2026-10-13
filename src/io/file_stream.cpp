@@ -131,28 +131,28 @@ bool FileStream::open(const std::filesystem::path& path, FileMode mode) {
     // bounded (~375 ms) so a hard lock costs little. Read-only opens are not
     // retried: a scanner holding a file we are about to read is far rarer, and
     // widening this would change read-path timing for no observed failure.
-    constexpr DWORD kTransientOpenErrors[] = {ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION};
-    constexpr int kOpenAttempts = 25;
-    constexpr DWORD kOpenRetryMs = 15;
+    constexpr DWORD TRANSIENT_OPEN_ERRORS[] = {ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION};
+    constexpr int OPEN_ATTEMPTS = 25;
+    constexpr DWORD OPEN_RETRY_MS = 15;
 
     const bool retry_on_transient =
         (disposition == CREATE_ALWAYS || disposition == CREATE_NEW || disposition == OPEN_ALWAYS);
     HANDLE h = INVALID_HANDLE_VALUE;
-    const int attempts = retry_on_transient ? kOpenAttempts : 1;
+    const int attempts = retry_on_transient ? OPEN_ATTEMPTS : 1;
     for (int attempt = 0; attempt < attempts; ++attempt) {
         h = CreateFileW(path.wstring().c_str(), access, share, nullptr, disposition,
                         FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h != INVALID_HANDLE_VALUE) break;
         const DWORD err = GetLastError();
         bool transient = false;
-        for (const DWORD e : kTransientOpenErrors) {
+        for (const DWORD e : TRANSIENT_OPEN_ERRORS) {
             if (err == e) {
                 transient = true;
                 break;
             }
         }
         if (!transient) break; // real error: report it, do not mask it
-        if (attempt + 1 < attempts) Sleep(kOpenRetryMs);
+        if (attempt + 1 < attempts) Sleep(OPEN_RETRY_MS);
     }
 
     if (h == INVALID_HANDLE_VALUE) {
@@ -424,10 +424,10 @@ namespace {
 // the build does not depend on _WIN32_WINNT being pinned at 0x0602+ or on a
 // particular SDK vintage (the public FILE_RENAME_INFO + constants are only
 // declared for newer SDKs).
-constexpr DWORD kFileRenameInfoExClass = 13;
-constexpr DWORD kFileRenameFlagReplaceIfExists = 0x00000001;
-constexpr DWORD kFileRenameFlagPosixSemantics = 0x00000002;
-constexpr DWORD kFileRenameFlagIgnoreReadonlyAttribute = 0x00000004;
+constexpr DWORD NT_FILE_RENAME_INFO_EX_CLASS = 13;
+constexpr DWORD NT_FILE_RENAME_FLAG_REPLACE_IF_EXISTS = 0x00000001;
+constexpr DWORD NT_FILE_RENAME_FLAG_POSIX_SEMANTICS = 0x00000002;
+constexpr DWORD NT_FILE_RENAME_FLAG_IGNORE_READONLY_ATTRIBUTE = 0x00000004;
 
 struct OpenrarRenameInfo {
     DWORD Flags;
@@ -457,7 +457,7 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
     }
 
     const bool replace = mode == CommitMode::ReplaceExisting;
-    // NOTE: kFileRenameFlagIgnoreReadonlyAttribute is deliberately NOT set —
+    // NOTE: NT_FILE_RENAME_FLAG_IGNORE_READONLY_ATTRIBUTE is deliberately NOT set —
     // a READONLY destination must fail the commit (v1.24 plan §9 row R:
     // "readonly respected"), matching the pre-atomic CreateAlways behavior.
 
@@ -474,7 +474,8 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
         const std::wstring leaf = dest.filename().wstring();
         std::vector<BYTE> buf(sizeof(OpenrarRenameInfo) + leaf.size() * sizeof(WCHAR));
         auto* ri = reinterpret_cast<OpenrarRenameInfo*>(buf.data());
-        ri->Flags = kFileRenameFlagPosixSemantics | (replace ? kFileRenameFlagReplaceIfExists : 0);
+        ri->Flags = NT_FILE_RENAME_FLAG_POSIX_SEMANTICS |
+                    (replace ? NT_FILE_RENAME_FLAG_REPLACE_IF_EXISTS : 0);
         ri->RootDirectory = parent;
         ri->FileNameLength = static_cast<DWORD>(leaf.size() * sizeof(WCHAR));
         std::memcpy(ri->FileName, leaf.c_str(), (leaf.size() + 1) * sizeof(WCHAR));
@@ -507,11 +508,11 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
                 CloseHandle(parent);
                 return true; // handle stays open on the renamed file; caller closes
             }
-            static constexpr LONG kStatusInvalidParameter = static_cast<LONG>(0xC000000Du);
-            static constexpr LONG kStatusNotSupported = static_cast<LONG>(0xC00000BBu);
-            static constexpr LONG kStatusInvalidDeviceRequest = static_cast<LONG>(0xC0000010u);
-            if (st != kStatusInvalidParameter && st != kStatusNotSupported &&
-                st != kStatusInvalidDeviceRequest) {
+            static constexpr LONG NT_STATUS_INVALID_PARAMETER = static_cast<LONG>(0xC000000Du);
+            static constexpr LONG NT_STATUS_NOT_SUPPORTED = static_cast<LONG>(0xC00000BBu);
+            static constexpr LONG NT_STATUS_INVALID_DEVICE_REQUEST = static_cast<LONG>(0xC0000010u);
+            if (st != NT_STATUS_INVALID_PARAMETER && st != NT_STATUS_NOT_SUPPORTED &&
+                st != NT_STATUS_INVALID_DEVICE_REQUEST) {
                 // Real error (ACCESS_DENIED, sharing violation): report it.
                 const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
                 if (ntdll) {
@@ -528,7 +529,7 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
 
         const BOOL ok = SetFileInformationByHandle(
             static_cast<HANDLE>(handle_),
-            static_cast<FILE_INFO_BY_HANDLE_CLASS>(kFileRenameInfoExClass), ri,
+            static_cast<FILE_INFO_BY_HANDLE_CLASS>(NT_FILE_RENAME_INFO_EX_CLASS), ri,
             static_cast<DWORD>(buf.size()));
         const DWORD rename_err = ok ? 0 : GetLastError();
         CloseHandle(parent);
@@ -588,8 +589,8 @@ bool FileStream::commit_rename_in(void* parent_dir_handle, const std::string& ut
     const std::wstring leaf = to_wide(utf8_leaf);
     std::vector<BYTE> buf(sizeof(OpenrarRenameInfo) + leaf.size() * sizeof(WCHAR));
     auto* ri = reinterpret_cast<OpenrarRenameInfo*>(buf.data());
-    ri->Flags = kFileRenameFlagPosixSemantics |
-                (mode == CommitMode::ReplaceExisting ? kFileRenameFlagReplaceIfExists : 0);
+    ri->Flags = NT_FILE_RENAME_FLAG_POSIX_SEMANTICS |
+                (mode == CommitMode::ReplaceExisting ? NT_FILE_RENAME_FLAG_REPLACE_IF_EXISTS : 0);
     // The parent handle comes from the verified containment walk — no path
     // resolution of any archive-controlled component happens after it.
     ri->RootDirectory = static_cast<HANDLE>(parent_dir_handle);
@@ -628,11 +629,11 @@ bool FileStream::commit_rename_in(void* parent_dir_handle, const std::string& ut
     // Capability failures (pre-1709 / FAT / SMB) are reported to the caller —
     // the containment layer decides whether a path-based fallback is
     // acceptable (it never silently re-resolves archive-controlled paths).
-    static constexpr LONG kStatusInvalidParameter = static_cast<LONG>(0xC000000Du);
-    static constexpr LONG kStatusNotSupported = static_cast<LONG>(0xC00000BBu);
-    static constexpr LONG kStatusInvalidDeviceRequest = static_cast<LONG>(0xC0000010u);
-    if (st == kStatusInvalidParameter || st == kStatusNotSupported ||
-        st == kStatusInvalidDeviceRequest) {
+    static constexpr LONG NT_STATUS_INVALID_PARAMETER = static_cast<LONG>(0xC000000Du);
+    static constexpr LONG NT_STATUS_NOT_SUPPORTED = static_cast<LONG>(0xC00000BBu);
+    static constexpr LONG NT_STATUS_INVALID_DEVICE_REQUEST = static_cast<LONG>(0xC0000010u);
+    if (st == NT_STATUS_INVALID_PARAMETER || st == NT_STATUS_NOT_SUPPORTED ||
+        st == NT_STATUS_INVALID_DEVICE_REQUEST) {
         last_error_ = static_cast<int>(ERROR_NOT_SUPPORTED);
     } else {
         const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
