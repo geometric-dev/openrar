@@ -50,7 +50,8 @@ void quote_into(std::string& out, const std::string& token) {
 } // namespace
 
 bool spawn_worker_process(const std::string& exe, const std::vector<std::string>& argv_tail,
-                          SpawnProfile profile, void** proc_out, std::string& err) {
+                          const ChildHandles& child_handles, SpawnProfile profile, void** proc_out,
+                          std::string& err) {
     std::string cmdline = "\"" + exe + "\"";
     for (const std::string& a : argv_tail) quote_into(cmdline, a);
     std::string cmdline_mut = cmdline;
@@ -73,7 +74,45 @@ bool spawn_worker_process(const std::string& exe, const std::vector<std::string>
         if (profile_created) DeleteAppContainerProfile(profile_name.c_str());
     };
 
-    if (profile == SpawnProfile::PlatformSandboxed) {
+    const bool sandboxed = (profile == SpawnProfile::PlatformSandboxed);
+    // HANDLE_LIST is always present: with bInheritHandles=TRUE, without it
+    // every inheritable handle in this process (the broker's own pipe ends,
+    // stray files) is duplicated into the worker. The sandboxed profile adds
+    // SECURITY_CAPABILITIES + MITIGATION_POLICY on top.
+    const DWORD attr_count = sandboxed ? 3u : 1u;
+
+    if (!InitializeProcThreadAttributeList(nullptr, attr_count, 0, &attr_size) &&
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        err = "InitializeProcThreadAttributeList (size) failed";
+        cleanup();
+        return false;
+    }
+    attr_buf = HeapAlloc(GetProcessHeap(), 0, attr_size);
+    if (attr_buf == nullptr) {
+        err = "out of memory for the attribute list";
+        cleanup();
+        return false;
+    }
+    if (!InitializeProcThreadAttributeList(reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf),
+                                           attr_count, 0, &attr_size)) {
+        err = "InitializeProcThreadAttributeList failed";
+        cleanup();
+        return false;
+    }
+
+    std::vector<HANDLE> inherit;
+    for (void* h : {child_handles.cmd_read, child_handles.res_write, child_handles.volume}) {
+        if (h != nullptr) inherit.push_back(static_cast<HANDLE>(h));
+    }
+    if (!UpdateProcThreadAttribute(reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf), 0,
+                                   PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit.data(),
+                                   inherit.size() * sizeof(HANDLE), nullptr, nullptr)) {
+        err = "cannot set HANDLE_LIST attribute (err=" + std::to_string(GetLastError()) + ")";
+        cleanup();
+        return false;
+    }
+
+    if (sandboxed) {
         // 1. Per-run AppContainer profile with an EMPTY capability list: the
         //    token carries no capability SIDs — no filesystem, no network.
         profile_name = make_profile_name();
@@ -91,26 +130,6 @@ bool spawn_worker_process(const std::string& exe, const std::vector<std::string>
         }
         profile_created = true;
 
-        // 2. Attribute list: SECURITY_CAPABILITIES + mitigation policy (the
-        //    v1.23 SFX hardening posture).
-        if (!InitializeProcThreadAttributeList(nullptr, 2, 0, &attr_size) &&
-            GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
-            err = "InitializeProcThreadAttributeList (size) failed";
-            cleanup();
-            return false;
-        }
-        attr_buf = HeapAlloc(GetProcessHeap(), 0, attr_size);
-        if (attr_buf == nullptr) {
-            err = "out of memory for the attribute list";
-            cleanup();
-            return false;
-        }
-        if (!InitializeProcThreadAttributeList(
-                reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf), 2, 0, &attr_size)) {
-            err = "InitializeProcThreadAttributeList failed";
-            cleanup();
-            return false;
-        }
         SECURITY_CAPABILITIES sc{};
         sc.AppContainerSid = app_container_sid;
         sc.Capabilities = nullptr;
@@ -132,14 +151,13 @@ bool spawn_worker_process(const std::string& exe, const std::vector<std::string>
             cleanup();
             return false;
         }
-        siex.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf);
     }
+    siex.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf);
 
     PROCESS_INFORMATION pi{};
-    const BOOL ok = CreateProcessA(
-        nullptr, cmdline_mut.data(), nullptr, nullptr, TRUE,
-        profile == SpawnProfile::PlatformSandboxed ? EXTENDED_STARTUPINFO_PRESENT : 0, nullptr,
-        nullptr, &siex.StartupInfo, &pi);
+    const BOOL ok =
+        CreateProcessA(nullptr, cmdline_mut.data(), nullptr, nullptr, TRUE,
+                       EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &siex.StartupInfo, &pi);
     cleanup();
     if (!ok) {
         err = "CreateProcess failed (err=" + std::to_string(GetLastError()) + ")";
@@ -151,7 +169,7 @@ bool spawn_worker_process(const std::string& exe, const std::vector<std::string>
     // kill-on-close Job Object + memory cap. The AppContainer token is the
     // privilege boundary; the Job caps resource burn if the worker is
     // compromised WITHIN its token.
-    if (profile == SpawnProfile::PlatformSandboxed) {
+    if (sandboxed) {
         HANDLE job = CreateJobObjectW(nullptr, nullptr);
         if (job != nullptr) {
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -251,9 +269,9 @@ void add_allow_arg_nomask(std::vector<SockFilter>& f, uint32_t nr, uint32_t arg_
 
 void install_linux_seccomp() {
 #if defined(__x86_64__)
-    const uint32_t kArch = AUDIT_ARCH_X86_64;
+    const uint32_t arch = AUDIT_ARCH_X86_64;
 #elif defined(__aarch64__)
-    const uint32_t kArch = AUDIT_ARCH_AARCH64;
+    const uint32_t arch = AUDIT_ARCH_AARCH64;
 #else
     // Unsupported architecture for the sandbox: fail-closed (spawn.hpp
     // contract) — never continue unsandboxed when a sandbox was requested.
@@ -263,7 +281,7 @@ void install_linux_seccomp() {
     std::vector<SockFilter> f;
     // Architecture check: mismatch → deny (the worker binary is single-arch).
     f.push_back({BPF_LD + BPF_W + BPF_ABS, 0, 0, offsetof(struct seccomp_data, arch)});
-    f.push_back({BPF_JMP + BPF_JEQ + BPF_K, 1, 0, kArch});
+    f.push_back({BPF_JMP + BPF_JEQ + BPF_K, 1, 0, arch});
     f.push_back({BPF_RET + BPF_K, 0, 0, SECCOMP_RET_ERRNO | EPERM});
     f.push_back({BPF_LD + BPF_W + BPF_ABS, 0, 0, offsetof(struct seccomp_data, nr)});
 
@@ -308,7 +326,8 @@ void install_linux_seccomp() {
 }
 
 bool spawn_worker_process(const std::string& exe, const std::vector<std::string>& argv_tail,
-                          SpawnProfile profile, void** proc_out, std::string& err) {
+                          const ChildHandles& child_handles, SpawnProfile profile, void** proc_out,
+                          std::string& err) {
     (void)profile; // the sandbox is installed in-child via --install-seccomp
     std::vector<char*> argv;
     argv.push_back(const_cast<char*>(exe.c_str()));
@@ -320,6 +339,27 @@ bool spawn_worker_process(const std::string& exe, const std::vector<std::string>
         return false;
     }
     if (pid == 0) {
+        // Child. Drop every fd except the worker's three so nothing the broker
+        // happened to have open leaks into the sandbox - the POSIX equivalent
+        // of the Windows HANDLE_LIST. The broker's own channel ends are
+        // FD_CLOEXEC, but any other descriptor (a stray log file, a parent
+        // handle) is not, and a leaked write end would also defeat EOF
+        // detection. Pre-exec, so async-signal-safe calls only.
+        int keep[3] = {-1, -1, -1};
+        int nkeep = 0;
+        for (void* h : {child_handles.cmd_read, child_handles.res_write, child_handles.volume})
+            if (h != nullptr) keep[nkeep++] = static_cast<int>(reinterpret_cast<intptr_t>(h));
+        long maxfd = ::sysconf(_SC_OPEN_MAX);
+        if (maxfd < 0 || maxfd > 4096) maxfd = 4096; // bounded scan
+        for (int fd = 3; fd < static_cast<int>(maxfd); ++fd) {
+            bool is_kept = false;
+            for (int j = 0; j < nkeep; ++j)
+                if (keep[j] == fd) {
+                    is_kept = true;
+                    break;
+                }
+            if (!is_kept) ::close(fd);
+        }
         ::execv(exe.c_str(), argv.data());
         _exit(127); // exec never returns on success
     }
@@ -365,8 +405,8 @@ std::filesystem::path worker_exe_path() {
 }
 
 bool spawn_worker_process(const std::string& exe, const std::vector<std::string>& argv_tail,
-                          SpawnProfile profile, void** proc_out, std::string& err) {
-    (void)profile;
+                          const ChildHandles& child_handles, SpawnProfile profile, void** proc_out,
+                          std::string& err) {
     if (profile == SpawnProfile::PlatformSandboxed) {
         err = "no sandbox model on this platform";
         return false;
@@ -381,6 +421,23 @@ bool spawn_worker_process(const std::string& exe, const std::vector<std::string>
         return false;
     }
     if (pid == 0) {
+        // Child: drop every fd except the worker's three (see the Linux
+        // branch for the rationale - POSIX equivalent of HANDLE_LIST).
+        int keep[3] = {-1, -1, -1};
+        int nkeep = 0;
+        for (void* h : {child_handles.cmd_read, child_handles.res_write, child_handles.volume})
+            if (h != nullptr) keep[nkeep++] = static_cast<int>(reinterpret_cast<intptr_t>(h));
+        long maxfd = ::sysconf(_SC_OPEN_MAX);
+        if (maxfd < 0 || maxfd > 4096) maxfd = 4096;
+        for (int fd = 3; fd < static_cast<int>(maxfd); ++fd) {
+            bool is_kept = false;
+            for (int j = 0; j < nkeep; ++j)
+                if (keep[j] == fd) {
+                    is_kept = true;
+                    break;
+                }
+            if (!is_kept) ::close(fd);
+        }
         ::execv(exe.c_str(), argv.data());
         _exit(127);
     }

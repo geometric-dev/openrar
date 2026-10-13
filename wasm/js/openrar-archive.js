@@ -12,7 +12,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import createOpenRARArchiveRaw from '../dist/openrar_archive.js';
+import createOpenRARArchiveRaw from './dist/openrar_archive.js';
 import { safeRead, requireExports } from './heap_helpers.js';
 
 // v1: initial.
@@ -23,17 +23,21 @@ export const ARCHIVE_WASM_API_VERSION = 2;
 
 // Exports the wrapper requires. Enforced at boot so a stale dist fails with
 // a rebuild hint instead of "undefined is not a function" mid-call.
+// Mirrors every _openrar_archive_* / ccall target this file uses
+// (create2 and handle_extract_all2 were missing, as was cwrap).
 const REQUIRED_ARCHIVE_EXPORTS = [
   '_openrar_archive_version',
   '_openrar_archive_open', '_openrar_archive_close',
   '_openrar_archive_handle_list', '_openrar_archive_handle_extract',
-  '_openrar_archive_handle_extract_all',
+  '_openrar_archive_handle_extract_all', '_openrar_archive_handle_extract_all2',
+  '_openrar_archive_handle_set_limits',
   '_openrar_archive_list', '_openrar_archive_list_free',
   '_openrar_archive_extract', '_openrar_archive_extract_all',
-  '_openrar_archive_create',
-  '_openrar_archive_get_error',
+  '_openrar_archive_extract_all2', '_openrar_archive_create',
+  '_openrar_archive_create2',
+  '_openrar_archive_get_error', '_openrar_archive_last_error_code',
   '_openrar_archive_alloc', '_openrar_archive_free',
-  '_malloc', '_free', 'ccall', 'addFunction', 'removeFunction',
+  '_malloc', '_free', 'ccall', 'cwrap', 'addFunction', 'removeFunction',
   'UTF8ToString', 'HEAPU8', 'HEAPU32',
 ];
 
@@ -154,6 +158,12 @@ function validateWindowLog2(w) {
 // claimed uncompressed total exceeds this (0 = unlimited).
 export const DEFAULT_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 
+// RAR_ERR_PARTIAL_OK (openrar_dll.h): a POSITIVE success code returned when
+// some entries extracted and at least one failed (its bytes are empty in the
+// result). Every genuine error is negative. Never route this through
+// throwIfError — it is not an error.
+const RAR_ERR_PARTIAL_OK = 1;
+
 // ── progress/cancel hooks (v2) ──────────────────────────────────────────────
 // The C side calls back through function pointers registered with
 // addFunction. The C ABI is void (*)(uint64_t done, uint64_t total,
@@ -233,7 +243,7 @@ export function validateArchivePath(path) {
 // offset 56: _pad[1] u64
 const ENTRY_SIZE = 64;
 
-function parseEntries(m, entriesPtr, count, pathsPtr) {
+function parseEntries(m, entriesPtr, count, pathsPtr, pathsSize) {
   const heapU8 = m.HEAPU8;
   // DataView over the same window HEAPU8 covers, so heap-relative pointer
   // arithmetic matches view offsets even if HEAPU8 is mounted at a base.
@@ -244,6 +254,16 @@ function parseEntries(m, entriesPtr, count, pathsPtr) {
     const off = base + i * ENTRY_SIZE;
     const path_offset = view.getUint32(off + 0, true);
     const path_len = view.getUint32(off + 4, true);
+    // path_offset/path_len come from the (possibly crafted) archive and name
+    // the entry inside the C-allocated path blob. Without this bound a
+    // hostile offset made every entry resolve to '' (subarray clamps), and
+    // extractAll then collapsed N entries into one Map key - silent data loss
+    // under an empty name. Both values are u32, so the sum is exact in a
+    // double.
+    if (path_offset + path_len > pathsSize) {
+      throw new RarError('TRUNCATED',
+        `entry ${i}: path range [${path_offset}, ${path_offset + path_len}) exceeds blob size ${pathsSize}`);
+    }
     const is_dir = view.getUint32(off + 8, true) !== 0;
     const method = view.getUint32(off + 12, true);
     const is_encrypted = view.getUint32(off + 16, true) !== 0;
@@ -375,8 +395,15 @@ export async function listArchive(rar) {
     if (pathsPtr) m._openrar_archive_free(pathsPtr);
     throwIfError(rc, m);
   }
-  const entries = parseEntries(m, entriesPtr, count, pathsPtr);
-  m.ccall('openrar_archive_list_free', null, ['number','number','number'], [entriesPtr, pathsPtr, pathsSize]);
+  const entries = (() => {
+    // Free in a finally: parseEntries validates attacker-controlled offsets
+    // and throws on a bad range, which previously leaked both C buffers.
+    try {
+      return parseEntries(m, entriesPtr, count, pathsPtr, pathsSize);
+    } finally {
+      m.ccall('openrar_archive_list_free', null, ['number','number','number'], [entriesPtr, pathsPtr, pathsSize]);
+    }
+  })();
   return entries;
 }
 
@@ -526,7 +553,13 @@ export class OpenRARArchive {
         const bufSize = m.HEAPU32[bufSizePtr >> 2];
         const offsetsPtr = m.HEAPU32[offsetsPtrPtr >> 2];
         const count = m.HEAPU32[countPtr >> 2];
-        if (rc !== 0) {
+        // RAR_ERR_PARTIAL_OK (1) is a SUCCESS code, not an error: buffer_archive
+        // returns it after including a failed entry with empty bytes, and every
+        // genuine error is negative. Testing `rc !== 0` misclassified a
+        // partially-successful extract as IO, freed the buffers, and threw away
+        // the entries that DID extract. Accept it and let the caller detect the
+        // emptied entry (bytes.length === 0) per the documented contract.
+        if (rc !== 0 && rc !== RAR_ERR_PARTIAL_OK) {
           if (bufPtr) m._openrar_archive_free(bufPtr);
           if (offsetsPtr) m._openrar_archive_free(offsetsPtr);
           throwIfError(rc, m);
@@ -631,13 +664,24 @@ export async function openArchive(rar, opts = {}) {
   const count = m.HEAPU32[countPtr>>2];
   const entriesPtr = m.HEAPU32[entriesPtrPtr>>2];
   const pathsPtr = m.HEAPU32[pathsPtrPtr>>2];
+  // Read the blob size. It was allocated, freed, and otherwise ignored, so
+  // parseEntries could not bound-check and list_free was handed a literal 0.
+  const pathsSize = m.HEAPU32[pathsSizePtr>>2];
   m._free(countPtr); m._free(entriesPtrPtr); m._free(pathsPtrPtr); m._free(pathsSizePtr);
   if (rc !== 0) {
     m.ccall('openrar_archive_close', null, ['number'], [handle]);
     throwIfError(rc, m);
   }
-  const entries = parseEntries(m, entriesPtr, count, pathsPtr);
-  m.ccall('openrar_archive_list_free', null, ['number','number','number'], [entriesPtr, pathsPtr, 0]);
+  let entries;
+  try {
+    entries = parseEntries(m, entriesPtr, count, pathsPtr, pathsSize);
+  } catch (e) {
+    // A malformed entry table must not leak the C buffers or the handle.
+    m.ccall('openrar_archive_list_free', null, ['number','number','number'], [entriesPtr, pathsPtr, pathsSize]);
+    m.ccall('openrar_archive_close', null, ['number'], [handle]);
+    throw e;
+  }
+  m.ccall('openrar_archive_list_free', null, ['number','number','number'], [entriesPtr, pathsPtr, pathsSize]);
   const archive = new OpenRARArchive(handle, entries, rarU8);
   archive._module = m;
   if (opts.limits) {

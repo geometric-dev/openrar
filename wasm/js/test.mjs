@@ -1,5 +1,5 @@
 // wasm/js/test.mjs — CI smoke test for the block codec.
-// Runs only if wasm/dist/openrar.js is built; CI runs this after a fresh
+// Runs only if wasm/js/dist/openrar.js is built; CI runs this after a fresh
 // `cmake --build --preset wasm`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,10 +8,10 @@ import path from 'node:path';
 import url from 'node:url';
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));
-const distJs = path.join(here, '../dist/openrar.js');
+const distJs = path.join(here, './dist/openrar.js');
 
 if (!existsSync(distJs)) {
-  test('wasm/dist/openrar.js missing — run `emcmake cmake --preset wasm && cmake --build --preset wasm`', { skip: true }, () => {});
+  test('wasm/js/dist/openrar.js missing — run `emcmake cmake --preset wasm && cmake --build --preset wasm`', { skip: true }, () => {});
 } else {
   const { OpenRAR, WASM_API_VERSION, getModule } = await import('./openrar.js');
 

@@ -130,7 +130,7 @@ private:
     // lower-cased). A cache hit skips the walk but never the final
     // containment assertion; cached handles pin verified inodes, so an
     // attacker renaming over a cached directory cannot redirect writes.
-    static constexpr size_t kCacheCapacity = 64;
+    static constexpr size_t CACHE_CAPACITY = 64;
     struct CacheEntry {
         std::string key;
         void* handle = nullptr;

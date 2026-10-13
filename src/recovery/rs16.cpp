@@ -26,8 +26,8 @@ namespace {
 
 // ── GFNI affinity matrices (v1.22.0) ─────────────────────────────────────────
 // GF(2^16) multiply-by-constant distributes over the byte halves:
-//   coeff * (hi<<8 | lo) = (hi * K1) ^ (lo * K0)
-// with K0 = coeff and K1 = coeff * x^8 (both 16-bit constants). Each 8-bit ×
+//   coeff * (hi<<8 | lo) = (hi * k1) ^ (lo * K0)
+// with K0 = coeff and k1 = coeff * x^8 (both 16-bit constants). Each 8-bit ×
 // 16-bit-constant product is a GF(2)-linear byte map 8 -> 16, i.e. TWO 8x8
 // GF(2) matrices (one per output byte). Four matrices per coefficient:
 //   m[0]: lo -> out_lo   m[1]: lo -> out_hi
@@ -57,7 +57,7 @@ struct GfniCalib {
     int qbit_of[8][8]; // qbit_of[row][col] = qword bit index for that entry
 };
 
-core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 K, bool high_half,
+core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 k, bool high_half,
                                   const GfniCalib& cal);
 
 const GfniCalib& gfni_calib() {
@@ -124,12 +124,12 @@ const GfniCalib& gfni_calib() {
         if (c.valid) {
             // Composite check: full 64-byte fold through the measured encoding
             // vs the scalar table reference, for a non-trivial coefficient.
-            constexpr core::uint32 kCoeff = 0x1234;
+            constexpr core::uint32 COEFF = 0x1234;
             alignas(64) core::byte ref_ecc[64] = {};
             core::uint16 mul_lo[256], mul_hi[256];
             for (core::uint32 b = 0; b < 256; ++b) {
-                mul_lo[b] = static_cast<core::uint16>(rs.gf_mul(kCoeff, b));
-                mul_hi[b] = static_cast<core::uint16>(rs.gf_mul(kCoeff, b << 8));
+                mul_lo[b] = static_cast<core::uint16>(rs.gf_mul(COEFF, b));
+                mul_hi[b] = static_cast<core::uint16>(rs.gf_mul(COEFF, b << 8));
             }
             for (core::uint32 w = 0; w < 32; ++w) {
                 const core::uint16 word =
@@ -139,12 +139,12 @@ const GfniCalib& gfni_calib() {
                 ref_ecc[2 * w] = static_cast<core::byte>(folded & 0xFF);
                 ref_ecc[2 * w + 1] = static_cast<core::byte>((folded >> 8) & 0xFF);
             }
-            const core::uint32 K1 = rs.gf_mul(kCoeff, 0x100u);
+            const core::uint32 k1 = rs.gf_mul(COEFF, 0x100u);
             core::uint64 m[4];
-            m[0] = gfni_encode_byte_map(rs, kCoeff, false, c);
-            m[1] = gfni_encode_byte_map(rs, kCoeff, true, c);
-            m[2] = gfni_encode_byte_map(rs, K1, false, c);
-            m[3] = gfni_encode_byte_map(rs, K1, true, c);
+            m[0] = gfni_encode_byte_map(rs, COEFF, false, c);
+            m[1] = gfni_encode_byte_map(rs, COEFF, true, c);
+            m[2] = gfni_encode_byte_map(rs, k1, false, c);
+            m[3] = gfni_encode_byte_map(rs, k1, true, c);
 
             // Split composites: isolate the lo-byte path (m0/m1) from the
             // hi-byte path (m2/m3 + odd de-interleave), so a calibration
@@ -192,14 +192,14 @@ const GfniCalib& gfni_calib() {
     return cached;
 }
 
-// Encode the byte map T(b) = one half of K*b as a qword under the measured
+// Encode the byte map T(b) = one half of k*b as a qword under the measured
 // convention: matrix entry (row, col) — dst_bit(row) = src_bit(col) AND
 // entry — is placed at the calibrated qword bit for T's bit pattern.
-core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 K, bool high_half,
+core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 k, bool high_half,
                                   const GfniCalib& cal) {
     core::uint64 q = 0;
     for (int k = 0; k < 8; ++k) {
-        const core::uint32 product = rs.gf_mul(K, 1u << k);
+        const core::uint32 product = rs.gf_mul(k, 1u << k);
         const core::uint8 out_b =
             static_cast<core::uint8>(high_half ? (product >> 8) & 0xFF : product & 0xFF);
         for (int r = 0; r < 8; ++r) {
@@ -217,7 +217,7 @@ core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 K, bool 
 
 // ── NEON fold kernel (v1.22.0) ───────────────────────────────────────────────
 // GF(2^16) multiply-by-constant distributes over the byte halves:
-//   coeff * (hi<<8 | lo) = (lo * K0) ^ (hi * K1), K0 = coeff, K1 = coeff * x^8
+//   coeff * (hi<<8 | lo) = (lo * K0) ^ (hi * k1), K0 = coeff, k1 = coeff * x^8
 // (the same algebra as mul_lo / mul_hi in update_ecc_scalar). Each byte *
 // 16-bit-constant product is a GF(2)-linear byte map 8 -> 16, and a linear
 // map splits over the input nibbles:
@@ -242,14 +242,14 @@ struct NeonFoldTables {
     uint8x16_t n1_hi; // map(b) high output byte, n = b >> 4
 };
 
-NeonFoldTables make_neon_fold_tables(const ReedSolomon16& rs, core::uint32 K) {
+NeonFoldTables make_neon_fold_tables(const ReedSolomon16& rs, core::uint32 k) {
     alignas(16) core::byte lo0[16];
     alignas(16) core::byte hi0[16];
     alignas(16) core::byte lo1[16];
     alignas(16) core::byte hi1[16];
     for (core::uint32 n = 0; n < 16; ++n) {
-        const core::uint32 p0 = rs.gf_mul(K, n);
-        const core::uint32 p1 = rs.gf_mul(K, n << 4);
+        const core::uint32 p0 = rs.gf_mul(k, n);
+        const core::uint32 p1 = rs.gf_mul(k, n << 4);
         lo0[n] = static_cast<core::byte>(p0 & 0xFF);
         hi0[n] = static_cast<core::byte>((p0 >> 8) & 0xFF);
         lo1[n] = static_cast<core::byte>(p1 & 0xFF);
@@ -523,7 +523,7 @@ void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, cons
     const GfniCalib& cal = gfni_calib();
     if (cal.valid && cal.composite_ok) {
         // GF(2^16) mul distributes over the byte halves:
-        //   coeff * (hi<<8 | lo) = (lo * K0) ^ (hi * K1), K1 = coeff * x^8.
+        //   coeff * (hi<<8 | lo) = (lo * K0) ^ (hi * k1), k1 = coeff * x^8.
         // Each 8-bit x 16-bit-constant product is a GF(2)-linear byte map,
         // i.e. two 8x8 matrices; the calibration has measured the
         // instruction's byte/bit mapping empirically, so the kernel is
@@ -531,9 +531,9 @@ void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, cons
         core::uint64 m[4];
         m[0] = gfni_encode_byte_map(*this, coeff, /*high_half=*/false, cal);
         m[1] = gfni_encode_byte_map(*this, coeff, /*high_half=*/true, cal);
-        const core::uint32 K1 = gf_mul(coeff, 0x100u);
-        m[2] = gfni_encode_byte_map(*this, K1, /*high_half=*/false, cal);
-        m[3] = gfni_encode_byte_map(*this, K1, /*high_half=*/true, cal);
+        const core::uint32 k1 = gf_mul(coeff, 0x100u);
+        m[2] = gfni_encode_byte_map(*this, k1, /*high_half=*/false, cal);
+        m[3] = gfni_encode_byte_map(*this, k1, /*high_half=*/true, cal);
 
         const size_t body = block_size & ~static_cast<size_t>(63);
         if (body > 0) {

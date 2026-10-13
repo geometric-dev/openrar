@@ -20,17 +20,17 @@ namespace openrar::sfx {
 // '=' are ignored silently.
 //
 // Caps (plan §4; exceeding degrades that line, never aborts extraction):
-//   - at most kMaxDirectiveLines recognized directive lines (truncated flag)
-//   - at most kMaxValueBytes per value (line ignored)
+//   - at most MAX_DIRECTIVE_LINES recognized directive lines (truncated flag)
+//   - at most MAX_VALUE_BYTES per value (line ignored)
 //   - the decoded comment itself is capped reader-side at 1 MiB
 //
 // The struct is plain data and is treated as immutable after parse: the stub
 // parses once per run and consumes it as const.
 
-inline constexpr size_t kMaxDirectiveLines = 64;
-inline constexpr size_t kMaxValueBytes = 4096;
-inline constexpr size_t kMaxShortcutFields = 6;
-inline constexpr size_t kMaxShortcutFieldBytes = 1024;
+inline constexpr size_t MAX_DIRECTIVE_LINES = 64;
+inline constexpr size_t MAX_VALUE_BYTES = 4096;
+inline constexpr size_t MAX_SHORTCUT_FIELDS = 6;
+inline constexpr size_t MAX_SHORTCUT_FIELD_BYTES = 1024;
 
 enum class OverwriteDirective { Ask, OverwriteAll, SkipExisting };
 enum class SilentMode { Off, HideStart, Headless };
@@ -66,7 +66,7 @@ struct SfxConfig {
     // contract; never a reason to abort extraction).
     size_t ignored_unknown_keys{0};     // Key=Value lines with unrecognized key
     size_t ignored_over_limit_lines{0}; // value/field caps exceeded
-    bool truncated{false};              // kMaxDirectiveLines exceeded
+    bool truncated{false};              // MAX_DIRECTIVE_LINES exceeded
     bool invalid_utf8{false};           // comment not valid UTF-8: no directives
 
     bool has_directives() const {

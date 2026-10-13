@@ -14,11 +14,19 @@ const here = path.dirname(url.fileURLToPath(import.meta.url));
 const dist = path.join(here, '../dist');
 
 const REQUIRED = {
-  // Block codec (src/wasm/wasm_api.cpp) — consumed by wasm/js/openrar.js
+  // Block codec (src/wasm/wasm_api.cpp) — must mirror openrar.js
+  // REQUIRED_EXPORTS. stream_pull and the five stream_decompress_* exports
+  // were missing here, so this gate passed on a build that could not run any
+  // streaming call, and create_ex was absent too (the filter-mode path).
   'openrar.js': [
     '_openrar_version', '_openrar_alloc', '_openrar_free',
     '_openrar_compress2', '_openrar_decompress2',
-    '_openrar_stream_create', '_openrar_stream_feed', '_openrar_stream_finish', '_openrar_stream_free',
+    '_openrar_stream_create', '_openrar_stream_create_ex',
+    '_openrar_stream_feed', '_openrar_stream_pull', '_openrar_stream_finish',
+    '_openrar_stream_free',
+    '_openrar_stream_decompress_create', '_openrar_stream_decompress_feed',
+    '_openrar_stream_decompress_pull', '_openrar_stream_decompress_finish',
+    '_openrar_stream_decompress_free',
     '_malloc', '_free', 'ccall', 'cwrap', 'UTF8ToString',
   ],
   // Archive API (src/wasm/archive_api.cpp) — consumed by wasm/js/openrar-archive.js

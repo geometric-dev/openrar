@@ -180,7 +180,7 @@ if (result.fallback) {
 ```bash
 # Build both:
 make                                  # → ./openrar
-make wasm                             # → wasm/dist/openrar.{js,wasm}
+make wasm                             # → wasm/js/dist/openrar.{js,wasm}
 
 # Compress a file with the native CLI:
 ./openrar a -m3 fixture.bin fixture.rar
@@ -188,7 +188,7 @@ hexdump -C fixture.rar | head
 
 # Decompress with WASM in Node:
 node -e '
-import("./wasm/dist/openrar.js").then(async ({ default: OpenRAR }) => {
+import("./wasm/js/dist/openrar.js").then(async ({ default: OpenRAR }) => {
   const rar = new OpenRAR();
   await rar.ready;
   const compressed = await import("node:fs/promises").then(f => f.readFile("fixture.rar"));
@@ -206,7 +206,7 @@ round-trip use the `wasm-cli` build:
 ```bash
 make wasm-cli
 node -e '
-import("./wasm/dist/openrar_cli.js").then(async (m) => {
+import("./wasm/js/dist/openrar_cli.js").then(async (m) => {
   const FS = m.FS;
   FS.writeFile("/fixture.bin", await import("node:fs").then(f => f.readFileSync("fixture.bin")));
   m.callMain(["a", "-m3", "/fixture.rar", "/fixture.bin"]);

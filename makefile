@@ -65,9 +65,9 @@ uninstall:
 #   source emsdk/emsdk_env.sh   (provides emcmake / em++)
 #
 # Usage:
-#   make wasm           → wasm/dist/openrar.{js,wasm}         (block codec)
-#   make wasm-archive   → wasm/dist/openrar_archive.{js,wasm} (RAR5 archive API)
-#   make wasm-cli       → wasm/dist/openrar_cli.{js,wasm}     (full CLI + MEMFS)
+#   make wasm           → wasm/js/dist/openrar.{js,wasm}         (block codec)
+#   make wasm-archive   → wasm/js/dist/openrar_archive.{js,wasm} (RAR5 archive API)
+#   make wasm-cli       → wasm/js/dist/openrar_cli.{js,wasm}     (full CLI + MEMFS)
 #   make wasm-debug     → unoptimized block codec
 EMCMAKE ?= emcmake
 

@@ -84,7 +84,7 @@ void WorkerBroker::shutdown() {
         proc_ = nullptr;
     }
     close_pair();
-    volume_ = kInvalidIoHandle;
+    volume_ = INVALID_IO_HANDLE;
     phase_ = Phase::Closed;
 }
 
@@ -119,6 +119,20 @@ bool WorkerBroker::start(const std::string& worker_exe, const std::filesystem::p
         return false;
     }
 
+    // Only the worker's ends (cmd_read, res_write) and the volume may cross
+    // the spawn boundary. Mark the broker's OWN ends (cmd_write, res_read)
+    // non-inheritable here. Without this the worker inherited a copy of
+    // cmd_write - the last writer on the command pipe - so its cmd_read never
+    // saw EOF when the broker died, leaking an eternal worker blocked in
+    // recv() while holding the volume handle; it also gave the worker the
+    // broker's res_read end.
+    if (!set_handle_inheritable(pair_.cmd_write, false) ||
+        !set_handle_inheritable(pair_.res_read, false)) {
+        detail = "cannot mark broker-side channel ends non-inheritable";
+        close_pair();
+        return false;
+    }
+
     // 2. Volume handle — the BROKER opens the archive; the worker receives
     // only the read handle (§5.1: the worker never learns a path).
 #if defined(_WIN32)
@@ -127,14 +141,14 @@ bool WorkerBroker::start(const std::string& worker_exe, const std::filesystem::p
     sa.bInheritHandle = TRUE;
     volume_ = CreateFileW(arc_path.c_str(), GENERIC_READ, FILE_SHARE_READ, &sa, OPEN_EXISTING,
                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (volume_ == kInvalidIoHandle) {
+    if (volume_ == INVALID_IO_HANDLE) {
         detail = "cannot open archive volume for the worker";
         close_pair();
         return false;
     }
 #else
     volume_ = ::open(arc_path.c_str(), O_RDONLY);
-    if (volume_ == kInvalidIoHandle) {
+    if (volume_ == INVALID_IO_HANDLE) {
         detail = "cannot open archive volume for the worker";
         close_pair();
         return false;
@@ -152,10 +166,19 @@ bool WorkerBroker::start(const std::string& worker_exe, const std::filesystem::p
     argv_tail.push_back(handle_str(pair_.cmd_read));
     argv_tail.push_back(handle_str(pair_.res_write));
     argv_tail.push_back(handle_str(volume_));
-    if (!spawn_worker_process(worker_exe, argv_tail, profile_, &proc_, detail)) {
+#if defined(_WIN32)
+    const ChildHandles child_handles{pair_.cmd_read, pair_.res_write, volume_};
+#else
+    // native_io_handle is `int` on POSIX; carry it through as void*.
+    const ChildHandles child_handles{
+        reinterpret_cast<void*>(static_cast<intptr_t>(pair_.cmd_read)),
+        reinterpret_cast<void*>(static_cast<intptr_t>(pair_.res_write)),
+        reinterpret_cast<void*>(static_cast<intptr_t>(volume_))};
+#endif
+    if (!spawn_worker_process(worker_exe, argv_tail, child_handles, profile_, &proc_, detail)) {
         close_pair();
         close_io_handle(volume_);
-        volume_ = kInvalidIoHandle;
+        volume_ = INVALID_IO_HANDLE;
         return false;
     }
 
@@ -326,20 +349,28 @@ bool WorkerBroker::run_selftest(const std::string& worker_exe,
         detail = "cannot create selftest channels";
         return false;
     }
+    // Same inheritance scoping as the real start(): the broker's own ends must
+    // not reach the worker (see the rationale in start()).
+    if (!set_handle_inheritable(broker.pair_.cmd_write, false) ||
+        !set_handle_inheritable(broker.pair_.res_read, false)) {
+        detail = "cannot mark selftest channel ends non-inheritable";
+        broker.close_pair();
+        return false;
+    }
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
     broker.volume_ = CreateFileW(volume_path.c_str(), GENERIC_READ, FILE_SHARE_READ, &sa,
                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (broker.volume_ == kInvalidIoHandle) {
+    if (broker.volume_ == INVALID_IO_HANDLE) {
         detail = "cannot open selftest volume handle";
         broker.close_pair();
         return false;
     }
 #else
     broker.volume_ = ::open(volume_path.c_str(), O_RDONLY);
-    if (broker.volume_ == kInvalidIoHandle) {
+    if (broker.volume_ == INVALID_IO_HANDLE) {
         detail = "cannot open selftest volume handle";
         broker.close_pair();
         return false;
@@ -354,7 +385,16 @@ bool WorkerBroker::run_selftest(const std::string& worker_exe,
     argv_tail.push_back(handle_str(broker.pair_.cmd_read));
     argv_tail.push_back(handle_str(broker.pair_.res_write));
     argv_tail.push_back(handle_str(broker.volume_));
-    if (!spawn_worker_process(worker_exe, argv_tail, profile, &broker.proc_, detail)) {
+#if defined(_WIN32)
+    const ChildHandles child_handles{broker.pair_.cmd_read, broker.pair_.res_write, broker.volume_};
+#else
+    const ChildHandles child_handles{
+        reinterpret_cast<void*>(static_cast<intptr_t>(broker.pair_.cmd_read)),
+        reinterpret_cast<void*>(static_cast<intptr_t>(broker.pair_.res_write)),
+        reinterpret_cast<void*>(static_cast<intptr_t>(broker.volume_))};
+#endif
+    if (!spawn_worker_process(worker_exe, argv_tail, child_handles, profile, &broker.proc_,
+                              detail)) {
         broker.close_pair();
         return false;
     }

@@ -77,7 +77,7 @@ void* parse_native(const char* s) {
 }
 #endif
 
-constexpr size_t kChunkPayload = 256 * 1024; // per DataChunk frame (≤ 4 MiB cap)
+constexpr size_t CHUNK_PAYLOAD = 256 * 1024; // per DataChunk frame (≤ 4 MiB cap)
 
 // Send or die: any channel failure on the worker side means the broker is
 // gone (or the pair is poisoned) — exit quietly, no partial state exists
@@ -335,7 +335,7 @@ int main(int argc, char** argv) {
                         w.mtime = fb.mtime_win >= 116444736000000000ull
                                       ? (fb.mtime_win - 116444736000000000ull) / 10000000ull
                                       : 0ull;
-                        w._pad[0] = fb.is_service ? sandbox::kWIRE_FLAG_SERVICE : 0ull;
+                        w._pad[0] = fb.is_service ? sandbox::WIRE_FLAG_SERVICE : 0ull;
                         view.entries.push_back(w);
                         paths += name;
                     }
@@ -365,7 +365,7 @@ int main(int argc, char** argv) {
                 }
                 uint64_t emitted = 0;
                 auto sink = [&](const core::byte* data, size_t n) -> bool {
-                    if (n > sandbox::kMaxFramePayload) return false;
+                    if (n > sandbox::MAX_FRAME_PAYLOAD) return false;
                     sandbox::Frame chunk{sandbox::FrameType::DataChunk, {}};
                     chunk.payload.assign(data, data + n);
                     if (!send_frame(res, chunk)) return false;
