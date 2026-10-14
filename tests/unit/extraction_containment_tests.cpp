@@ -15,8 +15,11 @@
 
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/archive/archive_reader.hpp"
+#include "../../src/format/header_writer.hpp"
 #include "../../src/io/containment.hpp"
 #include "../../src/io/extraction_journal.hpp"
+#include "../../src/io/file_stream.hpp"
+#include "../../src/io/path_util.hpp"
 #include "../../src/io/win32_meta.hpp"
 
 #include <cassert>
@@ -112,6 +115,44 @@ fs::path build_archive(const fs::path& dir,
     }
     fs::remove(blob);
     return arc;
+}
+
+// Builds a one-entry archive holding a single redirect record (symlink /
+// junction / hardlink / filecopy). The header is written raw so the entry NAME
+// can carry shapes no producer emits — a trailing separator, a drive prefix —
+// which is precisely what the depth math used to miscount.
+fs::path build_redir_archive(const fs::path& dir, const std::string& name, int redir_type,
+                             const std::string& target) {
+    const fs::path arc = dir / "redir_fixture.rar";
+    io::FileStream s;
+    assert(s.open(arc, io::FileMode::CreateAlways));
+    format::HeaderWriter::write_signature(s);
+    format::MainBlock mb;
+    format::HeaderWriter::write_main_block(s, mb);
+    format::FileBlock fb;
+    fb.file_name = name;
+    fb.host_os = 1;
+    fb.unp_size = 0;
+    fb.pack_size = -1;
+    fb.method = 0;
+    fb.redir_type = redir_type;
+    fb.redir_target = target;
+    assert(format::HeaderWriter::write_file_block(s, fb));
+    format::EndArcBlock eb;
+    format::HeaderWriter::write_end_block(s, eb);
+    s.close();
+    return arc;
+}
+
+// The destination the caller builds for an entry: root / sanitized(name).
+fs::path dest_for(const fs::path& root, const std::string& name) {
+    return root / io::sanitize_archive_path(name);
+}
+
+// Nothing at `p` — including a dangling link, which fs::exists() follows and
+// therefore reports as absent.
+bool nothing_created(const fs::path& p) {
+    return !is_symlink_like(p) && !fs::exists(p);
 }
 
 // ── The suite body (run twice: openat2 on / fallback forced) ────────────────
@@ -308,6 +349,124 @@ void test_alias_83_rejected() {
     rm(root);
 }
 
+// ── v1.41.1: link/copy target depth is the SANITIZED name's depth ─────────────
+//
+// The link-safety and root-stripping depth used to be counted from the RAW
+// header name while the destination is built from the sanitized one. Two
+// shapes inflated that count by one — a trailing separator ("a/b/") and a
+// drive prefix ("C:/a/b") — handing a relative link or copy source exactly one
+// ".." of reach past the extraction root.
+
+void test_symlink_target_depth_uses_sanitized_name() {
+    // Windows uses a JUNCTION: an unprivileged reparse point, so the creation
+    // half of this test runs on every agent. POSIX uses a plain symlink. Both
+    // pass through the same is_relative_symlink_safe() gate.
+#ifdef _WIN32
+    const int kLinkType = 3;
+#else
+    const int kLinkType = 1;
+#endif
+
+    // Escaping targets. Each of these resolved ABOVE the extraction root when
+    // the depth came from the raw name; each now resolves through the
+    // sanitized name and is refused before anything touches the filesystem.
+    const std::vector<std::pair<std::string, std::string>> escapes = {
+        {"a/b", "../../evil"},           // control: plain shape, still an escape
+        {"a/b/", "../../evil"},          // trailing separator bought +1 reach
+        {"C:/a/b", "../../evil"},        // drive prefix counted as a component
+        {"a/b/c/d", "../../../../evil"}, // deeper: 4 levels up from level 3
+        {"a/b/c", "../../evil"},         // one short of the escape: must stay legal
+    };
+
+    for (size_t i = 0; i < escapes.size(); ++i) {
+        const std::string& name = escapes[i].first;
+        const std::string& target = escapes[i].second;
+        const bool must_refuse = i < escapes.size() - 1;
+        const fs::path root = make_dir("depth_root");
+        const fs::path arc = build_redir_archive(root, name, kLinkType, target);
+
+        archive::ArchiveReader reader;
+        reader.set_extraction_root(root);
+        reader.set_extract_symlinks(true);
+        assert(reader.open(arc));
+        assert(reader.extract_entry(reader.entries()[0], dest_for(root, name)));
+
+        const fs::path dest = dest_for(root, name);
+        if (must_refuse) {
+            // Refused BEFORE creation — nothing in the root, and nothing
+            // anywhere outside it either.
+            assert(nothing_created(dest));
+            std::error_code ec;
+            assert(!fs::exists(root.parent_path() / "evil", ec));
+        } else {
+            assert(is_symlink_like(dest)); // in-root target: still materialized
+        }
+        rm(root);
+    }
+
+    // A target that re-descends stays inside the root and must NOT be refused:
+    // from <root>/a/b, "../a/../b/../c" resolves to <root>/c. The old
+    // dotdot-counting form rejected it (3 ".." > depth 1) despite the walk
+    // never leaving the root — a false positive on a legitimate archive.
+    {
+        const fs::path root = make_dir("redescend_root");
+        const fs::path arc = build_redir_archive(root, "a/b", kLinkType, "../a/../b/../c");
+        archive::ArchiveReader reader;
+        reader.set_extraction_root(root);
+        reader.set_extract_symlinks(true);
+        assert(reader.open(arc));
+        assert(reader.extract_entry(reader.entries()[0], dest_for(root, "a/b")));
+        assert(is_symlink_like(root / "a" / "b"));
+        rm(root);
+    }
+
+    std::cout << "[PASS] symlink depth: link targets resolve against the sanitized name\n";
+}
+
+void test_filecopy_root_depth_uses_sanitized_name() {
+    // FILECOPY (redir_type 5) materializes by default, and its source is
+    // confined by stripping the entry's own components off dest_path. A
+    // drive-prefixed name over-stripped by one, landing the "root" above the
+    // extraction root and letting "../secret.txt" read a real outside file.
+    const fs::path root = make_dir("filecopy_root");
+    const fs::path outside = make_dir("filecopy_outside");
+    write_file(outside / "secret.txt", "outside secret bytes");
+    write_file(root / "planted.txt", "inside bytes");
+
+    for (const std::string& name :
+         {std::string("C:/a/b"), std::string("a/b/"), std::string("a/b")}) {
+        const fs::path arc = build_redir_archive(root, name, 5, "../secret.txt");
+        archive::ArchiveReader reader;
+        reader.set_extraction_root(root);
+        assert(reader.open(arc));
+        assert(reader.extract_entry(reader.entries()[0], dest_for(root, name)));
+        // ../secret.txt only exists ABOVE the root, so every form must be
+        // refused as an unsafe target — never materialized.
+        assert(reader.last_filecopy_outcome() ==
+               archive::ArchiveReader::FilecopyOutcome::TargetUnsafe);
+        assert(nothing_created(dest_for(root, name)));
+    }
+
+    // Positive control: a genuinely in-root source still materializes, which
+    // pins that the refusal above is confinement and not a blanket rejection.
+    // FILECOPY targets resolve against the extraction ROOT (not the entry's own
+    // parent), so the source name carries no leading "..".
+    {
+        const fs::path arc = build_redir_archive(root, "a/b", 5, "planted.txt");
+        archive::ArchiveReader reader;
+        reader.set_extraction_root(root);
+        assert(reader.open(arc));
+        assert(reader.extract_entry(reader.entries()[0], dest_for(root, "a/b")));
+        assert(reader.last_filecopy_outcome() ==
+               archive::ArchiveReader::FilecopyOutcome::Materialized);
+        assert(read_file(dest_for(root, "a/b")) == "inside bytes");
+    }
+
+    std::cout << "[PASS] filecopy depth: copy sources are confined to the sanitized root\n";
+    rm(root);
+    rm(outside);
+}
+
 } // namespace
 
 int main() {
@@ -320,6 +479,8 @@ int main() {
 #endif
     test_toctou_symlink_target_race_and_friends();
     test_alias_83_rejected();
+    test_symlink_target_depth_uses_sanitized_name();
+    test_filecopy_root_depth_uses_sanitized_name();
     std::cout << "All extraction_containment_tests passed.\n";
     return 0;
 }

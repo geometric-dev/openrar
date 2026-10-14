@@ -83,7 +83,9 @@ int main() {
                 }
                 break;
             case Decompressor50::OpRecord::Tag::Match:
-                std::snprintf(buf, sizeof(buf), "M d=%u l=%u", r.a, r.b);
+                // r.a is the 0-based stored distance; display the wire value.
+                std::snprintf(buf, sizeof(buf), "M d=%u l=%u", static_cast<unsigned>(r.a) + 1u,
+                              r.b);
                 real_toks.push_back(buf);
                 break;
             case Decompressor50::OpRecord::Tag::Rep:

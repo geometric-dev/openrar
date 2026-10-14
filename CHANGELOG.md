@@ -7,6 +7,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.41.1] - 2026-10-14
+
+Security and correctness release driven by an independent review of an external
+audit. The audit's ~30 proposals were re-derived against the source and
+triaged: most were kept in modified form, several were rejected as wrong or
+already-fixed, and the two most serious findings were ones the audit did **not**
+contain. Theme: **depth arithmetic that did not match the path it was
+describing**.
+
+### Security
+
+- **Relative symlink target escaped the extraction root (P0)** -
+  `calc_allowed_depth()` counted the components of the RAW header name, but the
+  destination is built from `io::sanitize_archive_path(name)`
+  (`open_contained_writer`, `archive_reader.cpp`). Two name shapes inflated that
+  count by exactly one, granting every relative target one extra `..` of reach:
+  a trailing separator (`a/b/`, which the old code also special-cased as a
+  "directory" and credited a full extra level) and a drive prefix (`C:/a/b`,
+  where `C:` is stripped by sanitization but counted as a component). A crafted
+  entry `a/b/` with `redir_type=1` and target `../../evil` produced a live
+  symlink resolving outside the root. Both functions now derive their depth
+  from the sanitized name. Regression tests added.
+- **Hardlink / FILECOPY source escaped the extraction root (P0)** -
+  `get_dest_root()` had the same raw-name miscount, so it stripped one level
+  too many and landed the confinement root *above* the extraction root. A
+  `redir_type=5` entry named `C:/a/b` targeting `../secret.txt` copied a real
+  file from outside the root into the tree. Same fix; covered by a new test that
+  pins `FilecopyOutcome::TargetUnsafe` for every escaping shape and still
+  materializes an in-root source.
+- **Destination-policy symlink check suppressed across archives** - `close()`
+  cleared `links_created_` but not `symlink_chain_checked_`, the reader-lifetime
+  cache that short-circuits `has_symlink_parent_cached()`. Reusing one
+  `ArchiveReader` across two archives carried the first archive's verified chain
+  into the second. Not a containment bypass (the anchored write-time walk still
+  re-verifies every entry), but a destination-policy suppression.
+
+### Fixed
+
+- **`-mc` / `-m` were silently dropped for files over 16 MiB in multivolume
+  archives** (`add_file_to_archive_vol`): the >`SPOOL_MEMORY_THRESHOLD` branch
+  built its `StreamEncoder` without `filter_cfg`, while every other encoder call
+  site - the non-volume prepare, the direct-stream batch writer, and this same
+  function's in-memory branch - honours it. The same file packed differently
+  depending on its size and whether the archive was multivolume.
+  `volume_tests.cpp::test_volume_spool_honours_filter_cfg` pins it.
+- **QuickOpen buffers built and discarded under encrypted headers** - four
+  `want_qo` sites lacked the `!header_encrypt_mode` guard the other four
+  carried, so every header was staged into `qo_arena` (and, for retained
+  entries, re-read from disk) for a payload that is never emitted.
+- **`PendingTempReclaim` / stranded lock temps**: a Phase 1 failure in
+  `lock_archive` on volume N abandoned the `.lck_tmp` files already produced for
+  volumes 0..N-1. Those names are unique per attempt, so nothing ever reclaimed
+  them.
+- **FILECOPY with an unstattable source emitted `UnpSize=0`** - the documented
+  header shape that corrupts chain-member decodes under the reference decoder.
+  Now fails closed.
+- **Windows FILETIME conversion overflowed** on both the low side (signed
+  overflow, UB) and the high side (silent wrap) for out-of-range stamps; the
+  deferred-directory field was also `uint64` while legitimately holding negative
+  pre-1970 values, costing two implementation-defined conversions per
+  application. Both ends are now clamped and the field is `int64`.
+- **Stored extraction ignored its own extent seam and its seek result**: the
+  extent loop in `extract_store_entry_impl` opened volumes by name (bypassing
+  the attached-handle path the sandbox worker relies on) and left both seeks
+  unchecked, so a failed seek wrote verbatim-garbage that the CRC/BLAKE2sp gate
+  would then report as a successful extraction of the wrong bytes.
+
+### Performance
+
+- `read_packed_data` allocated and page-touched a fresh 1 MiB staging vector per
+  megabyte and then `memcpy`'d it into the destination; it now sizes once and
+  reads straight in.
+- `copy_stream_region` allocated a 1 MiB transfer buffer per call, in loops over
+  retained entries; callers in a batch now share one.
+- Bulk delete and batch-add name matching were O(offsets x entries) /
+  O(batch x entries) rescans; both are hash lookups now. (The audit's proposed
+  `.mv_bak` remap was rejected: keying on `path::string()` is case-sensitive
+  while `path::operator==` is case-insensitive on Windows, and a miss would
+  leave extents pointing at volumes the writer then recreates - silent
+  corruption.)
+- QuickOpen: per-entry header reads go straight into the arena (no temporary),
+  and the per-entry VINT buffers are reused with the CRC streamed off the arena.
+- Archive open: header-body, QuickOpen-entry and per-volume buffers are hoisted
+  out of their loops; the SFX signature scan uses `memchr` for the leading byte
+  instead of an 8-byte compare at every offset.
+- 32-bit/WASM guard on the dictionary window, so a large `-md` can no longer
+  wrap at the `size_t` narrowing and leave the encoder and the recorded
+  `win_size` disagreeing.
+- `Compressor50` computed a BLAKE2sp digest over 100% of the uncompressed input
+  on the compression thread and never read it: `hash_blake2_` had no getter, no
+  `finish()` and no consumer anywhere in the repo, and the archive writer gets
+  its checksum independently. Removed. (Second-audit pass; the audit's
+  "15-25% of CPU" figure is not supportable - the real saving is well under 2%.)
+- `write_block` constructed a fresh `BitOutput` per block, reserving a 256 KiB
+  transfer buffer each time; on incompressible input the block boundary fires
+  every ~32 KiB, so that was a 256 KiB allocation cycle per 32 KiB of input. The
+  buffer is now a reused member.
+- `ApplyEngine::flush_pending` copied each filter region out of the ring window
+  one byte at a time and then copied it a second time into a separate output
+  vector before running an in-place transform. It is now one or two `memcpy`s
+  across the wrap, transforming in place (only Delta genuinely needs a second
+  buffer).
+- Reed-Solomon scalar fold: the 256-entry GF lookup tables cost a fixed ~1 us to
+  build regardless of block size, which dominates for the small groups that
+  small archives and 512-byte sectors produce. Below 2 KiB the fold now uses
+  direct log/exp multiplies instead - the same trade the GFNI/NEON remainder
+  loops already make, and bit-identical by construction.
+
+### Fixed
+
+- **Span match distances above 4 GiB truncated to a u32** (`decode_span`): the
+  distance is 1-based and a maximal 4 GiB v0 window has the single value 2^32,
+  which does not fit `OpRecord::a`. It is now stored 0-based (`[1, 2^32]` ->
+  `[0, 0xFFFFFFFF]`), which is exact for the whole range and does not depend on
+  the caller having gated the window size. (The audit's proposed
+  `distance > 0xFFFFFFFF -> reject` would have *diverged* from the sequential
+  decoder, which accepts that value - i.e. a regression.)
+- **Over-complete Huffman descriptions were decoded as garbage**
+  (`HuffmanDecoder::build`): a crafted block header could supply code lengths
+  whose Kraft sum exceeds 1, leaving `decode_len_` non-monotone and the decoder
+  emitting arbitrary-but-in-bounds symbols instead of failing. `build` now
+  enforces the partial Kraft inequality, which rejects exactly the impossible
+  tables and leaves every legal complete, sparse or empty table untouched.
+- `BitReader::peek_bits`/`peek_bits64` could evaluate a shift by the type's own
+  width - undefined behaviour - when a starved streaming callback left the
+  accumulator empty at a maximum-width request. Return early when the whole
+  request is already buffered.
+- `Compressor50::compress_buffer_parallel` underflowed its per-chunk seed length
+  when `win_size == 0` (a public parameter with no lower bound), producing a
+  wild seed pointer. It now substitutes the declared default.
+
+### Notes
+
+- Rejected from the external audit after verification against the source: the
+  `enc_residual` "O(N) memmove" (the erase moves at most 15 bytes, and the
+  proposed replacement copies the same bytes it claimed to save); `KeyScrubGuard`
+  (`crypto::secure_wipe`, `~Rar5Keys` and `~Aes256` already scrub in the right
+  destruction order); `parse_part_number` (`atol` saturates and the value is only
+  compared `> 1`); the QuickOpen `struct_end` 32-bit wrap (the 2 MiB cap is the
+  left operand of the same `||`); and `extract_store_entry_impl` as a callee of
+  `extract_entry_impl` (it would have dropped the session-registry insert and
+  silently skipped every stored hardlink).
+- Rejected from the follow-up encoder/decoder audit, each checked against the
+  source: the `BitOutput::align_byte` "stale acc_ bits" claim (the extraction
+  window is strictly inside the valid bits, and `align_byte` with an empty
+  accumulator is unreachable); the `dist_code << extra_high_len` shift-by-32 UB
+  (guarded to <= 31 by `dist_len >= 1`); the `consume_bits` `1 << 64` shift (the
+  mask is evaluated only after `n_` has been decremented, so it is <= 63); the
+  4-wide batcher `+7`-vs-`+8` out-of-bounds read (a second conjunct,
+  `unhashed_pos_ + 7 <= cur_`, plus the `cur_ + 4 <= src_loaded_` guard, already
+  bounds it with 3 bytes to spare); the ARM/E8 SIMD over-read (every load is
+  in-bounds exactly, by the loop conditions); `% win_size_` -> `& win_mask_`
+  (the window is a non-power-of-two FCI value in the common case, so the
+  substitution does not apply); and the `std::bad_alloc` escape from
+  `flush_pending` (the allocations are bounded to 4 MiB and every ABI boundary
+  already has a catch-all).
+
 ## [1.41.0] - 2026-10-13
 
 Remediation release: a full-tree code review (security, correctness, dead code,

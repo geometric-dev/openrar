@@ -11,7 +11,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
-#include <set>
+#include <unordered_set>
 #include <vector>
 
 namespace openrar::compress {
@@ -423,7 +423,10 @@ private:
     // user file is skipped. One extract_all / one CLI x|e invocation is one
     // session; DLL/WASM calls begin a fresh session per call
     // (begin_extraction_session).
-    std::set<std::string> session_created_paths_;
+    // Membership-only (hardlink target gate). Nothing ever iterates it, so the
+    // ordered tree bought nothing but an O(log n) probe and a node allocation
+    // per extracted file (v1.41.1).
+    std::unordered_set<std::string> session_created_paths_;
 
     // Deferred directory metadata (v1.24 plan §7.4): directories are created
     // permissive with default timestamps; (path, mode, mtime) stack here and
@@ -432,10 +435,15 @@ private:
     // would clobber and letting read-only directories receive children.
     struct PendingDirMeta {
         std::filesystem::path path;
+        // Component count of `path`, captured with it. The bottom-up sort is
+        // O(n log n) comparisons; recomputing the count inside the comparator
+        // made that O(n log n) PATH PARSES. Captured from the same path value
+        // the sort reads — never re-derive it after normalising (v1.41.1).
+        size_t depth = 0;
         bool has_mode = false;
         core::uint32 mode = 0; // POSIX mode bits (host_os == 1 archives)
         bool has_mtime = false;
-        core::uint64 mtime_unix = 0;
+        core::int64 mtime_unix = 0;
         // v1.27: allow-listed attributes restore bottom-up with the rest of
         // the directory's deferred metadata.
         std::vector<format::FileBlock::FileXattr> xattrs;
