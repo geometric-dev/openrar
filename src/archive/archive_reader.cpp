@@ -107,8 +107,10 @@ bool entry_mtime_unix(const format::FileBlock& h, core::int64& out_unix) {
 // MtimeBounds default (max 32503680000) leaves seven orders of magnitude of
 // headroom, but set_mtime_bounds() is public and can widen it, and an
 // unclamped product overflowed signed long long (UB) on the low side and
-// wrapped a garbage FILETIME silently on the high side (v1.41.1).
-constexpr core::int64 FT_EPOCH_OFFSET = 11644473600LL; // 1601-01-01 → 1970-01-01
+// wrapped a garbage FILETIME silently on the high side (v1.41.1). Windows-only:
+// the POSIX paths convert through timespec and have no FILETIME.
+#ifdef _WIN32
+constexpr core::int64 FT_EPOCH_OFFSET = 11644473600LL; // 1601-01-01 -> 1970-01-01
 constexpr core::int64 FT_MIN_UNIX = -FT_EPOCH_OFFSET;  // the FILETIME epoch itself
 constexpr core::int64 FT_MAX_UNIX = 910692730085LL;    // INT64_MAX / 1e7, minus the offset
 core::uint64 unix_to_filetime100(core::int64 unix_sec) {
@@ -116,6 +118,7 @@ core::uint64 unix_to_filetime100(core::int64 unix_sec) {
     if (unix_sec > FT_MAX_UNIX) unix_sec = FT_MAX_UNIX;
     return (static_cast<core::uint64>(unix_sec) + 11644473600ULL) * 10000000ULL;
 }
+#endif
 
 bool set_file_mtime(const std::filesystem::path& p, core::int64 unix_sec) {
 #ifdef _WIN32

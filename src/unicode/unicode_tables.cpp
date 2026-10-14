@@ -9,8 +9,6 @@
 
 namespace openrar::unicode {
 
-static const core::uint32 UNICODE_VERSION_CP = 0x150100u;
-
 // case-fold pairs (cp, folded): 1457 entries
 static const core::uint32 CASE_FOLD[] = {
     0x0041u,  0x0061u,  0x0042u,  0x0062u,  0x0043u,  0x0063u,  0x0044u,  0x0064u,  0x0045u,
