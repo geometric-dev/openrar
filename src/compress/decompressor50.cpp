@@ -33,6 +33,12 @@ void BitReader::refill() {
             if (!cb_ || fetched_ >= size_) return; // true end of stream
             size_t to_read = std::min<size_t>(buf_.size(), size_ - fetched_);
             size_t n = cb_(buf_.data(), to_read);
+            // InputCallback is a PUBLIC std::function API owned by the
+            // embedding (DLL / wasm / host), so its return value cannot be
+            // trusted to fit the buffer it was offered. Unclamped, an
+            // over-reporting callback parks end_ past the staging vector and
+            // every later memcpy in this loop reads out of bounds (v1.41.1).
+            n = std::min(n, to_read);
             p_ = buf_.data();
             end_ = p_ + n;
             fetched_ += n;
@@ -67,18 +73,27 @@ size_t BitReader::bits_remaining() const {
 
 core::uint32 BitReader::peek_bits(unsigned int count) {
     if (count == 0) return 0;
+    if (count > 32) count = 32; // mirror get_bits64's clamp for external callers
     if (n_ < count) refill();
     unsigned int take = std::min(count, n_);
-    core::uint32 val = static_cast<core::uint32>(take ? acc_ >> (n_ - take) : 0);
-    return val << (count - take);
+    // Early return when the accumulator already holds the whole request:
+    // this both avoids the shift below and is the only correct form at
+    // `count == 32`, where `val << (count - take)` would be a shift by the
+    // type's own width (UB) whenever a starved callback left take == 0
+    // (v1.41.1).
+    if (take == count) return static_cast<core::uint32>(acc_ >> (n_ - count));
+    core::uint32 val = take ? static_cast<core::uint32>(acc_ >> (n_ - take)) : 0;
+    return val << (count - take); // count - take < 32 here (take >= 1)
 }
 
 core::uint64 BitReader::peek_bits64(unsigned int count) {
     if (count == 0) return 0;
+    if (count > 64) count = 64;
     if (n_ < count) refill();
     unsigned int take = std::min(count, n_);
-    core::uint64 val = (take ? acc_ >> (n_ - take) : 0);
-    return val << (count - take);
+    if (take == count) return acc_ >> (n_ - count);
+    core::uint64 val = take ? (acc_ >> (n_ - take)) : 0;
+    return val << (count - take); // count - take < 64 here (take >= 1)
 }
 
 core::uint32 BitReader::get_bits(unsigned int count) {
@@ -148,6 +163,14 @@ bool HuffmanDecoder::build(const core::byte* bit_lengths, size_t count) {
     core::uint32 upper = 0;
     for (unsigned int i = 1; i < 16; ++i) {
         upper += len_cnt[i];
+        // Kraft inequality on the PARTIAL sum: upper is S_i * 2^i where
+        // S_i = sum_{j<=i} len_cnt[j]/2^j. For any prefix code S_i <= 1, so
+        // upper <= (1u << i) always — including the sparsely-populated tables
+        // RAR permits (which only make S_i smaller) and all-zero tables.
+        // Rejecting the over-complete case here keeps decode_len_ monotone and
+        // turns a table that would otherwise decode to arbitrary garbage into
+        // a clean failure (v1.41.1).
+        if (upper > (1u << i)) return false;
         decode_len_[i] = upper << (16 - i);
         upper <<= 1;
         decode_pos_[i] = decode_pos_[i - 1] + len_cnt[i - 1];
@@ -333,11 +356,22 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
     if (distance > unp_ptr_ && !first_win_done_) {
         // INTENDED (RAR5 spec): references past written data on the first
         // window pass decode as zeros. Do not "fix" this into an error.
-        for (size_t i = 0; i < length; ++i) {
-            window_[win_pos_] = 0;
-            win_pos_ = wrap_up(win_pos_ + 1);
-            unp_ptr_ = wrap_up(unp_ptr_ + 1);
+        // The whole run is zeros, so it is a memset in one or two contiguous
+        // segments rather than one store + two wrap_up calls per byte. The
+        // cursor advance stays per-byte-equivalent: unp_ptr_ only latches
+        // first_win_done_ when it lands exactly on 0, and both cursors move in
+        // lockstep (v1.41.1).
+        size_t rem_zero = length;
+        while (rem_zero > 0) {
+            // win_pos_ == unp_ptr_ holds here, so this chunk never carries
+            // unp_ptr_ past 0 — it can only land exactly on it, which is
+            // precisely the byte the per-byte loop latched on.
+            const size_t chunk = std::min(rem_zero, win_size_ - win_pos_);
+            std::memset(&window_[win_pos_], 0, chunk);
+            win_pos_ = wrap_up(win_pos_ + chunk);
+            unp_ptr_ = wrap_up(unp_ptr_ + chunk);
             if (unp_ptr_ == 0) first_win_done_ = true;
+            rem_zero -= chunk;
         }
         return;
     }
@@ -479,32 +513,39 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
                 if (abs_pos() - f.block_start >= win_size_) {
                     return false;
                 }
-                size_t back = static_cast<size_t>((abs_pos() - f.block_start) % win_size_);
+                size_t back = static_cast<core::uint64>(abs_pos() - f.block_start) % win_size_;
                 size_t circ_start = (unp_ptr_ + win_size_ - back) % win_size_;
+                // `buf` is already a private copy — window_ must not be
+                // mutated — so it is the filter's destination. Only Delta is
+                // genuinely out-of-place (const src, separate dest); E8,
+                // E8E9 and ARM all transform IN PLACE, so the old
+                // buf -> out_buf memcpy (and a second heap allocation plus its
+                // value-init memset) was pure duplication (v1.41.1).
                 std::vector<core::byte> buf(len);
-                size_t cur = circ_start;
-                for (size_t i = 0; i < len; ++i) {
-                    buf[i] = window_[cur];
-                    cur++;
-                    if (cur == win_size_) cur = 0;
+                // Two contiguous segments: the region is bounded by win_size_
+                // (checked above and at every filter push site), so it wraps
+                // at most once. The byte-at-a-time loop this replaces moved
+                // up to a full filter chunk one byte per iteration.
+                const size_t head = std::min(len, win_size_ - circ_start);
+                std::memcpy(buf.data(), &window_[circ_start], head);
+                if (head < len) {
+                    std::memcpy(buf.data() + head, &window_[0], len - head);
                 }
 
-                std::vector<core::byte> out_buf(len);
+                std::vector<core::byte> delta_buf;
+                const core::byte* emit_ptr = buf.data();
                 if (f.type == 0) {
-                    Filters50::apply_delta(buf.data(), out_buf.data(), len, f.channels);
+                    delta_buf.resize(len);
+                    Filters50::apply_delta(buf.data(), delta_buf.data(), len, f.channels);
+                    emit_ptr = delta_buf.data();
                 } else if (f.type == 1) {
-                    std::memcpy(out_buf.data(), buf.data(), len);
-                    Filters50::apply_e8(out_buf.data(), len, f.file_offset, false);
+                    Filters50::apply_e8(buf.data(), len, f.file_offset, false);
                 } else if (f.type == 2) {
-                    std::memcpy(out_buf.data(), buf.data(), len);
-                    Filters50::apply_e8(out_buf.data(), len, f.file_offset, true);
+                    Filters50::apply_e8(buf.data(), len, f.file_offset, true);
                 } else if (f.type == 3) {
-                    std::memcpy(out_buf.data(), buf.data(), len);
-                    Filters50::apply_arm(out_buf.data(), len, f.file_offset);
-                } else {
-                    // Undefined filter types 4-7: treat as raw data per spec
-                    std::memcpy(out_buf.data(), buf.data(), len);
+                    Filters50::apply_arm(buf.data(), len, f.file_offset);
                 }
+                // Undefined filter types 4-7: emit the raw region (spec).
 
                 // 3. Emit filtered bytes directly to flush_cb (never touching window_!)
                 size_t to_emit = len;
@@ -512,7 +553,7 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
                     to_emit = dest_size - last_flushed_;
                 }
                 if (to_emit > 0) {
-                    if (cb && !cb(out_buf.data(), to_emit)) return false;
+                    if (cb && !cb(emit_ptr, to_emit)) return false;
                     last_flushed_ += to_emit;
                 }
             }
@@ -588,7 +629,7 @@ bool Decompressor50::read_block_header(BitReader& reader, BlockHeader& header) {
     header.block_size = static_cast<int>(block_size);
     core::uint32 chk = (0x5A ^ flags ^ block_size ^ (block_size >> 8) ^ (block_size >> 16)) & 0xFF;
     if (chk != saved) return false;
-    header.block_start = static_cast<int>(reader.byte_pos()); // after header
+    header.block_start = static_cast<core::int64>(reader.byte_pos()); // after header
     header.last_block_in_file = (flags & 0x40) != 0;
     header.table_present = (flags & 0x80) != 0;
     // block_size==0 is valid per spec (empty last block with LastBlock flag); caller must handle.
@@ -727,6 +768,17 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
         engine_.filters_head_ = 0;
     }
     core::uint64 base_at_entry = solid ? file_base_ : 0;
+    // A solid chain accumulates the unpacked bytes of every PRIOR member, so
+    // this is an output-position base that grows without bound. Filter regions
+    // are derived from it below through a size_t, which wraps silently at 4 GiB
+    // on ILP32/WASM — after which every transform is scheduled at a bogus
+    // offset and the member decodes to wrong bytes with no error raised. Refuse
+    // the address range instead of wrapping into it (v1.41.1).
+    if (base_at_entry > static_cast<core::uint64>(SIZE_MAX)) {
+        last_error_ = DecompressErrorCode::InvalidInput;
+        last_error_str_ = "solid member base exceeds the addressable range";
+        return false;
+    }
     if (!solid) {
         file_base_ = 0;
         member_start_ = 0;
@@ -750,10 +802,12 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     if (!read_tables(reader, header)) return false;
     if (!header.table_present && !tables_ready_) return false;
 
-    auto block_end_bit = [&](const BlockHeader& h) -> size_t {
-        if (h.block_size <= 0) return static_cast<size_t>(h.block_start) * 8;
-        return static_cast<size_t>(h.block_start + h.block_size - 1) * 8 +
-               static_cast<size_t>(h.block_bit_size);
+    auto block_end_bit = [&](const BlockHeader& h) -> core::uint64 {
+        if (h.block_size <= 0) return static_cast<core::uint64>(h.block_start) * 8;
+        // 64-bit throughout: the previous form added two ints before casting,
+        // so it overflowed at 2 GiB even when block_start was positive.
+        return (static_cast<core::uint64>(h.block_start + h.block_size - 1)) * 8 +
+               static_cast<core::uint64>(h.block_bit_size);
     };
     size_t end_bit = block_end_bit(header);
     auto cur_bit = [&]() -> size_t {
@@ -1211,6 +1265,18 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
         // token. consume_bits caps at the accumulator width (~57 bits), so
         // long descriptions skip in chunks.
         while (reader.bit_pos() < expect.token_bits) {
+            // Forward-progress guard. consume_bits() takes ZERO bits once the
+            // accumulator is empty and the staging callback is starved, so
+            // without this the loop spins forever on a truncated stream.
+            // prescan_member records token_bits only after read_tables parsed
+            // that description successfully, so the bits exist today — but a
+            // skip loop that can spin is one refactor away from a fuzz hang
+            // (v1.41.1).
+            if (reader.bits_remaining() == 0) {
+                last_error_ = DecompressErrorCode::InvalidInput;
+                last_error_str_ = "span token-bit skip hit end of input";
+                return false;
+            }
             size_t remain = expect.token_bits - reader.bit_pos();
             reader.consume_bits(static_cast<unsigned>(remain > 57 ? 57 : remain));
         }
@@ -1220,10 +1286,10 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
             return false;
         }
 
-        auto block_end_bit = [&](const BlockHeader& h) -> size_t {
-            if (h.block_size <= 0) return static_cast<size_t>(h.block_start) * 8;
-            return static_cast<size_t>(h.block_start + h.block_size - 1) * 8 +
-                   static_cast<size_t>(h.block_bit_size);
+        auto block_end_bit = [&](const BlockHeader& h) -> core::uint64 {
+            if (h.block_size <= 0) return static_cast<core::uint64>(h.block_start) * 8;
+            return (static_cast<core::uint64>(h.block_start + h.block_size - 1)) * 8 +
+                   static_cast<core::uint64>(h.block_bit_size);
         };
         const size_t end_bit = block_end_bit(header);
 
@@ -1341,7 +1407,13 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
                 OpRecord r;
                 r.tag = static_cast<core::uint8>(OpRecord::Tag::Match);
                 r.aux = 0;
-                r.a = static_cast<core::uint32>(distance);
+                // Stored 0-BASED: distance is 1-based and reaches win_size_,
+                // which is 2^32 for a maximal v0 member — one value that does
+                // not fit a u32 as-is (2^32 truncates to 0). Shifting the whole
+                // range down by one makes [1, 2^32] map exactly onto
+                // [0, 0xFFFFFFFF], with no dependency on the caller having
+                // gated win_size to <= 4 GiB (v1.41.1).
+                r.a = static_cast<core::uint32>(distance - 1);
                 r.b = len;
                 out.recs.push_back(r);
                 rec_bytes_now += sizeof(OpRecord);
@@ -1396,7 +1468,10 @@ bool Decompressor50::apply_begin() {
 
 bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size, bool is_last,
                                         OutputCallback flush_cb, size_t* io_total_written) {
-    size_t total_written = *io_total_written;
+    if (!sr.ok) return false; // the producer bailed; half-built records are not records
+    // Every other out-param in this class is null-guarded; this one was
+    // dereferenced unconditionally (v1.41.1).
+    size_t total_written = io_total_written ? *io_total_written : 0;
     // The sequential decoder's per-token flush cadence, verbatim: plain
     // bytes flush at the 64 KiB output cadence and at filter completions
     // (inside engine_.flush_pending). Filter records skip the cadence check
@@ -1417,6 +1492,21 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
             // chunk boundaries stay identical (M0/R1 invariant).
             size_t remaining = r.aux;
             if (remaining > dest_size - total_written) remaining = dest_size - total_written;
+            // The distance side of every record is validated below; the
+            // literal-pool side was not, so an offset into lit_pool was taken
+            // on trust and copied straight into the output. decode_span
+            // writes self-consistent offsets today, but SpanRecords is a
+            // public struct and the read side must not depend on there being
+            // exactly one producer. Bound by subtraction so it cannot wrap
+            // (v1.41.1).
+            if (remaining > 0) {
+                if (static_cast<size_t>(r.b) > sr.lit_pool.size() ||
+                    remaining > sr.lit_pool.size() - static_cast<size_t>(r.b)) {
+                    last_error_ = DecompressErrorCode::InvalidInput;
+                    last_error_str_ = "span literal record out of range";
+                    return false;
+                }
+            }
             const core::byte* srcp = sr.lit_pool.data() + r.b;
             while (remaining > 0) {
                 size_t stretch = engine_.win_size_ - engine_.win_pos_;
@@ -1449,7 +1539,9 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
             continue;
         }
         if (tag == OpRecord::Tag::Match) {
-            size_t distance = r.a;
+            // r.a is the 0-based distance (see the producer): widen before the
+            // +1 so 0xFFFFFFFF becomes 2^32, not 0 (v1.41.1).
+            size_t distance = static_cast<size_t>(r.a) + 1;
             size_t len = r.b;
             // Sequential order, verbatim: rep-state update, last_length
             // (the WIRE length — the dest clamp does not shrink it),
@@ -1506,6 +1598,15 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
         }
         // Filter: resolve the raw start delta against the running position
         // [R7] and run the sequential push-site check set, verbatim.
+        // This branch was the unconditional fall-through, so any tag outside
+        // 0..3 was silently reinterpreted as a filter record. Fail closed
+        // instead: an unknown tag is a corrupt or future record, never a
+        // reason to schedule a transform (v1.41.1).
+        if (tag != OpRecord::Tag::Filter) {
+            last_error_ = DecompressErrorCode::InvalidInput;
+            last_error_str_ = "unknown span op record tag";
+            return false;
+        }
         FilterEntry fe;
         fe.type = static_cast<core::uint8>(r.aux & 7);
         fe.channels = static_cast<core::uint8>(((r.aux >> 3) & 31) + 1);
@@ -1551,7 +1652,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
         // span regardless of the applier's stop point [R8]).
         if (total_written < dest_size && !sr.saw_last_block) return false;
     }
-    *io_total_written = total_written;
+    if (io_total_written) *io_total_written = total_written;
     return true;
 }
 
