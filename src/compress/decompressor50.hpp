@@ -222,13 +222,16 @@ public:
     // ── Phase 1: operation records (plan M2, Gate 0 §0 record set) ──────────
     //
     // One wire token per record, in span-relative token order. 12 bytes:
-    // {tag, aux, a, b}. The v0 flavor is gated (win_size <= 4 GiB), so a
-    // resolved distance fits u32; v1-flavor members (446 tables, > 4 GiB
-    // windows) take the sequential path.
+    // {tag, aux, a, b}. The v0 flavor is gated (win_size <= 4 GiB), and a
+    // resolved 1-based distance spans [1, win_size] — so the maximal 4 GiB
+    // window has the single value 2^32, which does not fit a u32. `a` is
+    // therefore stored 0-BASED ([1, 2^32] -> [0, 0xFFFFFFFF]); the applier
+    // widens and adds one. v1-flavor members (446 tables, > 4 GiB windows)
+    // take the sequential path.
     struct OpRecord {
         enum class Tag : core::uint8 {
             Lit = 0,    // aux = count (1..255), b = literal-pool offset
-            Match = 1,  // a = distance (resolved, u32), b = length (ladder applied)
+            Match = 1,  // a = distance - 1 (resolved, u32), b = length (ladder applied)
             Rep = 2,    // aux = index 0..3, a = RD length (no ladder)
             R257 = 3,   // no payload: applier re-emits (old_dist[0], last_length)
             Filter = 4, // a = raw start delta, b = length (post-clamp), aux = type | ((ch-1)<<3)
@@ -330,7 +333,13 @@ private:
     struct BlockHeader {
         int block_size{-1};
         int block_bit_size{0};
-        int block_start{0};
+        // int64, not int: the sequential decoder's BitReader runs continuously
+        // across the whole packed member, so byte_pos() is the CUMULATIVE member
+        // offset and a member over 2 GiB wrapped this field negative. The
+        // wrapped value then sign-extended through block_end_bit() and the
+        // decoder parsed the next block header out of the middle of a payload —
+        // a valid >2 GiB member could not be decoded at all (v1.41.1).
+        core::int64 block_start{0};
         int header_size{0};
         bool last_block_in_file{false};
         bool table_present{false};

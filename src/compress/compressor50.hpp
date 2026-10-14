@@ -3,7 +3,6 @@
 
 #include "../core/types.hpp"
 #include "../crypto/crc32.hpp"
-#include "../crypto/blake2sp.hpp"
 #include "../io/file_stream.hpp"
 #include "filters50.hpp"
 
@@ -105,6 +104,23 @@ public:
         block_bits_ = 0;
     }
 
+    // Re-arm for the next block in place. Semantically identical to destroying
+    // this BitOutput and constructing a fresh one pointed at `mem`, except that
+    // buf_ keeps its capacity, so the 256 KiB transfer buffer is not
+    // reallocated once per block (v1.41.1). Safe because
+    // write_block() calls finish_block_data() — which drains buf_ — before
+    // every early return, so buf_ is always empty here.
+    void reset_for_block(std::vector<core::byte>* mem) {
+        buf_.clear();
+        dest_file_ = nullptr;
+        mem_dest_ = mem;
+        block_bytes_ = 0;
+        block_bits_ = 0;
+        acc_ = 0;
+        acc_bits_ = 0;
+        write_failed_ = false;
+    }
+
     inline void put_bits64(core::uint64 value, core::uint32 num_bits) {
         // MSB-first: emit the high part, then the low 32 bits.
         if (num_bits <= 32) {
@@ -138,7 +154,18 @@ struct Compressor50Token {
     // bits and emitted a wrong distance (sweep finding H1).
     core::uint64 dist_extra{0};
     core::uint16 len_extra{0};
-    core::uint16 packed{0}; // type(3) | len_slot/data(6/8) | dist_slot(6)
+    // type(3) @ bits 0-2 | len_slot(6) @ 3-8 | dist_slot(7) @ 9-15.
+    //
+    // dist_slot is SEVEN bits, not six: RAR7 ExtraDist windows carry DCX = 80
+    // distance slots, and distance_to_slot() legitimately produces 64..79 for a
+    // match 4 GiB back or more. The old 0x3F mask silently kept only the low
+    // six, so the encoder then emitted the WRONG Huffman symbol AND the wrong
+    // extra-bit width for that distance — a well-formed stream carrying wrong
+    // bytes, which surfaces as a CRC failure at extract rather than as a
+    // decode error (v1.41.1). Encoder-internal only: the slot itself reaches
+    // the wire as code_dd_[slot] through the Huffman stream, so this field
+    // width is not part of the format.
+    core::uint16 packed{0};
 
     inline TokenType get_type() const { return static_cast<TokenType>(packed & 7); }
     inline void set_type(TokenType t) { packed = (packed & ~7) | static_cast<core::uint16>(t); }
@@ -148,11 +175,15 @@ struct Compressor50Token {
         packed = (packed & ~(0x3F << 3)) | (static_cast<core::uint16>(s) << 3);
     }
 
+    // Seven bits: DCX (80) RAR7 distance slots, of which 64..79 are only
+    // reachable above a 4 GiB window. Truncating to six bits corrupted the
+    // distance for any match 4 GiB back — see `packed`.
     inline core::byte get_dist_slot() const {
-        return static_cast<core::byte>((packed >> 9) & 0x3F);
+        return static_cast<core::byte>((packed >> 9) & 0x7F);
     }
     inline void set_dist_slot(core::byte s) {
-        packed = (packed & ~(0x3F << 9)) | (static_cast<core::uint16>(s) << 9);
+        packed =
+            static_cast<core::uint16>((packed & 0x01FFu) | (static_cast<core::uint16>(s) << 9));
     }
 
     inline core::byte get_data() const { return static_cast<core::byte>(packed >> 3); }
@@ -309,6 +340,9 @@ private:
     bool filter_pretransformed_{false};
     core::uint64 file_start_pos_{0};
     std::vector<core::byte> block_mem_;
+    // Reused across blocks so write_block() does not construct a fresh
+    // BitOutput (and its 256 KiB reserve) per block (v1.41.1).
+    BitOutput local_out_;
     core::uint32 freq_ld_[NC], freq_dd_[DCX], freq_ldd_[LDC], freq_rd_[RC], freq_bd_[BC];
     core::byte len_ld_[NC], len_dd_[DCX], len_ldd_[LDC], len_rd_[RC], len_bd_[BC];
     core::uint32 code_ld_[NC], code_dd_[DCX], code_ldd_[LDC], code_rd_[RC], code_bd_[BC];
@@ -323,20 +357,14 @@ private:
     // slot 0 decodes to 2 and is legal on the wire. Set by init_match_params().
     size_t min_match_{MIN_MATCH};
 
-    // Block-header table reuse (v1.33 Design A). A block whose freshly built
-    // Huffman code lengths are bit-identical to the ones the decoder already
-    // holds can clear bit 7 ("tables present") and omit the ~26 B table
-    // description. prev_tables_valid_ mirrors the decoder's tables_ready_,
-    // which is dropped at a non-solid file boundary
-    // (decompressor50.cpp:568) and at stream reset, so reuse is offered only
-    // where the decoder still has the tables in hand. The decoder-slot model
-    // that dictates REUSE_SEED_BLOCKS and the re-seed-on-change rule is
-    // documented with those constants (public, beside the wire-contract
-    // constants) and in docs/spec/03-compression-m1-m5.md §Table lifecycle.
-    bool prev_tables_valid_{false};
-    core::uint32 prev_table_size_{0};
-    core::byte prev_len_ld_[NC], prev_len_dd_[DCX], prev_len_ldd_[LDC], prev_len_rd_[RC];
-    unsigned seed_remaining_{REUSE_SEED_BLOCKS};
+    // Block-header table reuse (v1.33 Design A) is DISABLED: write_block()
+    // always emits the table description (bit 7 clear) to match the reference
+    // encoder — see the note in write_block. The shadow tables, the "tables
+    // still valid" flag, the table size and the re-seed counter that would
+    // drive reuse were consequently write-only state and have been removed
+    // (v1.41.1). REUSE_SEED_BLOCKS is retained as the documented constant
+    // (read by the compression tests) and the re-seed-on-change rule is
+    // documented with it and in docs/spec/03-compression-m1-m5.md.
 
     size_t old_dist_[4];
     // Encoder-side shadow of the decoder's last_length_ (the slot-257
@@ -354,7 +382,6 @@ private:
     bool lastlen_suppressed_{false};
 
     crypto::Crc32 hash_crc32_;
-    crypto::Blake2sp hash_blake2_;
 
     core::uint64 input_since_block_{0};
     core::uint64 packed_total_{0};
@@ -473,7 +500,14 @@ private:
             const core::byte* data = &buf_data_[static_cast<size_t>(from - pos_base_)];
             size_t size = static_cast<size_t>(to - from);
             hash_crc32_.update(data, size);
-            hash_blake2_.update(data, size);
+            // A BLAKE2sp digest used to be computed here over 100% of the
+            // uncompressed input and then thrown away: `hash_blake2_` had no
+            // getter, no finish(), and no reader anywhere in the repo. The
+            // write path obtains its checksum independently (the archive
+            // mutator keeps its own CRC), and the only producer of
+            // has_blake2sp is the header READER. Blake2sp runs eight
+            // single-threaded scalar leaves, so this was pure waste on the
+            // compression thread (v1.41.1).
         }
     }
 

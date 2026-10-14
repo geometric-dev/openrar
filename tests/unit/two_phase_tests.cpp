@@ -107,6 +107,37 @@ bool roundtrip_ok(const std::vector<core::byte>& packed, const std::vector<core:
     return dec.decompress_to_vector(packed.data(), packed.size(), out) && out == plain;
 }
 
+// A Huffman description whose Kraft sum exceeds 1 is not a prefix code: it
+// cannot be decoded unambiguously. build() must reject it. Before the Kraft
+// guard, such a table was accepted, decode_len_ was left non-monotone, and the
+// decoder emitted arbitrary-but-in-bounds symbols — fail-open garbage from a
+// crafted block header rather than a clean error. Sparse (incomplete) and
+// all-zero tables are legal for RAR and must still build.
+void test_overcomplete_huffman_rejected() {
+    auto build = [](std::initializer_list<core::byte> lens) {
+        std::vector<core::byte> v(lens);
+        return HuffmanDecoder().build(v.data(), v.size());
+    };
+
+    // Over-complete: sum(len_cnt[i] / 2^i) > 1.
+    assert(!build({1, 1, 1})); // 3/2
+    {
+        // 20 codes of length 1: sum = 10.0.
+        std::vector<core::byte> v(20, 1);
+        assert(!HuffmanDecoder().build(v.data(), v.size()));
+    }
+
+    // Legal tables still build.
+    assert(build({1, 1}));       // complete: 2/2 == 1
+    assert(build({2, 2, 2, 2})); // complete: 4/4 == 1
+    assert(build({2, 2, 2}));    // incomplete: 3/4
+    assert(build({15}));         // sparse/incomplete: allowed by RAR
+    assert(build({1, 3, 3}));    // 1/2 + 1/8 + 1/8 = 3/4, incomplete but valid
+    assert(build({0}));          // empty symbol
+
+    std::cout << "[PASS] over-complete Huffman descriptions are rejected\n";
+}
+
 } // namespace
 
 int main() {
@@ -120,6 +151,8 @@ int main() {
 
     const size_t M = 1024 * 1024;
     const size_t win = 0x200000;
+
+    test_overcomplete_huffman_rejected();
 
     // ── M1: pre-scan agreement with the sequential framing ──────────────────
     {
@@ -267,7 +300,9 @@ int main() {
                     // last_length keeps the WIRE length (sequential pins it
                     // before the dest clamp); the copy clamps at dest_size.
                     ap.last_length = r.b;
-                    size_t dist = r.a;
+                    // r.a is stored 0-based (the producer shifts by one so a
+                    // 2^32 distance fits a u32); widen before +1.
+                    size_t dist = static_cast<size_t>(r.a) + 1;
                     if (dist == 0) {
                         ap.fail = true;
                         return;
