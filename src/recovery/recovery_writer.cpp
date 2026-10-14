@@ -840,10 +840,10 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
 
     // Stream the volumes through the RS encoder, one even-sized chunk at a
     // time, appending parity to each .rev file while its CRC accumulates.
-    const size_t chunk = 1u << 20; // 1 MiB, even
+    const size_t chunk_size = 1u << 20; // 1 MiB, even
     std::vector<std::vector<core::byte>> parity(static_cast<size_t>(nr),
-                                                std::vector<core::byte>(chunk));
-    std::vector<core::byte> data(chunk);
+                                                std::vector<core::byte>(chunk_size));
+    std::vector<core::byte> data(chunk_size);
     std::vector<crypto::Crc32> rev_crc(static_cast<size_t>(nr));
 
     struct RevOut {
@@ -932,7 +932,7 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
     }
 
     while (processed < shard && ok) {
-        size_t chunk = static_cast<size_t>(std::min<core::uint64>(chunk, shard - processed));
+        size_t chunk = static_cast<size_t>(std::min<core::uint64>(chunk_size, shard - processed));
         for (core::uint32 j = 0; j < nr; ++j) {
             std::memset(parity[j].data(), 0, chunk);
         }
@@ -1663,13 +1663,13 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         out[i] = f;
     }
 
-    const size_t chunk = 1u << 20; // 1 MiB, even
-    std::vector<core::byte> srcbuf(chunk);
-    std::vector<std::vector<core::byte>> recon(missing, std::vector<core::byte>(chunk));
+    const size_t chunk_size = 1u << 20; // 1 MiB, even
+    std::vector<core::byte> srcbuf(chunk_size);
+    std::vector<std::vector<core::byte>> recon(missing, std::vector<core::byte>(chunk_size));
     core::uint64 processed = 0;
     bool ok = true;
     while (processed < shard && ok) {
-        size_t chunk = static_cast<size_t>(std::min<core::uint64>(chunk, shard - processed));
+        size_t chunk = static_cast<size_t>(std::min<core::uint64>(chunk_size, shard - processed));
         for (core::uint32 e = 0; e < missing; ++e) {
             std::memset(recon[e].data(), 0, chunk);
         }
