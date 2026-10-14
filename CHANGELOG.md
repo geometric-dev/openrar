@@ -138,6 +138,31 @@ describing**.
   when `win_size == 0` (a public parameter with no lower bound), producing a
   wild seed pointer. It now substitutes the declared default.
 
+### Fixed (v1.41.0 regressions, caught by the first v1.41.1 CI run)
+
+The v1.41.0 naming/style pass renamed ~100 `k`-prefixed constants but was never
+itself run through CI. Two of those renames collided with existing local names:
+
+- **GFNI affinity matrices were built for the wrong operand**
+  (`gfni_encode_byte_map`): the multiply-coefficient parameter `K` was renamed
+  to `k`, colliding with the eight-iteration loop variable of the same name. The
+  parameter was shadowed and ignored, so every matrix was built for the bit
+  index instead of the coefficient — a silent miscompilation that the runtime
+  calibration masked by simply rejecting the kernel. Loop variable renamed; the
+  coefficient is used again.
+- **Recovery parity/repair folded with an uninitialised chunk size**
+  (`recovery_writer.cpp`): the block constant `CHUNK` was renamed to `chunk`,
+  colliding with the per-iteration `size_t chunk` and making its initialiser
+  read itself. Only the aarch64 `-Wmaybe-uninitialized` leg reported it; on x64
+  it silently used a garbage size. Constants renamed `chunk_size`.
+- **WASM contract gate looked in the old output directory**
+  (`wasm/js/check-exports.mjs`): it resolved `../dist` (`wasm/dist`) while the
+  npm-packaging move had relocated the build output to `wasm/js/dist`. Every
+  sibling wrapper and test already resolved `./dist`; the gate now matches.
+- Dead symbols the stricter warnings rejected removed: `UNICODE_VERSION_CP`
+  (generated file + generator), `CHUNK_PAYLOAD`, `CheckOwnedDir::owned_by_cache_`.
+- `unix_to_filetime100` is now compiled only on Windows, where it is used.
+
 ### Notes
 
 - Rejected from the external audit after verification against the source: the

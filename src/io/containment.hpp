@@ -72,7 +72,6 @@ public:
     private:
         friend class ContainmentRoot;
         void* handle_ = nullptr;
-        bool owned_by_cache_ = false;
     };
 
     // Walks `rel_dir` ('/'-separated, sanitized, may be "" = root) from the
