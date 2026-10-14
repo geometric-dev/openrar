@@ -178,8 +178,6 @@ def emit(out_path: Path, casefold: dict, decomps: dict, ccc: dict, exclusions: s
 #include "../../src/core/types.hpp"
 
 namespace openrar::unicode {
-      {
-          static const core::uint32 UNICODE_VERSION_CP = 0x {UNICODE_VERSION.replace(".", "0")} u;
 
 '''
 #split tables into their own section to keep this readable

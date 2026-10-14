@@ -77,8 +77,6 @@ void* parse_native(const char* s) {
 }
 #endif
 
-constexpr size_t CHUNK_PAYLOAD = 256 * 1024; // per DataChunk frame (≤ 4 MiB cap)
-
 // Send or die: any channel failure on the worker side means the broker is
 // gone (or the pair is poisoned) — exit quietly, no partial state exists
 // here (the worker never owns filesystem state).
