@@ -27,6 +27,7 @@
 #include <iostream>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -59,20 +60,69 @@ struct TempFileCleanupGuard {
     }
 };
 
+// 32-bit/WASM guard for the dictionary window. Every consumer below narrows
+// win_size to size_t (the StreamEncoder and compressor constructors take
+// size_t, and the spool paths cast explicitly). snap_window_to_fci_grid tops
+// out near 2 TiB, and -md is caller-controlled, so on an ILP32/WASM build a
+// large request wraps at that narrowing: the encoder would allocate a tiny
+// window while the header still advertised the huge one, breaking the
+// "encoder window == recorded win_size" invariant by construction (v1.41.1).
+// On LP64 this never fires — the same shape as the existing 32-bit guards at
+// the volume-size checks.
+core::uint64 clamp_window_to_address_space(core::uint64 win_size) {
+    const core::uint64 ceiling = static_cast<core::uint64>(SIZE_MAX / 2);
+    if (win_size <= ceiling) return win_size;
+    // Re-snap so the clamped value is still exactly representable in the
+    // header's FCI encoding and matches what the encoder is handed.
+    return compress::snap_window_to_fci_grid(ceiling);
+}
+
+// Reclaims the temp files a two-phase rewrite has produced so far. Each
+// mutation_temp_path() name is unique per attempt, so an abandoned temp is
+// never reused or overwritten by a later run — without this guard a Phase 1
+// failure on volume N strands the temps of volumes 0..N-1 next to the user's
+// archive set (v1.41.1). `committed` is raised the moment the commit phase
+// takes ownership, because from that point Phase 2 owns the cleanup itself.
+struct PendingTempReclaim {
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>>* list{nullptr};
+    bool committed{false};
+
+    void commit() noexcept { committed = true; }
+
+    ~PendingTempReclaim() {
+        if (committed || !list) return;
+        std::error_code ec;
+        for (const auto& entry : *list) {
+            std::filesystem::remove(entry.first, ec); // temp; originals untouched
+        }
+    }
+};
+
 // Returns false on any short read or write so callers can abort.
+//
+// `scratch` lets a caller that copies in a loop supply one transfer buffer for
+// the whole batch. Passing none allocates a fresh 1 MiB vector per call, which
+// is an mmap + page-touch + munmap cycle every time — on a bulk rewrite of
+// 10,000 retained entries that is 10,000 of them (v1.41.1). The buffer is
+// sized to the request and never escapes this function.
 bool copy_stream_region(io::FileStream& src, io::FileStream& dest, core::uint64 src_offset,
-                        core::uint64 size) {
+                        core::uint64 size, std::vector<core::byte>* scratch = nullptr) {
+    if (size == 0) return true; // nothing to seek or copy
     // A failed seek would silently copy from the stream's current position —
     // verbatim-garbage in the rewritten archive. Check it.
     if (!src.seek(static_cast<core::int64>(src_offset), io::SeekOrigin::Begin)) return false;
-    std::vector<core::byte> buf(1048576); // 1 MiB transfer buffer for mechanical sympathy
+    std::vector<core::byte> local;
+    if (!scratch) {
+        local.resize(1048576); // 1 MiB transfer buffer for mechanical sympathy
+        scratch = &local;
+    }
     core::uint64 remaining = size;
 
     while (remaining > 0) {
         size_t take =
-            static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(buf.size())));
-        if (src.read(buf.data(), take) != take) return false;
-        if (dest.write(buf.data(), take) != take) return false;
+            static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(scratch->size())));
+        if (src.read(scratch->data(), take) != take) return false;
+        if (dest.write(scratch->data(), take) != take) return false;
         remaining -= take;
     }
     return true;
@@ -85,6 +135,9 @@ struct FileTimes {
     core::uint64 mtime{0};
     core::uint64 ctime{0};
     core::uint64 atime{0};
+    // Carried by the same stat that produced the times, so a caller that needs
+    // both never pays for a second metadata syscall (v1.41.1).
+    core::uint64 size{0};
 #ifdef _WIN32
     core::uint64 mtime_win{0};
     core::uint64 ctime_win{0};
@@ -97,6 +150,8 @@ bool get_file_times(const std::filesystem::path& path, FileTimes& out) {
 #ifdef _WIN32
     WIN32_FILE_ATTRIBUTE_DATA fa;
     if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fa)) return false;
+    out.size = (static_cast<core::uint64>(fa.nFileSizeHigh) << 32) |
+               static_cast<core::uint64>(fa.nFileSizeLow);
     auto to_unix = [](const FILETIME& ft) -> core::uint64 {
         ULARGE_INTEGER ul;
         ul.LowPart = ft.dwLowDateTime;
@@ -128,6 +183,7 @@ bool get_file_times(const std::filesystem::path& path, FileTimes& out) {
     out.mtime = static_cast<core::uint64>(st.st_mtime);
     out.ctime = static_cast<core::uint64>(st.st_ctime);
     out.atime = static_cast<core::uint64>(st.st_atime);
+    out.size = static_cast<core::uint64>(st.st_size);
     return true;
 #endif
 }
@@ -566,6 +622,9 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
 
         // Copy surviving entries
         const std::vector<ArchiveEntry>& entries = reader.entries();
+        // One transfer buffer for the whole retention loop (v1.41.1: without it
+        // every retained entry allocated and page-touched its own 1 MiB).
+        std::vector<core::byte> copy_scratch(1048576);
         for (size_t i = 0; i < entries.size(); ++i) {
             const ArchiveEntry& entry = entries[i];
 
@@ -579,7 +638,7 @@ int delete_entries_impl(const std::filesystem::path& arc_path, ArchiveReader& re
 
             // Retain entry and its verbatim payload
             if (!copy_stream_region(reader.stream(), out, entry.header_offset,
-                                    entry.header_size + entry.data_size)) {
+                                    entry.header_size + entry.data_size, &copy_scratch)) {
                 out.close();
                 {
                     std::error_code rm_ec;
@@ -710,12 +769,17 @@ int ArchiveMutator::delete_entries_by_index(const std::filesystem::path& arc_pat
     // always agree.
     const std::vector<ArchiveEntry>& entries = reader.entries();
     std::vector<char> removed(entries.size(), 0);
-    for (const core::uint64 off : header_offsets) {
-        for (size_t i = 0; i < entries.size(); ++i) {
-            if (!entries[i].header.is_service && entries[i].header_offset == off) {
-                removed[i] = 1;
-                mark_trailing_child_services(entries, removed, i);
-            }
+    // Hash lookup instead of a rescan per requested offset: the old nested
+    // loop was O(offsets x entries), which is quadratic for a bulk delete.
+    // mark_trailing_child_services only ever WRITES removed[] (never reads it)
+    // and its scan window is bounded by archive structure, so the resulting
+    // mask is identical whatever order the heads are visited in (v1.41.1).
+    std::unordered_set<core::uint64> wanted(header_offsets.begin(), header_offsets.end());
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (!entries[i].header.is_service &&
+            wanted.find(entries[i].header_offset) != wanted.end()) {
+            removed[i] = 1;
+            mark_trailing_child_services(entries, removed, i);
         }
     }
 
@@ -762,6 +826,10 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         // temp file; phase 2 (after the loop) atomically replaces the
         // originals. No original volume is touched until every temp exists.
         std::vector<std::pair<std::filesystem::path, std::filesystem::path>> pending;
+        // Strands nothing: every exit from here — a volume that will not open,
+        // a temp that will not create, or an exception mid-rewrite — reclaims
+        // the temps the earlier volumes already produced.
+        PendingTempReclaim reclaim{&pending};
 
         for (size_t vi = 0; vi < vols.size(); ++vi) {
             const auto& v = vols[vi];
@@ -906,6 +974,9 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         // leaves the already-committed volumes individually consistent
         // (locked) and the rest untouched — never a half-rewritten volume,
         // and the original of the failing volume survives (v1.21.1).
+        // Phase 2 owns cleanup from here: it removes every uncommitted temp on
+        // failure, so the guard stands down.
+        reclaim.commit();
         for (auto it = pending.begin(); it != pending.end(); ++it) {
             if (!atomic_replace(it->first, it->second)) {
                 std::error_code rm_ec;
@@ -983,9 +1054,10 @@ bool ArchiveMutator::lock_archive(const std::filesystem::path& arc_path,
         }
 
         // Copy all entries verbatim
+        std::vector<core::byte> copy_scratch(1048576);
         for (const auto& entry : reader.entries()) {
             if (!copy_stream_region(reader.stream(), out, entry.header_offset,
-                                    entry.header_size + entry.data_size)) {
+                                    entry.header_size + entry.data_size, &copy_scratch)) {
                 out.close();
                 {
                     std::error_code rm_ec;
@@ -1137,7 +1209,14 @@ bool ArchiveMutator::prepare_add_file(
     const compress::FilterConfig& filter_cfg, const std::string& default_group,
     const std::string& default_user, unsigned threads, compress::SolidPacker* solid_packer,
     bool solid_chain_member, bool want_xattr) {
-    if (!std::filesystem::exists(src_file)) {
+    // One stat answers both "does this exist?" and "what are its times?".
+    // They were already the same syscall (fs::exists and GetFileAttributesEx /
+    // ::stat bottom out in the same call), so folding them together drops a
+    // metadata round-trip per file and removes the now-dead "could not stat, so
+    // stamp it with now()" fallback — the open below fails on the same race
+    // anyway, and prepare_add_dir / _symlink / _hardlink never had it.
+    FileTimes times;
+    if (!get_file_times(src_file, times)) {
         return false;
     }
 
@@ -1158,6 +1237,7 @@ bool ArchiveMutator::prepare_add_file(
     core::uint64 win_size =
         compress::resolve_dict_window_size(dict_size, static_cast<core::uint32>(method));
     win_size = compress::snap_window_to_fci_grid(win_size);
+    win_size = clamp_window_to_address_space(win_size);
 
     core::uint64 file_sz = 0;
     core::uint32 crc = 0;
@@ -1171,13 +1251,7 @@ bool ArchiveMutator::prepare_add_file(
     fb.attributes = 0x20;
     bool is_non_pow2 = (win_size & (win_size - 1)) != 0;
     fb.unp_ver = (method > 0 && (win_size > (1ULL * 1024 * 1024 * 1024) || is_non_pow2)) ? 1 : 0;
-    FileTimes times;
-    if (get_file_times(src_file, times)) {
-        apply_file_times(fb, times, times_mask);
-    } else {
-        fb.utime_unix = static_cast<core::uint32>(
-            std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
-    }
+    apply_file_times(fb, times, times_mask);
 
     {
         io::FileStream src;
@@ -1607,7 +1681,11 @@ bool ArchiveMutator::prepare_add_file(
     if (want_streams) {
         std::vector<io::StreamEntry> streams;
         if (io::read_alternate_streams(src_file, streams)) {
-            for (const auto& s : streams) {
+            // Non-const binding: std::move on a const StreamEntry& binds the
+            // copy-assignment overload, so the buffer below was deep-copied and
+            // the move was silently a no-op — up to a second full copy of a
+            // 1 GiB stream in flight (v1.41.1).
+            for (auto& s : streams) {
                 if (s.data.size() > 0x40000000ULL) continue; // cap at 1 GiB per spec
                 // v1.27 M4 (SECURITY_ARCHITECTURE 4.3): Zone.Identifier is
                 // transport provenance, not file content — never carried as
@@ -1630,7 +1708,8 @@ bool ArchiveMutator::prepare_add_file(
                 crypto::Crc32 scrc;
                 scrc.update(s.data.data(), s.data.size());
                 child.fb.data_crc32 = scrc.get();
-                child.payload = s.data;
+                // Last use of s.data — hand the buffer over instead of copying it.
+                child.payload = std::move(s.data);
                 out.child_services.push_back(std::move(child));
             }
         }
@@ -1867,15 +1946,16 @@ bool ArchiveMutator::prepare_add_filecopy(const std::filesystem::path& src_file,
     fb.redir_type = 5; // FILECOPY
     fb.redir_dir_target = false;
     fb.redir_target = target_entry_name;
-    {
-        std::error_code ec;
-        const auto sz = std::filesystem::file_size(src_file, ec);
-        if (!ec) fb.unp_size = static_cast<core::uint64>(sz);
-    }
+    // The logical size and the timestamps come from one stat. A stat failure is
+    // fatal here, not skippable: emitting the record with UnpSize=0 is exactly
+    // the "corrupted chain-member decodes" shape the comment above warns about,
+    // and it would be written silently (v1.41.1).
     FileTimes times;
-    if (get_file_times(src_file, times)) {
-        apply_file_times(fb, times, times_mask);
+    if (!get_file_times(src_file, times)) {
+        return false;
     }
+    fb.unp_size = times.size;
+    apply_file_times(fb, times, times_mask);
     // v1.27: FILECOPY refs capture their own source's extended attributes
     // (a materialized reference is a separate inode at extraction — plan
     // §1.3; unlike hardlinks, which share the master's inode and carry no
@@ -1906,6 +1986,9 @@ int ArchiveMutator::write_batch_add_ex(
         detail_out = "no input files";
         return RAR_ERR_INVALID_ARG;
     }
+    // One transfer buffer for every copy this rewrite performs (v1.41.1: the
+    // per-entry copies below each allocated and page-touched their own 1 MiB).
+    std::vector<core::byte> copy_scratch(1048576);
 
     // Validate SFX stub size before any write (MAX_SFX_SIZE guard per 10-sfx.md:70)
     if (!sfx_stub_path.empty()) {
@@ -2004,38 +2087,55 @@ int ArchiveMutator::write_batch_add_ex(
                                                                           std::nullopt);
 
             if (max_versions < 0) {
+                // One hash probe per entry instead of a scan over the batch:
+                // the body below is idempotent, so dropping the `break` after
+                // the first name match changes nothing (v1.41.1).
+                std::unordered_set<std::string> batch_names;
+                batch_names.reserve(files.size());
+                for (const auto& pf : files) batch_names.insert(pf.entry_name);
                 for (size_t i = 0; i < entries.size(); ++i) {
                     if (entries[i].header.is_service) continue;
-                    for (const auto& pf : files) {
-                        if (entries[i].header.file_name == pf.entry_name) {
-                            replaced[i] = 1;
-                            for (size_t j = i + 1;
-                                 j < entries.size() && entries[j].header.is_service; ++j) {
-                                if (entries[j].header.service_type != "QO" &&
-                                    entries[j].header.service_type != "CMT" &&
-                                    entries[j].header.service_type != "RR") {
-                                    replaced[j] = 1;
-                                }
+                    if (batch_names.find(entries[i].header.file_name) != batch_names.end()) {
+                        replaced[i] = 1;
+                        for (size_t j = i + 1; j < entries.size() && entries[j].header.is_service;
+                             ++j) {
+                            if (entries[j].header.service_type != "QO" &&
+                                entries[j].header.service_type != "CMT" &&
+                                entries[j].header.service_type != "RR") {
+                                replaced[j] = 1;
                             }
-                            break;
                         }
                     }
                 }
             } else {
                 // Versioning mode: max_versions >= 0
-                for (const auto& pf : files) {
-                    std::vector<size_t> hist_indices;
-                    std::vector<size_t> curr_indices;
-                    for (size_t i = 0; i < entries.size(); ++i) {
-                        if (entries[i].header.is_service) continue;
-                        if (entries[i].header.file_name == pf.entry_name) {
-                            if (entries[i].header.has_file_version) {
-                                hist_indices.push_back(i);
-                            } else {
-                                curr_indices.push_back(i);
-                            }
-                        }
+                // Bucket the existing entries by name ONCE. The old form
+                // rescanned every entry for every batch member — quadratic,
+                // and the common batch is every file in the archive. The
+                // buckets are filled in index order, preserving the ordering
+                // the sort below and the prune walk depend on (v1.41.1).
+                std::unordered_map<std::string, std::pair<std::vector<size_t>, std::vector<size_t>>>
+                    by_name;
+                for (size_t i = 0; i < entries.size(); ++i) {
+                    if (entries[i].header.is_service) continue;
+                    auto& bucket = by_name[entries[i].header.file_name];
+                    if (entries[i].header.has_file_version) {
+                        bucket.first.push_back(i);
+                    } else {
+                        bucket.second.push_back(i);
                     }
+                }
+                for (const auto& pf : files) {
+                    // A name absent from the archive leaves both lists empty,
+                    // which is exactly what the old scan produced.
+                    const auto it = by_name.find(pf.entry_name);
+                    if (it == by_name.end()) continue;
+                    // Copy the historical bucket: it is appended to below, and
+                    // the map's own vector must not absorb the unversioned
+                    // indices (it is shared by every batch member with this
+                    // name).
+                    std::vector<size_t> hist_indices = it->second.first;
+                    const std::vector<size_t>& curr_indices = it->second.second;
 
                     // Sort historical versions by file_version
                     std::sort(hist_indices.begin(), hist_indices.end(), [&](size_t a, size_t b) {
@@ -2220,7 +2320,7 @@ int ArchiveMutator::write_batch_add_ex(
                     const format::FileBlock& updated_fb = *updated_headers[i];
                     core::uint64 orig_pos = out.tell();
                     auto block_bytes = format::HeaderWriter::serialize_file_block(updated_fb, 0);
-                    if (want_qo) {
+                    if (want_qo && !header_encrypt_mode) {
                         size_t offset = qo_arena.size();
                         qo_arena.insert(qo_arena.end(), block_bytes.begin(), block_bytes.end());
                         qo_indices.push_back({orig_pos, offset, block_bytes.size()});
@@ -2237,7 +2337,7 @@ int ArchiveMutator::write_batch_add_ex(
                     }
                     if (entry.data_size > 0) {
                         if (!copy_stream_region(reader.stream(), out, entry.data_offset,
-                                                entry.data_size)) {
+                                                entry.data_size, &copy_scratch)) {
                             out.close();
                             {
                                 std::error_code rm_ec;
@@ -2248,21 +2348,28 @@ int ArchiveMutator::write_batch_add_ex(
                         }
                     }
                 } else {
-                    if (want_qo) {
-                        size_t offset = qo_arena.size();
-                        std::vector<core::byte> old_hdr(static_cast<size_t>(entry.header_size));
-                        if (reader.stream().seek(static_cast<core::int64>(entry.header_offset),
-                                                 io::SeekOrigin::Begin) &&
-                            reader.stream().read(old_hdr.data(),
-                                                 static_cast<size_t>(entry.header_size)) ==
-                                entry.header_size) {
-                            qo_arena.insert(qo_arena.end(), old_hdr.begin(), old_hdr.end());
-                            qo_indices.push_back(
-                                {out.tell(), offset, static_cast<size_t>(entry.header_size)});
+                    if (want_qo && !header_encrypt_mode) {
+                        // Read straight into the arena: the temporary vector
+                        // this used to allocate was then copied verbatim into
+                        // qo_arena, so every retained header paid a heap
+                        // round-trip and a second full copy (v1.41.1).
+                        const core::uint64 hdr_size = entry.header_size;
+                        if (hdr_size <= static_cast<core::uint64>(SIZE_MAX)) {
+                            const size_t hdr_sz = static_cast<size_t>(hdr_size);
+                            const size_t offset = qo_arena.size();
+                            qo_arena.resize(offset + hdr_sz);
+                            if (reader.stream().seek(static_cast<core::int64>(entry.header_offset),
+                                                     io::SeekOrigin::Begin) &&
+                                reader.stream().read(qo_arena.data() + offset, hdr_sz) ==
+                                    hdr_size) {
+                                qo_indices.push_back({out.tell(), offset, hdr_sz});
+                            } else {
+                                qo_arena.resize(offset); // short read: nothing to index
+                            }
                         }
                     }
                     if (!copy_stream_region(reader.stream(), out, entry.header_offset,
-                                            entry.header_size + entry.data_size)) {
+                                            entry.header_size + entry.data_size, &copy_scratch)) {
                         out.close();
                         {
                             std::error_code rm_ec;
@@ -2431,7 +2538,7 @@ int ArchiveMutator::write_batch_add_ex(
             core::uint64 orig_pos = out.tell();
             auto block_bytes =
                 format::HeaderWriter::serialize_file_block(pf.fb, 0, pf.needs_direct_stream);
-            if (want_qo) {
+            if (want_qo && !header_encrypt_mode) {
                 size_t offset = qo_arena.size();
                 qo_arena.insert(qo_arena.end(), block_bytes.begin(), block_bytes.end());
                 qo_indices.push_back({orig_pos, offset, block_bytes.size()});
@@ -2793,7 +2900,7 @@ int ArchiveMutator::write_batch_add_ex(
                 core::uint64 child_orig_pos = out.tell();
                 auto child_bytes = format::HeaderWriter::serialize_file_block(
                     child.fb, format::HFL_CHILD | format::HFL_INHERITED);
-                if (want_qo) {
+                if (want_qo && !header_encrypt_mode) {
                     size_t offset = qo_arena.size();
                     qo_arena.insert(qo_arena.end(), child_bytes.begin(), child_bytes.end());
                     qo_indices.push_back({child_orig_pos, offset, child_bytes.size()});
@@ -2834,23 +2941,32 @@ int ArchiveMutator::write_batch_add_ex(
             // for archives up to several thousand entries.
             qo_payload.reserve(qo_arena.size() + 30u * qo_indices.size());
 
+            // Two scratch buffers reused across every entry: the previous form
+            // allocated a `struct_body` (header bytes copied in) and a
+            // `struct_size_vint` per entry, then copied both into qo_payload —
+            // three allocations and two extra passes over every header in the
+            // archive. The CRC is now streamed straight off the arena: the
+            // bytes it covers are identical, in the same order (v1.41.1).
+            std::vector<core::byte> hdr_vints;
+            hdr_vints.reserve(32);
+            std::vector<core::byte> struct_size_vint;
+            struct_size_vint.reserve(16);
+
             for (const auto& idx : qo_indices) {
                 core::uint64 dist = qo_header_pos - idx.orig_pos;
-                std::vector<core::byte> struct_body;
-                // Reserve: 3 vints (≤10 bytes each) + idx.size payload.
-                struct_body.reserve(30u + idx.size);
-                core::push_vint(struct_body, 0);        // Flags = 0
-                core::push_vint(struct_body, dist);     // Distance from start of QO header
-                core::push_vint(struct_body, idx.size); // Data size
-                struct_body.insert(struct_body.end(), qo_arena.begin() + idx.arena_offset,
-                                   qo_arena.begin() + idx.arena_offset + idx.size);
+                hdr_vints.clear();
+                core::push_vint(hdr_vints, 0);        // Flags = 0
+                core::push_vint(hdr_vints, dist);     // Distance from start of QO header
+                core::push_vint(hdr_vints, idx.size); // Data size
 
-                std::vector<core::byte> struct_size_vint;
-                core::push_vint(struct_size_vint, struct_body.size());
+                const size_t struct_body_size = hdr_vints.size() + idx.size;
+                struct_size_vint.clear();
+                core::push_vint(struct_size_vint, struct_body_size);
 
                 crypto::Crc32 crc;
                 crc.update(struct_size_vint.data(), struct_size_vint.size());
-                crc.update(struct_body.data(), struct_body.size());
+                crc.update(hdr_vints.data(), hdr_vints.size());
+                crc.update(qo_arena.data() + idx.arena_offset, idx.size);
                 core::uint32 struct_crc = crc.get();
 
                 qo_payload.push_back(static_cast<core::byte>(struct_crc & 0xFF));
@@ -2860,7 +2976,9 @@ int ArchiveMutator::write_batch_add_ex(
 
                 qo_payload.insert(qo_payload.end(), struct_size_vint.begin(),
                                   struct_size_vint.end());
-                qo_payload.insert(qo_payload.end(), struct_body.begin(), struct_body.end());
+                qo_payload.insert(qo_payload.end(), hdr_vints.begin(), hdr_vints.end());
+                qo_payload.insert(qo_payload.end(), qo_arena.begin() + idx.arena_offset,
+                                  qo_arena.begin() + idx.arena_offset + idx.size);
             }
 
 
@@ -3080,6 +3198,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     core::uint64 win_size =
         compress::resolve_dict_window_size(dict_size, static_cast<core::uint32>(method));
     win_size = compress::snap_window_to_fci_grid(win_size);
+    win_size = clamp_window_to_address_space(win_size);
     if (dict_size == 0 && !solid && method > 0 && file_sz > 0) {
         core::uint64 file_pow2 = 0x20000ULL; // 128 KiB floor
         while (file_pow2 < file_sz && file_pow2 < win_size) {
@@ -3255,7 +3374,14 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         if (!src.open(src_file, io::FileMode::ReadOnly)) return false;
 
         if (method > 0) {
-            compress::StreamEncoder encoder(method, win_size);
+            // filter_cfg MUST be forwarded: this is the >SPOOL_MEMORY_THRESHOLD
+            // branch of the volume path, and dropping it made -mc a silent
+            // no-op for files over the threshold (every other encoder call
+            // site — prepare_add_file, the direct-stream batch writer, and
+            // this function's own in-memory branch — honours it), so the same
+            // file compressed differently depending on its size and whether the
+            // archive was multivolume (v1.41.1 fix).
+            compress::StreamEncoder encoder(method, win_size, filter_cfg);
             struct FlushCtx {
                 decltype(write_spool_chunk)* writer;
                 bool ok;
@@ -3805,8 +3931,15 @@ bool ArchiveMutator::move_file_to_archive_vol(const std::filesystem::path& arc_p
         add_file_to_archive_vol(arc_path, src_file, arc_entry_name, method, vol_size, password,
                                 solid, dict_size, filter_cfg, encrypt_headers, comment, lock);
     if (ok) {
+        // Route through the same helper the non-volume move path uses, so the
+        // -df/-dr/-dw delete semantics live in one place. Plain mode is an
+        // exact std::filesystem::remove, so the "already gone" tolerance below
+        // is unchanged: a source removed concurrently is still a success,
+        // because the user's goal (in the archive, off the disk) is met.
+        // Returning the helper's result alone would report EXIT_FATAL for that
+        // (v1.41.1).
         std::error_code ec;
-        std::filesystem::remove(src_file, ec);
+        io::delete_source_securely(src_file, io::SourceDeleteMode::Plain, ec);
         return !ec || !std::filesystem::exists(src_file);
     }
     return false;

@@ -101,11 +101,26 @@ bool entry_mtime_unix(const format::FileBlock& h, core::int64& out_unix) {
 // rename (rename preserves it; the containment handle stays the only
 // writer). Used for regular files — directories go through the deferred
 // bottom-up path.
+
+// Windows FILETIME is 100ns ticks since 1601-01-01, so the conversion is
+// (unix_sec + 11644473600) * 1e7. Both ends are clamped here: the shipped
+// MtimeBounds default (max 32503680000) leaves seven orders of magnitude of
+// headroom, but set_mtime_bounds() is public and can widen it, and an
+// unclamped product overflowed signed long long (UB) on the low side and
+// wrapped a garbage FILETIME silently on the high side (v1.41.1).
+constexpr core::int64 FT_EPOCH_OFFSET = 11644473600LL; // 1601-01-01 → 1970-01-01
+constexpr core::int64 FT_MIN_UNIX = -FT_EPOCH_OFFSET;  // the FILETIME epoch itself
+constexpr core::int64 FT_MAX_UNIX = 910692730085LL;    // INT64_MAX / 1e7, minus the offset
+core::uint64 unix_to_filetime100(core::int64 unix_sec) {
+    if (unix_sec < FT_MIN_UNIX) unix_sec = FT_MIN_UNIX;
+    if (unix_sec > FT_MAX_UNIX) unix_sec = FT_MAX_UNIX;
+    return (static_cast<core::uint64>(unix_sec) + 11644473600ULL) * 10000000ULL;
+}
+
 bool set_file_mtime(const std::filesystem::path& p, core::int64 unix_sec) {
 #ifdef _WIN32
-    const long long ft100 = (unix_sec + 11644473600LL) * 10000000LL;
     ULARGE_INTEGER ul;
-    ul.QuadPart = static_cast<core::uint64>(ft100);
+    ul.QuadPart = unix_to_filetime100(unix_sec);
     FILETIME ft;
     ft.dwLowDateTime = ul.LowPart;
     ft.dwHighDateTime = ul.HighPart;
@@ -375,12 +390,7 @@ void ArchiveReader::apply_deferred_dir_metadata() {
     // Bottom-up: deepest first, so restrictive modes and final mtimes land
     // after every child write (plan §7.4). Best-effort throughout.
     std::sort(pending_dir_meta_.begin(), pending_dir_meta_.end(),
-              [](const PendingDirMeta& a, const PendingDirMeta& b) {
-                  const auto depth = [](const std::filesystem::path& p) {
-                      return static_cast<size_t>(std::distance(p.begin(), p.end()));
-                  };
-                  return depth(a.path) > depth(b.path);
-              });
+              [](const PendingDirMeta& a, const PendingDirMeta& b) { return a.depth > b.depth; });
     for (const auto& meta : pending_dir_meta_) {
 #ifdef _WIN32
         // Directory times via a backup-semantics handle (no traverse of the
@@ -391,13 +401,10 @@ void ArchiveReader::apply_deferred_dir_metadata() {
         if (h != INVALID_HANDLE_VALUE) {
             if (meta.has_mtime) {
                 // unix epoch → FILETIME (100ns since 1601-01-01)
-                const long long ft100 =
-                    (static_cast<long long>(meta.mtime_unix) + 11644473600LL) * 10000000LL;
-                LARGE_INTEGER li;
-                li.QuadPart = ft100;
+                const core::uint64 ft100 = unix_to_filetime100(meta.mtime_unix);
                 FILETIME ft;
-                ft.dwLowDateTime = static_cast<DWORD>(li.LowPart);
-                ft.dwHighDateTime = static_cast<DWORD>(li.HighPart);
+                ft.dwLowDateTime = static_cast<DWORD>(ft100 & 0xFFFFFFFFULL);
+                ft.dwHighDateTime = static_cast<DWORD>(ft100 >> 32);
                 SetFileTime(h, nullptr, nullptr, &ft);
             }
             CloseHandle(h);
@@ -536,6 +543,13 @@ void ArchiveReader::close() {
     header_encrypted_ = false;
     header_crypt_ = format::CryptBlock{};
     links_created_.clear();
+    // Reader-lifetime state, same as links_created_ above: the cached parent
+    // chain is verified once "for this reader's lifetime", and close() is
+    // exactly where that lifetime ends. Leaving it set let a reused reader
+    // suppress the destination-policy symlink check for the next archive
+    // whenever its destination sat at-or-under the previous archive's
+    // recorded parent (v1.41.1 fix).
+    symlink_chain_checked_.clear();
     solid_unpacker_.reset();
     solid_chain_ok_ = false;
     last_decoded_index_ = -1;
@@ -757,8 +771,20 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
             if (read_bytes < 8) break;
             hooks.emit(pos + read_bytes, scan_limit);
 
-            for (size_t i = 0; i <= read_bytes - 8; ++i) {
-                if (std::memcmp(scan_buf.data() + i, format::rar5_signature(), 8) == 0) {
+            // memchr for the first signature byte so libc scans with SIMD, then an
+            // 8-byte compare only at the handful of candidates that survive.
+            // The old form ran a full memcmp at every one of up to 4 MiB
+            // offsets (v1.41.1). `remaining - 7` is deliberate: it never lets
+            // the compare read past the window, and the window stride below
+            // re-tests the 7-byte overlap either way.
+            const core::byte* sig = format::rar5_signature();
+            const size_t last_start = read_bytes - 8;
+            size_t i = 0;
+            while (i <= last_start) {
+                const void* hit = std::memchr(scan_buf.data() + i, sig[0], (last_start - i) + 1);
+                if (!hit) break;
+                i = static_cast<size_t>(static_cast<const core::byte*>(hit) - scan_buf.data());
+                if (std::memcmp(scan_buf.data() + i, sig, 8) == 0) {
                     core::uint64 cand_offset = pos + i;
                     stream_.seek(static_cast<core::int64>(cand_offset + 8), io::SeekOrigin::Begin);
                     core::uint64 type = 0, flags = 0, data_size = 0;
@@ -771,6 +797,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                         break;
                     }
                 }
+                ++i; // candidate rejected: resume the search past it
             }
             if (found) break;
             pos += (read_bytes > 8) ? (read_bytes - 7) : 1;
@@ -818,12 +845,15 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
         // the signature and activates this state; every following header of
         // the volume is then read through it.
         format::HeaderCryptReader hcrypt;
+        // Reused across every header in every volume: read_block_raw() clears
+        // and then fully overwrites it, so hoisting it out of the loop drops
+        // one heap allocation per header block in the archive (v1.41.1).
+        std::vector<core::byte> body;
         while (vs.tell() < vsz) {
             if (hooks.cancelled()) return false;
             hooks.emit(vol_done_base + (vs.tell() - start_off), vol_total_base);
             core::uint64 head_start = vs.tell();
             core::uint64 type = 0, flags = 0, data_size = 0;
-            std::vector<core::byte> body;
             auto res =
                 format::HeaderReader::read_block_raw(vs, type, flags, body, data_size, &hcrypt);
             if (res != format::HeaderResult::Ok) {
@@ -911,6 +941,11 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                     // = fall back to the linear scan).
                                     core::uint64 qo_expect_pos = curr_pos;
                                     bool qo_ok = true;
+                                    // Reused per cached header: read_block_raw_mem()
+                                    // clears and overwrites it wholesale, so this
+                                    // drops one allocation per entry the QuickOpen
+                                    // cache carries (v1.41.1).
+                                    std::vector<core::byte> entry_body;
 
                                     while (qp < qo_buf.size()) {
                                         if (qp + 4 > qo_buf.size()) {
@@ -928,14 +963,22 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                             qo_ok = false;
                                             break;
                                         }
-                                        size_t body_start = struct_size_start + rb;
-                                        size_t struct_end =
-                                            body_start + static_cast<size_t>(struct_size);
+                                        const size_t body_start = struct_size_start + rb;
+                                        // Bound by subtraction, not by adding
+                                        // first: the old form computed
+                                        // struct_end (and could wrap on ILP32)
+                                        // before validating anything. The 2 MiB
+                                        // cap stays — it bounds the CRC-verified
+                                        // region independently of the buffer
+                                        // size (v1.41.1).
                                         if (struct_size > 2 * 1024 * 1024 ||
-                                            struct_end > qo_buf.size()) {
+                                            body_start > qo_buf.size() ||
+                                            struct_size > qo_buf.size() - body_start) {
                                             qo_ok = false;
                                             break;
                                         }
+                                        const size_t struct_end =
+                                            body_start + static_cast<size_t>(struct_size);
 
                                         crypto::Crc32 check_crc;
                                         check_crc.update(qo_buf.data() + struct_size_start,
@@ -985,7 +1028,6 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                         size_t mem_off = 0;
                                         core::uint64 entry_type = 0, entry_flags = 0,
                                                      entry_data_size = 0;
-                                        std::vector<core::byte> entry_body;
                                         auto bres = format::HeaderReader::read_block_raw_mem(
                                             qo_buf.data() + cur, static_cast<size_t>(data_sz),
                                             mem_off, entry_type, entry_flags, entry_body,
@@ -1242,6 +1284,12 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
     // allowing legitimate archives to span thousands of parts.
     constexpr size_t MAX_VOLUME_CHAIN = 65535;
     std::vector<ArchiveEntry> raw_all;
+    // Reused across the volume walk: process_volume() either assigns or appends
+    // to it, so it is cleared at the top of every iteration — hoisting it out
+    // of the loop reuses its capacity instead of reallocating per volume
+    // (v1.41.1).
+    std::vector<ArchiveEntry> vol_raw;
+    bool have_qo = false;
     bool scan_aborted = false;
     bool missing_required = false;
     while (vol_idx < vol_chain.size() && vol_idx < MAX_VOLUME_CHAIN) {
@@ -1273,7 +1321,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
         }
         bool vol_saw_end = false;
         format::MainBlock vol_main;
-        std::vector<ArchiveEntry> vol_raw;
+        vol_raw.clear();
         if (!process_volume(vpath, vol_idx == 0, *vs_source, vol_raw, vol_main, vol_saw_end)) {
             if (hooks.cancelled()) scan_aborted = true;
             break;
@@ -1283,12 +1331,14 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
         for (auto& re : vol_raw) {
             if (re.header.is_service && re.header.service_type == "QO") {
                 // QO is not needed for multivolume; spec says locator 0 but it may appear in the first volume
-                // Keep only first QO to avoid blocking merges
-                bool already_have_qo = false;
-                for (auto& e : raw_all)
-                    if (e.header.is_service && e.header.service_type == "QO")
-                        already_have_qo = true;
-                if (!already_have_qo) raw_all.push_back(std::move(re));
+                // Keep only first QO to avoid blocking merges. The flag must be
+                // raised INSIDE the push: raw_all keeps the first QO seen
+                // across the whole volume walk, so a second QO — in this
+                // volume or any later one — is dropped (v1.41.1).
+                if (!have_qo) {
+                    have_qo = true;
+                    raw_all.push_back(std::move(re));
+                }
                 continue;
             }
             // Find previous file entry with same name that has split_after (skip QO/service interleaving)
@@ -1427,19 +1477,33 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
 
 std::vector<std::filesystem::path> ArchiveReader::volume_paths() const {
     std::vector<std::filesystem::path> out;
-    if (!path_.empty()) out.push_back(path_);
+    // Lexical fast path: the DLL runs this once per extract() call, and the
+    // old form rescanned every already-collected volume for every extent,
+    // paying a stat() pair per miss (v1.41.1 fix).
+    std::unordered_set<std::filesystem::path> seen;
+    auto add = [&](const std::filesystem::path& p) {
+        if (seen.insert(p).second) out.push_back(p);
+    };
+    if (!path_.empty()) add(path_);
     for (const auto& e : entries_) {
         for (const auto& ext : e.extents) {
-            bool seen = false;
+            if (seen.count(ext.volume_path) != 0) continue; // identical already: no syscall
+            bool dup = false;
             for (const auto& p : out) {
+                // Both disjuncts matter: equivalent() cannot stat a volume that
+                // was renamed or removed after open, and the direct comparison
+                // is what still dedups it (v1.41.1 fix).
+                if (p == ext.volume_path) {
+                    dup = true;
+                    break;
+                }
                 std::error_code ec;
-                if (p == ext.volume_path ||
-                    (!ec && std::filesystem::equivalent(p, ext.volume_path, ec))) {
-                    seen = true;
+                if (std::filesystem::equivalent(p, ext.volume_path, ec) && !ec) {
+                    dup = true;
                     break;
                 }
             }
-            if (!seen) out.push_back(ext.volume_path);
+            if (!dup) add(ext.volume_path);
         }
     }
     return out;
@@ -2018,24 +2082,31 @@ bool ArchiveReader::read_packed_data(const ArchiveEntry& entry,
             if (total64 > static_cast<size_t>(-1)) return false;
         }
         size_t total = static_cast<size_t>(total64);
-        out.reserve(total);
+        // Size once, read straight into the destination. The old loop
+        // allocated and value-initialised a fresh 1 MiB staging vector per
+        // megabyte and then memcpy'd it into `out` — two passes over every
+        // byte plus a heap round-trip each (v1.41.1).
+        out.resize(total);
+        size_t write_pos = 0;
         for (auto& e : entry.extents) {
             io::FileStream vs;
             if (!open_extent_source(e.volume_path, vs)) return false;
             core::uint64 fsz = vs.size();
             core::uint64 remain =
                 e.offset < fsz ? std::min<core::uint64>(e.size, fsz - e.offset) : 0;
-            core::uint64 off = e.offset;
+            // Refuse a truncated extent up front rather than after writing
+            // part of it: same verdict as the old post-loop check, decided
+            // before anything lands.
+            if (remain < e.size) return false; // extent truncated on disk
+            // One seek per extent; FileStream::read is unbuffered, so the
+            // sequential reads below walk it.
+            if (!vs.seek(static_cast<core::int64>(e.offset), io::SeekOrigin::Begin)) return false;
             while (remain > 0) {
-                size_t take = static_cast<size_t>(std::min<core::uint64>(remain, 1u << 20));
-                std::vector<core::byte> chunk(take);
-                if (!vs.seek(static_cast<core::int64>(off), io::SeekOrigin::Begin)) return false;
-                if (vs.read(chunk.data(), take) != take) return false;
-                out.insert(out.end(), chunk.begin(), chunk.end());
-                off += take;
+                const size_t take = static_cast<size_t>(std::min<core::uint64>(remain, 1u << 20));
+                if (vs.read(out.data() + write_pos, take) != take) return false;
+                write_pos += take;
                 remain -= take;
             }
-            if (off - e.offset < e.size) return false; // extent truncated on disk
         }
         return true;
     }
@@ -2373,49 +2444,56 @@ bool is_full_path(const std::string& p) {
     if (n.rfind("//", 0) == 0) return true;
     return false;
 }
-int calc_allowed_depth(const std::string& arc_name) {
-    std::string norm = normalize_separators_to_slash(arc_name);
-    // strip trailing slash for directory entries
-    bool is_dir = (!arc_name.empty() && (arc_name.back() == '/' || arc_name.back() == '\\'));
-    while (!norm.empty() && norm.back() == '/') norm.pop_back();
-    std::vector<std::string> parts;
-    size_t pos = 0;
-    while (pos < norm.size()) {
-        size_t nxt = norm.find('/', pos);
-        std::string comp =
-            (nxt == std::string::npos) ? norm.substr(pos) : norm.substr(pos, nxt - pos);
-        pos = (nxt == std::string::npos) ? norm.size() : nxt + 1;
-        if (comp.empty() || comp == ".") continue;
-        if (comp == "..") {
-            if (!parts.empty()) parts.pop_back();
-            // if empty, ".." would escape root -> keep depth 0 (don't push)
-        } else {
-            parts.push_back(comp);
-        }
+// Number of components in the SANITIZED entry name. This is the string the
+// library joins onto the extraction root to build dest_path
+// (open_contained_writer / create_contained_dir above), so it is the only
+// name whose component count can agree with where dest_path actually landed.
+// Counting the RAW header name instead inflated the count by one whenever the
+// name carried a drive prefix ("C:/a/b") or a trailing separator ("a/b/"),
+// handing every relative link/copy target one extra ".." of reach past the
+// root (v1.41.1 fix).
+size_t sanitized_name_depth(const std::string& arc_name) {
+    const std::string rel = io::sanitize_archive_path(arc_name);
+    if (rel.empty()) return 0;
+    // sanitize_archive_path emits no empty, "." or ".." components and never a
+    // trailing separator, so a plain slash count is the component count.
+    size_t depth = 1;
+    for (const char c : rel) {
+        if (c == '/') ++depth;
     }
-    if (parts.empty()) return 0;
-    if (is_dir) return static_cast<int>(parts.size());
-    // last component is file name
-    int d = static_cast<int>(parts.size()) - 1;
-    return d < 0 ? 0 : d;
+    return depth;
+}
+int calc_allowed_depth(const std::string& arc_name) {
+    const size_t n = sanitized_name_depth(arc_name);
+    // A symlink resolves its relative target against the directory that
+    // CONTAINS it, so a name of n components sits n-1 levels below the root.
+    // Directory symlinks get the same answer: the trailing separator never
+    // survives sanitization, and the link still lives inside its parent — the
+    // old trailing-slash branch returned n and let one ".." escape the root.
+    return n > 0 ? static_cast<int>(n - 1) : 0;
 }
 bool is_relative_symlink_safe(const std::string& arc_name, const std::string& target) {
-    int depth = calc_allowed_depth(arc_name);
-    std::string t = normalize_separators_to_slash(strip_trailing_slashes(target));
+    // Walk the target the way the filesystem will: each ".." pops one level
+    // that a normal component pushed. Counting ".." in isolation (the old
+    // `dotdots <= depth` form) rejected targets that re-descend and stay
+    // inside the root — "../a/../b/../c" from a level-1 parent resolves to
+    // <root>/c — while still permitting the escaping forms above.
+    int cur = calc_allowed_depth(arc_name);
+    const std::string t = normalize_separators_to_slash(strip_trailing_slashes(target));
     size_t pos = 0;
-    int dotdots = 0;
     while (pos < t.size()) {
         size_t nxt = t.find('/', pos);
-        std::string comp = (nxt == std::string::npos) ? t.substr(pos) : t.substr(pos, nxt - pos);
+        const std::string comp =
+            (nxt == std::string::npos) ? t.substr(pos) : t.substr(pos, nxt - pos);
         pos = (nxt == std::string::npos) ? t.size() : nxt + 1;
-        if (comp.empty() || comp == ".") {
-            if (nxt == std::string::npos) break;
-            continue;
+        if (comp.empty() || comp == ".") continue;
+        if (comp == "..") {
+            if (--cur < 0) return false; // climbs above the extraction root
+        } else {
+            ++cur;
         }
-        if (comp == "..") ++dotdots;
-        if (nxt == std::string::npos) break;
     }
-    return dotdots <= depth;
+    return true;
 }
 bool is_reparse_or_symlink(const std::filesystem::path& p) {
 #ifdef _WIN32
@@ -2469,29 +2547,16 @@ bool on_checked_chain(const std::filesystem::path& p, const std::filesystem::pat
 }
 std::filesystem::path get_dest_root(const std::filesystem::path& dest_path,
                                     const std::string& arc_name) {
-    // Collect the entry name's components the way sanitize_archive_path
-    // resolves them ("." skipped, ".." pops). The caller builds dest_path as
-    // out_root / sanitized(name), so stripping exactly these components lands
-    // on the extraction root. Resolving ".." lexically here is what keeps a
-    // redir source from walking above out_root (report H3): the raw archive
-    // name may contain any number of "..", and walking one real parent per
-    // raw component let a link/copy source reach anywhere on the drive.
-    std::string norm = normalize_separators_to_slash(arc_name);
-    while (!norm.empty() && norm.back() == '/') norm.pop_back();
-    size_t depth = 0;
-    size_t pos = 0;
-    while (pos < norm.size()) {
-        size_t nxt = norm.find('/', pos);
-        std::string comp =
-            (nxt == std::string::npos) ? norm.substr(pos) : norm.substr(pos, nxt - pos);
-        pos = (nxt == std::string::npos) ? norm.size() : nxt + 1;
-        if (comp.empty() || comp == ".") continue;
-        if (comp == "..") {
-            if (depth > 0) --depth;
-            continue;
-        }
-        ++depth;
-    }
+    // Strip exactly the components the caller appended when it built dest_path
+    // as out_root / sanitize_archive_path(file_name) — that is what lands back
+    // on the extraction root (v1.41.1 fix: the previous loop counted the RAW
+    // name, so a drive prefix like "C:/a/b" stripped one level too many and
+    // handed a hardlink/FILECOPY source one ".." of reach above out_root —
+    // report H3). Resolving ".." here is what keeps a link/copy source from
+    // walking above out_root; the raw archive name may contain any number of
+    // "..", and walking one real parent per raw component let a source reach
+    // anywhere on the drive.
+    const size_t depth = sanitized_name_depth(arc_name);
     std::filesystem::path root = dest_path;
     for (size_t i = 0; i < depth; ++i) {
         auto pr = root.parent_path();
@@ -2691,6 +2756,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             // restoration after all writes complete.
             PendingDirMeta meta;
             meta.path = dest_path;
+            meta.depth = static_cast<size_t>(std::distance(dest_path.begin(), dest_path.end()));
             // POSIX modes are honored only when the producer stored a real
             // st_mode (file-type bits present); DOS-style attribute blobs
             // (e.g. 0x10 from Windows-foo producers) would otherwise become
@@ -2707,20 +2773,22 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             // last_mtime_clamped_.
             if (entry.header.htime_is_unix && entry.header.htime_mtime_unix != 0) {
                 meta.has_mtime = true;
-                meta.mtime_unix = entry.header.htime_mtime_unix;
+                meta.mtime_unix = static_cast<core::int64>(entry.header.htime_mtime_unix);
             } else if (entry.header.utime_unix != 0) {
                 meta.has_mtime = true;
-                meta.mtime_unix = entry.header.utime_unix;
+                meta.mtime_unix = static_cast<core::int64>(entry.header.utime_unix);
             } else if (entry.header.mtime_win != 0) {
                 meta.has_mtime = true;
+                // Signed: a pre-1970 FILETIME lands below the epoch offset, and
+                // routing that through a uint64 field cost two
+                // implementation-defined conversions per application (v1.41.1).
                 meta.mtime_unix =
-                    static_cast<core::uint64>(entry.header.mtime_win / 10000000LL - 11644473600LL);
+                    static_cast<core::int64>(entry.header.mtime_win / 10000000LL - 11644473600LL);
             }
             if (meta.has_mtime) {
-                const core::int64 raw = static_cast<core::int64>(meta.mtime_unix);
-                if (mtime_out_of_bounds(raw, mtime_bounds_)) {
+                if (mtime_out_of_bounds(meta.mtime_unix, mtime_bounds_)) {
                     last_mtime_clamped_ = true;
-                    meta.mtime_unix = static_cast<core::uint64>(clamp_mtime(raw, mtime_bounds_));
+                    meta.mtime_unix = clamp_mtime(meta.mtime_unix, mtime_bounds_);
                 }
             }
             if (meta.has_mode || meta.has_mtime || !entry.header.xattrs.empty()) {
@@ -3198,8 +3266,15 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
         const bool use_crc = !use_blake && entry.header.has_crc32;
         for (auto& e : entry.extents) {
             io::FileStream vs;
-            if (!vs.open(e.volume_path, io::FileMode::ReadOnly)) return fail();
-            vs.seek(static_cast<core::int64>(e.offset), io::SeekOrigin::Begin);
+            // Route through the extent seam, not a bare open: the sandbox
+            // worker serves the attached first volume from a duplicated OS
+            // handle whose synthetic path cannot be opened by name
+            // (v1.41.1 fix).
+            if (!open_extent_source(e.volume_path, vs)) return fail();
+            // An unchecked seek would copy from the stream's current position —
+            // verbatim-garbage in the extracted file, and the CRC/BLAKE2sp gate
+            // below is the only thing standing between it and a silent success.
+            if (!vs.seek(static_cast<core::int64>(e.offset), io::SeekOrigin::Begin)) return fail();
             core::byte buf[8192];
             core::uint64 remaining = e.size;
             while (remaining > 0) {
@@ -3227,7 +3302,8 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
         return true;
     }
 
-    stream_.seek(static_cast<core::int64>(entry.data_offset), io::SeekOrigin::Begin);
+    if (!stream_.seek(static_cast<core::int64>(entry.data_offset), io::SeekOrigin::Begin))
+        return fail();
     core::byte buf[8192];
     core::uint64 remaining = entry.data_size;
     crypto::Blake2sp blake;

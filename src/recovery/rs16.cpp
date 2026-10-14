@@ -475,15 +475,40 @@ void ReedSolomon16::update_ecc_scalar(core::uint32 data_num, core::uint32 ecc_nu
         return; // x^0: product is 0 for every word, nothing to fold in
     }
 
+    const core::byte* d = data;
+    core::byte* e_ptr = ecc;
+    size_t remaining = block_size / 2;
+
+    // Building mul_lo/mul_hi is a FIXED 512 gf_mul calls (~1 KiB of stores)
+    // no matter how small the block is — measured at roughly 1 us, which is
+    // about half the entire cost of folding a 200-byte group. group_count is
+    // ceil(archive_size / d), so every small archive folds through groups that
+    // never amortise it. Below the threshold, fold with direct log/exp
+    // multiplies instead: the same gf_mul the tables are built from, so the
+    // result is bit-identical by construction
+    // (mul_lo[b & 0xFF] ^ mul_hi[b >> 8] == gf_mul(coeff, b)), and at or above
+    // the threshold nothing changes at all. The GFNI and NEON remainder loops
+    // already make exactly this trade (v1.41.1).
+    constexpr size_t TABLE_AMORTISE_BYTES = 2048;
+    if (block_size < TABLE_AMORTISE_BYTES) {
+        while (remaining-- > 0) {
+            core::uint16 b = static_cast<core::uint16>(d[0] | (d[1] << 8));
+            d += 2;
+            core::uint16 ec = static_cast<core::uint16>(e_ptr[0] | (e_ptr[1] << 8));
+            ec ^= static_cast<core::uint16>(gf_mul(coeff, b));
+            e_ptr[0] = static_cast<core::byte>(ec & 0xFF);
+            e_ptr[1] = static_cast<core::byte>((ec >> 8) & 0xFF);
+            e_ptr += 2;
+        }
+        return;
+    }
+
     core::uint16 mul_lo[256], mul_hi[256];
     for (core::uint32 i = 0; i < 256; ++i) {
         mul_lo[i] = static_cast<core::uint16>(gf_mul(coeff, i));
         mul_hi[i] = static_cast<core::uint16>(gf_mul(coeff, i << 8));
     }
 
-    const core::byte* d = data;
-    core::byte* e_ptr = ecc;
-    size_t remaining = block_size / 2;
     // x4 unroll; read/write bytes explicitly so bounds are exact.
     while (remaining >= 4) {
         for (int k = 0; k < 4; ++k) {
