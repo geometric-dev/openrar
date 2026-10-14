@@ -251,7 +251,6 @@ void Compressor50::reset_state() {
     prev64_.clear();
     reset_old_dist();
     hash_crc32_.reset();
-    hash_blake2_.reset();
     init_freq();
 }
 
@@ -310,9 +309,6 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
     src_eof_ = false;
     reset_old_dist();
     init_freq();
-    // A fresh archive starts with no tables in the decoder's hands.
-    prev_tables_valid_ = false;
-    seed_remaining_ = REUSE_SEED_BLOCKS;
 }
 
 // -- Streaming session (Path A) ----------------------------------------------
@@ -340,7 +336,6 @@ bool Compressor50::begin_stream(int method, size_t win_size, bool continue_windo
         input_since_block_ = 0;
         total_at_file_start_ = packed_total_;
         hash_crc32_.reset();
-        hash_blake2_.reset();
         fail_count_ = 0;
         init_match_params();
         active_filter_ = FilterType::None; // detection fires only at cur_ == 0
@@ -407,10 +402,7 @@ void Compressor50::start_file(io::FileStream* src, core::uint64 src_file_size,
     // drops them at a non-solid start (decompressor50.cpp:568), but reference
     // unrar rejects the solid-mixed interop track outright if we reuse across a
     // SOLID boundary too - each member is its own block sequence as far as the
-    // format is concerned. Reuse is intra-file only; a member boundary costs at
-    // most one table description, so there is nothing to win by crossing it.
-    prev_tables_valid_ = false;
-    seed_remaining_ = REUSE_SEED_BLOCKS;
+    // format is concerned. write_block always emits a description regardless.
     token_seq_.clear();
     lit_bytes_.clear();
     match_tokens_.clear();
@@ -419,7 +411,6 @@ void Compressor50::start_file(io::FileStream* src, core::uint64 src_file_size,
     input_since_block_ = 0;
     total_at_file_start_ = packed_total_;
     hash_crc32_.reset();
-    hash_blake2_.reset();
 
     if (!continue_window) {
         cur_ = 0;
@@ -445,7 +436,6 @@ void Compressor50::init(io::FileStream* src, io::FileStream* dest, int method,
     total_at_file_start_ = 0;
     mem_out_ = nullptr;
     hash_crc32_.reset();
-    hash_blake2_.reset();
     init_freq();
 }
 
@@ -685,11 +675,17 @@ void Compressor50::distance_to_slot(size_t distance, core::uint32& slot, core::u
         return;
     }
 
-#if defined(_MSC_VER) && (defined(_M_AMD64) || defined(_M_X64))
+#if defined(_MSC_VER) &&                                                                           \
+    (defined(_M_AMD64) || defined(_M_X64) || defined(_M_ARM64) || defined(_M_ARM64EC))
+    // 64-bit MSVC targets all have the 64-bit scan. The ARM64 macros must be
+    // listed explicitly: the previous `#elif defined(_MSC_VER)` fell through to
+    // the 32-bit scan on MSVC ARM64, where size_t IS 64-bit and a distance of
+    // 4 GiB or more was narrowed to 32 bits — producing a wrong dbits, and so a
+    // wrong distance on the wire (v1.41.1).
     unsigned long msb;
     _BitScanReverse64(&msb, distance - 1);
     core::uint32 dbits = static_cast<core::uint32>(msb - 1);
-#elif defined(_MSC_VER)
+#elif defined(_MSC_VER) && defined(_M_IX86)
     // L14: 32-bit x86 MSVC has no _BitScanReverse64. distance <= max_dist_ =
     // min(win_size, SIZE_MAX - 0x1000000) < 2^32 on 32-bit targets, so
     // (distance - 1) always fits the 32-bit scan exactly.
@@ -791,8 +787,9 @@ bool Compressor50::need_flush() {
 }
 
 void Compressor50::make_tables() {
-    std::memset(code_rd_, 0, sizeof(code_rd_));
-    std::memset(code_bd_, 0, sizeof(code_bd_));
+    // The code_rd_/code_bd_ zeroing that used to be here was dead: build_codes
+    // writes every element of its output unconditionally, including
+    // zero-length symbols (v1.41.1).
 
     // Select table size: RAR7 ExtraDist (win > 4 GiB) uses DCX=80 → 446, else 430
     cur_table_size_ = (win_size_ > (4ULL * 1024 * 1024 * 1024)) ? TABLE_SIZEX : TABLE_SIZE;
@@ -1053,9 +1050,7 @@ void Compressor50::apply_pending_filter(core::uint64 up_to) {
 
 bool Compressor50::write_block(bool last_block) {
     block_mem_.clear();
-
-    BitOutput local_out;
-    local_out.set_memory(&block_mem_);
+    local_out_.reset_for_block(&block_mem_);
 
     make_tables();
 
@@ -1068,16 +1063,13 @@ bool Compressor50::write_block(bool last_block) {
     // itself emits a description on every block (verified across a full
     // solid+ref archive), so we match the reference encoder and the bug
     // cannot be hit. Costs a small ratio loss on repetitive input.
-    const core::uint32 cur_dc = (cur_table_size_ == TABLE_SIZEX) ? DCX : DCB;
-    emit_table(local_out);
-    emit_tokens(local_out);
+    emit_table(local_out_);
+    emit_tokens(local_out_);
 
-    // NB: what the decoder now holds is recorded at the END of write_block,
-    // after the empty-block early returns - those paths write no table (and
-    // sometimes no block at all), so the decoder's tables are unchanged there
-    // and prev_* must not be advanced.
+    // NB: the shadow tables the decoder would need for reuse are no longer
+    // recorded — reuse is disabled above, so that bookkeeping was dead.
 
-    local_out.finish_block_data();
+    local_out_.finish_block_data();
 
     core::uint64 data_size = block_mem_.size();
     if (data_size == 0) {
@@ -1144,7 +1136,7 @@ bool Compressor50::write_block(bool last_block) {
         init_freq();
         return false;
     }
-    core::uint64 total_bits = local_out.get_block_bits();
+    core::uint64 total_bits = local_out_.get_block_bits();
 
     assert(total_bits >= (data_size - 1) * 8 && "Block bit size underflow");
     core::uint32 block_bit_size = static_cast<core::uint32>(total_bits - (data_size - 1) * 8);
@@ -1176,15 +1168,6 @@ bool Compressor50::write_block(bool last_block) {
     }
 
     packed_total_ += 2 + byte_count + data_size;
-
-    // The block is on the wire: record the tables the decoder now holds. Placed
-    // here, after the empty-block early returns, because those write no table.
-    std::memcpy(prev_len_ld_, len_ld_, NC);
-    std::memcpy(prev_len_dd_, len_dd_, cur_dc);
-    std::memcpy(prev_len_ldd_, len_ldd_, LDC);
-    std::memcpy(prev_len_rd_, len_rd_, RC);
-    prev_table_size_ = cur_table_size_;
-    prev_tables_valid_ = true;
 
     token_seq_.clear();
     lit_bytes_.clear();
@@ -1695,6 +1678,12 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
         dest.clear();
         return true;
     }
+    // win_size is a public parameter with no lower bound; the per-chunk seed
+    // arithmetic below subtracts one from min(win_size, off), which underflows
+    // to SIZE_MAX when win_size is 0 and turns the seed pointer into a wild
+    // one. Mirror the declared default so an embedder passing 0 gets the same
+    // window the header advertises (v1.41.1).
+    if (win_size == 0) win_size = 0x200000;
 
     unsigned eff_threads = threads == 0 ? core::hardware_thread_hint() : threads;
     if (eff_threads == 0) eff_threads = 1;

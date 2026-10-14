@@ -388,6 +388,105 @@ std::filesystem::path pack_volume(const std::filesystem::path& dir,
     return dir / (std::string(stem) + ".part01.rar");
 }
 
+// ── v1.41.1: the volume spool path honours the caller's FilterConfig ────────
+//
+// Files over SPOOL_MEMORY_THRESHOLD are compressed by a streaming encoder
+// instead of the in-memory compressor. That encoder was built WITHOUT
+// filter_cfg, so -mc / -m were silently dropped for exactly those files: the
+// same input packed smaller in a single-volume archive than in a multivolume
+// one, and identically to a run with filters explicitly disabled. Parallel /
+// streaming path divergence — the knob was honoured on one engine and
+// dropped on its twin.
+void test_volume_spool_honours_filter_cfg() {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "openrar_vol_filters";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+
+    // 17 MiB of x86-shaped data: over the 16 MiB spool threshold, and laid
+    // out as repeated function bodies that CALL one shared absolute target —
+    // the E8 filter's case, where each copy differs only in its relative
+    // operand and the filter folds them back together.
+    constexpr size_t kSize = 17u << 20;
+    const std::filesystem::path src = dir / "code.bin";
+    {
+        std::vector<core::byte> data(kSize, 0x90);
+        // PE stub, so FilterMode::Auto actually detects an x86-64 image.
+        data[0] = 'M';
+        data[1] = 'Z';
+        core::write_le32(data.data() + 0x3C, 64);
+        data[64] = 'P';
+        data[65] = 'E';
+        core::write_le16(data.data() + 68, 0x8664);
+
+        constexpr size_t kTarget = 4096; // one shared absolute callee
+        constexpr size_t kBody = 64;
+        for (size_t off = 8192; off + kBody <= kSize; off += kBody) {
+            const size_t next = off + 8 + 5; // the E8 instruction is at off+8
+            const core::int32 rel = static_cast<core::int32>(static_cast<core::int64>(kTarget) -
+                                                             static_cast<core::int64>(next));
+            data[off + 8] = 0xE8;
+            core::write_le32(data.data() + off + 9, static_cast<core::uint32>(rel));
+        }
+        io::FileStream s;
+        assert(s.open(src, io::FileMode::CreateAlways));
+        assert(s.write(data.data(), data.size()) == data.size());
+        s.close();
+    }
+    assert(std::filesystem::file_size(src) == kSize);
+
+    // Big enough that the whole set stays one volume.
+    const core::uint64 vol_size = 64ull << 20;
+
+    compress::FilterConfig off;
+    off.mode = compress::FilterMode::DisableAll;
+    compress::FilterConfig on; // Auto — detection picks the x86 branch filter
+
+    // New-style volume naming: the set is written as stem.part01.rar and the
+    // plain stem.rar never exists on disk.
+    const std::filesystem::path arc_off = dir / "off.part01.rar";
+    assert(archive::ArchiveMutator::add_file_to_archive_vol(dir / "off.rar", src, "code.bin", 3,
+                                                            vol_size, "", false, 0, off));
+    const std::filesystem::path arc_on = dir / "on.part01.rar";
+    assert(archive::ArchiveMutator::add_file_to_archive_vol(dir / "on.rar", src, "code.bin", 3,
+                                                            vol_size, "", false, 0, on));
+
+    const MemberHeader m_off = member_header(arc_off, 0);
+    const MemberHeader m_on = member_header(arc_on, 0);
+    // Both must actually have compressed (method 0 would make the comparison
+    // vacuous), and the window must agree — only the filters differ.
+    assert(m_off.method == 3 && m_on.method == 3);
+    assert(m_off.win_size == m_on.win_size);
+    assert(m_off.unp_size == kSize && m_on.unp_size == kSize);
+
+    // The defect in one assertion: with filter_cfg dropped on this branch the
+    // two runs packed byte-identical streams, so the filter config had no
+    // effect at all. Filters are a decode-time transform the header must
+    // describe, so the bytes MUST differ when the config differs.
+    std::vector<core::byte> b_off, b_on;
+    {
+        io::FileStream f;
+        assert(f.open(arc_off, io::FileMode::ReadOnly));
+        b_off.resize(static_cast<size_t>(f.size()));
+        assert(f.read(b_off.data(), b_off.size()) == b_off.size());
+    }
+    {
+        io::FileStream f;
+        assert(f.open(arc_on, io::FileMode::ReadOnly));
+        b_on.resize(static_cast<size_t>(f.size()));
+        assert(f.read(b_on.data(), b_on.size()) == b_on.size());
+    }
+    assert(b_off != b_on);
+
+    // ...and both still round-trip to the original bytes.
+    extract_and_compare(arc_off, 0, src);
+    extract_and_compare(arc_on, 0, src);
+
+    std::filesystem::remove_all(dir, ec);
+    std::cout << "[PASS] volume spool honours FilterConfig (no engine divergence)\n";
+}
+
 } // namespace
 
 // The shared table itself: six method-tuned defaults, the legacy 1..15 scale,
@@ -642,6 +741,7 @@ int main() {
     test_volume_dict_scale_and_unpver();
     test_volume_period_corpus_regression();
     test_volume_solid_window_clamp();
+    test_volume_spool_honours_filter_cfg();
     std::cout << "All volume naming tests PASSED!\n";
     return 0;
 }

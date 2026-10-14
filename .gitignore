@@ -92,5 +92,10 @@ tools/perf/out/
 # hashes precisely so the corpus itself is not version-controlled.
 tools/perf/payload/
 # Benchmark bundle output (tools/make_bench_bundle.ps1): contains package-time
-# copies of the local WinRAR install (D4) — never committed.
+# copies of the local WinRAR install (D4) - never committed.
 /dist/
+
+# External-review tooling dumps whole-tree concatenations into the repo root.
+# Derived, multi-megabyte, and regenerated on every run - never committed.
+core_codebase.txt
+filtered_codebase.txt

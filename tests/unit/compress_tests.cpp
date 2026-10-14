@@ -1056,6 +1056,40 @@ void test_bit_reader_get_bits64() {
     std::cout << "[PASS] BitReader get_bits64 across 33-64 bit values\n";
 }
 
+// The encoder's own bookkeeping must be able to HOLD every slot the decoder
+// accepts. test_extra_distance_slot_decoding above proves the decode side
+// handles slots 76/78; this pins the encode side. RAR7 ExtraDist windows carry
+// DCX = 80 distance slots, and distance_to_slot() legitimately emits 64..79 for
+// a match 4 GiB back or further. With a six-bit dist_slot field those collapsed
+// to 0..15, so emit_tokens() re-read a wrong slot and computed BOTH the wrong
+// Huffman symbol and the wrong extra-bit width — a well-formed stream carrying
+// wrong bytes, surfacing only as a CRC failure at extract.
+void test_token_holds_every_distance_slot() {
+    for (core::uint32 slot = 0; slot < Compressor50::DCX; ++slot) {
+        Compressor50Token tok;
+        tok.set_type(Compressor50Token::TokenType::Match);
+        // Fill the neighbouring fields too: the slot must not disturb them, and
+        // they must not bleed into it.
+        tok.set_len_slot(static_cast<core::byte>(slot & 0x3F));
+        tok.set_dist_slot(static_cast<core::byte>(slot));
+        assert(tok.get_dist_slot() == slot);
+        assert(tok.get_type() == Compressor50Token::TokenType::Match);
+        assert(tok.get_len_slot() == (slot & 0x3F));
+
+        // dist_bits is DERIVED from the stored slot at emit time, so a slot
+        // that survives storage must also yield the right bit width.
+        core::byte expect_bits = slot < 4 ? 0 : static_cast<core::byte>(slot / 2 - 1);
+        assert(tok.get_dist_bits() == expect_bits);
+
+        // Re-writing the slot must not leave residue from the previous value.
+        tok.set_dist_slot(0);
+        assert(tok.get_dist_slot() == 0);
+        tok.set_dist_slot(static_cast<core::byte>(slot));
+        assert(tok.get_dist_slot() == slot);
+    }
+    std::cout << "[+] test_token_holds_every_distance_slot" << std::endl;
+}
+
 void test_extra_distance_slot_decoding() {
     core::byte test_stream[16] = {0xA5, 0x5A, 0xF0, 0x0F, 0x33, 0xCC, 0x55, 0xAA,
                                   0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0};
@@ -2770,6 +2804,7 @@ int main() {
     std::cout << std::flush;
     test_bit_reader_get_bits64();
     std::cout << std::flush;
+    test_token_holds_every_distance_slot();
     test_extra_distance_slot_decoding();
     std::cout << std::flush;
     test_compressor50_large_window_match_finding();
