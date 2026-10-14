@@ -198,13 +198,18 @@ const GfniCalib& gfni_calib() {
 core::uint64 gfni_encode_byte_map(const ReedSolomon16& rs, core::uint32 k, bool high_half,
                                   const GfniCalib& cal) {
     core::uint64 q = 0;
-    for (int k = 0; k < 8; ++k) {
-        const core::uint32 product = rs.gf_mul(k, 1u << k);
+    // The loop walks the eight INPUT bit positions; `k` is the multiply
+    // coefficient. It must not be named `k` too: a rename pass previously made
+    // both `k`, so the coefficient parameter was shadowed and ignored and the
+    // byte map was built for the bit index instead — a silent GFNI
+    // miscompilation that only the calibration check masked (v1.41.1).
+    for (int bit = 0; bit < 8; ++bit) {
+        const core::uint32 product = rs.gf_mul(k, 1u << bit);
         const core::uint8 out_b =
             static_cast<core::uint8>(high_half ? (product >> 8) & 0xFF : product & 0xFF);
         for (int r = 0; r < 8; ++r) {
             if (out_b & (1u << r)) {
-                q |= 1ULL << cal.qbit_of[r][k];
+                q |= 1ULL << cal.qbit_of[r][bit];
             }
         }
     }
