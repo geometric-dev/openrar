@@ -11,7 +11,12 @@ import path from 'node:path';
 import url from 'node:url';
 
 const here = path.dirname(url.fileURLToPath(import.meta.url));
-const dist = path.join(here, '../dist');
+// The build emits into wasm/js/dist (RUNTIME_OUTPUT_DIRECTORY in
+// cmake/wasm.cmake), a SIBLING of this script - not ../dist from here. Every
+// wrapper and test resolves ./dist; this gate was the one left pointing at the
+// old wasm/dist location after the npm-packaging move, so it reported both
+// modules missing on a perfectly good build (v1.41.1).
+const dist = path.join(here, './dist');
 
 const REQUIRED = {
   // Block codec (src/wasm/wasm_api.cpp) — must mirror openrar.js
