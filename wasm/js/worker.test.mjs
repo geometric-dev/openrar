@@ -150,10 +150,11 @@ if (!existsSync(distJs)) {
       const wr = createOpenRARWorker({ workerUrl: 'fake' });
       try {
         const bad = { toString: () => 'x', extra: () => {} };
-        await assert.rejects(
-          () => wr.compress(new Uint8Array(16), 3, undefined),
-          /cannot be posted/);
-        assert.ok(bad); // silence the unused warning
+        // `bad` carries function-valued members, so it is not
+        // structured-cloneable. The host must reject loudly rather than post a
+        // lossy payload. (This call previously passed a plain Uint8Array and
+        // therefore asserted a rejection that could never happen.)
+        await assert.rejects(() => wr.compress(bad, 3, undefined), /cannot be posted/);
       } finally {
         wr.terminate();
       }

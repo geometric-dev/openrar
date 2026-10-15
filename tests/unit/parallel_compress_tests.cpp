@@ -164,6 +164,7 @@ static void test_parallel_pipeline_streaming() {
             out_crc, out_packed);
 
         assert(ok && "compress_stream returned false");
+        assert(in_stream.tell() == total_size && "in_stream must be read in a single forward pass");
     }
 
     std::error_code ec;

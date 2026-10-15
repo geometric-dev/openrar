@@ -1137,6 +1137,7 @@ public:
     static size_t prev_size(const Compressor50& c) { return c.prev_.size(); }
     static size_t head64_size(const Compressor50& c) { return c.head64_.size(); }
     static size_t prev64_size(const Compressor50& c) { return c.prev64_.size(); }
+    static size_t buf_capacity(const Compressor50& c) { return c.buf_.capacity(); }
 
     static void setup_mock_large_window(Compressor50& c, core::uint64 max_dist,
                                         size_t win_mask_size) {
@@ -2669,6 +2670,197 @@ void test_length2_match_support() {
 // (checksum errors at -mt5..16, absent at -mt1 and when refs are removed).
 // WinRAR emits a table description on every block, so we match the reference
 // encoder and the bug cannot be hit. Invariant: bit 7 is SET on every block.
+void test_bit_output_unaligned_block_bits() {
+    for (core::uint32 bits = 1; bits <= 64; ++bits) {
+        std::vector<core::byte> mem;
+        BitOutput out;
+        out.reset_for_block(&mem);
+        for (core::uint32 b = 0; b < bits; ++b) {
+            out.put_bits((b & 1) ? 1u : 0u, 1);
+        }
+        out.finish_block_data();
+        assert(out.get_block_bits() == bits);
+        assert(mem.size() == (bits + 7) / 8);
+        assert(out.get_block_bytes() == mem.size());
+    }
+    std::cout << "[PASS] BitOutput direct memory write & unaligned block bits (OPT-01)\n";
+}
+
+void test_reconstruct_pos_4gib_boundary() {
+    Compressor50 c;
+    c.begin_archive(nullptr, 3, 2 * 1024 * 1024);
+    // Candidate ahead of pos before 4 GiB must be rejected, never wrap negative
+    assert(Compressor50TestAccess::reconstruct_pos(c, 100, 200) == -1);
+    assert(Compressor50TestAccess::reconstruct_pos(c, 100, 0xFFFFFFFFu) == -1);
+    assert(Compressor50TestAccess::reconstruct_pos(c, 1000, 900) == 900);
+    // Across 4 GiB boundary: pos = 0x100000005, trunc = 0xFFFFFFF0 (dist = 21)
+    core::uint64 pos4g = 0x100000005ULL;
+    assert(Compressor50TestAccess::reconstruct_pos(c, pos4g, 0xFFFFFFF0u) ==
+           static_cast<core::int64>(0xFFFFFFF0ULL));
+    std::cout << "[PASS] Compressor50::reconstruct_pos 4 GiB boundary & wrap guard (OPT-02)\n";
+}
+
+void test_compressor50_unpacked_crc32_filtered_and_plain() {
+    std::vector<core::byte> plain = t9_text(32768);
+    crypto::Crc32 expected_plain;
+    expected_plain.update(plain.data(), plain.size());
+
+    {
+        Compressor50 packer;
+        packer.begin_archive(nullptr, 3, 0x200000);
+        packer.set_external_buffer(plain.data(), plain.size());
+        std::vector<core::byte> out;
+        packer.set_memory_dest(&out);
+        assert(packer.compress() >= 0);
+        assert(packer.get_unpacked_crc32() == expected_plain.get());
+    }
+
+    // Filtered streaming input (E8 in-place transform must hash pre-filter bytes)
+    std::vector<core::byte> pe(16384, 0x90);
+    fill_pe_header(pe);
+    plant_call(pe, 256);
+    crypto::Crc32 expected_pe;
+    expected_pe.update(pe.data(), pe.size());
+    {
+        Compressor50 packer;
+        std::vector<core::byte> out;
+        packer.set_memory_dest(&out);
+        assert(packer.begin_stream(3, 0x200000, false));
+        assert(packer.feed(pe.data(), pe.size()) == 0);
+        assert(packer.finish_stream() == 0);
+        assert(packer.get_unpacked_crc32() == expected_pe.get());
+    }
+    std::cout << "[PASS] Compressor50::get_unpacked_crc32 plain & filtered (OPT-03)\n";
+}
+
+void test_huffman_builder_kraft_exactness() {
+    const core::uint32 size = 306;
+    const core::uint32 max_bits = 15;
+    core::uint32 freq[size] = {0};
+    core::byte lengths[size] = {0};
+
+    // Fibonacci distribution forcing depth > 15
+    core::uint32 a = 1, b = 1;
+    for (core::uint32 i = 0; i < 40; ++i) {
+        freq[i] = a;
+        core::uint32 next = a + b;
+        a = b;
+        b = next;
+    }
+    HuffmanBuilder::build_lengths(freq, size, max_bits, lengths);
+    core::uint32 kraft_sum = 0;
+    for (core::uint32 i = 0; i < size; ++i) {
+        if (lengths[i] > 0) {
+            assert(lengths[i] <= max_bits);
+            kraft_sum += 1u << (max_bits - lengths[i]);
+        }
+    }
+    assert(kraft_sum == (1u << max_bits) &&
+           "Kraft sum must be exact (32768) after length-limiting");
+    assert(lengths[39] <= 2 && "Most frequent symbol must retain a short code");
+    HuffmanDecoder dec;
+    assert(dec.build(lengths, size));
+    std::cout << "[PASS] HuffmanBuilder Kraft-exact downward length-limiting (OPT-04)\n";
+}
+
+void test_external_buffer_zero_internal_alloc() {
+    std::vector<core::byte> src = t9_text(16384);
+    Compressor50 packer;
+    packer.begin_archive(nullptr, 3, 0x800000);
+    packer.set_external_buffer(src.data(), src.size());
+    std::vector<core::byte> out;
+    packer.set_memory_dest(&out);
+    assert(packer.compress() >= 0);
+    assert(Compressor50TestAccess::buf_capacity(packer) == 0 &&
+           "External-buffer session must not allocate internal buf_");
+
+    // Reuse same instance for a streaming session (must lazily allocate buf_)
+    out.clear();
+    assert(packer.begin_stream(3, 0x200000, false));
+    packer.set_memory_dest(&out);
+    assert(packer.feed(src.data(), src.size()) == 0);
+    assert(packer.finish_stream() == 0);
+    assert(Compressor50TestAccess::buf_capacity(packer) > 0);
+    assert_roundtrip_2mib(out, src);
+    std::cout << "[PASS] Compressor50 lazy internal buffer allocation & reuse (OPT-06)\n";
+}
+
+void test_bitreader_refill_short_tail() {
+    for (size_t len = 0; len <= 15; ++len) {
+        std::vector<core::byte> buf(len);
+        for (size_t i = 0; i < len; ++i) buf[i] = static_cast<core::byte>((i * 37 + 0xA5) & 0xFF);
+
+        BitReader r_mem(buf.data(), buf.size());
+        size_t pos = 0;
+        BitReader r_cb(
+            [&](core::byte* dst, size_t max_sz) -> size_t {
+                if (pos >= buf.size() || max_sz == 0) return 0;
+                dst[0] = buf[pos++];
+                return 1;
+            },
+            buf.size());
+
+        for (size_t b = 0; b < len; ++b) {
+            core::uint32 v1 = r_mem.get_bits(8);
+            core::uint32 v2 = r_cb.get_bits(8);
+            assert(v1 == buf[b] && v2 == buf[b]);
+        }
+        assert(r_mem.peek_bits(32) == 0);
+        assert(r_cb.peek_bits(32) == 0);
+    }
+    std::cout << "[PASS] BitReader 8-byte fast refill & short-tail parity (OPT-16)\n";
+}
+
+void test_filter_wrapping_and_oversized_region_ram_cap() {
+    // Delta filter roundtrip across a small window to exercise circular wrapping
+    std::vector<core::byte> wav(70000, 0);
+    std::memcpy(wav.data(), "RIFF\x00\x00\x00\x00WAVEfmt ", 16);
+    core::write_le16(wav.data() + 22, 1); // 1 channel
+    core::write_le16(wav.data() + 34, 8); // 8-bit => stride 1
+    for (size_t i = 44; i < wav.size(); ++i) {
+        wav[i] = static_cast<core::byte>((i * 7 + (i >> 3)) & 0xFF);
+    }
+    std::vector<core::byte> packed;
+    assert(Compressor50::compress_buffer(wav.data(), wav.size(), packed, 3, 0x20000));
+    Decompressor50 dec(0x20000);
+    std::vector<core::byte> out;
+    assert(dec.decompress_to_vector(packed.data(), packed.size(), out));
+    assert(out == wav);
+    std::cout
+        << "[PASS] Decompressor50 persistent filter scratch & Delta SIMD roundtrip (OPT-19/20)\n";
+}
+
+void test_bit_output_put_bits64() {
+    // MSB-first packing for every width 1..64. The old high-part extraction
+    // (`value >> (num_bits - 32)`) only coincided with the correct `value >> 32`
+    // at num_bits == 64, so 33..63-bit fields silently emitted the wrong bits.
+    // Latent until emit_tokens packed code+extra into one put_bits64 call with
+    // num_bits = dist_len + extra_high_len (v1.42.0).
+    for (core::uint32 nb = 1; nb <= 64; ++nb) {
+        core::uint64 v = 0x9E3779B97F4A7C15ULL;
+        if (nb < 64) v &= ((core::uint64(1) << nb) - 1);
+        v |= (core::uint64(1) << (nb - 1)); // ensure the top bit is set
+        std::vector<core::byte> mem;
+        BitOutput out;
+        out.reset_for_block(&mem);
+        out.put_bits64(v, nb);
+        out.finish_block_data();
+
+        const size_t nbytes = (nb + 7) / 8;
+        std::vector<core::byte> exp(nbytes, 0);
+        for (core::uint32 i = 0; i < nb; ++i) {
+            if ((v >> (nb - 1 - i)) & 1) {
+                exp[i / 8] = static_cast<core::byte>(exp[i / 8] | (0x80 >> (i % 8)));
+            }
+        }
+        assert(mem.size() == nbytes);
+        assert(std::memcmp(mem.data(), exp.data(), nbytes) == 0 &&
+               "put_bits64 emitted the wrong bits");
+        assert(out.get_block_bits() == nb);
+    }
+    std::cout << "[PASS] BitOutput::put_bits64 MSB-first packing widths 1..64 (OPT-09)\n";
+}
+
 void test_block_table_reuse() {
     // Random data hits the 32768-TOKEN quantum long before the input quantum,
     // so it yields many blocks - the case the old reuse rule would have fired
@@ -2834,6 +3026,14 @@ int main() {
     test_slot257_solid_carry();
     test_add_match_admissibility();
     test_length2_match_support();
+    test_bit_output_unaligned_block_bits();
+    test_reconstruct_pos_4gib_boundary();
+    test_compressor50_unpacked_crc32_filtered_and_plain();
+    test_huffman_builder_kraft_exactness();
+    test_external_buffer_zero_internal_alloc();
+    test_bitreader_refill_short_tail();
+    test_filter_wrapping_and_oversized_region_ram_cap();
+    test_bit_output_put_bits64();
     test_block_table_reuse();
     std::cout << std::flush;
 

@@ -53,24 +53,46 @@ void CdcChunker::chunk(const core::byte* data, size_t size, std::vector<CdcChunk
 }
 
 void CdcStreamChunker::feed(const core::byte* data, size_t n, std::vector<CdcChunk>& out) {
-    for (size_t i = 0; i < n; ++i) {
-        h_ = (h_ << 1) + owner_.table_[static_cast<unsigned char>(data[i])];
-        pending_[pending_size_++] = data[i];
-        ++fed_;
-        const size_t pos = pending_size_;
-        if (pos < CdcChunker::MIN_CHUNK) continue;
-        // FastCDC two-level normalization: the strict mask below the avg
-        // point, the lighter one above it. (At a buffer end within AVG_CHUNK
-        // of the chunk start, chunk() applied the strict mask to every
-        // scanned position and the light mask at most at the final byte,
-        // where "cut" and "tail to EOF" coincide — the streaming decisions
-        // are byte-identical without knowing where EOF is.)
-        const core::uint64 active_mask =
-            pos < CdcChunker::AVG_CHUNK ? owner_.mask_ : (owner_.mask_ >> 1);
-        if ((h_ & active_mask) == 0) {
-            emit(out); // natural boundary
-        } else if (pos == CdcChunker::MAX_CHUNK) {
-            emit(out); // no boundary within the max window: cut at the cap
+    size_t i = 0;
+    const core::uint64 mask_strict = owner_.mask_;
+    const core::uint64 mask_light = owner_.mask_ >> 1;
+
+    while (i < n) {
+        if (pending_size_ < CdcChunker::MIN_CHUNK - 1) {
+            size_t skip =
+                std::min(n - i, static_cast<size_t>(CdcChunker::MIN_CHUNK - 1) - pending_size_);
+            for (size_t k = 0; k < skip; ++k) {
+                h_ = (h_ << 1) + owner_.table_[static_cast<unsigned char>(data[i + k])];
+            }
+            i += skip;
+            pending_size_ += skip;
+            fed_ += skip;
+            if (i == n) break;
+        }
+
+        if (pending_size_ < CdcChunker::AVG_CHUNK - 1) {
+            size_t end =
+                std::min(n, i + (static_cast<size_t>(CdcChunker::AVG_CHUNK - 1) - pending_size_));
+            while (i < end) {
+                h_ = (h_ << 1) + owner_.table_[static_cast<unsigned char>(data[i++])];
+                ++pending_size_;
+                ++fed_;
+                if ((h_ & mask_strict) == 0) {
+                    emit(out);
+                    break;
+                }
+            }
+            if (pending_size_ == 0 || i == n) continue;
+        }
+
+        while (i < n) {
+            h_ = (h_ << 1) + owner_.table_[static_cast<unsigned char>(data[i++])];
+            ++pending_size_;
+            ++fed_;
+            if ((h_ & mask_light) == 0 || pending_size_ == CdcChunker::MAX_CHUNK) {
+                emit(out);
+                break;
+            }
         }
     }
 }

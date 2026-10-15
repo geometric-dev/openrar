@@ -73,6 +73,7 @@ private:
     core::uint64 total_out_{0};
 
     std::vector<core::byte> in_queue_;
+    size_t in_head_{0};
     std::vector<core::byte> output_;
 
     Decompressor50 decompressor_;

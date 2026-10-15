@@ -139,6 +139,7 @@ public:
         io::SourceDeleteMode delete_mode{io::SourceDeleteMode::Plain};
         bool needs_deferred_crc{false};
         bool needs_direct_stream{false};
+        unsigned direct_stream_threads{1};
         std::vector<PreparedAdd> child_services;
 
         PreparedAdd() = default;

@@ -102,18 +102,18 @@ bool Inflate::HuffmanTable::build(const core::uint8* lengths, size_t n, bool all
         if (lengths[sym] > 0) symbols[next[lengths[sym]]++] = static_cast<core::uint16>(sym);
     }
 
-    // Root LUT for codes that fit ROOT_BITS. The canonical code's MSB is
-    // the first bit read; the LUT index stores the first-read bit in its
-    // MSB, so the base index is code << (ROOT_BITS - length).
+    // Root LUT for codes that fit ROOT_BITS, pre-reversed into LSB-first
+    // stream bit order so next_symbol() indexes root[peek] directly without
+    // per-symbol bit reversal (OPT-22).
     core::uint32 next_code[MAX_BITS + 1];
     std::memcpy(next_code, first_code, sizeof(next_code));
     for (size_t sym = 0; sym < n; ++sym) {
         unsigned int len = lengths[sym];
         if (len == 0 || len > ROOT_BITS) continue;
-        core::uint32 base = next_code[len]++ << (ROOT_BITS - len);
-        core::uint32 span = core::uint32(1) << (ROOT_BITS - len);
+        core::uint32 rev = reverse_bits(next_code[len]++, len);
+        core::uint32 step = core::uint32(1) << len;
         core::uint32 entry = (core::uint32(len) << 16) | core::uint32(sym);
-        for (core::uint32 i = 0; i < span; ++i) root[base + i] = entry;
+        for (core::uint32 idx = rev; idx < ROOT_SIZE; idx += step) root[idx] = entry;
     }
     return true;
 }
@@ -172,6 +172,21 @@ bool Inflate::pull_acc_byte() {
 }
 
 bool Inflate::ensure_bits(unsigned int count) {
+    if (real_bits_ >= count) return true;
+    if (in_end_ - in_pos_ >= 8 && bit_count_ <= 56) {
+        core::uint64 v = core::read_le64(in_buf_.data() + in_pos_);
+        unsigned int bytes = (64 - bit_count_) >> 3;
+        if (bytes == 8) {
+            bit_acc_ = v;
+        } else {
+            core::uint64 mask = (core::uint64(1) << (bytes * 8)) - 1;
+            bit_acc_ |= (v & mask) << bit_count_;
+        }
+        bit_count_ += bytes * 8;
+        real_bits_ += bytes * 8;
+        in_pos_ += bytes;
+        if (real_bits_ >= count) return true;
+    }
     while (real_bits_ < count) {
         if (!pull_acc_byte()) return false;
     }
@@ -179,6 +194,19 @@ bool Inflate::ensure_bits(unsigned int count) {
 }
 
 core::uint32 Inflate::peek_zero_fill(unsigned int count) {
+    if (bit_count_ < count && in_end_ - in_pos_ >= 8 && bit_count_ <= 56) {
+        core::uint64 v = core::read_le64(in_buf_.data() + in_pos_);
+        unsigned int bytes = (64 - bit_count_) >> 3;
+        if (bytes == 8) {
+            bit_acc_ = v;
+        } else {
+            core::uint64 mask = (core::uint64(1) << (bytes * 8)) - 1;
+            bit_acc_ |= (v & mask) << bit_count_;
+        }
+        bit_count_ += bytes * 8;
+        real_bits_ += bytes * 8;
+        in_pos_ += bytes;
+    }
     // pull_acc_byte/refill_input terminate on true EOF; in_eof_ only marks
     // the last short read and says nothing about buffered bytes.
     while (bit_count_ < count) {
@@ -276,8 +304,7 @@ bool Inflate::read_dynamic_tables() {
     unsigned int idx = 0;
     while (idx < total) {
         core::uint32 peek = peek_zero_fill(HuffmanTable::ROOT_BITS);
-        core::uint32 rev = reverse_bits(peek, HuffmanTable::ROOT_BITS);
-        core::uint32 entry = clen.root[rev];
+        core::uint32 entry = clen.root[peek];
         if ((entry >> 16) == 0) {
             entry = clen.decode_canonical(peek_zero_fill(HuffmanTable::MAX_BITS));
             if (entry == 0) return false;
@@ -351,9 +378,25 @@ InflateError Inflate::flush_output() {
 }
 
 InflateError Inflate::emit(const core::byte* data, size_t size) {
-    for (size_t i = 0; i < size; ++i) {
-        InflateError err = emit_literal(data[i]);
-        if (err != InflateError::Ok) return err;
+    size_t pos = 0;
+    while (pos < size) {
+        size_t chunk = size - pos;
+        size_t out_rem = out_buf_.size() - out_len_;
+        size_t win_rem = WINDOW_SIZE - window_pos_;
+        if (chunk > out_rem) chunk = out_rem;
+        if (chunk > win_rem) chunk = win_rem;
+        std::memcpy(out_buf_.data() + out_len_, data + pos, chunk);
+        std::memcpy(window_.data() + window_pos_, data + pos, chunk);
+        out_len_ += chunk;
+        window_pos_ = (window_pos_ + chunk) & WINDOW_MASK;
+        if (window_fill_ < WINDOW_SIZE) {
+            window_fill_ = std::min<size_t>(WINDOW_SIZE, window_fill_ + chunk);
+        }
+        pos += chunk;
+        if (out_len_ == out_buf_.size()) {
+            InflateError err = flush_output();
+            if (err != InflateError::Ok) return err;
+        }
     }
     return InflateError::Ok;
 }
@@ -368,14 +411,35 @@ InflateError Inflate::emit_literal(core::byte b) {
 }
 
 InflateError Inflate::window_copy(core::uint32 dist, core::uint32 len) {
-    if (dist > window_fill_) return InflateError::DistanceTooFar;
-    for (core::uint32 r = 0; r < len; ++r) {
+    if (dist == 0 || dist > window_fill_) return InflateError::DistanceTooFar;
+    while (len > 0) {
         const size_t src = (window_pos_ + WINDOW_SIZE - dist) & WINDOW_MASK;
-        const core::byte b = window_[src];
-        out_buf_[out_len_++] = b;
-        window_[window_pos_] = b;
-        window_pos_ = (window_pos_ + 1) & WINDOW_MASK;
-        if (window_fill_ < WINDOW_SIZE) ++window_fill_;
+        size_t chunk = len;
+        size_t out_rem = out_buf_.size() - out_len_;
+        size_t win_dst_rem = WINDOW_SIZE - window_pos_;
+        size_t win_src_rem = WINDOW_SIZE - src;
+        if (chunk > out_rem) chunk = out_rem;
+        if (chunk > win_dst_rem) chunk = win_dst_rem;
+        if (chunk > win_src_rem) chunk = win_src_rem;
+
+        if (dist == 1) {
+            const core::byte b = window_[src];
+            std::memset(out_buf_.data() + out_len_, b, chunk);
+            std::memset(window_.data() + window_pos_, b, chunk);
+        } else if (src == window_pos_) {
+            std::memcpy(out_buf_.data() + out_len_, window_.data() + window_pos_, chunk);
+        } else {
+            size_t gap = (src < window_pos_) ? (window_pos_ - src) : (src - window_pos_);
+            if (chunk > gap) chunk = gap;
+            std::memcpy(out_buf_.data() + out_len_, window_.data() + src, chunk);
+            std::memcpy(window_.data() + window_pos_, window_.data() + src, chunk);
+        }
+        out_len_ += chunk;
+        window_pos_ = (window_pos_ + chunk) & WINDOW_MASK;
+        if (window_fill_ < WINDOW_SIZE) {
+            window_fill_ = std::min<size_t>(WINDOW_SIZE, window_fill_ + chunk);
+        }
+        len -= static_cast<core::uint32>(chunk);
         if (out_len_ == out_buf_.size()) {
             const InflateError err = flush_output();
             if (err != InflateError::Ok) return err;
@@ -390,8 +454,7 @@ InflateError Inflate::window_copy(core::uint32 dist, core::uint32 len) {
 
 bool Inflate::next_symbol(const HuffmanTable& table, unsigned int& sym) {
     const core::uint32 peek = peek_zero_fill(HuffmanTable::ROOT_BITS);
-    const core::uint32 idx = reverse_bits(peek, HuffmanTable::ROOT_BITS);
-    core::uint32 entry = table.root[idx];
+    core::uint32 entry = table.root[peek];
     if ((entry >> 16) == 0) {
         entry = table.decode_canonical(peek_zero_fill(HuffmanTable::MAX_BITS));
         if (entry == 0) return false;
