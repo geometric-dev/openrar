@@ -21,13 +21,26 @@ BitReader::BitReader(InputCallback cb, size_t size)
 void BitReader::refill() {
     // Fill the accumulator to at least 57 bits, fetching successive input
     // chunks as needed, so a peek/consume is served short ONLY at the true
-    // end of the stream (zero padding is EOF semantics). The staging buffer
-    // boundary must never leak into delivered bits: with a single-shot load,
-    // an accumulator down to its last bits coupled with a buffer down to its
-    // last bytes returned a short mid-stream peek (observed as scattered
-    // single-byte corruption in every streaming consumer of large members
-    // while contiguous readers over the same stream decoded cleanly).
+    // end of the stream (zero padding is EOF semantics).
     if (n_ > 56) return;
+    if (end_ - p_ >= 8) {
+        core::uint64 v = 0;
+        std::memcpy(&v, p_, 8);
+#if defined(_MSC_VER)
+        v = _byteswap_uint64(v);
+#else
+        v = __builtin_bswap64(v);
+#endif
+        unsigned int bytes = (64 - n_) >> 3;
+        p_ += bytes;
+        if (bytes == 8) {
+            acc_ = v;
+        } else {
+            acc_ = (acc_ << (bytes * 8)) | (v >> (64 - bytes * 8));
+        }
+        n_ += bytes * 8;
+        return;
+    }
     for (;;) {
         if (p_ >= end_) {
             if (!cb_ || fetched_ >= size_) return; // true end of stream
@@ -97,8 +110,21 @@ core::uint64 BitReader::peek_bits64(unsigned int count) {
 }
 
 core::uint32 BitReader::get_bits(unsigned int count) {
-    core::uint32 val = peek_bits(count);
-    consume_bits(count);
+    if (count == 0) return 0;
+    if (count > 32) count = 32;
+    if (n_ < count) refill();
+    if (n_ >= count) {
+        n_ -= count;
+        consumed_ += count;
+        core::uint32 val = static_cast<core::uint32>(acc_ >> n_);
+        acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
+        return val;
+    }
+    unsigned int take = n_;
+    core::uint32 val = take ? (static_cast<core::uint32>(acc_) << (count - take)) : 0;
+    consumed_ += take;
+    n_ = 0;
+    acc_ = 0;
     return val;
 }
 
@@ -283,11 +309,6 @@ void Decompressor50::ApplyEngine::init(size_t win_size) {
     win_pow2_ = (win_size_ & (win_size_ - 1)) == 0;
 }
 
-size_t Decompressor50::ApplyEngine::wrap_up(size_t pos) const {
-    if (win_pow2_) return pos & win_mask_;
-    return pos >= win_size_ ? pos - win_size_ : pos;
-}
-
 bool Decompressor50::ApplyEngine::ensure_window_alloc() {
     if (window_ready_ || win_size_ == 0) return true;
     try {
@@ -303,15 +324,7 @@ bool Decompressor50::ApplyEngine::ensure_window_alloc() {
 void Decompressor50::ApplyEngine::reset_window() {
     if (window_ready_) std::fill(window_.begin(), window_.end(), static_cast<core::byte>(0));
     win_pos_ = 0;
-    unp_ptr_ = 0;
     first_win_done_ = false;
-}
-
-void Decompressor50::ApplyEngine::write_literal(core::uint32 slot) {
-    window_[win_pos_] = static_cast<core::byte>(slot);
-    win_pos_ = wrap_up(win_pos_ + 1);
-    unp_ptr_ = wrap_up(unp_ptr_ + 1);
-    if (unp_ptr_ == 0) first_win_done_ = true;
 }
 
 void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
@@ -352,25 +365,16 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
 #endif
 
     if (distance == 0 || distance > win_size_) return;
-    size_t src = wrap_up(unp_ptr_ + win_size_ - distance);
-    if (distance > unp_ptr_ && !first_win_done_) {
+    size_t src = wrap_up(win_pos_ + win_size_ - distance);
+    if (distance > win_pos_ && !first_win_done_) {
         // INTENDED (RAR5 spec): references past written data on the first
         // window pass decode as zeros. Do not "fix" this into an error.
-        // The whole run is zeros, so it is a memset in one or two contiguous
-        // segments rather than one store + two wrap_up calls per byte. The
-        // cursor advance stays per-byte-equivalent: unp_ptr_ only latches
-        // first_win_done_ when it lands exactly on 0, and both cursors move in
-        // lockstep (v1.41.1).
         size_t rem_zero = length;
         while (rem_zero > 0) {
-            // win_pos_ == unp_ptr_ holds here, so this chunk never carries
-            // unp_ptr_ past 0 — it can only land exactly on it, which is
-            // precisely the byte the per-byte loop latched on.
             const size_t chunk = std::min(rem_zero, win_size_ - win_pos_);
             std::memset(&window_[win_pos_], 0, chunk);
             win_pos_ = wrap_up(win_pos_ + chunk);
-            unp_ptr_ = wrap_up(unp_ptr_ + chunk);
-            if (unp_ptr_ == 0) first_win_done_ = true;
+            if (win_pos_ == 0) first_win_done_ = true;
             rem_zero -= chunk;
         }
         return;
@@ -382,8 +386,14 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
         // Advancing without writing is the same result and cannot be expressed
         // as memcpy (dst == src) or a chunked loop with gap 0.
         win_pos_ = wrap_up(win_pos_ + length);
-        unp_ptr_ = wrap_up(unp_ptr_ + length);
-        if (unp_ptr_ == 0) first_win_done_ = true;
+        if (win_pos_ == 0) first_win_done_ = true;
+        return;
+    }
+
+    if (distance == 1 && win_pos_ + length <= win_size_) {
+        std::memset(&window_[win_pos_], window_[src], length);
+        win_pos_ = wrap_up(win_pos_ + length);
+        if (win_pos_ == 0) first_win_done_ = true;
         return;
     }
 
@@ -397,8 +407,7 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
     if (src + length <= win_size_ && win_pos_ + length <= win_size_ && gap >= length) {
         std::memcpy(&window_[win_pos_], &window_[src], length);
         win_pos_ = wrap_up(win_pos_ + length);
-        unp_ptr_ = wrap_up(unp_ptr_ + length);
-        if (unp_ptr_ == 0) first_win_done_ = true;
+        if (win_pos_ == 0) first_win_done_ = true;
         return;
     }
 
@@ -406,30 +415,11 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
         size_t chunk = length;
         if (chunk > win_size_ - win_pos_) chunk = win_size_ - win_pos_;
         if (chunk > win_size_ - src) chunk = win_size_ - src;
-        // The linear gap must be recomputed from the CURRENT positions: when
-        // the match source wraps the window end mid-copy (first chunk clamped
-        // by the window edge), src re-enters at 0 and ends up BEHIND dst — the
-        // pre-loop gap is then stale by a full window, and an unclamped memcpy
-        // overtakes its own source, letting memmove's as-if-through-temp
-        // semantics substitute stale pre-match bytes for the just-written
-        // ones (single-byte corruption, found on a 16.7 MB file where a
-        // dist=26 match started at window offset 0x19). With src < win_pos_
-        // the clamp is win_pos_ - src; positions advance in lockstep, so this
-        // equals the true circular distance and keeps every memcpy disjoint
-        // from its own source region.
         size_t gap_now = (src < win_pos_) ? (win_pos_ - src) : (src - win_pos_);
         if (chunk > gap_now) chunk = gap_now;
 
         std::memcpy(&window_[win_pos_], &window_[src], chunk);
 
-        // Wildcopy RLE expansion. Replicating from the head of the just-written
-        // region is byte-exact only once at least `distance` bytes are written:
-        // from then on every reference falls inside the written region. That is
-        // the common low-distance case (gap == distance, chunk == distance).
-        // When src sits ahead of dst (post-wrap, gap == win_size_ - distance)
-        // chunk can never reach `distance`, so the expansion must be skipped
-        // and the outer loop copies chunk-wise. The step clamp against the
-        // window end also disables it there; the outer loop then wraps.
         if (chunk < length && chunk >= distance) {
             size_t done = chunk;
             size_t remaining = length - done;
@@ -447,8 +437,7 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
         win_pos_ = wrap_up(win_pos_ + chunk);
         src = wrap_up(src + chunk);
         length -= chunk;
-        unp_ptr_ = wrap_up(unp_ptr_ + chunk);
-        if (unp_ptr_ == 0) first_win_done_ = true;
+        if (win_pos_ == 0) first_win_done_ = true;
     }
 }
 
@@ -458,18 +447,11 @@ bool Decompressor50::ApplyEngine::flush_plain_up_to(size_t target, size_t total_
     while (last_flushed_ < target) {
         size_t chunk = target - last_flushed_;
         size_t back = (total_written - last_flushed_) % win_size_;
-        size_t circ_start = (unp_ptr_ + win_size_ - back) % win_size_;
+        size_t circ_start = (win_pos_ + win_size_ - back) % win_size_;
         size_t max_contig = win_size_ - circ_start;
         if (chunk > max_contig) chunk = max_contig;
 
         if (chunk == 0) {
-            // Defensive: unreachable while win_size_ > 0 (the ctor substitutes
-            // a default for 0, so max_contig >= 1). Fail closed by returning
-            // false; the caller propagates it. This used to fprintf to stderr
-            // and std::abort() unconditionally - a process-termination helper
-            // in the decode hot path, which ARCHITECTURE.md s5 replaced with
-            // a bool return plus a recorded DecompressErrorCode, and which
-            // would kill a fuzzing or embedding process outright.
             return false;
         }
         if (cb && !cb(&window_[circ_start], chunk)) {
@@ -483,14 +465,6 @@ bool Decompressor50::ApplyEngine::flush_plain_up_to(size_t target, size_t total_
 bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 base_at_entry,
                                                 size_t total_written, size_t dest_size,
                                                 OutputCallback cb) {
-    // Pending regions are recorded in ABSOLUTE file coordinates (block_start
-    // includes base_at_entry) so a queue carried across per-block calls keeps
-    // a stable frame. abs_pos() is this call's current absolute output
-    // position; local_region_start() converts a region into this call's local
-    // frame (regions carried from an earlier block clamp to 0 — their leading
-    // plain bytes were already flushed before this call started). total_written
-    // does not change during a flush, so the call-site value is equivalent to
-    // the sequential decoder's live lambda capture.
     auto abs_pos = [&]() -> core::uint64 {
         return base_at_entry + static_cast<core::uint64>(total_written);
     };
@@ -514,38 +488,40 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
                     return false;
                 }
                 size_t back = static_cast<core::uint64>(abs_pos() - f.block_start) % win_size_;
-                size_t circ_start = (unp_ptr_ + win_size_ - back) % win_size_;
-                // `buf` is already a private copy — window_ must not be
-                // mutated — so it is the filter's destination. Only Delta is
-                // genuinely out-of-place (const src, separate dest); E8,
-                // E8E9 and ARM all transform IN PLACE, so the old
-                // buf -> out_buf memcpy (and a second heap allocation plus its
-                // value-init memset) was pure duplication (v1.41.1).
-                std::vector<core::byte> buf(len);
-                // Two contiguous segments: the region is bounded by win_size_
-                // (checked above and at every filter push site), so it wraps
-                // at most once. The byte-at-a-time loop this replaces moved
-                // up to a full filter chunk one byte per iteration.
+                size_t circ_start = (win_pos_ + win_size_ - back) % win_size_;
                 const size_t head = std::min(len, win_size_ - circ_start);
-                std::memcpy(buf.data(), &window_[circ_start], head);
-                if (head < len) {
-                    std::memcpy(buf.data() + head, &window_[0], len - head);
-                }
 
-                std::vector<core::byte> delta_buf;
-                const core::byte* emit_ptr = buf.data();
+                const core::byte* emit_ptr = nullptr;
                 if (f.type == 0) {
-                    delta_buf.resize(len);
-                    Filters50::apply_delta(buf.data(), delta_buf.data(), len, f.channels);
-                    emit_ptr = delta_buf.data();
-                } else if (f.type == 1) {
-                    Filters50::apply_e8(buf.data(), len, f.file_offset, false);
-                } else if (f.type == 2) {
-                    Filters50::apply_e8(buf.data(), len, f.file_offset, true);
-                } else if (f.type == 3) {
-                    Filters50::apply_arm(buf.data(), len, f.file_offset);
+                    filter_scratch_.resize(len);
+                    if (head == len) {
+                        Filters50::apply_delta(&window_[circ_start], filter_scratch_.data(), len,
+                                               f.channels);
+                        emit_ptr = filter_scratch_.data();
+                    } else {
+                        std::memcpy(filter_scratch_.data(), &window_[circ_start], head);
+                        std::memcpy(filter_scratch_.data() + head, &window_[0], len - head);
+                        delta_scratch_.resize(len);
+                        Filters50::apply_delta(filter_scratch_.data(), delta_scratch_.data(), len,
+                                               f.channels);
+                        emit_ptr = delta_scratch_.data();
+                    }
+                } else {
+                    filter_scratch_.resize(len);
+                    std::memcpy(filter_scratch_.data(), &window_[circ_start], head);
+                    if (head < len) {
+                        std::memcpy(filter_scratch_.data() + head, &window_[0], len - head);
+                    }
+                    if (f.type == 1) {
+                        Filters50::apply_e8(filter_scratch_.data(), len, f.file_offset, false);
+                    } else if (f.type == 2) {
+                        Filters50::apply_e8(filter_scratch_.data(), len, f.file_offset, true);
+                    } else if (f.type == 3) {
+                        Filters50::apply_arm(filter_scratch_.data(), len, f.file_offset);
+                    }
+                    // Undefined filter types 4-7: emit the raw region (spec).
+                    emit_ptr = filter_scratch_.data();
                 }
-                // Undefined filter types 4-7: emit the raw region (spec).
 
                 // 3. Emit filtered bytes directly to flush_cb (never touching window_!)
                 size_t to_emit = len;
@@ -569,6 +545,17 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
                 break;
             }
         }
+    }
+
+    // Honor RAM ceiling invariant (docs/invariants.md §2): cap retained scratch at 1 MiB.
+    constexpr size_t MAX_RETAINED_FILTER_SCRATCH = 1024 * 1024;
+    if (filter_scratch_.capacity() > MAX_RETAINED_FILTER_SCRATCH) {
+        filter_scratch_.clear();
+        filter_scratch_.shrink_to_fit();
+    }
+    if (delta_scratch_.capacity() > MAX_RETAINED_FILTER_SCRATCH) {
+        delta_scratch_.clear();
+        delta_scratch_.shrink_to_fit();
     }
 
     // v1.38.0 M2: compact the consumed prefix once per flush call (each
@@ -1526,8 +1513,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
                 }
                 std::memcpy(engine_.window_.data() + engine_.win_pos_, srcp, stretch);
                 engine_.win_pos_ = engine_.wrap_up(engine_.win_pos_ + stretch);
-                engine_.unp_ptr_ = engine_.wrap_up(engine_.unp_ptr_ + stretch);
-                if (engine_.unp_ptr_ == 0) engine_.first_win_done_ = true;
+                if (engine_.win_pos_ == 0) engine_.first_win_done_ = true;
                 srcp += stretch;
                 total_written += stretch;
                 remaining -= stretch;

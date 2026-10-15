@@ -70,10 +70,9 @@ private:
     void emit(std::vector<CdcChunk>& out);
 
     const CdcChunker& owner_;
-    core::uint64 h_ = 0; // Gear hash of the pending bytes
-    core::byte pending_[CdcChunker::MAX_CHUNK] = {};
+    core::uint64 h_ = 0;      // Gear hash of the pending bytes
     size_t pending_size_ = 0; // bytes since the last cut (<= MAX_CHUNK)
-    size_t fed_ = 0;          // total bytes fed (chunk offsets are stream-relative)
+    core::uint64 fed_ = 0;    // total bytes fed (chunk offsets are stream-relative)
 };
 
 } // namespace openrar::compress

@@ -359,7 +359,6 @@ private:
         // ring window
         std::vector<core::byte> window_;
         size_t win_pos_{0};
-        size_t unp_ptr_{0}; // linear position for filter handling
         bool first_win_done_{false};
         bool window_ready_{false};
         // filter queue + flush cursor (last_flushed_ is call-local; reset
@@ -367,6 +366,10 @@ private:
         std::vector<FilterEntry> filters_;
         size_t filters_head_{0}; // consumed-prefix cursor (v1.38.0 M2)
         size_t last_flushed_{0};
+        // Bounded persistent scratch buffers for filter application (OPT-19);
+        // capped to <= 1 MiB retained capacity per docs/invariants.md §2.
+        std::vector<core::byte> filter_scratch_;
+        std::vector<core::byte> delta_scratch_;
 #ifdef OPENRAR_CROSS_VALIDATE
         const core::byte* val_src_{nullptr};
         size_t val_size_{0};
@@ -376,7 +379,10 @@ private:
 #endif
 
         void init(size_t win_size);
-        size_t wrap_up(size_t pos) const;
+        inline size_t wrap_up(size_t pos) const {
+            if (win_pow2_) return pos & win_mask_;
+            return pos >= win_size_ ? pos - win_size_ : pos;
+        }
         // Allocates the window once; false on bad_alloc (caller maps the
         // error exactly as before the extraction).
         bool ensure_window_alloc();
@@ -385,7 +391,11 @@ private:
         // Resets the call-local flush cursor (per decompress/decompress_block
         // call, like the sequential decoder's call-local last_flushed).
         void begin_call() { last_flushed_ = 0; }
-        void write_literal(core::uint32 slot);
+        inline void write_literal(core::uint32 slot) {
+            window_[win_pos_] = static_cast<core::byte>(slot);
+            win_pos_ = wrap_up(win_pos_ + 1);
+            if (win_pos_ == 0) first_win_done_ = true;
+        }
         void copy_match(size_t distance, size_t length, size_t total_written);
         bool flush_plain_up_to(size_t target, size_t total_written, size_t dest_size,
                                OutputCallback cb);

@@ -35,8 +35,6 @@ import {
   extractFileByIndex, extractAll as archiveExtractAll,
 } from './openrar-archive.js';
 
-const HAS_WORKER = typeof Worker !== 'undefined' && typeof import.meta.url === 'string';
-
 // Upper bound on calls dispatched to the worker at once. Each in-flight call
 // may hold a full copy of its input, and they all share one wasm heap, so
 // unbounded fan-out turns a `for` loop into an out-of-memory. Extra calls
@@ -334,7 +332,15 @@ class OpenRARProxyFallback {
  *   bundler relocates it). Must point at wasm/js/worker.js.
  */
 export function createOpenRARWorker(opts = {}) {
-  if (!HAS_WORKER) return new OpenRARProxyFallback();
+  // Resolved PER CALL, not at module load. A module-level probe froze the
+  // answer to whatever `Worker` happened to be when this file was first
+  // imported: in Node (no global Worker) the factory then always returned the
+  // main-thread fallback, so a host that installs a Worker polyfill - or the
+  // test suite's fake Worker - could never reach the real off-thread path and
+  // the whole worker protocol was untestable (v1.41.1).
+  if (typeof Worker === 'undefined' || typeof import.meta.url !== 'string') {
+    return new OpenRARProxyFallback();
+  }
   const url = opts.workerUrl || new URL('./worker.js', import.meta.url).href;
   return new OpenRARWorkerImpl(url);
 }

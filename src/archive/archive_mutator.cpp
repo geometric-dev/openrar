@@ -1389,12 +1389,11 @@ bool ArchiveMutator::prepare_add_file(
                 fb.method = 0;
                 fb.win_size = 0;
                 out.needs_deferred_crc = true;
-            } else if (method > 0 && !do_encrypt && direct_stream && eff_threads <= 1 &&
-                       !solid_packer) {
-                // Direct-to-archive streaming compression via fixed-width vint back-patching (single-threaded):
+            } else if (method > 0 && !do_encrypt && direct_stream && !solid_packer) {
+                // Direct-to-archive streaming compression via fixed-width vint back-patching:
                 // No temp spool needed! write_batch_add_ex will stream-compress directly into the
-                // archive in 1 MiB chunks, compute CRC32 on-the-fly, and back-patch the
-                // 10-byte fixed-width vint header. Eliminates intermediate disk spooling.
+                // archive, compute CRC32 on-the-fly, and back-patch the 10-byte fixed-width
+                // vint header. Eliminates intermediate disk spooling for both ST and MT.
                 src.close();
                 fb.pack_size = 0;  // 10-byte fixed vint placeholder
                 fb.data_crc32 = 0; // Deterministic placeholder for header back-patching
@@ -1403,6 +1402,7 @@ bool ArchiveMutator::prepare_add_file(
                 fb.win_size = win_size;
                 fb.unp_ver = (win_size > (1ULL * 1024 * 1024 * 1024) || is_non_pow2) ? 1 : 0;
                 out.needs_direct_stream = true;
+                out.direct_stream_threads = eff_threads;
             } else {
                 // Compressed or encrypted streaming to temporary spool file
                 std::filesystem::path spool_p = mutation_temp_path(src_file, "spool_tmp");
@@ -1445,6 +1445,11 @@ bool ArchiveMutator::prepare_add_file(
                 crypto::Crc32 crc_calc;
                 std::vector<core::byte> read_buf(1048576);
                 core::uint64 remaining = file_sz;
+                // True when the packed stream came from ParallelBlockPipeline,
+                // whose input CRC is carried in `stream_crc` and never fed to
+                // crc_calc. The store-fallback tail below must not overwrite
+                // `crc` with crc_calc.get() in that case (v1.42.0, -mt>1 fix).
+                bool used_parallel = false;
 
                 if (method > 0) {
                     bool comp_ok = true;
@@ -1515,6 +1520,7 @@ bool ArchiveMutator::prepare_add_file(
                         if (!comp_ok) return false; // shared window state: abort, never store
                         crc = crc_calc.get();
                     } else if (use_parallel) {
+                        used_parallel = true;
                         compress::ParallelCompressConfig pcfg;
                         pcfg.method = method;
                         pcfg.win_size = static_cast<size_t>(win_size);
@@ -1644,7 +1650,7 @@ bool ArchiveMutator::prepare_add_file(
                 }
 
                 src.close();
-                if (method == 0 || eff_threads <= 1) crc = crc_calc.get();
+                if (!used_parallel) crc = crc_calc.get();
                 fb.pack_size = static_cast<core::int64>(spooled_pack_bytes);
                 fb.data_crc32 = crc;
                 fb.has_crc32 = true;
@@ -2603,58 +2609,96 @@ int ArchiveMutator::write_batch_add_ex(
 
                 core::uint64 actual_pack_size = 0;
                 crypto::Crc32 crc_calc;
+                core::uint32 final_crc = 0;
                 bool stream_ok = true;
 
-                struct DirectFlushCtx {
-                    io::FileStream* out_stream;
-                    core::uint64* pack_bytes;
-                    bool ok;
-                } fctx{&out, &actual_pack_size, true};
-
-                compress::StreamEncoder encoder(pf.fb.method, pf.fb.win_size, filter_cfg);
-                encoder.set_flush(
-                    [](void* user, const core::byte* data, size_t size) -> int {
-                        auto* ctx = static_cast<DirectFlushCtx*>(user);
-                        if (size > 0) {
-                            if (ctx->out_stream->write(data, size) != size) {
-                                ctx->ok = false;
-                                return -1;
-                            }
-                            *(ctx->pack_bytes) += size;
-                        }
-                        return 0;
-                    },
-                    &fctx);
-
-                std::vector<core::byte> read_buf(1048576); // 1 MiB streaming buffer
-                core::uint64 remaining = pf.fb.unp_size;
-                while (remaining > 0) {
-                    size_t to_read =
-                        static_cast<size_t>(std::min<core::uint64>(remaining, read_buf.size()));
-                    if (src_in.read(read_buf.data(), to_read) != to_read) {
-                        stream_ok = false;
-                        break;
+                bool use_parallel = pf.direct_stream_threads > 1;
+                if (use_parallel && filter_cfg.mode != compress::FilterMode::DisableAll) {
+                    std::vector<core::byte> sample(
+                        static_cast<size_t>(std::min<core::uint64>(pf.fb.unp_size, 65536)));
+                    if (!sample.empty() &&
+                        src_in.read(sample.data(), sample.size()) == sample.size()) {
+                        use_parallel = compress::mt_should_use_parallel(filter_cfg, sample.data(),
+                                                                        sample.size());
                     }
-                    crc_calc.update(read_buf.data(), to_read);
-                    if (!encoder.feed(read_buf.data(), to_read) || !fctx.ok) {
+                    if (!src_in.seek(0, io::SeekOrigin::Begin)) {
                         stream_ok = false;
-                        break;
                     }
-                    remaining -= to_read;
                 }
 
-                if (stream_ok) {
-                    std::vector<core::byte> final_chunk;
-                    if (!encoder.finish(final_chunk) || !fctx.ok) {
+                if (stream_ok && use_parallel) {
+                    compress::ParallelCompressConfig pcfg;
+                    pcfg.method = static_cast<int>(pf.fb.method);
+                    pcfg.win_size = static_cast<size_t>(pf.fb.win_size);
+                    pcfg.threads = pf.direct_stream_threads;
+                    compress::ParallelBlockPipeline pipeline(pcfg);
+                    core::uint32 stream_crc = 0;
+                    core::uint64 p_pack = 0;
+                    auto write_direct_chunk = [&](const core::byte* data, size_t size) -> bool {
+                        if (size == 0) return true;
+                        if (out.write(data, size) != size) return false;
+                        actual_pack_size += size;
+                        return true;
+                    };
+                    if (!pipeline.compress_stream(src_in, pf.fb.unp_size, write_direct_chunk,
+                                                  stream_crc, p_pack)) {
                         stream_ok = false;
-                    } else if (!final_chunk.empty()) {
-                        if (out.write(final_chunk.data(), final_chunk.size()) !=
-                            final_chunk.size()) {
+                    } else {
+                        final_crc = stream_crc;
+                    }
+                } else if (stream_ok) {
+                    struct DirectFlushCtx {
+                        io::FileStream* out_stream;
+                        core::uint64* pack_bytes;
+                        bool ok;
+                    } fctx{&out, &actual_pack_size, true};
+
+                    compress::StreamEncoder encoder(pf.fb.method, pf.fb.win_size, filter_cfg);
+                    encoder.set_flush(
+                        [](void* user, const core::byte* data, size_t size) -> int {
+                            auto* ctx = static_cast<DirectFlushCtx*>(user);
+                            if (size > 0) {
+                                if (ctx->out_stream->write(data, size) != size) {
+                                    ctx->ok = false;
+                                    return -1;
+                                }
+                                *(ctx->pack_bytes) += size;
+                            }
+                            return 0;
+                        },
+                        &fctx);
+
+                    std::vector<core::byte> read_buf(1048576); // 1 MiB streaming buffer
+                    core::uint64 remaining = pf.fb.unp_size;
+                    while (remaining > 0) {
+                        size_t to_read =
+                            static_cast<size_t>(std::min<core::uint64>(remaining, read_buf.size()));
+                        if (src_in.read(read_buf.data(), to_read) != to_read) {
                             stream_ok = false;
-                        } else {
-                            actual_pack_size += final_chunk.size();
+                            break;
+                        }
+                        crc_calc.update(read_buf.data(), to_read);
+                        if (!encoder.feed(read_buf.data(), to_read) || !fctx.ok) {
+                            stream_ok = false;
+                            break;
+                        }
+                        remaining -= to_read;
+                    }
+
+                    if (stream_ok) {
+                        std::vector<core::byte> final_chunk;
+                        if (!encoder.finish(final_chunk) || !fctx.ok) {
+                            stream_ok = false;
+                        } else if (!final_chunk.empty()) {
+                            if (out.write(final_chunk.data(), final_chunk.size()) !=
+                                final_chunk.size()) {
+                                stream_ok = false;
+                            } else {
+                                actual_pack_size += final_chunk.size();
+                            }
                         }
                     }
+                    final_crc = crc_calc.get();
                 }
 
                 src_in.close();
@@ -2686,7 +2730,7 @@ int ArchiveMutator::write_batch_add_ex(
                     pf.fb.win_size = 0;
                     pf.fb.unp_ver = 0;
                     pf.fb.pack_size = static_cast<core::int64>(pf.fb.unp_size);
-                    pf.fb.data_crc32 = crc_calc.get();
+                    pf.fb.data_crc32 = final_crc;
 
                     auto store_block_bytes =
                         format::HeaderWriter::serialize_file_block(pf.fb, 0, false);
@@ -2734,7 +2778,7 @@ int ArchiveMutator::write_batch_add_ex(
                     // Normal compression succeeded: back-patch FileBlock header with exact pack_size and CRC32
                     core::uint64 payload_end = out.tell();
                     pf.fb.pack_size = static_cast<core::int64>(actual_pack_size);
-                    pf.fb.data_crc32 = crc_calc.get();
+                    pf.fb.data_crc32 = final_crc;
 
                     auto updated_block_bytes =
                         format::HeaderWriter::serialize_file_block(pf.fb, 0, true);

@@ -7,6 +7,11 @@
 
 #if defined(__aarch64__) || defined(_M_ARM64)
 #include <arm_neon.h>
+#elif !defined(__EMSCRIPTEN__) &&                                                                  \
+    (defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__))
+#include <immintrin.h>
+#include <tmmintrin.h>
+#define OPENRAR_HAS_X86_RS16_SIMD 1
 #endif
 
 #if defined(OPENRAR_HAS_GFNI_KERNEL)
@@ -294,6 +299,158 @@ void rs16_fold_neon(const core::byte* data, core::byte* ecc, size_t bytes, const
 
 #endif // __aarch64__ || _M_ARM64
 
+#if defined(OPENRAR_HAS_X86_RS16_SIMD)
+
+struct X86FoldTables {
+    alignas(16) core::byte lo0[16];
+    alignas(16) core::byte hi0[16];
+    alignas(16) core::byte lo1[16];
+    alignas(16) core::byte hi1[16];
+};
+
+X86FoldTables make_x86_fold_tables(const ReedSolomon16& rs, core::uint32 k) {
+    X86FoldTables t{};
+    for (core::uint32 n = 0; n < 16; ++n) {
+        const core::uint32 p0 = rs.gf_mul(k, n);
+        const core::uint32 p1 = rs.gf_mul(k, n << 4);
+        t.lo0[n] = static_cast<core::byte>(p0 & 0xFF);
+        t.hi0[n] = static_cast<core::byte>((p0 >> 8) & 0xFF);
+        t.lo1[n] = static_cast<core::byte>(p1 & 0xFF);
+        t.hi1[n] = static_cast<core::byte>((p1 >> 8) & 0xFF);
+    }
+    return t;
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("ssse3")))
+#endif
+void rs16_fold_ssse3(const core::byte* data, core::byte* ecc, size_t bytes, const X86FoldTables& k0,
+                     const X86FoldTables& k1) noexcept {
+    const __m128i mask0f = _mm_set1_epi8(0x0F);
+    const __m128i shuf_deint = _mm_setr_epi8(0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15);
+    const __m128i k0_lo0 = _mm_load_si128(reinterpret_cast<const __m128i*>(k0.lo0));
+    const __m128i k0_hi0 = _mm_load_si128(reinterpret_cast<const __m128i*>(k0.hi0));
+    const __m128i k0_lo1 = _mm_load_si128(reinterpret_cast<const __m128i*>(k0.lo1));
+    const __m128i k0_hi1 = _mm_load_si128(reinterpret_cast<const __m128i*>(k0.hi1));
+    const __m128i k1_lo0 = _mm_load_si128(reinterpret_cast<const __m128i*>(k1.lo0));
+    const __m128i k1_hi0 = _mm_load_si128(reinterpret_cast<const __m128i*>(k1.hi0));
+    const __m128i k1_lo1 = _mm_load_si128(reinterpret_cast<const __m128i*>(k1.lo1));
+    const __m128i k1_hi1 = _mm_load_si128(reinterpret_cast<const __m128i*>(k1.hi1));
+
+    for (size_t off = 0; off + 32 <= bytes; off += 32) {
+        const __m128i dA = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + off));
+        const __m128i dB = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + off + 16));
+        const __m128i a = _mm_shuffle_epi8(dA, shuf_deint);
+        const __m128i b = _mm_shuffle_epi8(dB, shuf_deint);
+        const __m128i lo = _mm_unpacklo_epi64(a, b);
+        const __m128i hi = _mm_unpackhi_epi64(a, b);
+        const __m128i lon0 = _mm_and_si128(lo, mask0f);
+        const __m128i lon1 = _mm_and_si128(_mm_srli_epi16(lo, 4), mask0f);
+        const __m128i hin0 = _mm_and_si128(hi, mask0f);
+        const __m128i hin1 = _mm_and_si128(_mm_srli_epi16(hi, 4), mask0f);
+        const __m128i p_lo_lo =
+            _mm_xor_si128(_mm_shuffle_epi8(k0_lo0, lon0), _mm_shuffle_epi8(k0_lo1, lon1));
+        const __m128i p_lo_hi =
+            _mm_xor_si128(_mm_shuffle_epi8(k0_hi0, lon0), _mm_shuffle_epi8(k0_hi1, lon1));
+        const __m128i p_hi_lo =
+            _mm_xor_si128(_mm_shuffle_epi8(k1_lo0, hin0), _mm_shuffle_epi8(k1_lo1, hin1));
+        const __m128i p_hi_hi =
+            _mm_xor_si128(_mm_shuffle_epi8(k1_hi0, hin0), _mm_shuffle_epi8(k1_hi1, hin1));
+        const __m128i prod_lo = _mm_xor_si128(p_lo_lo, p_hi_lo);
+        const __m128i prod_hi = _mm_xor_si128(p_lo_hi, p_hi_hi);
+        const __m128i eA = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ecc + off));
+        const __m128i eB = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ecc + off + 16));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(ecc + off),
+                         _mm_xor_si128(eA, _mm_unpacklo_epi8(prod_lo, prod_hi)));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(ecc + off + 16),
+                         _mm_xor_si128(eB, _mm_unpackhi_epi8(prod_lo, prod_hi)));
+    }
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2")))
+#endif
+void rs16_fold_avx2(const core::byte* data, core::byte* ecc, size_t bytes, const X86FoldTables& k0,
+                    const X86FoldTables& k1) noexcept {
+    const __m256i mask0f = _mm256_set1_epi8(0x0F);
+    const __m256i shuf_deint = _mm256_broadcastsi128_si256(
+        _mm_setr_epi8(0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15));
+    const __m256i k0_lo0 =
+        _mm256_broadcastsi128_si256(_mm_load_si128(reinterpret_cast<const __m128i*>(k0.lo0)));
+    const __m256i k0_hi0 =
+        _mm256_broadcastsi128_si256(_mm_load_si128(reinterpret_cast<const __m128i*>(k0.hi0)));
+    const __m256i k0_lo1 =
+        _mm256_broadcastsi128_si256(_mm_load_si128(reinterpret_cast<const __m128i*>(k0.lo1)));
+    const __m256i k0_hi1 =
+        _mm256_broadcastsi128_si256(_mm_load_si128(reinterpret_cast<const __m128i*>(k0.hi1)));
+    const __m256i k1_lo0 =
+        _mm256_broadcastsi128_si256(_mm_load_si128(reinterpret_cast<const __m128i*>(k1.lo0)));
+    const __m256i k1_hi0 =
+        _mm256_broadcastsi128_si256(_mm_load_si128(reinterpret_cast<const __m128i*>(k1.hi0)));
+    const __m256i k1_lo1 =
+        _mm256_broadcastsi128_si256(_mm_load_si128(reinterpret_cast<const __m128i*>(k1.lo1)));
+    const __m256i k1_hi1 =
+        _mm256_broadcastsi128_si256(_mm_load_si128(reinterpret_cast<const __m128i*>(k1.hi1)));
+
+    for (size_t off = 0; off + 64 <= bytes; off += 64) {
+        const __m256i dA = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + off));
+        const __m256i dB = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + off + 32));
+        const __m256i a = _mm256_shuffle_epi8(dA, shuf_deint);
+        const __m256i b = _mm256_shuffle_epi8(dB, shuf_deint);
+        const __m256i lo = _mm256_unpacklo_epi64(a, b);
+        const __m256i hi = _mm256_unpackhi_epi64(a, b);
+        const __m256i lon0 = _mm256_and_si256(lo, mask0f);
+        const __m256i lon1 = _mm256_and_si256(_mm256_srli_epi16(lo, 4), mask0f);
+        const __m256i hin0 = _mm256_and_si256(hi, mask0f);
+        const __m256i hin1 = _mm256_and_si256(_mm256_srli_epi16(hi, 4), mask0f);
+        const __m256i p_lo_lo =
+            _mm256_xor_si256(_mm256_shuffle_epi8(k0_lo0, lon0), _mm256_shuffle_epi8(k0_lo1, lon1));
+        const __m256i p_lo_hi =
+            _mm256_xor_si256(_mm256_shuffle_epi8(k0_hi0, lon0), _mm256_shuffle_epi8(k0_hi1, lon1));
+        const __m256i p_hi_lo =
+            _mm256_xor_si256(_mm256_shuffle_epi8(k1_lo0, hin0), _mm256_shuffle_epi8(k1_lo1, hin1));
+        const __m256i p_hi_hi =
+            _mm256_xor_si256(_mm256_shuffle_epi8(k1_hi0, hin0), _mm256_shuffle_epi8(k1_hi1, hin1));
+        const __m256i prod_lo = _mm256_xor_si256(p_lo_lo, p_hi_lo);
+        const __m256i prod_hi = _mm256_xor_si256(p_lo_hi, p_hi_hi);
+        const __m256i eA = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ecc + off));
+        const __m256i eB = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ecc + off + 32));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(ecc + off),
+                            _mm256_xor_si256(eA, _mm256_unpacklo_epi8(prod_lo, prod_hi)));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(ecc + off + 32),
+                            _mm256_xor_si256(eB, _mm256_unpackhi_epi8(prod_lo, prod_hi)));
+    }
+}
+
+#endif // OPENRAR_HAS_X86_RS16_SIMD
+
+struct SharedGfTables {
+    core::uint16 exp[4 * ReedSolomon16::GF_SIZE + 1]{};
+    core::uint32 log[ReedSolomon16::GF_SIZE + 1]{};
+
+    SharedGfTables() {
+        core::uint32 e = 1;
+        for (core::uint32 l = 0; l < ReedSolomon16::GF_SIZE; ++l) {
+            log[e] = l;
+            exp[l] = static_cast<core::uint16>(e);
+            exp[l + ReedSolomon16::GF_SIZE] = static_cast<core::uint16>(e);
+            e <<= 1;
+            if (e > ReedSolomon16::GF_SIZE) {
+                e ^= 0x1100Bu;
+            }
+        }
+        log[0] = 2 * ReedSolomon16::GF_SIZE;
+        for (core::uint32 i = 2 * ReedSolomon16::GF_SIZE; i <= 4 * ReedSolomon16::GF_SIZE; ++i) {
+            exp[i] = 0;
+        }
+    }
+};
+
+const SharedGfTables& shared_gf_tables() {
+    static const SharedGfTables kTables{};
+    return kTables;
+}
+
 } // namespace
 
 bool ReedSolomon16::gfni_kernel_active() {
@@ -318,25 +475,9 @@ ReedSolomon16::ReedSolomon16() {
 }
 
 void ReedSolomon16::init_gf() {
-    gf_exp_.resize(4 * GF_SIZE + 1, 0);
-    gf_log_.resize(GF_SIZE + 1, 0);
-
-    core::uint32 e = 1;
-    for (core::uint32 l = 0; l < GF_SIZE; ++l) {
-        gf_log_[e] = l;
-        gf_exp_[l] = e;
-        gf_exp_[l + GF_SIZE] = e; // Duplicate table to avoid modulo operations
-        e <<= 1;
-        if (e > GF_SIZE) {
-            e ^= 0x1100Bu; // Irreducible primitive polynomial: x^16 + x^12 + x^3 + x + 1
-        }
-    }
-
-    // Set sentinel for log(0) so exp[log(0) + log(x)] == 0
-    gf_log_[0] = 2 * GF_SIZE;
-    for (core::uint32 i = 2 * GF_SIZE; i <= 4 * GF_SIZE; ++i) {
-        gf_exp_[i] = 0;
-    }
+    const auto& t = shared_gf_tables();
+    gf_exp_ = t.exp;
+    gf_log_ = t.log;
 }
 
 bool ReedSolomon16::init(core::uint32 data_count, core::uint32 rec_count,
@@ -596,6 +737,40 @@ void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, cons
         rs16_fold_neon(data, ecc, body, k0, k1);
         // Scalar remainder (< 32 bytes): direct log/exp muls, cheaper than
         // building tables for a handful of words.
+        for (size_t off = body; off + 2 <= block_size; off += 2) {
+            const core::uint16 word = static_cast<core::uint16>(data[off] | (data[off + 1] << 8));
+            const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
+            const core::uint16 ec = static_cast<core::uint16>(
+                static_cast<core::uint16>(ecc[off] | (ecc[off + 1] << 8)) ^ product);
+            ecc[off] = static_cast<core::byte>(ec & 0xFF);
+            ecc[off + 1] = static_cast<core::byte>((ec >> 8) & 0xFF);
+        }
+        return;
+    }
+#endif
+
+#if defined(OPENRAR_HAS_X86_RS16_SIMD)
+    const auto& cpu = core::get_cpu_features();
+    if (cpu.avx2 && block_size >= 64) {
+        const size_t body = block_size & ~static_cast<size_t>(63);
+        const X86FoldTables k0 = make_x86_fold_tables(*this, coeff);
+        const X86FoldTables k1 = make_x86_fold_tables(*this, gf_mul(coeff, 0x100u));
+        rs16_fold_avx2(data, ecc, body, k0, k1);
+        for (size_t off = body; off + 2 <= block_size; off += 2) {
+            const core::uint16 word = static_cast<core::uint16>(data[off] | (data[off + 1] << 8));
+            const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
+            const core::uint16 ec = static_cast<core::uint16>(
+                static_cast<core::uint16>(ecc[off] | (ecc[off + 1] << 8)) ^ product);
+            ecc[off] = static_cast<core::byte>(ec & 0xFF);
+            ecc[off + 1] = static_cast<core::byte>((ec >> 8) & 0xFF);
+        }
+        return;
+    }
+    if (cpu.ssse3 && block_size >= 32) {
+        const size_t body = block_size & ~static_cast<size_t>(31);
+        const X86FoldTables k0 = make_x86_fold_tables(*this, coeff);
+        const X86FoldTables k1 = make_x86_fold_tables(*this, gf_mul(coeff, 0x100u));
+        rs16_fold_ssse3(data, ecc, body, k0, k1);
         for (size_t off = body; off + 2 <= block_size; off += 2) {
             const core::uint16 word = static_cast<core::uint16>(data[off] | (data[off + 1] << 8));
             const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));

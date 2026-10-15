@@ -53,28 +53,31 @@ bool StreamDecoder::feed(const core::byte* src, size_t n) {
 }
 
 bool StreamDecoder::process_blocks() {
-    while (!in_queue_.empty() && !finished_) {
+    while (in_head_ < in_queue_.size() && !finished_) {
         if (cancel_cb_ && cancel_cb_(cancel_user_)) {
             aborted_ = true;
             return false;
         }
 
-        // Need at least 3 bytes for a minimum block header: flags (1B), chk (1B), block_size (>=1B)
-        if (in_queue_.size() < 3) break;
+        const size_t avail = in_queue_.size() - in_head_;
+        const core::byte* q = in_queue_.data() + in_head_;
 
-        core::uint32 flags = in_queue_[0];
+        // Need at least 3 bytes for a minimum block header: flags (1B), chk (1B), block_size (>=1B)
+        if (avail < 3) break;
+
+        core::uint32 flags = q[0];
         core::uint32 byte_cnt = ((flags >> 3) & 3) + 1;
         if (byte_cnt == 4) {
             aborted_ = true;
             return false; // Spec violation
         }
         size_t header_size = 2 + byte_cnt;
-        if (in_queue_.size() < header_size) break;
+        if (avail < header_size) break;
 
-        core::uint32 saved = in_queue_[1];
+        core::uint32 saved = q[1];
         core::uint32 block_size = 0;
         for (core::uint32 i = 0; i < byte_cnt; ++i) {
-            block_size |= static_cast<core::uint32>(in_queue_[2 + i]) << (i * 8);
+            block_size |= static_cast<core::uint32>(q[2 + i]) << (i * 8);
         }
 
         core::uint32 chk =
@@ -85,7 +88,7 @@ bool StreamDecoder::process_blocks() {
         }
 
         size_t total_block_bytes = header_size + block_size;
-        if (in_queue_.size() < total_block_bytes) {
+        if (avail < total_block_bytes) {
             // Need more data before this block can be safely decompressed
             break;
         }
@@ -106,8 +109,8 @@ bool StreamDecoder::process_blocks() {
             return true;
         };
 
-        bool ok = decompressor_.decompress_block(in_queue_.data(), total_block_bytes, sink,
-                                                 &written, &block_finished, has_decoded_block_);
+        bool ok = decompressor_.decompress_block(q, total_block_bytes, sink, &written,
+                                                 &block_finished, has_decoded_block_);
         if (!ok) {
             aborted_ = true;
             return false;
@@ -118,12 +121,20 @@ bool StreamDecoder::process_blocks() {
             finished_ = true;
         }
 
-        // Advance past consumed block
-        in_queue_.erase(in_queue_.begin(), in_queue_.begin() + total_block_bytes);
+        // Advance read cursor past consumed block
+        in_head_ += total_block_bytes;
 
         if (progress_cb_) {
             progress_cb_(progress_user_, total_out_, total_out_);
         }
+    }
+
+    if (in_head_ == in_queue_.size()) {
+        in_queue_.clear();
+        in_head_ = 0;
+    } else if (in_head_ >= 0x40000) {
+        in_queue_.erase(in_queue_.begin(), in_queue_.begin() + in_head_);
+        in_head_ = 0;
     }
     return true;
 }
@@ -147,7 +158,7 @@ bool StreamDecoder::finish(std::vector<core::byte>& out) {
     if (!process_blocks()) return false;
 
     // A valid finished stream must not have leftover unparsed bytes
-    if (!in_queue_.empty()) {
+    if (in_head_ != in_queue_.size()) {
         aborted_ = true;
         return false;
     }
@@ -175,6 +186,7 @@ bool StreamDecoder::take_output(std::vector<core::byte>& out) {
 
 void StreamDecoder::reset() {
     in_queue_.clear();
+    in_head_ = 0;
     output_.clear();
     decompressor_ = Decompressor50(win_size_);
     started_ = false;
