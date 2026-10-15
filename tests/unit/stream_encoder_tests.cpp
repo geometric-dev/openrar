@@ -377,7 +377,35 @@ void test_stream_decoder_store() {
     std::vector<openrar::core::byte> out;
     CHECK(dec.finish(out));
     CHECK(out.size() == src.size());
-    CHECK(std::memcmp(out.data(), src.data(), src.size()) == 0);
+    CHECK(std::memcmp(out.data(), src.size() ? src.data() : nullptr, src.size()) == 0);
+}
+
+void test_stream_decoder_multi_block_single_feed_and_trailing_garbage() {
+    const std::vector<uint8_t> src = pattern_payload(1200 * 1024, 999);
+    const size_t win = 1024 * 1024;
+    std::vector<uint8_t> comp = one_shot(src, 3, win);
+    CHECK(!comp.empty());
+
+    // Single feed of a multi-block stream
+    {
+        openrar::compress::StreamDecoder dec(win, 3);
+        CHECK(dec.feed(comp.data(), comp.size()));
+        std::vector<openrar::core::byte> out;
+        CHECK(dec.finish(out));
+        CHECK(out == src);
+    }
+
+    // Trailing unparsed byte after a complete block must be rejected at finish()
+    {
+        std::vector<uint8_t> corrupt = comp;
+        corrupt[0] &= ~0x40; // clear LastBlock on first block so feed() stops with 1 trailing byte
+        corrupt[1] ^= 0x40;  // keep header checksum valid
+        corrupt.push_back(0xAA);
+        openrar::compress::StreamDecoder dec(win, 3);
+        (void)dec.feed(corrupt.data(), corrupt.size());
+        std::vector<openrar::core::byte> out;
+        CHECK(!dec.finish(out));
+    }
 }
 
 } // namespace
@@ -408,6 +436,7 @@ int main() {
     test_stream_decoder_roundtrip();
     test_stream_decoder_incremental_pull();
     test_stream_decoder_store();
+    test_stream_decoder_multi_block_single_feed_and_trailing_garbage();
 
     if (fails) {
         std::fprintf(stderr, "%d failure(s)\n", fails);

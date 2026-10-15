@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cassert>
 #include <cstdio>
+#include <memory>
 
 namespace openrar::compress {
 
@@ -30,10 +31,133 @@ void HuffmanBuilder::build_lengths(const core::uint32* freq, core::uint32 size,
         return;
     }
 
-    // Shrink thread_local vectors when capacity is ≥4× the needed size to
-    // avoid indefinite retention of worst-case allocations in long-lived hosts
-    // (DLL, server embedding).  The 4× threshold avoids thrashing on
-    // alternating sizes while still reclaiming memory after a one-off large call.
+    constexpr core::uint32 MAX_STACK_SYMS = 512;
+    if (size <= MAX_STACK_SYMS) {
+        struct TreeNode {
+            core::uint64 weight;
+            core::int16 child_l, child_r;
+            core::int16 symbol;
+            core::int16 pad;
+        };
+        TreeNode tree[2 * MAX_STACK_SYMS];
+        core::uint16 q1[MAX_STACK_SYMS];
+        core::uint16 q2[MAX_STACK_SYMS];
+        core::uint16 depths[MAX_STACK_SYMS] = {};
+        struct StackEntry {
+            core::uint16 node;
+            core::uint16 depth;
+        };
+        StackEntry stack[2 * MAX_STACK_SYMS];
+        core::uint16 bl_count[MAX_STACK_SYMS + 1] = {};
+        core::uint16 sorted_syms[MAX_STACK_SYMS];
+
+        core::uint32 tree_sz = 0;
+        core::uint32 q1_sz = 0;
+        core::uint32 q2_sz = 0;
+
+        for (core::uint32 i = 0; i < size; i++) {
+            if (freq[i] != 0) {
+                tree[tree_sz] = {freq[i], -1, -1, static_cast<core::int16>(i), 0};
+                q1[q1_sz++] = static_cast<core::uint16>(tree_sz++);
+            }
+        }
+
+        std::sort(q1, q1 + q1_sz, [&](core::uint16 a, core::uint16 b) {
+            if (tree[a].weight != tree[b].weight) return tree[a].weight < tree[b].weight;
+            return tree[a].symbol < tree[b].symbol;
+        });
+
+        core::uint32 i1 = 0, i2 = 0;
+        auto get_min = [&]() -> core::uint16 {
+            if (i1 < q1_sz && (i2 == q2_sz || tree[q1[i1]].weight <= tree[q2[i2]].weight)) {
+                return q1[i1++];
+            }
+            return q2[i2++];
+        };
+
+        while (q1_sz - i1 + q2_sz - i2 > 1) {
+            core::uint16 left = get_min();
+            core::uint16 right = get_min();
+            tree[tree_sz] = {tree[left].weight + tree[right].weight, static_cast<core::int16>(left),
+                             static_cast<core::int16>(right), -1, 0};
+            q2[q2_sz++] = static_cast<core::uint16>(tree_sz++);
+        }
+
+        core::uint16 root = static_cast<core::uint16>(tree_sz - 1);
+        core::uint32 stack_sz = 0;
+        stack[stack_sz++] = {root, 0};
+
+        core::uint32 max_depth = 0;
+        while (stack_sz > 0) {
+            StackEntry entry = stack[--stack_sz];
+            core::uint16 node_idx = entry.node;
+            core::uint16 d = entry.depth;
+            if (tree[node_idx].symbol != -1) {
+                depths[tree[node_idx].symbol] = d;
+                if (d > max_depth) max_depth = d;
+            } else {
+                stack[stack_sz++] = {static_cast<core::uint16>(tree[node_idx].child_r),
+                                     static_cast<core::uint16>(d + 1)};
+                stack[stack_sz++] = {static_cast<core::uint16>(tree[node_idx].child_l),
+                                     static_cast<core::uint16>(d + 1)};
+            }
+        }
+
+        if (max_depth > max_bits) {
+            for (core::uint32 i = 0; i < size; ++i) {
+                if (depths[i] > 0) bl_count[depths[i]]++;
+            }
+
+            core::uint32 overflow = 0;
+            for (core::uint32 d = max_bits + 1; d <= max_depth; ++d) {
+                overflow += bl_count[d];
+                bl_count[d] = 0;
+            }
+            bl_count[max_bits] = static_cast<core::uint16>(bl_count[max_bits] + overflow);
+
+            core::uint32 kraft_limit = 1u << max_bits;
+            core::uint32 kraft_sum = 0;
+            for (core::uint32 d = 1; d <= max_bits; ++d) {
+                kraft_sum += static_cast<core::uint32>(bl_count[d]) << (max_bits - d);
+            }
+
+            while (kraft_sum > kraft_limit) {
+                core::uint32 d = max_bits - 1;
+                while (d > 0 && bl_count[d] == 0) d--;
+                if (d == 0 || bl_count[max_bits] == 0) break;
+
+                bl_count[d]--;
+                bl_count[d + 1] += 2;
+                bl_count[max_bits]--;
+                kraft_sum -= 1;
+            }
+
+            core::uint32 sorted_sz = 0;
+            for (core::uint32 i = 0; i < size; ++i) {
+                if (depths[i] > 0) sorted_syms[sorted_sz++] = static_cast<core::uint16>(i);
+            }
+            std::sort(sorted_syms, sorted_syms + sorted_sz, [&](core::uint16 a, core::uint16 b) {
+                if (freq[a] != freq[b]) return freq[a] > freq[b];
+                return a < b;
+            });
+
+            core::uint32 sym_idx = 0;
+            for (core::uint32 bits = 1; bits <= max_bits; ++bits) {
+                for (core::uint32 i = 0; i < bl_count[bits]; ++i) {
+                    assert(sym_idx < sorted_sz &&
+                           "bl_count overruns sorted_syms — Kraft invariant broken");
+                    depths[sorted_syms[sym_idx++]] = static_cast<core::uint16>(bits);
+                }
+            }
+        }
+
+        for (core::uint32 i = 0; i < size; ++i) {
+            lengths[i] = static_cast<core::byte>(depths[i]);
+        }
+        return;
+    }
+
+    // Fallback for alphabets > 512 symbols
     auto maybe_shrink = [](auto& vec, size_t needed) {
         if (vec.capacity() >= needed * 4) {
             vec.shrink_to_fit();
@@ -80,7 +204,6 @@ void HuffmanBuilder::build_lengths(const core::uint32* freq, core::uint32 size,
     maybe_shrink(sorted_syms, size);
     sorted_syms.reserve(size);
 
-
     for (core::uint32 i = 0; i < size; i++) {
         if (freq[i] != 0) {
             tree.push_back({freq[i], -1, -1, static_cast<int>(i)});
@@ -111,7 +234,6 @@ void HuffmanBuilder::build_lengths(const core::uint32* freq, core::uint32 size,
 
     core::uint32 root = static_cast<core::uint32>(tree.size() - 1);
 
-    // reset depths and stack correctly
     std::fill(depths.begin(), depths.end(), 0);
     stack.clear();
     stack.push_back({root, 0});
@@ -123,7 +245,7 @@ void HuffmanBuilder::build_lengths(const core::uint32* freq, core::uint32 size,
         core::uint32 node_idx = entry.first;
         core::uint32 d = entry.second;
         if (tree[node_idx].symbol != -1) {
-            depths[tree[node_idx].symbol] = static_cast<core::byte>(d);
+            depths[tree[node_idx].symbol] = d;
             if (d > max_depth) max_depth = d;
         } else {
             stack.push_back({static_cast<core::uint32>(tree[node_idx].child_r), d + 1});
@@ -137,8 +259,6 @@ void HuffmanBuilder::build_lengths(const core::uint32* freq, core::uint32 size,
             if (depths[i] > 0) bl_count[depths[i]]++;
         }
 
-        // Bit-length limiting via the zlib gen_bitlen approach.
-        // 1. Collapse all over-limit leaves to max_bits.
         core::uint32 overflow = 0;
         for (core::uint32 d = max_bits + 1; d <= max_depth; ++d) {
             overflow += bl_count[d];
@@ -146,22 +266,21 @@ void HuffmanBuilder::build_lengths(const core::uint32* freq, core::uint32 size,
         }
         bl_count[max_bits] += overflow;
 
-        // 2. Recompute Kraft sum to determine over-completeness
         core::uint32 kraft_limit = 1u << max_bits;
         core::uint32 kraft_sum = 0;
         for (core::uint32 d = 1; d <= max_bits; ++d) {
             kraft_sum += bl_count[d] << (max_bits - d);
         }
 
-        // 3. While over-complete, push leaves to longer codes
         while (kraft_sum > kraft_limit) {
-            core::uint32 d = 1;
-            while (d < max_bits && bl_count[d] == 0) d++;
-            if (d >= max_bits) break; // all at max_bits, can't push deeper
+            core::uint32 d = max_bits - 1;
+            while (d > 0 && bl_count[d] == 0) d--;
+            if (d == 0 || bl_count[max_bits] == 0) break;
 
             bl_count[d]--;
-            bl_count[d + 1]++;
-            kraft_sum -= (1u << (max_bits - d - 1));
+            bl_count[d + 1] += 2;
+            bl_count[max_bits]--;
+            kraft_sum -= 1;
         }
 
         max_depth = max_bits;
@@ -234,6 +353,7 @@ void Compressor50::reset_state() {
     input_since_block_ = 0;
     cur_ = 0;
     unhashed_pos_ = 0;
+    crc_pos_ = 0; // OPT-03: Reset CRC cursor alongside unhashed_pos_
     mem_out_ = nullptr;
     token_seq_.clear();
     lit_bytes_.clear();
@@ -287,8 +407,11 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
     assert((win_size_ & (win_size_ - 1)) == 0);
 
     buf_size_ = win_size_ + 0x400000 + READ_CHUNK;
-    buf_.resize(buf_size_);
-    buf_data_ = buf_.data();
+    buf_data_ = buf_.empty() ? nullptr : buf_.data();
+
+    if (token_seq_.capacity() < 32768) token_seq_.reserve(32768);
+    if (lit_bytes_.capacity() < 32768) lit_bytes_.reserve(32768);
+    if (match_tokens_.capacity() < 16384) match_tokens_.reserve(16384);
 
     is_large_window_ = (win_size_ > 4ULL * 1024 * 1024 * 1024);
     if (is_large_window_) {
@@ -342,6 +465,7 @@ bool Compressor50::begin_stream(int method, size_t win_size, bool continue_windo
         filter_pretransformed_ = false;
         file_start_pos_ = cur_;
         unhashed_pos_ = cur_;
+        crc_pos_ = cur_;
         return true;
     }
     begin_archive(nullptr, method, win_size);
@@ -358,6 +482,7 @@ int Compressor50::feed(const core::byte* data, size_t n) {
         cur_ == 0 && n >= 64) {
         active_filter_ = Filters50::detect_filter(data, n, filter_channels_, filter_config_);
     }
+    if (n > 0) ensure_internal_buffer();
     const core::byte* p = data;
     size_t left = n;
     while (left > 0) {
@@ -367,6 +492,7 @@ int Compressor50::feed(const core::byte* data, size_t n) {
             // Cannot normally happen: process_available keeps the unprocessed
             // gap at <= 4 bytes, so used <= win_size_ + 4 < buf_size_ after
             // every pass. Slide defensively rather than overflow.
+            advance_crc(cur_);
             slide_window();
             continue;
         }
@@ -386,7 +512,7 @@ int Compressor50::finish_stream() {
     src_eof_ = true;
     src_size_ = src_loaded_;
     if (process_available(true) < 0) return -1;
-    consume_source(unhashed_pos_, cur_);
+    advance_crc(cur_);
     unhashed_pos_ = cur_;
     if (!write_block(true)) return -1;
     stream_finished_ = true;
@@ -425,6 +551,7 @@ void Compressor50::start_file(io::FileStream* src, core::uint64 src_file_size,
         filter_emitted_until_ = cur_;
     }
     unhashed_pos_ = cur_;
+    crc_pos_ = cur_;
 }
 
 void Compressor50::init(io::FileStream* src, io::FileStream* dest, int method,
@@ -452,6 +579,7 @@ void Compressor50::load_data(core::uint64 until) {
     if (streaming_) return; // feed() copies bytes into buf_ directly
     if (until > src_size_) until = src_size_;
     if (until <= src_loaded_) return;
+    ensure_internal_buffer();
 
     while (src_loaded_ < until && !src_eof_) {
         size_t space = buf_size_ - static_cast<size_t>(src_loaded_ - pos_base_);
@@ -499,20 +627,51 @@ void Compressor50::insert_position(core::uint64 pos) {
     }
 }
 
+inline void Compressor50::hash_range(core::uint64 from, core::uint64 to) {
+    if (!is_large_window_) {
+        const size_t win_mask = win_size_ - 1;
+        while (from + 4 <= to && from + 8 <= src_loaded_) {
+            core::uint64 q;
+            std::memcpy(&q, &buf_data_[static_cast<size_t>(from - pos_base_)], 8);
+            core::uint32 h0 = ((static_cast<core::uint32>(q)) * 0x9e3779b1u) >> (32 - HASH_BITS);
+            core::uint32 h1 =
+                ((static_cast<core::uint32>(q >> 8)) * 0x9e3779b1u) >> (32 - HASH_BITS);
+            core::uint32 h2 =
+                ((static_cast<core::uint32>(q >> 16)) * 0x9e3779b1u) >> (32 - HASH_BITS);
+            core::uint32 h3 =
+                ((static_cast<core::uint32>(q >> 24)) * 0x9e3779b1u) >> (32 - HASH_BITS);
+            prev_[static_cast<size_t>(from & win_mask)] = head_[h0];
+            head_[h0] = static_cast<core::uint32>(from);
+            prev_[static_cast<size_t>((from + 1) & win_mask)] = head_[h1];
+            head_[h1] = static_cast<core::uint32>(from + 1);
+            prev_[static_cast<size_t>((from + 2) & win_mask)] = head_[h2];
+            head_[h2] = static_cast<core::uint32>(from + 2);
+            prev_[static_cast<size_t>((from + 3) & win_mask)] = head_[h3];
+            head_[h3] = static_cast<core::uint32>(from + 3);
+            from += 4;
+        }
+    }
+    while (from < to && from + 4 <= src_loaded_) {
+        insert_position(from);
+        from++;
+    }
+}
+
 size_t Compressor50::match_length(core::uint64 pos, core::uint64 cand, size_t cap) {
     const core::byte* p = &buf_data_[static_cast<size_t>(pos - pos_base_)];
     const core::byte* q = &buf_data_[static_cast<size_t>(cand - pos_base_)];
     return arch::match_length_simd(p, q, cap);
 }
 
-Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 max_chain,
-                                                 core::uint32 nice_len) {
+template <bool LargeWindow>
+Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::uint32 max_chain,
+                                                      core::uint32 nice_len) {
     MatchInfo best = {0, -1};
     if (pos + 4 > src_loaded_ || pos < pos_base_) return best;
 
     core::uint32 h = calc_hash(pos);
     core::int64 cand = -1;
-    if (is_large_window_) {
+    if constexpr (LargeWindow) {
         core::uint64 hpos = head64_[h];
         if (hpos != static_cast<core::uint64>(-1) && pos >= hpos && (pos - hpos) <= max_dist_) {
             cand = static_cast<core::int64>(hpos);
@@ -540,11 +699,15 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
             &buf_data_[static_cast<size_t>(static_cast<core::uint64>(cand) - pos_base_)];
 
         core::int64 next_cand = -1;
-        if (is_large_window_) {
+        if constexpr (LargeWindow) {
             core::uint64 next64 = prev64_[static_cast<size_t>(cand) & win_mask];
             if (next64 != static_cast<core::uint64>(-1)) {
 #if defined(__GNUC__) || defined(__clang__)
                 __builtin_prefetch(&prev64_[static_cast<size_t>(next64) & win_mask]);
+#elif defined(_MSC_VER) && (defined(_M_AMD64) || defined(_M_X64))
+                _mm_prefetch(
+                    reinterpret_cast<const char*>(&prev64_[static_cast<size_t>(next64) & win_mask]),
+                    _MM_HINT_T0);
 #endif
                 if (pos >= next64 && (pos - next64) <= max_dist_) {
                     next_cand = static_cast<core::int64>(next64);
@@ -555,22 +718,30 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
             if (next != 0xffffffff) {
 #if defined(__GNUC__) || defined(__clang__)
                 __builtin_prefetch(&prev_[next & win_mask]);
+#elif defined(_MSC_VER) && (defined(_M_AMD64) || defined(_M_X64))
+                _mm_prefetch(reinterpret_cast<const char*>(&prev_[next & win_mask]), _MM_HINT_T0);
 #endif
             }
             next_cand = reconstruct_pos(pos, next);
         }
-
-        if (best.length > 0) {
-            if (best.length < limit && buf_cand[best.length] != buf_pos[best.length]) {
-                cand = next_cand;
-                continue;
-            }
-            if (buf_cand[0] != buf_pos[0]) {
-                cand = next_cand;
-                continue;
-            }
+        if (next_cand >= 0 && static_cast<core::uint64>(next_cand) >= pos_base_) {
+#if defined(__GNUC__) || defined(__clang__)
+            __builtin_prefetch(
+                &buf_data_[static_cast<size_t>(static_cast<core::uint64>(next_cand) - pos_base_)]);
+#elif defined(_MSC_VER) && (defined(_M_AMD64) || defined(_M_X64))
+            _mm_prefetch(reinterpret_cast<const char*>(&buf_data_[static_cast<size_t>(
+                             static_cast<core::uint64>(next_cand) - pos_base_)]),
+                         _MM_HINT_T0);
+#endif
         }
 
+        if (best.length > 0 && best.length < limit &&
+            buf_cand[best.length] != buf_pos[best.length]) {
+            cand = next_cand;
+            continue;
+        }
+
+        size_t len = 0;
         if (limit >= 4) {
             core::uint32 c4;
             std::memcpy(&c4, buf_cand, 4);
@@ -578,12 +749,19 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
                 cand = next_cand;
                 continue;
             }
-        } else if (limit >= 3 && (buf_cand[1] != buf_pos[1] || buf_cand[2] != buf_pos[2])) {
-            cand = next_cand;
-            continue;
+            len = 4 + arch::match_length_simd(buf_pos + 4, buf_cand + 4, limit - 4);
+        } else {
+            if (buf_cand[0] != buf_pos[0]) {
+                cand = next_cand;
+                continue;
+            }
+            if (limit >= 3 && (buf_cand[1] != buf_pos[1] || buf_cand[2] != buf_pos[2])) {
+                cand = next_cand;
+                continue;
+            }
+            len = match_length(pos, static_cast<core::uint64>(cand), limit);
         }
 
-        size_t len = match_length(pos, static_cast<core::uint64>(cand), limit);
         if (len > best.length) {
             best.length = len;
             best.candidate = cand;
@@ -593,6 +771,12 @@ Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 
     }
     if (best.length < min_match_) best.length = 0;
     return best;
+}
+
+Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 max_chain,
+                                                 core::uint32 nice_len) {
+    if (is_large_window_) return find_match_impl<true>(pos, max_chain, nice_len);
+    return find_match_impl<false>(pos, max_chain, nice_len);
 }
 
 size_t Compressor50::rep_length(core::uint64 pos, size_t dist, size_t cap) {
@@ -817,9 +1001,9 @@ struct TableItem {
     core::byte bits;
 };
 
-static void make_table_items(const core::byte* table_bits, core::uint32 table_size,
-                             std::vector<TableItem>& items) {
-    items.clear();
+static core::uint32 make_table_items(const core::byte* table_bits, core::uint32 table_size,
+                                     TableItem* items) {
+    core::uint32 count = 0;
     core::uint32 i = 0;
     while (i < table_size) {
         core::byte v = table_bits[i];
@@ -832,14 +1016,14 @@ static void make_table_items(const core::byte* table_bits, core::uint32 table_si
                 core::uint32 chunk = r >= 11 ? std::min(r, 138u) : r;
                 if (chunk >= 11) {
                     assert(chunk - 11 <= 127 && "RLE code 19 extra field is 7 bits");
-                    items.push_back({19, static_cast<core::byte>(chunk - 11), 7});
+                    items[count++] = {19, static_cast<core::byte>(chunk - 11), 7};
                 } else {
                     assert(chunk - 3 <= 7 && "RLE code 18 extra field is 3 bits");
-                    items.push_back({18, static_cast<core::byte>(chunk - 3), 3});
+                    items[count++] = {18, static_cast<core::byte>(chunk - 3), 3};
                 }
                 i += chunk;
             } else {
-                items.push_back({v, 0, 0});
+                items[count++] = {v, 0, 0};
                 i++;
             }
         } else {
@@ -848,31 +1032,28 @@ static void make_table_items(const core::byte* table_bits, core::uint32 table_si
                 core::uint32 chunk = r >= 11 ? std::min(r, 138u) : r;
                 if (chunk >= 11) {
                     assert(chunk - 11 <= 127 && "RLE code 17 extra field is 7 bits");
-                    items.push_back({17, static_cast<core::byte>(chunk - 11), 7});
+                    items[count++] = {17, static_cast<core::byte>(chunk - 11), 7};
                 } else {
                     assert(chunk - 3 <= 7 && "RLE code 16 extra field is 3 bits");
-                    items.push_back({16, static_cast<core::byte>(chunk - 3), 3});
+                    items[count++] = {16, static_cast<core::byte>(chunk - 3), 3};
                 }
                 i += chunk;
             } else {
-                items.push_back({v, 0, 0});
+                items[count++] = {v, 0, 0};
                 i++;
             }
         }
     }
+    return count;
 }
 
 void Compressor50::emit_table(BitOutput& local_out) {
-    static thread_local std::vector<TableItem> items;
-    items.clear();
-    // Shrink if capacity is ≥4× the table size (same heuristic as build_lengths)
-    if (items.capacity() >= static_cast<size_t>(cur_table_size_) * 4) {
-        items.shrink_to_fit();
-    }
-    make_table_items(table_bits_, cur_table_size_, items);
+    assert(cur_table_size_ <= TABLE_SIZEX);
+    TableItem items[TABLE_SIZEX];
+    core::uint32 item_count = make_table_items(table_bits_, cur_table_size_, items);
 
     std::memset(freq_bd_, 0, sizeof(freq_bd_));
-    for (const TableItem& item : items) freq_bd_[item.sym]++;
+    for (core::uint32 i = 0; i < item_count; ++i) freq_bd_[items[i].sym]++;
 
     HuffmanBuilder::build_lengths(freq_bd_, BC, 15, len_bd_);
     HuffmanBuilder::build_codes(len_bd_, BC, code_bd_);
@@ -910,7 +1091,8 @@ void Compressor50::emit_table(BitOutput& local_out) {
         }
     }
 
-    for (const TableItem& item : items) {
+    for (core::uint32 i = 0; i < item_count; ++i) {
+        const TableItem& item = items[i];
         local_out.put_bits(code_bd_[item.sym], len_bd_[item.sym]);
         local_out.put_bits(item.extra, item.bits);
     }
@@ -958,12 +1140,8 @@ void Compressor50::emit_tokens(BitOutput& local_out) {
             core::uint32 len_len = len_ld_[sym];
             core::uint32 l_extra = tok.len_extra;
             core::uint32 l_bits = tok.get_len_bits();
-            if (len_len + l_bits <= 32) {
-                local_out.put_bits((len_code << l_bits) | l_extra, len_len + l_bits);
-            } else {
-                local_out.put_bits(len_code, len_len);
-                local_out.put_bits(l_extra, l_bits);
-            }
+            assert(len_len + l_bits <= 32);
+            local_out.put_bits((len_code << l_bits) | l_extra, len_len + l_bits);
 
             core::uint32 dist_code = code_dd_[dist_slot];
             core::uint32 dist_len = len_dd_[dist_slot];
@@ -974,14 +1152,15 @@ void Compressor50::emit_tokens(BitOutput& local_out) {
                     core::uint32 extra_high_len = d_bits - 4;
                     if (dist_len + extra_high_len <= 32) {
                         local_out.put_bits(
-                            static_cast<core::uint32>((dist_code << extra_high_len) | extra_high),
+                            static_cast<core::uint32>(
+                                (static_cast<core::uint64>(dist_code) << extra_high_len) |
+                                extra_high),
                             dist_len + extra_high_len);
                     } else {
-                        local_out.put_bits(dist_code, dist_len);
-                        // extra_high_len can exceed 32 bits for windows above
-                        // 16 GiB (d_bits up to 38); put_bits64 keeps the top
-                        // bits that the old u32 path silently dropped (H1).
-                        local_out.put_bits64(extra_high, extra_high_len);
+                        assert(dist_len + extra_high_len <= 64);
+                        local_out.put_bits64(
+                            (static_cast<core::uint64>(dist_code) << extra_high_len) | extra_high,
+                            dist_len + extra_high_len);
                     }
                 } else {
                     local_out.put_bits(dist_code, dist_len);
@@ -989,14 +1168,10 @@ void Compressor50::emit_tokens(BitOutput& local_out) {
                 core::uint32 extra_low = static_cast<core::uint32>(tok.dist_extra & 0xf);
                 local_out.put_bits(code_ldd_[extra_low], len_ldd_[extra_low]);
             } else {
-                if (dist_len + d_bits <= 32) {
-                    local_out.put_bits(
-                        static_cast<core::uint32>((dist_code << d_bits) | tok.dist_extra),
-                        dist_len + d_bits);
-                } else {
-                    local_out.put_bits(dist_code, dist_len);
-                    local_out.put_bits(static_cast<core::uint32>(tok.dist_extra), d_bits);
-                }
+                assert(dist_len + d_bits <= 32);
+                local_out.put_bits(
+                    static_cast<core::uint32>((dist_code << d_bits) | tok.dist_extra),
+                    dist_len + d_bits);
             }
             break;
         }
@@ -1011,12 +1186,8 @@ void Compressor50::emit_tokens(BitOutput& local_out) {
             core::uint32 rep_len = len_rd_[len_slot];
             core::uint32 l_extra = tok.len_extra;
             core::uint32 l_bits = tok.get_len_bits();
-            if (rep_len + l_bits <= 32) {
-                local_out.put_bits((rep_code << l_bits) | l_extra, rep_len + l_bits);
-            } else {
-                local_out.put_bits(rep_code, rep_len);
-                local_out.put_bits(l_extra, l_bits);
-            }
+            assert(rep_len + l_bits <= 32);
+            local_out.put_bits((rep_code << l_bits) | l_extra, rep_len + l_bits);
             break;
         }
         }
@@ -1281,6 +1452,7 @@ int Compressor50::process_available(bool final) {
         }
 
         if (!external_buf_ && cur_ >= pos_base_ + buf_size_ - READ_CHUNK) {
+            advance_crc(cur_);
             slide_window();
         }
 
@@ -1307,6 +1479,7 @@ int Compressor50::process_available(bool final) {
                             : 0;
                     size_t trans_len = std::min<size_t>(chunk_len, avail_in_buf);
                     if (trans_len > 0) {
+                        advance_crc(filter_emitted_until_ + trans_len);
                         core::uint64 file_rel_offset = filter_emitted_until_ - file_start_pos_;
                         if (active_filter_ == FilterType::E8) {
                             Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset,
@@ -1336,7 +1509,7 @@ int Compressor50::process_available(bool final) {
         }
 
         if (need_flush()) {
-            consume_source(unhashed_pos_, cur_);
+            advance_crc(cur_);
             unhashed_pos_ = cur_;
             if (!write_block(false)) return -1;
         }
@@ -1362,34 +1535,8 @@ int Compressor50::process_available(bool final) {
             continue;
         }
 
-        // 4-wide batched insert uses the 32-bit tables; large windows (> 4 GiB)
-        // use the 64-bit tables via insert_position and must never touch
-        // head_/prev_ (empty vectors, plus 32-bit position truncation).
-        while (!is_large_window_ && unhashed_pos_ + 7 <= cur_ && unhashed_pos_ + 7 <= src_loaded_) {
-            core::uint64 q;
-            std::memcpy(&q, &buf_data_[static_cast<size_t>(unhashed_pos_ - pos_base_)], 8);
-            core::uint32 h0 = ((static_cast<core::uint32>(q)) * 0x9e3779b1u) >> (32 - HASH_BITS);
-            core::uint32 h1 =
-                ((static_cast<core::uint32>(q >> 8)) * 0x9e3779b1u) >> (32 - HASH_BITS);
-            core::uint32 h2 =
-                ((static_cast<core::uint32>(q >> 16)) * 0x9e3779b1u) >> (32 - HASH_BITS);
-            core::uint32 h3 =
-                ((static_cast<core::uint32>(q >> 24)) * 0x9e3779b1u) >> (32 - HASH_BITS);
-            prev_[static_cast<size_t>(unhashed_pos_ & (win_size_ - 1))] = head_[h0];
-            head_[h0] = static_cast<core::uint32>(unhashed_pos_ & 0xffffffff);
-            prev_[static_cast<size_t>((unhashed_pos_ + 1) & (win_size_ - 1))] = head_[h1];
-            head_[h1] = static_cast<core::uint32>((unhashed_pos_ + 1) & 0xffffffff);
-            prev_[static_cast<size_t>((unhashed_pos_ + 2) & (win_size_ - 1))] = head_[h2];
-            head_[h2] = static_cast<core::uint32>((unhashed_pos_ + 2) & 0xffffffff);
-            prev_[static_cast<size_t>((unhashed_pos_ + 3) & (win_size_ - 1))] = head_[h3];
-            head_[h3] = static_cast<core::uint32>((unhashed_pos_ + 3) & 0xffffffff);
-            unhashed_pos_ += 4;
-        }
-        // Fill every remaining p < cur_ that can be hashed (eliminates the previous 0-3 byte lag)
-        while (unhashed_pos_ < cur_ && unhashed_pos_ + 4 <= src_loaded_) {
-            insert_position(unhashed_pos_);
-            unhashed_pos_++;
-        }
+        hash_range(unhashed_pos_, cur_);
+        unhashed_pos_ = cur_;
 
         core::uint32 cur_nice_len = nice_len_;
         size_t cur_max_lz = MAX_LZ_MATCH;
@@ -1534,14 +1681,12 @@ int Compressor50::process_available(bool final) {
             }
 
             // Catch-up already inserted every hashable p < old cur_.
-            // Insert the match body [old_cur, end) exactly once, then sync unhashed_pos_
-            // so the next catch-up never re-inserts the span (prevents self-loops).
+            // Insert the match body [old_cur, end) exactly once via 4-wide batching,
+            // then sync unhashed_pos_ so the next catch-up never re-inserts the span.
             core::uint64 end = cur_ + len;
             if (end > src_loaded_) end = src_loaded_;
-            while (cur_ < end) {
-                insert_position(cur_);
-                cur_++;
-            }
+            hash_range(cur_, end);
+            cur_ = end;
             input_since_block_ += len;
             unhashed_pos_ = cur_;
         }
@@ -1557,7 +1702,7 @@ core::int64 Compressor50::compress(bool last_block) {
     // via L13). The streaming_ flag keeps its stall-point deferring off.
     if (process_available(false) < 0) return -1;
 
-    consume_source(unhashed_pos_, cur_);
+    advance_crc(cur_);
     unhashed_pos_ = cur_;
     if (!write_block(last_block)) return -1;
 
@@ -1710,13 +1855,7 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
         }
     }
 
-    // NOTE: this library entry point is NOT the path the CLI uses for
-    // ParallelBlockPipeline::compress_stream; that one lives in
-    // parallel_compressor.cpp and carries the table-reuse chunk floor. Keep the
-    // two clamps in step - see the floor note in parallel_compressor.cpp for why
-    // a chunk must be able to amortise a 16-block re-seed.
-    size_t chunk_size = std::max<size_t>(
-        1024 * 1024, std::min<size_t>(4 * 1024 * 1024, (src_size + eff_threads - 1) / eff_threads));
+    size_t chunk_size = parallel_chunk_size(src_size, eff_threads);
     size_t num_chunks = (src_size + chunk_size - 1) / chunk_size;
     if (num_chunks <= 1) {
         return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
@@ -1728,8 +1867,24 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
     std::vector<std::vector<core::byte>> chunk_outputs(num_chunks);
     std::vector<char> chunk_ok(num_chunks, 0);
 
-    core::ThreadPool pool(std::min<unsigned>(eff_threads, static_cast<unsigned>(num_chunks)));
+    const unsigned worker_count =
+        std::min<unsigned>(eff_threads, static_cast<unsigned>(num_chunks));
+    std::mutex packer_mu;
+    std::vector<std::unique_ptr<Compressor50>> free_packers;
+    free_packers.reserve(worker_count);
+
+    core::ThreadPool pool(worker_count);
     core::parallel_for(pool, 0, num_chunks, [&](size_t i) {
+        std::unique_ptr<Compressor50> packer;
+        {
+            std::lock_guard<std::mutex> lk(packer_mu);
+            if (!free_packers.empty()) {
+                packer = std::move(free_packers.back());
+                free_packers.pop_back();
+            }
+        }
+        if (!packer) packer = std::make_unique<Compressor50>();
+
         size_t off = i * chunk_size;
         size_t len = std::min(chunk_size, src_size - off);
         bool is_last = (i == num_chunks - 1);
@@ -1740,13 +1895,17 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
         // seed + chunk, which also bounds the per-worker hash allocation.
         const size_t seed_len = (off == 0) ? 0 : std::min(win_size, off) - 1;
         const size_t worker_win = std::max<size_t>(1, std::min<size_t>(win_size, seed_len + len));
-        Compressor50 packer;
-        packer.begin_archive(nullptr, method, worker_win);
-        packer.set_filter_config(no_filters);
-        packer.set_seeded_external_buffer(src + off - seed_len, seed_len, len);
-        packer.set_memory_dest(&chunk_outputs[i]);
-        core::int64 r = packer.compress(is_last);
+        packer->begin_archive(nullptr, method, worker_win);
+        packer->set_filter_config(no_filters);
+        packer->set_seeded_external_buffer(src + off - seed_len, seed_len, len);
+        packer->set_memory_dest(&chunk_outputs[i]);
+        core::int64 r = packer->compress(is_last);
         if (r >= 0) chunk_ok[i] = 1;
+
+        {
+            std::lock_guard<std::mutex> lk(packer_mu);
+            free_packers.push_back(std::move(packer));
+        }
     });
 
     for (char ok : chunk_ok) {
