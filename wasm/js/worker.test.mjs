@@ -80,19 +80,32 @@ if (!existsSync(distJs)) {
    */
   function installFakeWorker() {
     const handlers = [];
+    const prevPostMessage = globalThis.postMessage;
+    // Direction 2 (worker -> host): worker.js replies with `self.postMessage`,
+    // which resolves to this global (`self === globalThis` here). Fan every
+    // reply out to each live host handle's onmessage, exactly as a real
+    // Worker's dedicated message port does. Without this the worker's replies
+    // were unreachable and the host saw only its own requests.
+    globalThis.postMessage = (message) => {
+      for (const h of [...handlers]) {
+        if (h.onmessage) h.onmessage({ data: message });
+      }
+    };
     class FakeWorker {
       constructor(_url, _opts) {
         this.onmessage = null;
         this.onerror = null;
         handlers.push(this);
       }
+      // Direction 1 (host -> worker): deliver to worker.js's handler, which it
+      // installs on `self` (the global). structuredClone first reproduces the
+      // browser's cloneability rule (DataCloneError on functions) - the
+      // regression guard for the opts leak.
       postMessage(message, transfer = []) {
-        // Throws DataCloneError for non-cloneable payloads, exactly as a
-        // browser would - this is the regression guard for the opts leak.
-        structuredClone(message);
+        const cloned = structuredClone(message);
         queueMicrotask(() => {
-          for (const h of handlers) {
-            if (h.onmessage) h.onmessage({ data: message });
+          if (typeof globalThis.onmessage === 'function') {
+            globalThis.onmessage({ data: cloned });
           }
         });
       }
@@ -103,7 +116,11 @@ if (!existsSync(distJs)) {
     }
     return {
       FakeWorker,
-      restore() { delete globalThis.Worker; },
+      restore() {
+        delete globalThis.Worker;
+        if (prevPostMessage === undefined) delete globalThis.postMessage;
+        else globalThis.postMessage = prevPostMessage;
+      },
       // worker.js reads `self`; in Node the global object stands in.
       async loadWorkerModule() {
         globalThis.self = globalThis;
