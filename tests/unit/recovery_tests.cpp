@@ -31,8 +31,11 @@ void test_gf_arithmetic() {
     ReedSolomon16 rs;
 
     // Zero element
+    assert(rs.gf_mul(0, 0) == 0);
     assert(rs.gf_mul(0, 12345) == 0);
     assert(rs.gf_mul(54321, 0) == 0);
+    assert(rs.gf_mul(0, 65535) == 0);
+    assert(rs.gf_mul(65535, 0) == 0);
 
     // Identity element
     assert(rs.gf_mul(1, 12345) == 12345);

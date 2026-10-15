@@ -1518,6 +1518,19 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         }
     }
 
+    size_t large_files = 0;
+    for (const auto& q : queue) {
+        if (!q.is_dir && !q.is_symlink && !q.is_hardlink && !q.is_filecopy &&
+            q.file_size >= 1024 * 1024) {
+            ++large_files;
+        }
+    }
+    const size_t active_large =
+        std::max<size_t>(1, std::min<size_t>(large_files ? large_files : queue.size(), threads));
+    const unsigned base_inner_threads =
+        (!solid && threads > 1) ? static_cast<unsigned>((threads + active_large - 1) / active_large)
+                                : 1u;
+
     ThreadPool pool(threads);
 
     for (size_t i = 0; i < queue.size(); ++i) {
@@ -1527,7 +1540,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         pool.submit([&pl, &queue, &prepared, i, method, &password, delete_source, times_mask,
                      want_stm, want_acl, want_xattr, est_ws, budget_bytes = prepare_budget,
                      dict_size, solid, &filter_cfg, &default_group, &default_user, &solid_packer,
-                     &solid_chain_member] {
+                     &solid_chain_member, base_inner_threads] {
             std::unique_lock<std::mutex> lk(pl.mu);
             pl.cv.wait(lk, [&] { return pl.aborting || pl.admit_head == i; });
             if (pl.aborting) {
@@ -1573,8 +1586,8 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
                                 queue[i].src_path, queue[i].entry_name, method, password,
                                 prepared[i], times_mask, dict_size, want_stm, want_acl, solid,
                                 /*direct_stream=*/false, filter_cfg, default_group, default_user,
-                                /*threads=*/1, solid_packer.get(), solid_chain_member[i] != 0,
-                                want_xattr);
+                                /*threads=*/base_inner_threads, solid_packer.get(),
+                                solid_chain_member[i] != 0, want_xattr);
                     } catch (...) {
                         // std::filesystem throws on sources that vanish or
                         // become unreadable after the scan; same handling as

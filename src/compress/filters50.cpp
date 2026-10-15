@@ -8,6 +8,9 @@
 #include <intrin.h>
 #endif
 #elif defined(__aarch64__) || defined(_M_ARM64)
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 #include <arm_neon.h>
 #endif
 
@@ -20,6 +23,10 @@ namespace openrar::compress {
 inline unsigned first_match_byte(core::uint64 nibble_mask) {
 #if defined(__GNUC__) || defined(__clang__)
     return static_cast<unsigned>(__builtin_ctzll(nibble_mask)) >> 2;
+#elif defined(_MSC_VER)
+    unsigned long bsf;
+    _BitScanForward64(&bsf, nibble_mask);
+    return static_cast<unsigned>(bsf) >> 2;
 #else
     unsigned idx = 0;
     while (((nibble_mask >> (4 * idx)) & 0xF) == 0) ++idx;
@@ -91,18 +98,20 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
     size_t scan_len = std::min<size_t>(size, 65536);
     if (config.e8_override >= 0 && scan_len >= 512) {
         size_t call_count = 0;
-        for (size_t i = 0; i + 4 < scan_len; ++i) {
-            if (data[i] == 0xE8) {
-                core::uint32 addr = core::read_le32(data + i + 1);
-                // Valid CALL offset heuristic: local jump within 16MB modular cycle
-                if (addr < 0x01000000u || addr >= 0xFF000000u) {
-                    call_count++;
-                    i += 4;
-                }
+        const size_t limit = scan_len - 4;
+        size_t i = 0;
+        while (i < limit) {
+            const void* p = std::memchr(data + i, 0xE8, limit - i);
+            if (!p) break;
+            i = static_cast<size_t>(static_cast<const core::byte*>(p) - data);
+            core::uint32 addr = core::read_le32(data + i + 1);
+            // Valid CALL offset heuristic: local jump within 16MB modular cycle
+            if (addr < 0x01000000u || addr >= 0xFF000000u) {
+                if (++call_count >= 32) return FilterType::E8;
+                i += 5;
+            } else {
+                i += 1;
             }
-        }
-        if (call_count >= 32) {
-            return FilterType::E8;
         }
     }
 
@@ -447,6 +456,32 @@ bool Filters50::apply_delta(const core::byte* src, core::byte* dest, size_t size
         }
         return true;
     }
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    if (channels == 1) {
+        const uint8x16_t zero = vdupq_n_u8(0);
+        uint8x16_t vprev = zero;
+        while (src_pos + 16 <= size) {
+            uint8x16_t v = vld1q_u8(src + src_pos);
+            uint8x16_t vneg = vsubq_u8(zero, v);
+            vneg = vaddq_u8(vneg, vextq_u8(zero, vneg, 15));
+            vneg = vaddq_u8(vneg, vextq_u8(zero, vneg, 14));
+            vneg = vaddq_u8(vneg, vextq_u8(zero, vneg, 12));
+            vneg = vaddq_u8(vneg, vextq_u8(zero, vneg, 8));
+            vneg = vaddq_u8(vneg, vprev);
+            vst1q_u8(out + src_pos, vneg);
+            vprev = vdupq_n_u8(vgetq_lane_u8(vneg, 15));
+            src_pos += 16;
+        }
+        core::byte prev = vgetq_lane_u8(vprev, 0);
+        while (src_pos < size) {
+            prev = static_cast<core::byte>(prev - src[src_pos]);
+            out[src_pos++] = prev;
+        }
+        if (src == dest) {
+            std::memcpy(dest, out, size);
+        }
+        return true;
+    }
 #endif
 
     for (core::uint8 ch = 0; ch < channels; ++ch) {
@@ -741,6 +776,36 @@ bool Filters50::encode_delta(const core::byte* src, core::byte* dest, size_t siz
     if (src == dest) {
         tmp.resize(size);
         out = tmp.data();
+    }
+
+    if (channels == 1) {
+        out[0] = static_cast<core::byte>(0 - src[0]);
+        size_t pos = 1;
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+        while (pos + 16 <= size) {
+            __m128i v_prev = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + pos - 1));
+            __m128i v_cur = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + pos));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + pos), _mm_sub_epi8(v_prev, v_cur));
+            pos += 16;
+        }
+#elif defined(__aarch64__) || defined(_M_ARM64)
+        while (pos + 16 <= size) {
+            uint8x16_t v_prev = vld1q_u8(src + pos - 1);
+            uint8x16_t v_cur = vld1q_u8(src + pos);
+            vst1q_u8(out + pos, vsubq_u8(v_prev, v_cur));
+            pos += 16;
+        }
+#endif
+        core::byte prev = src[pos - 1];
+        for (; pos < size; ++pos) {
+            core::byte val = src[pos];
+            out[pos] = static_cast<core::byte>(prev - val);
+            prev = val;
+        }
+        if (src == dest) {
+            std::memcpy(dest, out, size);
+        }
+        return true;
     }
 
     size_t dest_pos = 0;

@@ -122,7 +122,13 @@ CpuFeatures detect_cpu_features() {
 
         f.avx2 = os_ymm && (ebx & (1 << 5)) != 0;
         f.sha_ni = (ebx & (1 << 29)) != 0;
-        f.avx512f = os_zmm && (ebx & (1 << 16)) != 0;
+        // Require AVX512F (bit 16) + AVX512BW (bit 30) + AVX512VL (bit 31) so
+        // byte-mask instructions (_mm512_cmpeq_epi8_mask / _mm512_maskz_loadu_epi8)
+        // never execute on AVX512F-only CPUs (e.g. Knights Landing).
+        constexpr int AVX512_REQ = (1 << 16) | (1 << 30) | (1U << 31);
+        f.avx512f =
+            os_zmm && ((static_cast<unsigned int>(ebx) & static_cast<unsigned int>(AVX512_REQ)) ==
+                       static_cast<unsigned int>(AVX512_REQ));
         // GFNI (leaf 7 ECX bit 8) is required in its 512-bit form for the
         // RS16 parity kernel, so it is gated on ZMM OS state like AVX-512F
         // (v1.22.0 groundwork). The 128/256-bit GFNI forms (AVX2-class /

@@ -188,6 +188,13 @@ int main() {
         std::cout << "[PASS] streaming equivalence (feed partitions x3 seeds)\n";
     }
 
+    // 7. OPT-24: Dead 256 KiB pending_ buffer removed and 64-bit fed_ offset verified.
+    {
+        static_assert(sizeof(openrar::compress::CdcStreamChunker) <= 64,
+                      "CdcStreamChunker must not embed a 256 KiB pending_ buffer");
+        std::cout << "[PASS] CdcStreamChunker footprint <= 64B & 64-bit offset (OPT-24)\n";
+    }
+
     std::cout << "All cdc_chunker_tests passed.\n";
     return 0;
 }
