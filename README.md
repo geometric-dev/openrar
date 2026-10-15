@@ -196,17 +196,20 @@ Windows 11, WinRAR 7.20 x64.
 
 | Workload (135.5 MB canonical = text + code + binary) | OpenRAR | WinRAR 7.20 |
 |---|---:|---:|
-| `-m3` single-thread | **8.4 s** (16.1 MB/s) | 16.5 s (8.2 MB/s) |
-| `-m3` `-mt4` | **5.7 s** (23.7 MB/s) | 7.4 s (18.2 MB/s) |
-| `-m0` store | **0.11 s** | 0.22 s |
-| `-m5` single-thread | **27.6 s** (4.9 MB/s) | 38.1 s (3.6 MB/s) |
-| solid `-m3` | **8.7 s** | 17.7 s |
-| multivolume `-m3 -v32m` | **10.6 s** | 16.6 s |
-| 1 GB `-m3 -mt4` | **47.8 s** | 69.3 s |
+| `-m3` single-thread | **8.6 s** (15.8 MB/s) | 18.1 s (7.5 MB/s) |
+| `-m3` `-mt4` | **4.8 s** (28.2 MB/s) | 8.5 s (16.0 MB/s) |
+| `-m0` store | **0.15 s** | 0.26 s |
+| `-m5` single-thread | **27.4 s** (4.9 MB/s) | 42.0 s (3.2 MB/s) |
+| solid `-m3` | **8.9 s** | 19.1 s |
+| multivolume `-m3 -v32m` | **9.0 s** | 19.0 s |
+| 1 GB `-m3 -mt4` | **39.7 s** | 76.2 s |
 
-- **Compression at the default `-m3`: 1.3–2.0x faster than WinRAR**, ratios
-  within ~3%. **`-m5` is now faster than WinRAR too (1.4x)** — v1.30 was
-  2.3x slower (match-finder walk depth, see PERFORMANCE.md).
+- **Compression at the default `-m3`: ~2x faster than WinRAR**, ratios within
+  ~3%. **`-m5` is faster than WinRAR too (~1.5x)** — v1.30 was 2.3x slower
+  (match-finder walk depth, see PERFORMANCE.md). The `-mt4` and 1 GB rows
+  improved materially in **v1.42.0** (multithreaded chunk-floor removal,
+  in-memory seed hand-off, worker/packer reuse, per-file inner threads,
+  direct-stream MT): `-m3 -mt4` 5.7 → 4.8 s and 1 GB 47.8 → 39.7 s on this host.
 - **Extraction parallelism (v1.37.0, `-mt` plumbing fixed in v1.37.2):
   single-member extraction parallelizes** via two-phase decode (parallel
   symbol spans + serial window apply through one shared engine;
