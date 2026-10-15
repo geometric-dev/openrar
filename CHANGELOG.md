@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.42.0] - 2026-10-15
+
+Performance and correctness release implementing the two-phase optimization
+backlog of `docs/v1.41.1-code-review.md` (`OPT-01`..`OPT-29`) across the
+compressor, decompressor, filters, DEFLATE, CDC, Reed-Solomon, CRC-64 and CLI
+subsystems, plus two latent encoder defects the new fast paths exposed and one
+WASM worker-protocol fix. Validated by the full 47-suite CTest matrix and a
+four-engine benchmark (`old`/`new` OpenRAR, WinRAR, UnRAR) over the canonical
+129 MB, mixed, 512 MB zeros and 1 GB corpora — every archive
+cross-extraction-verified, no speed regression (new ≤ old on every row; up to
+−27% on canonical `-m3 -mt4`, −25% on the 1 GB `-m3 -mt4` row, −38% on 512 MB
+zeros `-m1`).
+
+### Performance
+
+- **Compressor (`OPT-01`..`OPT-09`):** `BitOutput` writes straight into the
+  block buffer (no intermediate 256 KiB staging copy); branchless unsigned
+  modular distance reconstruction; a dedicated `crc_pos_` unpacked-CRC cursor;
+  Kraft-exact downward Huffman length-limiting; stack-resident Huffman tables;
+  lazy internal-window allocation with per-worker reuse; large-window-specialized
+  match finding with cross-platform prefetch and 4-byte prefix skip; synchronous
+  4-wide batched match-body hashing; dead-branch removal in token emission.
+- **Decompressor (`OPT-16`..`OPT-19`):** 8-byte `bswap64` accumulator refill and
+  single-check `get_bits`; removal of the duplicate `unp_ptr_` window cursor;
+  distance-1 RLE `memset` fast path; bounded persistent filter scratch buffers
+  (≤ 1 MiB, honoring `docs/invariants.md` §2).
+- **Filters / DEFLATE / CDC (`OPT-20`..`OPT-25`):** vectorized Delta
+  encode/apply (SSE2 + NEON); MSVC-ARM64 bit-scan and `memchr`-based E8
+  detection; pre-reversed `Inflate` root LUT and chunked window copies; removal
+  of the dead 256 KiB `CdcStreamChunker` buffer with a 64-bit offset; read-cursor
+  compaction replacing the `O(N²)` `StreamDecoder::in_queue_` shift.
+- **Reed-Solomon / CRC-64 (`OPT-26`, `OPT-27`):** process-wide shared GF(65536)
+  tables plus x86 SSSE3/AVX2 nibble-LUT fold kernels; slicing-by-8 CRC-64.
+- **CLI / multi-file batching (`OPT-14`, `OPT-15`, `OPT-28`, `OPT-29`):** the
+  stale 16 MiB chunk floor is gone; the block pipeline seeds each chunk in
+  memory and recycles worker buffers; multi-file batches no longer starve cores
+  when `queue.size() < -mtN`; single large unencrypted files stream directly to
+  the archive under `-mt>1`.
+
+### Fixed
+
+- **`BitOutput::put_bits64` emitted the wrong high bits for 33..63-bit fields**
+  (`src/compress/compressor50.hpp`): the high half was extracted with
+  `value >> (num_bits - 32)` instead of `value >> 32`, which only coincides at
+  `num_bits == 64`. Latent until the combined distance-code emission packed a
+  code+extra into one 33..49-bit call; it corrupted every large-distance token
+  at `-m5`. Pinned by `test_bit_output_put_bits64`.
+- **Parallel store-fallback wrote a bogus `data_crc32`**
+  (`ArchiveMutator::prepare_add_file`): for an incompressible file under
+  `-mt>1`, the store fallback overwrote the pipeline's valid `stream_crc` with
+  the never-fed `crc_calc.get()` (`0`), so every decoder reported a checksum
+  error on byte-correct stored data. Guarded by `used_parallel`; pinned by
+  `test_store_fallback_parallel_crc`.
+- **WASM worker protocol was unreachable off-thread** (`wasm/js/worker-host.mjs`):
+  `Worker` availability was probed once at module load, so hosts that install a
+  `Worker` after importing (a polyfill, or the test fake) always got the
+  main-thread fallback and the real off-thread path was untestable. The probe is
+  now per-call; `worker.test.mjs` also now passes the intended non-cloneable
+  object so its "reject loudly" assertion actually fires.
+
 ## [1.41.1] - 2026-10-14
 
 Security and correctness release driven by an independent review of an external
@@ -138,7 +198,7 @@ describing**.
   when `win_size == 0` (a public parameter with no lower bound), producing a
   wild seed pointer. It now substitutes the declared default.
 
-### Fixed (v1.41.0 regressions, caught by the first v1.41.1 CI run)
+### Fixed (caught by the first v1.41.1 CI run)
 
 The v1.41.0 naming/style pass renamed ~100 `k`-prefixed constants but was never
 itself run through CI. Two of those renames collided with existing local names:
@@ -162,6 +222,14 @@ itself run through CI. Two of those renames collided with existing local names:
 - Dead symbols the stricter warnings rejected removed: `UNICODE_VERSION_CP`
   (generated file + generator), `CHUNK_PAYLOAD`, `CheckOwnedDir::owned_by_cache_`.
 - `unix_to_filetime100` is now compiled only on Windows, where it is used.
+- **WASM worker protocol was unreachable off-thread (and so untestable)**
+  (`wasm/js/worker-host.mjs`): `Worker` availability was probed once at module
+  load, so any environment that installs `Worker` after importing the module - a
+  polyfill, or the new `worker.test.mjs` fake - got the main-thread fallback and
+  never exercised the real protocol path. The probe is now per-call.
+  `worker.test.mjs` also passed a plain Uint8Array where it clearly meant to
+  pass its non-cloneable `bad` object, so its "reject loudly" assertion could
+  never fire; corrected.
 
 ### Notes
 

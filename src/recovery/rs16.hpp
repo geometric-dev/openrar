@@ -73,8 +73,8 @@ private:
     core::uint32 ne_{0}; // Number of missing/erased units
     bool decoding_{false};
 
-    std::vector<core::uint32> gf_exp_;
-    std::vector<core::uint32> gf_log_;
+    const core::uint16* gf_exp_{nullptr};
+    const core::uint32* gf_log_{nullptr};
 
     std::vector<bool> valid_flags_;
     std::vector<core::uint32> mx_; // Cauchy transformation matrix

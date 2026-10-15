@@ -56,43 +56,23 @@ size_t match_length_avx512_kernel(const core::byte* p, const core::byte* q, size
         }
         i += 64;
     }
-    // 256-bit / 128-bit / word tails: identical structure to the AVX2
-    // kernel's tails (kept in this TU so every vectorized byte lives under
-    // the same /arch guard).
-    while (i + 32 <= cap) {
-        __m256i v_p = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + i));
-        __m256i v_q = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(q + i));
-        __m256i cmp = _mm256_cmpeq_epi8(v_p, v_q);
-        int mask = _mm256_movemask_epi8(cmp);
-        if (mask != -1) {
-            core::uint32 diff = static_cast<core::uint32>(~mask);
+    // Masked AVX-512BW tail (< 64 bytes): _mm512_maskz_loadu_epi8 suppresses
+    // faults on masked-off lanes so tails near page boundaries are safe.
+    if (i < cap) {
+        __mmask64 k = (static_cast<__mmask64>(1) << (cap - i)) - 1;
+        __m512i v_p = _mm512_maskz_loadu_epi8(k, p + i);
+        __m512i v_q = _mm512_maskz_loadu_epi8(k, q + i);
+        __mmask64 diff = _mm512_mask_cmpneq_epi8_mask(k, v_p, v_q);
+        if (diff != 0) {
 #if defined(_MSC_VER)
             unsigned long index;
-            _BitScanForward(&index, diff);
+            _BitScanForward64(&index, static_cast<core::uint64>(diff));
             return i + index;
 #else
-            return i + static_cast<size_t>(__builtin_ctz(diff));
+            return i + static_cast<size_t>(__builtin_ctzll(static_cast<core::uint64>(diff)));
 #endif
         }
-        i += 32;
-    }
-    while (i + 8 <= cap) {
-        core::uint64 p_val, q_val;
-        std::memcpy(&p_val, p + i, 8);
-        std::memcpy(&q_val, q + i, 8);
-        if (p_val != q_val) {
-#if defined(_MSC_VER)
-            unsigned long index;
-            _BitScanForward64(&index, p_val ^ q_val);
-            return i + index / 8;
-#else
-            return i + static_cast<size_t>(__builtin_ctzll(p_val ^ q_val)) / 8;
-#endif
-        }
-        i += 8;
-    }
-    while (i < cap && p[i] == q[i]) {
-        i++;
+        return cap;
     }
     return i;
 }
