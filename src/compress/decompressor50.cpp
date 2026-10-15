@@ -95,8 +95,8 @@ core::uint32 BitReader::peek_bits(unsigned int count) {
     // type's own width (UB) whenever a starved callback left take == 0
     // (v1.41.1).
     if (take == count) return static_cast<core::uint32>(acc_ >> (n_ - count));
-    core::uint32 val = take ? static_cast<core::uint32>(acc_ >> (n_ - take)) : 0;
-    return val << (count - take); // count - take < 32 here (take >= 1)
+    if (take == 0) return 0; // starved accumulator: zero-pad without a shift-by-32 UB
+    return static_cast<core::uint32>(acc_ >> (n_ - take)) << (count - take);
 }
 
 core::uint64 BitReader::peek_bits64(unsigned int count) {
@@ -105,8 +105,8 @@ core::uint64 BitReader::peek_bits64(unsigned int count) {
     if (n_ < count) refill();
     unsigned int take = std::min(count, n_);
     if (take == count) return acc_ >> (n_ - count);
-    core::uint64 val = take ? (acc_ >> (n_ - take)) : 0;
-    return val << (count - take); // count - take < 64 here (take >= 1)
+    if (take == 0) return 0; // starved accumulator: zero-pad without a shift-by-64 UB
+    return (acc_ >> (n_ - take)) << (count - take);
 }
 
 core::uint32 BitReader::get_bits(unsigned int count) {
