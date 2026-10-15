@@ -274,11 +274,11 @@ void rs16_fold_neon(const core::byte* data, core::byte* ecc, size_t bytes, const
                     const NeonFoldTables& k1) noexcept {
     const uint8x16_t mask0f = vdupq_n_u8(0x0F);
     for (size_t off = 0; off + 32 <= bytes; off += 32) {
-        const uint8x16_t dA = vld1q_u8(data + off);
-        const uint8x16_t dB = vld1q_u8(data + off + 16);
+        const uint8x16_t d_a = vld1q_u8(data + off);
+        const uint8x16_t d_b = vld1q_u8(data + off + 16);
         // Little-endian words: even bytes are the low half, odd the high.
-        const uint8x16_t lo = vuzp1q_u8(dA, dB);
-        const uint8x16_t hi = vuzp2q_u8(dA, dB);
+        const uint8x16_t lo = vuzp1q_u8(d_a, d_b);
+        const uint8x16_t hi = vuzp2q_u8(d_a, d_b);
         const uint8x16_t lon0 = vandq_u8(lo, mask0f);
         const uint8x16_t lon1 = vshrq_n_u8(lo, 4);
         const uint8x16_t hin0 = vandq_u8(hi, mask0f);
@@ -290,10 +290,10 @@ void rs16_fold_neon(const core::byte* data, core::byte* ecc, size_t bytes, const
         const uint8x16_t prod_lo = veorq_u8(p_lo_lo, p_hi_lo); // low bytes of the products
         const uint8x16_t prod_hi = veorq_u8(p_lo_hi, p_hi_hi); // high bytes
         // Back to memory order: word i = [low byte, high byte].
-        const uint8x16_t eA = vld1q_u8(ecc + off);
-        const uint8x16_t eB = vld1q_u8(ecc + off + 16);
-        vst1q_u8(ecc + off, veorq_u8(eA, vzip1q_u8(prod_lo, prod_hi)));
-        vst1q_u8(ecc + off + 16, veorq_u8(eB, vzip2q_u8(prod_lo, prod_hi)));
+        const uint8x16_t e_a = vld1q_u8(ecc + off);
+        const uint8x16_t e_b = vld1q_u8(ecc + off + 16);
+        vst1q_u8(ecc + off, veorq_u8(e_a, vzip1q_u8(prod_lo, prod_hi)));
+        vst1q_u8(ecc + off + 16, veorq_u8(e_b, vzip2q_u8(prod_lo, prod_hi)));
     }
 }
 
@@ -338,10 +338,10 @@ void rs16_fold_ssse3(const core::byte* data, core::byte* ecc, size_t bytes, cons
     const __m128i k1_hi1 = _mm_load_si128(reinterpret_cast<const __m128i*>(k1.hi1));
 
     for (size_t off = 0; off + 32 <= bytes; off += 32) {
-        const __m128i dA = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + off));
-        const __m128i dB = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + off + 16));
-        const __m128i a = _mm_shuffle_epi8(dA, shuf_deint);
-        const __m128i b = _mm_shuffle_epi8(dB, shuf_deint);
+        const __m128i d_a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + off));
+        const __m128i d_b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + off + 16));
+        const __m128i a = _mm_shuffle_epi8(d_a, shuf_deint);
+        const __m128i b = _mm_shuffle_epi8(d_b, shuf_deint);
         const __m128i lo = _mm_unpacklo_epi64(a, b);
         const __m128i hi = _mm_unpackhi_epi64(a, b);
         const __m128i lon0 = _mm_and_si128(lo, mask0f);
@@ -358,12 +358,12 @@ void rs16_fold_ssse3(const core::byte* data, core::byte* ecc, size_t bytes, cons
             _mm_xor_si128(_mm_shuffle_epi8(k1_hi0, hin0), _mm_shuffle_epi8(k1_hi1, hin1));
         const __m128i prod_lo = _mm_xor_si128(p_lo_lo, p_hi_lo);
         const __m128i prod_hi = _mm_xor_si128(p_lo_hi, p_hi_hi);
-        const __m128i eA = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ecc + off));
-        const __m128i eB = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ecc + off + 16));
+        const __m128i e_a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ecc + off));
+        const __m128i e_b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ecc + off + 16));
         _mm_storeu_si128(reinterpret_cast<__m128i*>(ecc + off),
-                         _mm_xor_si128(eA, _mm_unpacklo_epi8(prod_lo, prod_hi)));
+                         _mm_xor_si128(e_a, _mm_unpacklo_epi8(prod_lo, prod_hi)));
         _mm_storeu_si128(reinterpret_cast<__m128i*>(ecc + off + 16),
-                         _mm_xor_si128(eB, _mm_unpackhi_epi8(prod_lo, prod_hi)));
+                         _mm_xor_si128(e_b, _mm_unpackhi_epi8(prod_lo, prod_hi)));
     }
 }
 
@@ -393,10 +393,10 @@ void rs16_fold_avx2(const core::byte* data, core::byte* ecc, size_t bytes, const
         _mm256_broadcastsi128_si256(_mm_load_si128(reinterpret_cast<const __m128i*>(k1.hi1)));
 
     for (size_t off = 0; off + 64 <= bytes; off += 64) {
-        const __m256i dA = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + off));
-        const __m256i dB = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + off + 32));
-        const __m256i a = _mm256_shuffle_epi8(dA, shuf_deint);
-        const __m256i b = _mm256_shuffle_epi8(dB, shuf_deint);
+        const __m256i d_a = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + off));
+        const __m256i d_b = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + off + 32));
+        const __m256i a = _mm256_shuffle_epi8(d_a, shuf_deint);
+        const __m256i b = _mm256_shuffle_epi8(d_b, shuf_deint);
         const __m256i lo = _mm256_unpacklo_epi64(a, b);
         const __m256i hi = _mm256_unpackhi_epi64(a, b);
         const __m256i lon0 = _mm256_and_si256(lo, mask0f);
@@ -413,12 +413,12 @@ void rs16_fold_avx2(const core::byte* data, core::byte* ecc, size_t bytes, const
             _mm256_xor_si256(_mm256_shuffle_epi8(k1_hi0, hin0), _mm256_shuffle_epi8(k1_hi1, hin1));
         const __m256i prod_lo = _mm256_xor_si256(p_lo_lo, p_hi_lo);
         const __m256i prod_hi = _mm256_xor_si256(p_lo_hi, p_hi_hi);
-        const __m256i eA = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ecc + off));
-        const __m256i eB = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ecc + off + 32));
+        const __m256i e_a = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ecc + off));
+        const __m256i e_b = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ecc + off + 32));
         _mm256_storeu_si256(reinterpret_cast<__m256i*>(ecc + off),
-                            _mm256_xor_si256(eA, _mm256_unpacklo_epi8(prod_lo, prod_hi)));
+                            _mm256_xor_si256(e_a, _mm256_unpacklo_epi8(prod_lo, prod_hi)));
         _mm256_storeu_si256(reinterpret_cast<__m256i*>(ecc + off + 32),
-                            _mm256_xor_si256(eB, _mm256_unpackhi_epi8(prod_lo, prod_hi)));
+                            _mm256_xor_si256(e_b, _mm256_unpackhi_epi8(prod_lo, prod_hi)));
     }
 }
 
@@ -447,8 +447,8 @@ struct SharedGfTables {
 };
 
 const SharedGfTables& shared_gf_tables() {
-    static const SharedGfTables kTables{};
-    return kTables;
+    static const SharedGfTables tables{};
+    return tables;
 }
 
 } // namespace
