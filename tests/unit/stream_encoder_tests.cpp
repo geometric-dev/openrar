@@ -377,7 +377,7 @@ void test_stream_decoder_store() {
     std::vector<openrar::core::byte> out;
     CHECK(dec.finish(out));
     CHECK(out.size() == src.size());
-    CHECK(std::memcmp(out.data(), src.size() ? src.data() : nullptr, src.size()) == 0);
+    CHECK(std::memcmp(out.data(), src.data(), src.size()) == 0);
 }
 
 void test_stream_decoder_multi_block_single_feed_and_trailing_garbage() {

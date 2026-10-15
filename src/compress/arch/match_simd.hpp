@@ -323,7 +323,7 @@ inline MatchFn resolve_match_fn() noexcept {
 #endif
 }
 
-inline const MatchFn g_match_fn = resolve_match_fn();
+inline const MatchFn MATCH_FN = resolve_match_fn();
 
 inline size_t match_length_simd(const core::byte* p, const core::byte* q, size_t cap) noexcept {
     if (cap == 0 || p[0] != q[0]) return 0;
@@ -343,7 +343,7 @@ inline size_t match_length_simd(const core::byte* p, const core::byte* q, size_t
 #endif
         }
         if (cap == 16) return 16;
-        size_t r = 16 + g_match_fn(p + 16, q + 16, cap - 16);
+        size_t r = 16 + MATCH_FN(p + 16, q + 16, cap - 16);
         return r > cap ? cap : r;
     }
     return match_length_scalar(p, q, cap);
@@ -375,12 +375,12 @@ inline size_t match_length_simd(const core::byte* p, const core::byte* q, size_t
 #endif
         }
         if (cap == 16) return 16;
-        size_t r = 16 + g_match_fn(p + 16, q + 16, cap - 16);
+        size_t r = 16 + MATCH_FN(p + 16, q + 16, cap - 16);
         return r > cap ? cap : r;
     }
     return match_length_scalar(p, q, cap);
 #else
-    size_t r = g_match_fn(p, q, cap);
+    size_t r = MATCH_FN(p, q, cap);
     return r > cap ? cap : r;
 #endif
 }
