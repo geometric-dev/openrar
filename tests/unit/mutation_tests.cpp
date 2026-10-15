@@ -1547,6 +1547,57 @@ static void test_delete_removes_ads_children() {
     std::cout << "test_delete_removes_ads_children OK\n";
 }
 
+// Store-fallback CRC under parallel (spool) compression. prepare_add_file
+// with threads>1 routes through ParallelBlockPipeline, whose input CRC lives
+// in stream_crc and never reaches crc_calc. When incompressible input made
+// the store fallback fire, the tail clobbered `crc` with crc_calc.get() (a
+// never-fed value), storing a bogus data_crc32 for byte-correct data — every
+// decoder then reported a checksum error (v1.42.0). Guarded by `used_parallel`.
+static void test_store_fallback_parallel_crc() {
+    fs::path dir = make_scratch_dir("store_fallback_parallel");
+    std::error_code ec;
+    fs::path f_rand = dir / "rand_18m.bin";
+    openrar::crypto::Crc32 crc_calc;
+    {
+        std::ofstream fs_out(f_rand, std::ios::binary);
+        std::vector<uint32_t> buf(256 * 1024);
+        uint32_t state = 1357911u;
+        for (int i = 0; i < 18; ++i) { // 18 MiB incompressible
+            for (size_t j = 0; j < buf.size(); ++j) {
+                state = state * 1664525u + 1013904223u;
+                buf[j] = state;
+            }
+            fs_out.write(reinterpret_cast<const char*>(buf.data()),
+                         static_cast<std::streamsize>(buf.size() * sizeof(uint32_t)));
+            crc_calc.update(buf.data(), buf.size() * sizeof(uint32_t));
+        }
+    }
+    uint32_t expected = crc_calc.get();
+
+    ArchiveMutator::PreparedAdd prep;
+    prep.src_path = f_rand;
+    prep.entry_name = "rand_18m.bin";
+    bool ok = ArchiveMutator::prepare_add_file(f_rand, "rand_18m.bin", 3, "", prep,
+                                               openrar::archive::time_flags::MTIME, 0, false, false,
+                                               false, /*direct_stream=*/false, {}, "", "",
+                                               /*threads=*/4);
+    assert(ok);
+    assert(prep.fb.method == 0);            // incompressible -> store fallback
+    assert(prep.fb.data_crc32 == expected); // FILE crc, not the never-fed crc_calc
+
+    fs::path arc = dir / "sf.rar";
+    std::vector<ArchiveMutator::PreparedAdd> batch;
+    batch.push_back(std::move(prep));
+    assert(ArchiveMutator::write_batch_add(arc, batch));
+    engine::ArchiveReader reader;
+    assert(reader.open(arc));
+    assert(reader.entries().size() == 1);
+    assert(reader.test_entry(reader.entries()[0]));
+
+    fs::remove_all(dir, ec);
+    std::cout << "[PASS] store-fallback CRC under parallel compression (v1.42.0)\n";
+}
+
 int main() {
 #ifdef _MSC_VER
     // Route assert failures to stderr under ctest (piped stdio).
@@ -1576,6 +1627,7 @@ int main() {
     test_streaming_and_spooling();
     test_deferred_store_and_adaptive_clamping();
     test_direct_stream_compression_and_backpatch();
+    test_store_fallback_parallel_crc();
     test_off_grid_dict_snap_roundtrip();
     test_xattr_namespace_policy();
     test_xattr_capture_roundtrip();

@@ -37,31 +37,8 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
     out_crc32 = 0;
     if (file_size == 0) return true;
 
-    // Minimum chunk size, driven by table reuse. A chunk is an independent
-    // compression run: it opens with its own re-seed of 16 table descriptions
-    // (2 x the decoder's maximum worker count; see Compressor50::
-    // REUSE_SEED_BLOCKS) and cannot reuse anything until they are spent.
-    //
-    // The old 4 MiB ceiling allowed only 8 blocks of 512 KiB per chunk, so a
-    // chunk could never reuse a single table AND spent its whole budget on
-    // re-seeding. Measured on 64 MiB of zeros, that made the multithreaded path
-    // both larger and SLOWER than the sequential one (0.5x). The floor below is
-    // 2x the seed length in blocks (32 blocks = 16 MiB), which amortises the
-    // re-seed and yields, at the same input, ~13% smaller output and ~1.27x
-    // single-thread-equivalent throughput at -mt4.
-    //
-    // This does not cost parallelism: chunks = size / floor, and the floor
-    // tracks the thread count through the seed length. For small members the
-    // pipeline correctly falls back to sequential, which was already the faster
-    // choice at that granularity.
-    //
-    // Keep this clamp in step with the one in Compressor50::compress_buffer_parallel.
     constexpr size_t BLOCK_QUANTUM = 0x80000; // one 512 KiB block quantum
-    constexpr size_t REUSE_CHUNK_FLOOR =
-        2 * Compressor50::REUSE_SEED_BLOCKS * BLOCK_QUANTUM; // 2 x 16 x 512 KiB = 16 MiB
-    size_t chunk_size = cfg_.chunk_size;
-    if (chunk_size < REUSE_CHUNK_FLOOR) chunk_size = REUSE_CHUNK_FLOOR;
-    if (chunk_size > 256u * 1024u * 1024u) chunk_size = 256u * 1024u * 1024u;
+    size_t chunk_size = parallel_chunk_size(file_size, eff_threads_, cfg_.chunk_size);
 
     FilterConfig no_filters;
     no_filters.mode = FilterMode::DisableAll;
@@ -136,15 +113,29 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
     };
 
     std::deque<std::shared_ptr<ChunkJob>> in_flight;
+    std::vector<std::shared_ptr<ChunkJob>> free_jobs;
+    std::vector<std::unique_ptr<Compressor50>> free_packers;
+    free_jobs.reserve(max_in_flight + 1);
+    free_packers.reserve(eff_threads_);
     std::mutex mu;
     std::condition_variable cv_ready;
     std::atomic<bool> abort_flag{false};
     std::exception_ptr captured_ex;
 
-    core::ThreadPool pool(eff_threads_);
+    core::ThreadPool pool(std::min<unsigned>(eff_threads_, static_cast<unsigned>(total_chunks)));
     crypto::Crc32 crc_calc;
     core::uint64 done_bytes = 0;
     core::uint64 next_chunk_to_read = 0;
+
+    auto acquire_job = [&]() -> std::shared_ptr<ChunkJob> {
+        std::lock_guard<std::mutex> lk(mu);
+        if (!free_jobs.empty()) {
+            auto j = std::move(free_jobs.back());
+            free_jobs.pop_back();
+            return j;
+        }
+        return std::make_shared<ChunkJob>();
+    };
 
     auto drain_front = [&](bool wait_for_front) -> bool {
         std::shared_ptr<ChunkJob> job_to_write;
@@ -190,14 +181,32 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
             }
             out_packed_bytes += job_to_write->compressed.size();
         }
-        // Release compressed buffer memory immediately
-        std::vector<core::byte>().swap(job_to_write->compressed);
+        job_to_write->compressed.clear();
+        job_to_write->uncompressed.clear();
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            if (free_jobs.size() <= max_in_flight) {
+                free_jobs.push_back(std::move(job_to_write));
+            }
+        }
 
         if (cfg_.progress_cb) {
             cfg_.progress_cb(cfg_.progress_user, done_bytes, file_size);
         }
         return true;
     };
+
+    std::shared_ptr<ChunkJob> next_job = acquire_job();
+    {
+        size_t first_len = static_cast<size_t>(std::min<core::uint64>(chunk_size, file_size));
+        next_job->index = 0;
+        next_job->is_last = (total_chunks == 1);
+        next_job->seed_len = 0;
+        next_job->ready = false;
+        next_job->failed = false;
+        next_job->compressed.clear();
+        next_job->uncompressed.resize(first_len);
+    }
 
     while (next_chunk_to_read < total_chunks) {
         // Poll cancellation and exception on main thread
@@ -224,83 +233,89 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
         }
         if (abort_flag.load(std::memory_order_relaxed)) break;
 
-        auto job = std::make_shared<ChunkJob>();
-        job->index = next_chunk_to_read;
-        job->is_last = (next_chunk_to_read == total_chunks - 1);
-
+        std::shared_ptr<ChunkJob> job = std::move(next_job);
         core::uint64 off = next_chunk_to_read * chunk_size;
         size_t len = static_cast<size_t>(std::min<core::uint64>(chunk_size, file_size - off));
-        // Seed the chunk with the member bytes that precede it. RAR5 scopes the
-        // LZ dictionary to the member, so a chunk may match backwards across
-        // its boundary; seeding each context reproduces what a
-        // single-threaded encoder would see at that offset. Read here (not
-        // from the predecessor's context) because the MT path disables
-        // filters, so source bytes ARE the post-filter bytes - which keeps
-        // chunks independent and the pipeline fully parallel. No ordering
-        // dependency is introduced.
-        const size_t seed_len =
-            (off == 0) ? 0 : static_cast<size_t>(std::min<core::uint64>(cfg_.win_size, off) - 1);
-        job->seed_len = seed_len;
-        job->uncompressed.resize(seed_len + len);
+        const size_t seed_len = job->seed_len;
 
-        bool read_ok = true;
-        if (seed_len > 0) {
-            if (!src_stream.seek(off - seed_len, io::SeekOrigin::Begin) ||
-                src_stream.read(job->uncompressed.data(), seed_len) != seed_len) {
-                read_ok = false;
-            }
-        }
-        if (read_ok) {
-            if (!src_stream.seek(off, io::SeekOrigin::Begin) ||
-                src_stream.read(job->uncompressed.data() + seed_len, len) != len) {
-                read_ok = false;
-            }
-        }
-        if (!read_ok) {
+        if (src_stream.read(job->uncompressed.data() + seed_len, len) != len) {
             abort_flag = true;
             break;
         }
         crc_calc.update(job->uncompressed.data() + seed_len, len);
         done_bytes += len;
 
+        // Hand off the trailing history seed to the next chunk in memory before
+        // submitting `job`, eliminating backward seeks and duplicate disk reads.
+        if (next_chunk_to_read + 1 < total_chunks) {
+            core::uint64 next_off = (next_chunk_to_read + 1) * chunk_size;
+            size_t next_len =
+                static_cast<size_t>(std::min<core::uint64>(chunk_size, file_size - next_off));
+            size_t next_seed_len =
+                static_cast<size_t>(std::min<core::uint64>(cfg_.win_size, next_off) - 1);
+            next_job = acquire_job();
+            next_job->index = next_chunk_to_read + 1;
+            next_job->is_last = (next_chunk_to_read + 1 == total_chunks - 1);
+            next_job->seed_len = next_seed_len;
+            next_job->ready = false;
+            next_job->failed = false;
+            next_job->compressed.clear();
+            next_job->uncompressed.resize(next_seed_len + next_len);
+            if (next_seed_len > 0) {
+                std::memcpy(next_job->uncompressed.data(),
+                            job->uncompressed.data() + job->uncompressed.size() - next_seed_len,
+                            next_seed_len);
+            }
+        }
+
         {
             std::lock_guard<std::mutex> lk(mu);
             in_flight.push_back(job);
         }
 
-        pool.submit([job, this, no_filters, &mu, &cv_ready, &abort_flag, &captured_ex] {
-            try {
-                if (abort_flag.load(std::memory_order_relaxed)) {
+        pool.submit(
+            [job, this, no_filters, &mu, &cv_ready, &abort_flag, &captured_ex, &free_packers] {
+                std::unique_ptr<Compressor50> packer;
+                try {
+                    if (abort_flag.load(std::memory_order_relaxed)) {
+                        std::lock_guard<std::mutex> lk(mu);
+                        job->failed = true;
+                    } else {
+                        {
+                            std::lock_guard<std::mutex> lk(mu);
+                            if (!free_packers.empty()) {
+                                packer = std::move(free_packers.back());
+                                free_packers.pop_back();
+                            }
+                        }
+                        if (!packer) packer = std::make_unique<Compressor50>();
+
+                        const size_t worker_win = std::max<size_t>(
+                            1, std::min<size_t>(cfg_.win_size, job->seed_len + job->data_len()));
+                        packer->begin_archive(nullptr, cfg_.method, worker_win);
+                        packer->set_filter_config(no_filters);
+                        packer->set_seeded_external_buffer(job->uncompressed.data(), job->seed_len,
+                                                           job->data_len());
+                        packer->set_memory_dest(&job->compressed);
+                        core::int64 r = packer->compress(job->is_last);
+                        std::lock_guard<std::mutex> lk(mu);
+                        if (r < 0) {
+                            job->failed = true;
+                            abort_flag = true;
+                        } else {
+                            job->ready = true;
+                        }
+                        free_packers.push_back(std::move(packer));
+                    }
+                } catch (...) {
                     std::lock_guard<std::mutex> lk(mu);
                     job->failed = true;
-                } else {
-                    Compressor50 packer;
-                    const size_t worker_win = std::max<size_t>(
-                        1, std::min<size_t>(cfg_.win_size, job->seed_len + job->data_len()));
-                    packer.begin_archive(nullptr, cfg_.method, worker_win);
-                    packer.set_filter_config(no_filters);
-                    packer.set_seeded_external_buffer(job->uncompressed.data(), job->seed_len,
-                                                      job->data_len());
-                    packer.set_memory_dest(&job->compressed);
-                    core::int64 r = packer.compress(job->is_last);
-                    std::lock_guard<std::mutex> lk(mu);
-                    if (r < 0) {
-                        job->failed = true;
-                        abort_flag = true;
-                    } else {
-                        job->ready = true;
-                    }
+                    abort_flag = true;
+                    if (!captured_ex) captured_ex = std::current_exception();
+                    if (packer) free_packers.push_back(std::move(packer));
                 }
-            } catch (...) {
-                std::lock_guard<std::mutex> lk(mu);
-                job->failed = true;
-                abort_flag = true;
-                if (!captured_ex) captured_ex = std::current_exception();
-            }
-            // Release uncompressed buffer immediately to reclaim memory
-            std::vector<core::byte>().swap(job->uncompressed);
-            cv_ready.notify_all();
-        });
+                cv_ready.notify_all();
+            });
 
         ++next_chunk_to_read;
     }

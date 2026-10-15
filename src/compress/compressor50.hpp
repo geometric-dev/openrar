@@ -33,14 +33,14 @@ private:
 public:
     BitOutput()
         : dest_file_(nullptr), mem_dest_(nullptr), block_bytes_(0), block_bits_(0), acc_(0),
-          acc_bits_(0) {
-        buf_.reserve(OUTBUF_SIZE + 16);
-    }
+          acc_bits_(0) {}
 
     void set_dest_file(io::FileStream* dest) { dest_file_ = dest; }
     void set_memory(std::vector<core::byte>* mem) { mem_dest_ = mem; }
 
-    core::uint64 get_block_bytes() const { return block_bytes_ + buf_.size(); }
+    core::uint64 get_block_bytes() const {
+        return block_bytes_ + (mem_dest_ != nullptr ? mem_dest_->size() : buf_.size());
+    }
     core::uint64 get_block_bits() const { return block_bits_; }
     bool failed() const { return write_failed_; }
 
@@ -59,23 +59,25 @@ public:
 #else
             val = __builtin_bswap32(val);
 #endif
-            size_t sz = buf_.size();
-            if (sz + 4 > buf_.capacity()) buf_.reserve(sz + OUTBUF_SIZE);
-            buf_.resize(sz + 4);
-            std::memcpy(&buf_[sz], &val, 4);
+            std::vector<core::byte>& dst = (mem_dest_ != nullptr) ? *mem_dest_ : buf_;
+            size_t sz = dst.size();
+            if (sz + 4 > dst.capacity()) dst.reserve(sz + OUTBUF_SIZE);
+            dst.resize(sz + 4);
+            std::memcpy(&dst[sz], &val, 4);
             acc_bits_ -= 32;
-            if (buf_.size() >= OUTBUF_SIZE) flush_buf();
+            if (mem_dest_ == nullptr && dst.size() >= OUTBUF_SIZE) flush_buf();
         }
     }
 
     void flush_buf() {
-        if (buf_.empty()) return;
         if (mem_dest_ != nullptr) {
-            block_bytes_ += buf_.size();
-            mem_dest_->insert(mem_dest_->end(), buf_.begin(), buf_.end());
-            buf_.clear();
+            if (!buf_.empty()) {
+                mem_dest_->insert(mem_dest_->end(), buf_.begin(), buf_.end());
+                buf_.clear();
+            }
             return;
         }
+        if (buf_.empty()) return;
         if (dest_file_ != nullptr) {
             size_t wrote = dest_file_->write(buf_.data(), buf_.size());
             if (wrote != buf_.size()) write_failed_ = true;
@@ -85,17 +87,18 @@ public:
     }
 
     void align_byte() {
+        std::vector<core::byte>& dst = (mem_dest_ != nullptr) ? *mem_dest_ : buf_;
         while (acc_bits_ >= 8) {
-            buf_.push_back(static_cast<core::byte>(acc_ >> (acc_bits_ - 8)));
+            dst.push_back(static_cast<core::byte>(acc_ >> (acc_bits_ - 8)));
             acc_bits_ -= 8;
         }
         if (acc_bits_ > 0) {
             core::byte partial = static_cast<core::byte>(acc_ << (8 - acc_bits_));
-            buf_.push_back(partial);
-            acc_ = 0;
-            acc_bits_ = 0;
+            dst.push_back(partial);
         }
-        if (buf_.size() >= OUTBUF_SIZE) flush_buf();
+        acc_ = 0;
+        acc_bits_ = 0;
+        if (mem_dest_ == nullptr && dst.size() >= OUTBUF_SIZE) flush_buf();
     }
 
     void reset_block_count() {
@@ -104,16 +107,15 @@ public:
         block_bits_ = 0;
     }
 
-    // Re-arm for the next block in place. Semantically identical to destroying
-    // this BitOutput and constructing a fresh one pointed at `mem`, except that
-    // buf_ keeps its capacity, so the 256 KiB transfer buffer is not
-    // reallocated once per block (v1.41.1). Safe because
-    // write_block() calls finish_block_data() — which drains buf_ — before
-    // every early return, so buf_ is always empty here.
+    // Re-arm for the next block in place. Writes directly into `*mem` when
+    // non-null, avoiding staging through `buf_` and copying into `block_mem_`.
     void reset_for_block(std::vector<core::byte>* mem) {
         buf_.clear();
         dest_file_ = nullptr;
         mem_dest_ = mem;
+        if (mem != nullptr && mem->capacity() < OUTBUF_SIZE * 2 + 64) {
+            mem->reserve(OUTBUF_SIZE * 2 + 64);
+        }
         block_bytes_ = 0;
         block_bits_ = 0;
         acc_ = 0;
@@ -122,12 +124,18 @@ public:
     }
 
     inline void put_bits64(core::uint64 value, core::uint32 num_bits) {
-        // MSB-first: emit the high part, then the low 32 bits.
+        assert(num_bits <= 64);
+        // MSB-first: emit the high (num_bits - 32) bits, then the low 32 bits.
+        // The high part is `value >> 32` (the top bits) — NOT `value >>
+        // (num_bits - 32)`, which only coincides for num_bits == 64 and
+        // silently emitted the wrong bits for every 33..63-bit field. Latent
+        // until emit_tokens' distance path packed a code+extra into one
+        // put_bits64 call with num_bits = dist_len + extra_high_len (v1.42.0).
         if (num_bits <= 32) {
             put_bits(static_cast<core::uint32>(value), num_bits);
             return;
         }
-        put_bits(static_cast<core::uint32>(value >> (num_bits - 32)), num_bits - 32);
+        put_bits(static_cast<core::uint32>(value >> 32), num_bits - 32);
         put_bits(static_cast<core::uint32>(value & 0xFFFFFFFFu), 32);
     }
 
@@ -388,6 +396,11 @@ private:
     core::uint64 total_at_file_start_{0};
     core::uint64 cur_{0};
     core::uint64 unhashed_pos_{0};
+    // Separate cursor for CRC32 hashing of pre-filter source bytes.
+    // Unlike unhashed_pos_ (which is also used for LZ hash table catch-up),
+    // this cursor tracks which bytes have been hashed for the unpacked CRC32.
+    // OPT-03: Fixes aliasing where unhashed_pos_ == cur_ caused CRC32 to always return 0.
+    core::uint64 crc_pos_{0};
 
     std::vector<core::byte>* mem_out_{nullptr};
 
@@ -418,28 +431,36 @@ private:
         return buf_data_[static_cast<size_t>(pos - pos_base_)];
     }
     void load_data(core::uint64 until);
+    void ensure_internal_buffer() {
+        if (!external_buf_) {
+            if (buf_.size() < buf_size_) {
+                buf_.resize(buf_size_);
+            }
+            buf_data_ = buf_.data();
+        }
+    }
 
     // 32-bit truncation of absolute positions is safe here. The match_length_simd
     // function performs a physical post-reconstruction verification of the matched bytes.
     // If a hash chain collision spans exactly a 4GB interval, the bytes will differ and
     // it will be safely rejected.
     inline core::int64 reconstruct_pos(core::uint64 pos, core::uint32 trunc) {
-        if (trunc == 0xffffffff) return -1;
-        core::int64 cand = (pos & ~0xffffffffULL) | trunc;
-        if (static_cast<core::uint64>(cand) > pos) {
-            cand -= 0x100000000LL;
-        }
-        if (pos - static_cast<core::uint64>(cand) > max_dist_) return -1;
-        return cand;
+        if (trunc == 0xFFFFFFFFu) return -1;
+        core::uint32 dist32 = static_cast<core::uint32>(pos) - trunc;
+        if (dist32 > max_dist_ || dist32 > pos) return -1;
+        return static_cast<core::int64>(pos - dist32);
     }
 
     core::uint32 calc_hash(core::uint64 pos);
     void insert_position(core::uint64 pos);
+    void hash_range(core::uint64 from, core::uint64 to);
 
     struct MatchInfo {
         size_t length;
         core::int64 candidate;
     };
+    template <bool LargeWindow>
+    MatchInfo find_match_impl(core::uint64 pos, core::uint32 max_chain, core::uint32 nice_len);
     MatchInfo find_match(core::uint64 pos, core::uint32 max_chain, core::uint32 nice_len);
     size_t match_length(core::uint64 pos, core::uint64 cand, size_t cap);
     size_t rep_length(core::uint64 pos, size_t dist, size_t cap);
@@ -510,6 +531,12 @@ private:
             // compression thread (v1.41.1).
         }
     }
+    void advance_crc(core::uint64 up_to) {
+        if (crc_pos_ < up_to) {
+            consume_source(crc_pos_, up_to);
+            crc_pos_ = up_to;
+        }
+    }
 
 public:
     Compressor50();
@@ -548,6 +575,7 @@ public:
         pos_base_ = 0;
         cur_ = 0;
         unhashed_pos_ = 0;
+        crc_pos_ = 0;
     }
 
     // Compress `data_len` bytes at `history`, where the first `seed_len` bytes
@@ -579,6 +607,7 @@ public:
         pos_base_ = 0;
         cur_ = seed_len;
         unhashed_pos_ = 0;
+        crc_pos_ = seed_len;
     }
 
     core::int64 compress(bool last_block = true);
@@ -628,6 +657,21 @@ public:
 
     friend class Compressor50TestAccess;
 };
+
+inline size_t parallel_chunk_size(core::uint64 total_size, unsigned eff_threads,
+                                  size_t configured_chunk = 2 * 1024 * 1024) {
+    constexpr size_t BLOCK_QUANTUM = 0x80000;     // 512 KiB
+    constexpr size_t MIN_CHUNK = 1024 * 1024;     // 1 MiB
+    constexpr size_t MAX_CHUNK = 4 * 1024 * 1024; // 4 MiB
+    if (configured_chunk != 2 * 1024 * 1024 && configured_chunk > 0) {
+        return std::clamp<size_t>(configured_chunk, BLOCK_QUANTUM, 256u * 1024u * 1024u);
+    }
+    if (eff_threads == 0) eff_threads = 1;
+    core::uint64 per_thread = (total_size + eff_threads - 1) / eff_threads;
+    size_t clamped =
+        static_cast<size_t>(std::clamp<core::uint64>(per_thread, MIN_CHUNK, MAX_CHUNK));
+    return ((clamped + BLOCK_QUANTUM - 1) / BLOCK_QUANTUM) * BLOCK_QUANTUM;
+}
 
 } // namespace openrar::compress
 
