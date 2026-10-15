@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.42.1] - 2026-10-15
+
+Completes the v1.42.0 WASM worker fix: the per-call `Worker` probe made the real
+off-thread path reachable, which exposed two latent defects the main-thread
+fallback had always hidden.
+
+### Fixed
+
+- **The WASM worker protocol could not actually round-trip** (`wasm/js/worker.test.mjs`):
+  the Layer-2 fake `Worker` delivered each host request back to the host's own
+  `onmessage` and never forwarded it to `worker.js`, and it provided no
+  worker-to-host channel at all — so the protocol only appeared to work while
+  `createOpenRARWorker` returned the main-thread fallback. The shim now bridges
+  both directions (host→worker via `worker.js`'s `self.onmessage`, worker→host
+  via `self.postMessage`), so the real protocol is exercised end to end.
+- **A non-cloneable argument threw synchronously instead of rejecting**
+  (`wasm/js/worker-host.mjs`): `#call` validated `args` with a bare
+  `assertPostable`, so `worker.compress(<function-bearing object>, ...)` threw
+  out of the async API rather than returning a rejected promise. It now rejects,
+  matching the rest of the handle surface.
+
 ## [1.42.0] - 2026-10-15
 
 Performance and correctness release implementing the two-phase optimization

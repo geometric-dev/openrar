@@ -183,8 +183,15 @@ class OpenRARWorkerImpl {
     if (this.#broken) return Promise.reject(this.#broken);
 
     // Validate before anything is registered, so a rejected call leaves no
-    // entry in #pending and no dangling abort listener.
-    assertPostable(args);
+    // entry in #pending and no dangling abort listener. Reject rather than
+    // throw: every method on this handle is async and returns a promise, so a
+    // non-cloneable argument must surface as a rejection the caller awaits,
+    // not a synchronous throw that skips their catch.
+    try {
+      assertPostable(args);
+    } catch (err) {
+      return Promise.reject(err);
+    }
 
     const id = this.#nextId++;
     const call = new WorkerCall(this.#worker, id);
