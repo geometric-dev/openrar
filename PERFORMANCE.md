@@ -28,6 +28,32 @@ record for those releases.
 
 ---
 
+## Reproducing these numbers (any host)
+
+Harness: `tools/perf_vs_winrar.py` (Windows-only; WinRAR comparison). It builds
+nothing — build Release first, then run from the repo root:
+
+```
+python tools/perf_vs_winrar.py          # full: 1 warm-up + 3 timed runs, MEDIAN
+python tools/perf_vs_winrar.py --quick  # smoke only (numbers not quoted)
+```
+
+Prerequisites: a Release `openrar.exe` (autodetected under `build/`, or set
+`OPENRAR_EXE`), WinRAR 7.20 + UnRAR under `C:\Program Files\WinRAR`, Python 3,
+and ~2 GB free for the corpora. The run writes `tools/perf/results.json`
+incrementally (28 configs) and discloses the host in that same file.
+
+Comparability across hosts: the corpora are **not vendored** (gitignored). The
+harness regenerates them deterministically on a host when absent, and the
+canonical/big `code.cpp` and the mixed `src_*.cpp` embed *that host's* `src/`
+tree — so a fresh checkout produces a different corpus era. Every corpus's hash
+is recorded in `results.json` (`corpora`). To compare two hosts directly, either
+generate both at the same commit or copy `tools/perf/data/` between them; a
+mismatched fingerprint means sizes (and, to a smaller degree, times) are only
+loosely comparable.
+
+---
+
 ## v1.42.x measurement (current tree)
 
 Source of truth for the current tree (`v1.42.1`). Host disclosed; the v1.40.0
