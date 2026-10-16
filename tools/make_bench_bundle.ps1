@@ -30,7 +30,11 @@ param(
     [string]$RunbenchExe = "",
     [string]$OpenrarExe = "",
     [string]$Stub = "",
-    [switch]$SkipSmoke
+    [switch]$SkipSmoke,
+    [switch]$Zip,
+    [string]$ZipOut = "",
+    [switch]$Rar,
+    [string]$RarOut = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,11 +64,11 @@ $stub = Resolve-File "Default.SFX" $Stub @(
 )
 # D4: stock engines from the local WinRAR install; package time only (D4) —
 # never committed, only copied into the gitignored dist/ payload.
-$unrar = Resolve-File "UnRAR.exe" "" @(
+$unrarExe = Resolve-File "UnRAR.exe" "" @(
     (Join-Path $WinrarDir "UnRAR.exe"),
     "${env:ProgramFiles(x86)}\WinRAR\UnRAR.exe"
 )
-$rar = Resolve-File "rar.exe" "" @(
+$rarExe = Resolve-File "rar.exe" "" @(
     (Join-Path $WinrarDir "rar.exe"),
     "${env:ProgramFiles(x86)}\WinRAR\rar.exe"
 )
@@ -78,8 +82,8 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 Copy-Item $runbench (Join-Path $stage "runbench.exe")
 Copy-Item $openrar  (Join-Path $stage "openrar.exe")
-Copy-Item $unrar    (Join-Path $stage "UnRAR.exe")
-Copy-Item $rar      (Join-Path $stage "rar.exe")
+Copy-Item $unrarExe (Join-Path $stage "UnRAR.exe")
+Copy-Item $rarExe   (Join-Path $stage "rar.exe")
 # Bare -sfx resolves "default.sfx" against cwd then the exe dir
 # (ArchiveMutator::resolve_sfx_stub); stage it under that name, NOT packed.
 Copy-Item $stub     (Join-Path $stage "default.sfx")
@@ -114,6 +118,37 @@ $payload = Get-ChildItem $stage | Where-Object { $_.Name -ne "default.sfx" } |
     ForEach-Object { "{0}  {1} bytes" -f $_.Name, $_.Length }
 Write-Host "bundle: $outPath"
 $payload | ForEach-Object { Write-Host "  $_" }
+
+if ($Zip -or $Rar) {
+    # Plain payload archives (no SFX stub) for hosts that prefer to unpack and
+    # run runbench.exe directly: a .zip (universal) and/or a .rar (packed by
+    # openrar itself). Built from the same stage dir as the SFX.
+    $verLine = (& $openrar --version | Select-Object -First 1).ToString().Trim()
+    $ver = if ($verLine -match '([0-9]+\.[0-9]+(\.[0-9]+)?)') { $Matches[1] } else { "0.0.0" }
+    $payload = @("runbench.exe", "openrar.exe", "UnRAR.exe", "rar.exe")
+}
+
+if ($Zip) {
+    if ($ZipOut -eq "") { $ZipOut = "dist\openrar-bench-$ver-windows-x64.zip" }
+    $zipPath = Join-Path $Root $ZipOut
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $zipPath) | Out-Null
+    if (Test-Path -LiteralPath $zipPath) { Remove-Item -Force -LiteralPath $zipPath }
+    Compress-Archive -Force -DestinationPath $zipPath -Path ($payload | ForEach-Object { Join-Path $stage $_ })
+    Write-Host "zip: $zipPath (4 exes, no SFX)"
+}
+
+if ($Rar) {
+    if ($RarOut -eq "") { $RarOut = "dist\openrar-bench-$ver-windows-x64.rar" }
+    $rarPath = Join-Path $Root $RarOut
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $rarPath) | Out-Null
+    if (Test-Path -LiteralPath $rarPath) { Remove-Item -Force -LiteralPath $rarPath }
+    Push-Location $stage
+    try {
+        & $openrar a -m3 -mt4 $rarPath @payload
+        if ($LASTEXITCODE -ne 0) { throw "openrar a failed rc=$LASTEXITCODE" }
+    } finally { Pop-Location }
+    Write-Host "rar: $rarPath (4 exes, no SFX, packed by openrar)"
+}
 
 if (-not $SkipSmoke) {
     # Directives suppressed (-sfxnoexec): extraction-only smoke, no consent
