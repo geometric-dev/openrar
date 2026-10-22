@@ -84,6 +84,13 @@ pin-tool-log.txt
 # Scratch cross-validation build
 build_cv/
 
+# Secondary native build tree (the -DOPENRAR_INMEM_ARCHIVE=ON leg) and the
+# scratch directories the test suites create next to the tree (dest_*, test_*).
+# They are local build/run residue, never committed.
+build_inmem/
+dest_*/
+test_*/
+
 # Perf harness local artifacts (corpora + archives; results.json IS committed)
 tools/perf/data/
 tools/perf/out/
