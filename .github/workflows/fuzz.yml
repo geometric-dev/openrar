@@ -105,7 +105,7 @@ jobs:
         # SIGPIPEs strings and returns 141 — so the assertion failed even when
         # libFuzzer was linked. `grep -c` consumes all input, so no SIGPIPE.
         run: |
-          for f in fuzz_decompress fuzz_archive fuzz_file_handle fuzz_inflate; do
+          for f in fuzz_decompress fuzz_archive fuzz_file_handle fuzz_inflate fuzz_target; do
             if [ ! -x "./build_fuzz/$f" ]; then
               echo "::error::$f was not built"
               exit 1
@@ -135,6 +135,13 @@ jobs:
         # libFuzzer's 1200 s default applies per input and one hostile input
         # can consume the whole budget and report nothing.
         run: ./build_fuzz/fuzz_decompress -max_total_time="$FUZZ_TIME" -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
+
+      - name: Fuzz codec (audit-driven target)
+        # tests/fuzz/fuzz_target.cpp: hostile decode, compress->decompress
+        # round trip with truncation/bit-flip oracles, sequential vs
+        # two-phase differential, BitReader model check. Inputs are capped
+        # at 256 KiB so round-trip lanes stay fast enough to explore.
+        run: ./build_fuzz/fuzz_target -max_total_time="$FUZZ_TIME" -timeout=60 -max_len=262144 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
 
       - name: Fuzz archive + block C ABI
         run: ./build_fuzz/fuzz_archive -max_total_time="$FUZZ_TIME" -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
