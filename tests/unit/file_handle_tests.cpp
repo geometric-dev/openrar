@@ -22,6 +22,8 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -51,7 +53,7 @@ static fs::path make_scratch_dir(const char* name) {
 
 static void write_bytes(const fs::path& p, const std::vector<uint8_t>& data) {
     std::ofstream f(p, std::ios::binary);
-    assert(f);
+    REQUIRE(f);
     if (!data.empty())
         f.write(reinterpret_cast<const char*>(data.data()),
                 static_cast<std::streamsize>(data.size()));
@@ -59,7 +61,7 @@ static void write_bytes(const fs::path& p, const std::vector<uint8_t>& data) {
 
 static std::vector<uint8_t> read_bytes(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
-    assert(f);
+    REQUIRE(f);
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
                                 std::istreambuf_iterator<char>());
 }
@@ -99,7 +101,7 @@ create_plain_archive(const fs::path& dir, const char* name,
     size_t out_len = 0;
     int rc = openrar_archive_create(name_ptrs.data(), data_ptrs.data(), sizes.data(),
                                     static_cast<uint32_t>(files.size()), 3, 2, &out, &out_len);
-    assert(rc == RAR_OK);
+    REQUIRE(rc == RAR_OK);
     fs::path arc = dir / name;
     write_bytes(arc, std::vector<uint8_t>(out, out + out_len));
     openrar_free(out);
@@ -158,10 +160,10 @@ static fs::path make_solid_archive(const fs::path& dir) {
         const fs::path src = dir / ("src_" + entry);
         write_bytes(src, make_pattern(1u << 20, 1000u + i)); // 1 MiB each
         ArchiveMutator::PreparedAdd p;
-        assert(ArchiveMutator::prepare_add_file(src, entry, 3, "", p));
+        REQUIRE(ArchiveMutator::prepare_add_file(src, entry, 3, "", p));
         prepared.push_back(std::move(p));
     }
-    assert(ArchiveMutator::write_batch_add(arc, prepared, {}, "", false, {}, /*solid=*/true));
+    REQUIRE(ArchiveMutator::write_batch_add(arc, prepared, {}, "", false, {}, /*solid=*/true));
     return arc;
 }
 
@@ -172,8 +174,8 @@ static fs::path make_encrypted_archive(const fs::path& dir, const char* password
     const fs::path src = dir / (std::string(arc_name) + ".src");
     write_bytes(src, data);
     fs::path arc = dir / arc_name;
-    assert(ArchiveMutator::add_file_to_archive(arc, src, "payload.bin", 3, {}, 0, password,
-                                               encrypt_headers));
+    REQUIRE(ArchiveMutator::add_file_to_archive(arc, src, "payload.bin", 3, {}, 0, password,
+                                                encrypt_headers));
     return arc;
 }
 
@@ -182,7 +184,7 @@ static fs::path make_volume_set(const fs::path& dir, std::vector<uint8_t> data) 
     const fs::path src = dir / "vol_src.bin";
     write_bytes(src, data);
     const fs::path base = dir / "volset.rar";
-    assert(ArchiveMutator::add_file_to_archive_vol(base, src, "big.bin", 0, 96 * 1024));
+    REQUIRE(ArchiveMutator::add_file_to_archive_vol(base, src, "big.bin", 0, 96 * 1024));
     return base;
 }
 
@@ -197,23 +199,23 @@ static void test_plain_roundtrip() {
 
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     uint32_t count = 0;
     void* e = nullptr;
     void* p = nullptr;
     size_t ps = 0;
-    assert(openrar_archive_handle_list(h, &count, &e, &p, &ps) == RAR_OK);
-    assert(count == 3);
+    REQUIRE(openrar_archive_handle_list(h, &count, &e, &p, &ps) == RAR_OK);
+    REQUIRE(count == 3);
     std::map<std::string, const openrar_archive_entry_t*> by_name;
     const auto* ents = static_cast<const openrar_archive_entry_t*>(e);
     const char* paths = static_cast<const char*>(p);
     for (uint32_t i = 0; i < count; ++i)
         by_name[std::string(paths + ents[i].path_offset, ents[i].path_len)] = &ents[i];
-    assert(by_name.count("a.bin") && by_name.count("d/") && by_name.count("d/b.bin"));
-    assert(by_name["a.bin"]->size == blob_a.size());
-    assert(by_name["a.bin"]->is_dir == 0);
-    assert(by_name["d/"]->is_dir == 1);
-    assert(by_name["d/b.bin"]->size == blob_b.size());
+    REQUIRE((by_name.count("a.bin") && by_name.count("d/") && by_name.count("d/b.bin")));
+    REQUIRE(by_name["a.bin"]->size == blob_a.size());
+    REQUIRE(by_name["a.bin"]->is_dir == 0);
+    REQUIRE(by_name["d/"]->is_dir == 1);
+    REQUIRE(by_name["d/b.bin"]->size == blob_b.size());
     openrar_archive_list_free(e, p, ps);
 
     // Memory extract matches the source bytes.
@@ -226,21 +228,21 @@ static void test_plain_roundtrip() {
         std::fprintf(stderr, "[diag] handle_extract rc=%d msg='%s' len=%zu\n", rc, msg, len);
         std::fflush(stderr);
     }
-    assert(rc == RAR_OK);
-    assert(len == blob_a.size() && std::memcmp(out, blob_a.data(), len) == 0);
+    REQUIRE(rc == RAR_OK);
+    REQUIRE((len == blob_a.size() && std::memcmp(out, blob_a.data(), len) == 0));
     openrar_free(out);
 
     // Extract to path matches too, and no temp file survives.
     const fs::path dest = dir / "out" / "a.bin";
-    assert(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr) == RAR_OK);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
+                                                   nullptr) == RAR_OK);
     const auto written = read_bytes(dest);
-    assert(written == blob_a);
-    assert(count_temp_files(dir) == 0);
+    REQUIRE(written == blob_a);
+    REQUIRE(count_temp_files(dir) == 0);
 
     // Streaming test verifies every data entry.
-    assert(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
-    assert(openrar_archive_handle_test(h, 2, nullptr, nullptr, nullptr) == RAR_OK);
+    REQUIRE(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
+    REQUIRE(openrar_archive_handle_test(h, 2, nullptr, nullptr, nullptr) == RAR_OK);
     openrar_archive_close(h);
     std::cout << "[PASS] plain_roundtrip\n";
 }
@@ -253,21 +255,21 @@ static void test_progress_contract() {
     const fs::path arc = create_plain_archive(dir, "p.rar", {{"big.bin", blob}});
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
 
     ProgressLog log;
     const fs::path dest = dir / "big.bin";
-    assert(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), ProgressLog::cb,
-                                                  nullptr, &log) == RAR_OK);
-    assert(log.monotonic());
-    assert(log.calls.size() >= 2);
-    assert(log.calls.back().first == blob.size() && log.calls.back().second == blob.size());
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), ProgressLog::cb,
+                                                   nullptr, &log) == RAR_OK);
+    REQUIRE(log.monotonic());
+    REQUIRE(log.calls.size() >= 2);
+    REQUIRE((log.calls.back().first == blob.size() && log.calls.back().second == blob.size()));
     // Exactly one final (total, total).
     size_t finals = 0;
     for (const auto& c : log.calls)
         if (c.first == blob.size() && c.second == blob.size()) ++finals;
-    assert(finals == 1);
-    assert(count_temp_files(dir) == 0);
+    REQUIRE(finals == 1);
+    REQUIRE(count_temp_files(dir) == 0);
     openrar_archive_close(h);
     std::cout << "[PASS] progress_contract\n";
 }
@@ -280,20 +282,20 @@ static void test_cancel_mid_extract() {
     const fs::path arc = create_plain_archive(dir, "c.rar", {{"big.bin", blob}});
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
 
     CancelPolicy cancel; // fire on the 4th poll
     cancel.fire_after = 3;
     const fs::path dest = dir / "never.bin";
-    assert(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr,
-                                                  CancelPolicy::cb, &cancel) == RAR_ERR_ABORTED);
-    assert(!fs::exists(dest));
-    assert(count_temp_files(dir) == 0);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr,
+                                                   CancelPolicy::cb, &cancel) == RAR_ERR_ABORTED);
+    REQUIRE(!fs::exists(dest));
+    REQUIRE(count_temp_files(dir) == 0);
 
     // The handle stays usable; a full retry succeeds.
-    assert(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr) == RAR_OK);
-    assert(read_bytes(dest) == blob);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
+                                                   nullptr) == RAR_OK);
+    REQUIRE(read_bytes(dest) == blob);
     openrar_archive_close(h);
     std::cout << "[PASS] cancel_mid_extract\n";
 }
@@ -308,34 +310,34 @@ static void test_guards_and_vtable() {
     // Extracting ONTO the archive is rejected up front.
     uint32_t fh =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(fh != 0);
-    assert(openrar_archive_handle_extract_to_path(fh, 0, arc.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr) == RAR_ERR_INVALID_ARG);
-    assert(last_error().find("archive file") != std::string::npos);
+    REQUIRE(fh != 0);
+    REQUIRE(openrar_archive_handle_extract_to_path(fh, 0, arc.u8string().c_str(), nullptr, nullptr,
+                                                   nullptr) == RAR_ERR_INVALID_ARG);
+    REQUIRE(last_error().find("archive file") != std::string::npos);
     // extract_all is prohibited on file handles.
     uint8_t* b = nullptr;
     size_t bs = 0;
     uint64_t* offs = nullptr;
     uint32_t oc = 0;
-    assert(openrar_archive_handle_extract_all(fh, &b, &bs, &offs, &oc) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(openrar_archive_handle_extract_all(fh, &b, &bs, &offs, &oc) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
     openrar_archive_close(fh);
-    assert(fs::file_size(arc) > 0); // archive untouched
+    REQUIRE(fs::file_size(arc) > 0); // archive untouched
 
     // Buffer handle: test is unsupported, extract_all still works, to_path
     // still honors the durability contract.
     const auto buf = read_bytes(arc);
     uint32_t bh = openrar_archive_open(buf.data(), buf.size());
-    assert(bh != 0);
-    assert(openrar_archive_handle_test(bh, 0, nullptr, nullptr, nullptr) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
-    assert(openrar_archive_handle_extract_all(bh, &b, &bs, &offs, &oc) == RAR_OK);
+    REQUIRE(bh != 0);
+    REQUIRE(openrar_archive_handle_test(bh, 0, nullptr, nullptr, nullptr) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(openrar_archive_handle_extract_all(bh, &b, &bs, &offs, &oc) == RAR_OK);
     openrar_free(b);
     openrar_free(offs);
     const fs::path dest = dir / "x.bin";
-    assert(openrar_archive_handle_extract_to_path(bh, 0, dest.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr) == RAR_OK);
-    assert(read_bytes(dest) == blob);
+    REQUIRE(openrar_archive_handle_extract_to_path(bh, 0, dest.u8string().c_str(), nullptr, nullptr,
+                                                   nullptr) == RAR_OK);
+    REQUIRE(read_bytes(dest) == blob);
     openrar_archive_close(bh);
     std::cout << "[PASS] guards_and_vtable\n";
 }
@@ -348,13 +350,13 @@ static void test_directory_entry() {
         create_plain_archive(dir, "d.rar", {{"nested/", {}}, {"nested/f.txt", {'h', 'i'}}});
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     ProgressLog log;
     const fs::path dest = dir / "out" / "nested";
-    assert(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), ProgressLog::cb,
-                                                  nullptr, &log) == RAR_OK);
-    assert(fs::is_directory(dest));
-    assert(log.calls.size() == 1 && log.calls[0].first == 0 && log.calls[0].second == 0);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), ProgressLog::cb,
+                                                   nullptr, &log) == RAR_OK);
+    REQUIRE(fs::is_directory(dest));
+    REQUIRE((log.calls.size() == 1 && log.calls[0].first == 0 && log.calls[0].second == 0));
     // The file inside still extracts to the same tree.
     const fs::path fdest = dir / "out" / "nested" / "f.txt";
     const int frc = openrar_archive_handle_extract_to_path(h, 1, fdest.u8string().c_str(), nullptr,
@@ -364,9 +366,9 @@ static void test_directory_entry() {
         openrar_archive_get_error(errbuf, sizeof(errbuf));
         std::cerr << "  dir-entry file extract failed rc=" << frc << " err=" << errbuf << "\n";
     }
-    assert(frc == RAR_OK);
+    REQUIRE(frc == RAR_OK);
     const auto got = read_bytes(fdest);
-    assert(got.size() == 2 && got[0] == 'h' && got[1] == 'i');
+    REQUIRE((got.size() == 2 && got[0] == 'h' && got[1] == 'i'));
     openrar_archive_close(h);
     std::cout << "[PASS] directory_entry\n";
 }
@@ -382,34 +384,34 @@ static void test_solid_catch_up() {
     {
         uint32_t h =
             openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-        assert(h != 0);
+        REQUIRE(h != 0);
         for (uint32_t i = 0; i < 3; ++i) {
             uint8_t* out = nullptr;
             size_t len = 0;
-            assert(openrar_archive_handle_extract(h, i, &out, &len) == RAR_OK);
+            REQUIRE(openrar_archive_handle_extract(h, i, &out, &len) == RAR_OK);
             reference[i].assign(out, out + len);
             openrar_free(out);
         }
         openrar_archive_close(h);
     }
-    assert(reference[0].size() == 1u << 20);
+    REQUIRE(reference[0].size() == 1u << 20);
 
     // Out-of-order: byte-identical despite chain restarts.
     {
         uint32_t h =
             openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-        assert(h != 0);
+        REQUIRE(h != 0);
         const uint32_t order[3] = {2, 0, 1};
         for (uint32_t i : order) {
             const fs::path dest = dir / ("ooo_" + std::to_string(i) + ".bin");
-            assert(openrar_archive_handle_extract_to_path(h, i, dest.u8string().c_str(), nullptr,
-                                                          nullptr, nullptr) == RAR_OK);
-            assert(read_bytes(dest) == reference[i]);
+            REQUIRE(openrar_archive_handle_extract_to_path(h, i, dest.u8string().c_str(), nullptr,
+                                                           nullptr, nullptr) == RAR_OK);
+            REQUIRE(read_bytes(dest) == reference[i]);
         }
         // Repeated extraction of the same entry succeeds (catch-up re-runs).
-        assert(openrar_archive_handle_extract_to_path(h, 2, (dir / "again.bin").u8string().c_str(),
-                                                      nullptr, nullptr, nullptr) == RAR_OK);
-        assert(read_bytes(dir / "again.bin") == reference[2]);
+        REQUIRE(openrar_archive_handle_extract_to_path(h, 2, (dir / "again.bin").u8string().c_str(),
+                                                       nullptr, nullptr, nullptr) == RAR_OK);
+        REQUIRE(read_bytes(dir / "again.bin") == reference[2]);
         openrar_archive_close(h);
     }
 
@@ -417,17 +419,17 @@ static void test_solid_catch_up() {
     {
         uint32_t h =
             openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-        assert(h != 0);
+        REQUIRE(h != 0);
         CancelPolicy cancel;
         cancel.fire_after = 1; // fire on the 2nd poll — mid catch-up
-        assert(openrar_archive_handle_extract_to_path(h, 2, (dir / "cx.bin").u8string().c_str(),
-                                                      nullptr, CancelPolicy::cb,
-                                                      &cancel) == RAR_ERR_ABORTED);
-        assert(!fs::exists(dir / "cx.bin"));
-        assert(count_temp_files(dir) == 0);
-        assert(openrar_archive_handle_extract_to_path(h, 2, (dir / "cx.bin").u8string().c_str(),
-                                                      nullptr, nullptr, nullptr) == RAR_OK);
-        assert(read_bytes(dir / "cx.bin") == reference[2]);
+        REQUIRE(openrar_archive_handle_extract_to_path(h, 2, (dir / "cx.bin").u8string().c_str(),
+                                                       nullptr, CancelPolicy::cb,
+                                                       &cancel) == RAR_ERR_ABORTED);
+        REQUIRE(!fs::exists(dir / "cx.bin"));
+        REQUIRE(count_temp_files(dir) == 0);
+        REQUIRE(openrar_archive_handle_extract_to_path(h, 2, (dir / "cx.bin").u8string().c_str(),
+                                                       nullptr, nullptr, nullptr) == RAR_OK);
+        REQUIRE(read_bytes(dir / "cx.bin") == reference[2]);
         openrar_archive_close(h);
     }
     std::cout << "[PASS] solid_catch_up\n";
@@ -443,30 +445,30 @@ static void test_encrypted_extraction() {
     // No password: extraction refuses loudly.
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0); // headers are clear — open succeeds
-    assert(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_ERR_ENCRYPTED);
-    assert(openrar_archive_handle_extract_to_path(h, 0, (dir / "no.bin").u8string().c_str(),
-                                                  nullptr, nullptr, nullptr) == RAR_ERR_ENCRYPTED);
+    REQUIRE(h != 0); // headers are clear — open succeeds
+    REQUIRE(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_ERR_ENCRYPTED);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, (dir / "no.bin").u8string().c_str(),
+                                                   nullptr, nullptr, nullptr) == RAR_ERR_ENCRYPTED);
     openrar_archive_close(h);
 
     // Wrong password: BAD_PASSWORD, never CRC.
     h = openrar_archive_open_file(arc.u8string().c_str(), "wrong", nullptr, nullptr, nullptr);
-    assert(h != 0);
-    assert(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_ERR_BAD_PASSWORD);
-    assert(openrar_archive_handle_extract_to_path(h, 0, (dir / "bad.bin").u8string().c_str(),
-                                                  nullptr, nullptr,
-                                                  nullptr) == RAR_ERR_BAD_PASSWORD);
-    assert(!fs::exists(dir / "bad.bin"));
+    REQUIRE(h != 0);
+    REQUIRE(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_ERR_BAD_PASSWORD);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, (dir / "bad.bin").u8string().c_str(),
+                                                   nullptr, nullptr,
+                                                   nullptr) == RAR_ERR_BAD_PASSWORD);
+    REQUIRE(!fs::exists(dir / "bad.bin"));
     openrar_archive_close(h);
 
     // Correct password: extraction + test verify, bytes match.
     h = openrar_archive_open_file(arc.u8string().c_str(), "pw123", nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     const fs::path dest = dir / "ok.bin";
-    assert(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr) == RAR_OK);
-    assert(read_bytes(dest) == blob);
-    assert(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
+                                                   nullptr) == RAR_OK);
+    REQUIRE(read_bytes(dest) == blob);
+    REQUIRE(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
     openrar_archive_close(h);
     std::cout << "[PASS] encrypted_extraction\n";
 }
@@ -483,38 +485,38 @@ static void test_hp_open_flow() {
     // No password: open fails with the prompt-me signal.
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h == 0);
-    assert(last_error().find("encrypted") != std::string::npos);
+    REQUIRE(h == 0);
+    REQUIRE(last_error().find("encrypted") != std::string::npos);
     h = openrar_archive_open_file(fixture.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h == 0);
-    assert(last_error().find("encrypted") != std::string::npos);
+    REQUIRE(h == 0);
+    REQUIRE(last_error().find("encrypted") != std::string::npos);
 
     // Wrong password: the dedicated code.
     h = openrar_archive_open_file(fixture.u8string().c_str(), "nope", nullptr, nullptr, nullptr);
-    assert(h == 0);
-    assert(last_error().find("wrong password") != std::string::npos);
+    REQUIRE(h == 0);
+    REQUIRE(last_error().find("wrong password") != std::string::npos);
 
     // Correct password: list, extract, test all work.
     h = openrar_archive_open_file(arc.u8string().c_str(), "hp-pw", nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     uint32_t count = 0;
     void* e = nullptr;
     void* p = nullptr;
     size_t ps = 0;
-    assert(openrar_archive_handle_list(h, &count, &e, &p, &ps) == RAR_OK);
-    assert(count == 1);
+    REQUIRE(openrar_archive_handle_list(h, &count, &e, &p, &ps) == RAR_OK);
+    REQUIRE(count == 1);
     openrar_archive_list_free(e, p, ps);
     const fs::path dest = dir / "payload.bin";
-    assert(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr) == RAR_OK);
-    assert(read_bytes(dest) == blob);
-    assert(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
+                                                   nullptr) == RAR_OK);
+    REQUIRE(read_bytes(dest) == blob);
+    REQUIRE(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
     openrar_archive_close(h);
 
     // The fixture (WinRAR-made hello5_hp.rar) extracts with its known password.
     h = openrar_archive_open_file(fixture.u8string().c_str(), "secret", nullptr, nullptr, nullptr);
-    assert(h != 0);
-    assert(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
+    REQUIRE(h != 0);
+    REQUIRE(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
     openrar_archive_close(h);
     std::cout << "[PASS] hp_open_flow\n";
 }
@@ -549,36 +551,36 @@ static void test_volume_set() {
     for (const auto& e : fs::directory_iterator(dir))
         if (e.path().u8string().find(".part") != std::string::npos) parts.push_back(e.path());
     std::sort(parts.begin(), parts.end(), volume_part_less);
-    assert(parts.size() >= 2);
+    REQUIRE(parts.size() >= 2);
 
     // Open part1 (or the base name): one merged entry, extraction stitches.
     const fs::path part1 = parts[0];
     uint32_t h =
         openrar_archive_open_file(part1.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     uint32_t count = 0;
     void* e = nullptr;
     void* p = nullptr;
     size_t ps = 0;
-    assert(openrar_archive_handle_list(h, &count, &e, &p, &ps) == RAR_OK);
-    assert(count == 1); // split entry merged into one logical entry
+    REQUIRE(openrar_archive_handle_list(h, &count, &e, &p, &ps) == RAR_OK);
+    REQUIRE(count == 1); // split entry merged into one logical entry
     {
         const auto* ents = static_cast<const openrar_archive_entry_t*>(e);
-        assert(ents[0].size == blob.size());
+        REQUIRE(ents[0].size == blob.size());
     }
     openrar_archive_list_free(e, p, ps);
     const fs::path dest = dir / "stitched.bin";
-    assert(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr) == RAR_OK);
-    assert(read_bytes(dest) == blob);
-    assert(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
+                                                   nullptr) == RAR_OK);
+    REQUIRE(read_bytes(dest) == blob);
+    REQUIRE(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
     openrar_archive_close(h);
 
     // Middle-volume rewind: opening part2 resolves back to part1.
     if (parts.size() >= 2) {
         h = openrar_archive_open_file(parts[1].u8string().c_str(), nullptr, nullptr, nullptr,
                                       nullptr);
-        assert(h != 0);
+        REQUIRE(h != 0);
         openrar_archive_close(h);
 
         // Missing first volume: hard error naming the derived part1.
@@ -586,10 +588,10 @@ static void test_volume_set() {
         fs::rename(part1, hidden1);
         h = openrar_archive_open_file(parts[1].u8string().c_str(), nullptr, nullptr, nullptr,
                                       nullptr);
-        assert(h == 0);
+        REQUIRE(h == 0);
         if (last_error().find("cannot open first volume") == std::string::npos) {
             std::fprintf(stderr, "volume-rewind error was: %s\n", last_error().c_str());
-            assert(false && "expected 'cannot open first volume' (see printed error)");
+            REQUIRE((false && "expected 'cannot open first volume' (see printed error)"));
         }
         fs::rename(hidden1, part1);
 
@@ -597,10 +599,10 @@ static void test_volume_set() {
         const fs::path hidden2 = parts[1].u8string() + ".hidden";
         fs::rename(parts[1], hidden2);
         h = openrar_archive_open_file(part1.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-        assert(h == 0);
+        REQUIRE(h == 0);
         if (last_error().find("missing volume") == std::string::npos) {
             std::fprintf(stderr, "strict-set error was: %s\n", last_error().c_str());
-            assert(false && "expected 'missing volume' (see printed error)");
+            REQUIRE((false && "expected 'missing volume' (see printed error)"));
         }
         fs::rename(hidden2, parts[1]);
 
@@ -608,13 +610,13 @@ static void test_volume_set() {
         // set was complete still reports the absent volume on extraction.
         uint32_t h2 =
             openrar_archive_open_file(part1.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-        assert(h2 != 0);
+        REQUIRE(h2 != 0);
         fs::rename(parts[1], hidden2);
-        assert(openrar_archive_handle_extract_to_path(h2, 0, (dir / "gap.bin").u8string().c_str(),
-                                                      nullptr, nullptr,
-                                                      nullptr) == RAR_ERR_MISSING_VOLUME);
-        assert(!fs::exists(dir / "gap.bin"));
-        assert(last_error().find("missing volume") != std::string::npos);
+        REQUIRE(openrar_archive_handle_extract_to_path(h2, 0, (dir / "gap.bin").u8string().c_str(),
+                                                       nullptr, nullptr,
+                                                       nullptr) == RAR_ERR_MISSING_VOLUME);
+        REQUIRE(!fs::exists(dir / "gap.bin"));
+        REQUIRE(last_error().find("missing volume") != std::string::npos);
         openrar_archive_close(h2);
         fs::rename(hidden2, parts[1]);
     }
@@ -632,21 +634,21 @@ static void test_ram_ceiling() {
     blob.clear(); // drop the source copy before measuring
 
     PROCESS_MEMORY_COUNTERS before{};
-    assert(GetProcessMemoryInfo(GetCurrentProcess(), &before, sizeof(before)));
+    REQUIRE(GetProcessMemoryInfo(GetCurrentProcess(), &before, sizeof(before)));
     uint32_t h = openrar_archive_open_file(arc.u8string().c_str(), "pw", nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     const fs::path dest = dir / "payload.bin";
-    assert(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr) == RAR_OK);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
+                                                   nullptr) == RAR_OK);
     PROCESS_MEMORY_COUNTERS after{};
-    assert(GetProcessMemoryInfo(GetCurrentProcess(), &after, sizeof(after)));
+    REQUIRE(GetProcessMemoryInfo(GetCurrentProcess(), &after, sizeof(after)));
 
     const unsigned long long delta = after.PeakWorkingSetSize - before.PeakWorkingSetSize;
     // Chunked decrypt streams in 64 KiB slices: the bound is the dictionary
     // window + slice buffers (docs/invariants.md §2). The historical
     // whole-cipher path would show ≥ 100 MiB here; allow a generous 32 MiB.
     std::cout << "  peak working set delta: " << (delta >> 20) << " MiB\n";
-    assert(delta <= (32ull << 20));
+    REQUIRE(delta <= (32ull << 20));
     openrar_archive_close(h);
     std::cout << "[PASS] ram_ceiling\n";
 #endif
@@ -661,42 +663,39 @@ static void test_heap_extract_cap() {
         create_plain_archive(dir, "cap.rar", {{"huge.bin", std::vector<uint8_t>(kSize, 0x5A)}});
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     uint8_t* out = nullptr;
     size_t len = 0;
-    assert(openrar_archive_handle_extract(h, 0, &out, &len) == RAR_ERR_NOMEM);
-    assert(out == nullptr && len == 0);
-    assert(last_error().find("256 MiB") != std::string::npos);
+    REQUIRE(openrar_archive_handle_extract(h, 0, &out, &len) == RAR_ERR_NOMEM);
+    REQUIRE((out == nullptr && len == 0));
+    REQUIRE(last_error().find("256 MiB") != std::string::npos);
     // The streaming path has no cap.
     const fs::path dest = dir / "huge.bin";
-    assert(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
-                                                  nullptr) == RAR_OK);
-    assert(fs::file_size(dest) == kSize);
+    REQUIRE(openrar_archive_handle_extract_to_path(h, 0, dest.u8string().c_str(), nullptr, nullptr,
+                                                   nullptr) == RAR_OK);
+    REQUIRE(fs::file_size(dest) == kSize);
     openrar_archive_close(h);
     std::cout << "[PASS] heap_extract_cap\n";
 }
 
-int main() {
-#ifdef _MSC_VER
-    // Route assert failures to stderr under ctest (piped stdio).
-    _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-#endif
-    // RAM measurement first: PeakWorkingSetSize is monotonic, so this test
-    // must run before the large-fixture cap test.
-    test_ram_ceiling();
-    test_plain_roundtrip();
-    test_progress_contract();
-    test_cancel_mid_extract();
-    test_guards_and_vtable();
-    test_directory_entry();
-    test_solid_catch_up();
-    test_encrypted_extraction();
-    test_hp_open_flow();
-    test_volume_set();
-    test_heap_extract_cap();
-    std::cout << "ALL FILE HANDLE TESTS PASSED\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_ram_ceiling", test_ram_ceiling, false},
+    {"test_plain_roundtrip", test_plain_roundtrip, false},
+    {"test_progress_contract", test_progress_contract, false},
+    {"test_cancel_mid_extract", test_cancel_mid_extract, false},
+    {"test_guards_and_vtable", test_guards_and_vtable, false},
+    {"test_directory_entry", test_directory_entry, false},
+    {"test_solid_catch_up", test_solid_catch_up, false},
+    {"test_encrypted_extraction", test_encrypted_extraction, false},
+    {"test_hp_open_flow", test_hp_open_flow, false},
+    {"test_volume_set", test_volume_set, false},
+    {"test_heap_extract_cap", test_heap_extract_cap, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "ALL FILE HANDLE TESTS PASSED\n";
+    return rc;
 }

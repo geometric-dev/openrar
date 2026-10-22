@@ -21,6 +21,8 @@
 #include <vector>
 #ifdef _MSC_VER
 #include <crtdbg.h>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 #endif
 
 using namespace openrar;
@@ -76,7 +78,7 @@ static void test_pipeline_noexec_suppresses_and_reports() {
     probe_invocation("--sfx-probe-touch \"" + sentinel + "\"", probe_cmd);
     std::string cmt = "Setup=" + probe_cmd + "\nDelete=*.tmp\n";
     sfx::SfxConfig cfg = sfx::parse_sfx_config(bytes(cmt));
-    assert(cfg.has_directives());
+    REQUIRE(cfg.has_directives());
 
     sfx::PipelineOptions opts;
     opts.no_exec = true;
@@ -95,14 +97,14 @@ static void test_pipeline_noexec_suppresses_and_reports() {
     sfx::SfxConsentEngine eng(be);
     sfx::PipelineResult r = sfx::run_sfx_pipeline(cfg, eng, opts, extract);
 
-    assert(extract_calls == 1);                                      // extraction still ran
-    assert(seen_overwrite != sfx::OverwriteDirective::OverwriteAll); // de-escalated
-    assert(r.suppressed_directives == 2);                            // Setup + Delete
+    REQUIRE(extract_calls == 1);                                      // extraction still ran
+    REQUIRE(seen_overwrite != sfx::OverwriteDirective::OverwriteAll); // de-escalated
+    REQUIRE(r.suppressed_directives == 2);                            // Setup + Delete
     bool reported = false;
     for (const auto& line : r.report)
         if (line.status == "skipped-noexec") reported = true;
-    assert(reported);
-    assert(!fs::exists(sentinel)); // no spawn happened
+    REQUIRE(reported);
+    REQUIRE(!fs::exists(sentinel)); // no spawn happened
     fs::remove_all("build/sfx_pipe_dest");
     std::cout << "[PASS] pipeline: -sfxnoexec suppresses + reports, extraction runs" << std::endl;
 }
@@ -123,20 +125,20 @@ static void test_pipeline_consent_and_exit_mapping() {
     sfx::SfxConsentEngine eng(be);
     sfx::PipelineResult r = sfx::run_sfx_pipeline(
         cfg, eng, opts, [](const std::string&, sfx::OverwriteDirective) { return 0; });
-    assert(r.exit_code == 7);
+    REQUIRE(r.exit_code == 7);
     bool executed = false;
     for (const auto& line : r.report)
         if (line.phase == "setup" && line.status == "executed") executed = true;
-    assert(executed);
+    REQUIRE(executed);
 
     // Consent denied => skipped-consent, exit 0, no prompt-side effects.
     FakeBackend be2({sfx::ConsentAnswer::Deny});
     sfx::SfxConsentEngine eng2(be2);
     r = sfx::run_sfx_pipeline(cfg, eng2, opts,
                               [](const std::string&, sfx::OverwriteDirective) { return 0; });
-    assert(r.exit_code == 0);
+    REQUIRE(r.exit_code == 0);
     for (const auto& line : r.report)
-        if (line.phase == "setup") assert(line.status == "skipped-consent");
+        if (line.phase == "setup") REQUIRE(line.status == "skipped-consent");
     std::cout << "[PASS] pipeline: child exit propagation + consent denial mapping" << std::endl;
 }
 
@@ -150,7 +152,7 @@ static void test_pipeline_prompt_cap_aborts() {
         cmt += "Setup=" + probe_cmd + "\n";
     }
     sfx::SfxConfig cfg = sfx::parse_sfx_config(bytes(cmt));
-    assert(cfg.setup.size() == 9);
+    REQUIRE(cfg.setup.size() == 9);
 
     sfx::PipelineOptions opts;
     opts.argv_dest = "build/sfx_pipe_dest3";
@@ -158,8 +160,8 @@ static void test_pipeline_prompt_cap_aborts() {
     sfx::SfxConsentEngine eng(be, /*prompt_cap=*/8);
     sfx::PipelineResult r = sfx::run_sfx_pipeline(
         cfg, eng, opts, [](const std::string&, sfx::OverwriteDirective) { return 0; });
-    assert(eng.aborted());
-    assert(r.aborted && r.exit_code == 2);
+    REQUIRE(eng.aborted());
+    REQUIRE((r.aborted && r.exit_code == 2));
     std::cout << "[PASS] pipeline: prompt cap aborts the run (exit 2)" << std::endl;
 }
 
@@ -178,8 +180,8 @@ static void test_pipeline_extraction_failure_blocks_setup() {
         sfx::run_sfx_pipeline(cfg, eng, opts, [](const std::string&, sfx::OverwriteDirective) {
             return 3;
         }); // CRC-fail analogue
-    assert(r.exit_code == 3);
-    assert(be.asks() == 0); // Setup never consented, never spawned
+    REQUIRE(r.exit_code == 3);
+    REQUIRE(be.asks() == 0); // Setup never consented, never spawned
     std::cout << "[PASS] pipeline: extraction failure blocks Setup (exit 3)" << std::endl;
 }
 
@@ -201,10 +203,10 @@ static void test_pipeline_delete_scoped_and_consented() {
     sfx::PipelineResult r = sfx::run_sfx_pipeline(
         cfg, eng, opts, [](const std::string&, sfx::OverwriteDirective) { return 0; });
 
-    assert(!fs::exists(dest / "kill.tmp"));
-    assert(!fs::exists(dest / "sub" / "kill.tmp")); // recursive match
-    assert(fs::exists(dest / "keep.txt"));          // non-matching untouched
-    assert(be.asks() == 1);                         // ONE coalesced prompt
+    REQUIRE(!fs::exists(dest / "kill.tmp"));
+    REQUIRE(!fs::exists(dest / "sub" / "kill.tmp")); // recursive match
+    REQUIRE(fs::exists(dest / "keep.txt"));          // non-matching untouched
+    REQUIRE(be.asks() == 1);                         // ONE coalesced prompt
     fs::remove_all(dest);
     std::cout << "[PASS] pipeline: Delete= coalesced consent, recursive, scoped" << std::endl;
 }
@@ -220,7 +222,7 @@ static void test_pipeline_path_containment() {
 #endif
     std::string cmt = std::string("Path=") + hostile + "\n";
     sfx::SfxConfig cfg = sfx::parse_sfx_config(bytes(cmt));
-    assert(cfg.path == hostile);
+    REQUIRE(cfg.path == hostile);
 
     sfx::PipelineOptions opts; // no argv override
     FakeBackend be({});
@@ -234,8 +236,8 @@ static void test_pipeline_path_containment() {
     bool refused = false;
     for (const auto& line : r.report)
         if (line.status == "refused-containment-path") refused = true;
-    assert(refused);
-    assert(seen_dest != hostile);
+    REQUIRE(refused);
+    REQUIRE(seen_dest != hostile);
     std::cout << "[PASS] pipeline: Path= outside profile refused (containment)" << std::endl;
 }
 
@@ -253,36 +255,23 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     if (argc > 0 && argv[0] != nullptr) g_self_exe = argv[0];
-#ifdef _MSC_VER
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    try {
+    static const openrar::test::Case k_cases[] = {
+        {"test_pipeline_noexec_suppresses_and_reports", test_pipeline_noexec_suppresses_and_reports,
+         false},
+        {"test_pipeline_consent_and_exit_mapping", test_pipeline_consent_and_exit_mapping, false},
+        {"test_pipeline_prompt_cap_aborts", test_pipeline_prompt_cap_aborts, false},
+        {"test_pipeline_extraction_failure_blocks_setup",
+         test_pipeline_extraction_failure_blocks_setup, false},
+        {"test_pipeline_delete_scoped_and_consented", test_pipeline_delete_scoped_and_consented,
+         false},
+        {"test_pipeline_path_containment", test_pipeline_path_containment, false},
+    };
+    openrar::test::route_crt_asserts_to_stderr();
+    if (!openrar::test::is_list_only(argc, argv) && !openrar::test::last_run_was_filtered())
         std::cout << "Running v1.23.0 SFX M4 pipeline tests...\n";
-        test_pipeline_noexec_suppresses_and_reports();
-        std::cout << std::flush;
-        test_pipeline_consent_and_exit_mapping();
-        std::cout << std::flush;
-        test_pipeline_prompt_cap_aborts();
-        std::cout << std::flush;
-        test_pipeline_extraction_failure_blocks_setup();
-        std::cout << std::flush;
-        test_pipeline_delete_scoped_and_consented();
-        std::cout << std::flush;
-        test_pipeline_path_containment();
-        std::cout << std::flush;
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
         std::cout << "All SFX M4 pipeline tests PASSED!" << std::endl;
-    } catch (const std::exception& ex) {
-        std::fprintf(stderr, "[sfx-pipeline-tests] exception: %s\n", ex.what());
-        std::fflush(stderr);
-        return 2;
-    } catch (...) {
-        std::fprintf(stderr, "[sfx-pipeline-tests] unknown exception\n");
-        std::fflush(stderr);
-        return 2;
-    }
-    return 0;
+    return rc;
 }

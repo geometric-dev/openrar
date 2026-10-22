@@ -16,6 +16,8 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -54,7 +56,7 @@ void rm(const fs::path& p) {
 void write_file(const fs::path& p, const std::string& data) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     f.write(data.data(), static_cast<std::streamsize>(data.size()));
-    assert(f.good());
+    REQUIRE(f.good());
 }
 
 // Returns false when the OS refuses the truncation (Windows pins the size
@@ -86,32 +88,32 @@ void test_map_read_basics() {
     write_file(file, payload);
 
     io::MappedFile mf;
-    assert(mf.open(file));
-    assert(mf.is_open());
-    assert(mf.size() == payload.size());
-    assert(mf.tell() == 0);
+    REQUIRE(mf.open(file));
+    REQUIRE(mf.is_open());
+    REQUIRE(mf.size() == payload.size());
+    REQUIRE(mf.tell() == 0);
 
     // Sequential ReadSource reads.
     char buf[1000];
-    assert(mf.read(buf, sizeof(buf)) == sizeof(buf));
-    assert(mf.tell() == sizeof(buf));
-    assert(mf.seek(0, io::SeekOrigin::Begin));
-    assert(mf.read(buf, 100) == 100);
+    REQUIRE(mf.read(buf, sizeof(buf)) == sizeof(buf));
+    REQUIRE(mf.tell() == sizeof(buf));
+    REQUIRE(mf.seek(0, io::SeekOrigin::Begin));
+    REQUIRE(mf.read(buf, 100) == 100);
     // End-relative seek is pinned to the open-time size.
-    assert(mf.seek(-4, io::SeekOrigin::End));
-    assert(mf.tell() == payload.size() - 4);
-    assert(mf.seek(1, io::SeekOrigin::End) == false); // past the end refused
-    assert(mf.tell() == payload.size() - 4);
+    REQUIRE(mf.seek(-4, io::SeekOrigin::End));
+    REQUIRE(mf.tell() == payload.size() - 4);
+    REQUIRE(mf.seek(1, io::SeekOrigin::End) == false); // past the end refused
+    REQUIRE(mf.tell() == payload.size() - 4);
 
     // Absolute-offset reads.
     char out8[8] = {};
-    assert(mf.read_at(42, out8, 8) == 8);
-    assert(out8[0] == 'x');
-    assert(mf.read_at(payload.size(), out8, 1) == 0);     // past EOF
-    assert(mf.read_at(payload.size() - 2, out8, 8) == 2); // clamped at EOF
+    REQUIRE(mf.read_at(42, out8, 8) == 8);
+    REQUIRE(out8[0] == 'x');
+    REQUIRE(mf.read_at(payload.size(), out8, 1) == 0);     // past EOF
+    REQUIRE(mf.read_at(payload.size() - 2, out8, 8) == 2); // clamped at EOF
 
     mf.close();
-    assert(!mf.is_open());
+    REQUIRE(!mf.is_open());
     std::cout << "[PASS] mapped read basics (cursor, bounds, EOF clamp)\n";
     rm(dir);
 }
@@ -124,8 +126,8 @@ void test_truncation_after_map_read_fails_gracefully() {
     write_file(file, std::string(1 << 20, 'A')); // 1 MiB
 
     io::MappedFile mf;
-    assert(mf.open(file));
-    assert(mf.size() == 1 << 20);
+    REQUIRE(mf.open(file));
+    REQUIRE(mf.size() == 1 << 20);
 
     char buf[100];
 #ifdef _WIN32
@@ -137,30 +139,30 @@ void test_truncation_after_map_read_fails_gracefully() {
         HANDLE h = CreateFileW(file.wstring().c_str(), GENERIC_WRITE,
                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        assert(h != INVALID_HANDLE_VALUE);
+        REQUIRE(h != INVALID_HANDLE_VALUE);
         LARGE_INTEGER li;
         li.QuadPart = 4096;
-        assert(SetFilePointerEx(h, li, nullptr, FILE_BEGIN));
-        assert(!SetEndOfFile(h));
-        assert(GetLastError() == ERROR_USER_MAPPED_FILE);
+        REQUIRE(SetFilePointerEx(h, li, nullptr, FILE_BEGIN));
+        REQUIRE(!SetEndOfFile(h));
+        REQUIRE(GetLastError() == ERROR_USER_MAPPED_FILE);
         CloseHandle(h);
     }
-    assert(mf.read_at(0, buf, sizeof(buf)) == sizeof(buf));   // mapping intact
-    assert(mf.read_at((1 << 20) - 4, buf, sizeof(buf)) == 4); // tail intact
-    assert(mf.read_at(1 << 20, buf, sizeof(buf)) == 0);       // past EOF clean
+    REQUIRE(mf.read_at(0, buf, sizeof(buf)) == sizeof(buf));   // mapping intact
+    REQUIRE(mf.read_at((1 << 20) - 4, buf, sizeof(buf)) == 4); // tail intact
+    REQUIRE(mf.read_at(1 << 20, buf, sizeof(buf)) == 0);       // past EOF clean
     mf.close();
 #else
     // POSIX: shrink to 4096 bytes AFTER the map — the truncation-aware
     // pre-flight turns reads past the new EOF into short/empty results.
-    assert(shrink_file(file, 4096));
+    REQUIRE(shrink_file(file, 4096));
 
-    assert(mf.read_at(0, buf, sizeof(buf)) == sizeof(buf)); // surviving prefix
-    assert(mf.read_at(4000, buf, sizeof(buf)) == 96);       // spanning new EOF
-    assert(mf.read_at(8192, buf, sizeof(buf)) == 0);        // beyond new EOF
-    assert(mf.read_at(1 << 20, buf, sizeof(buf)) == 0);
+    REQUIRE(mf.read_at(0, buf, sizeof(buf)) == sizeof(buf)); // surviving prefix
+    REQUIRE(mf.read_at(4000, buf, sizeof(buf)) == 96);       // spanning new EOF
+    REQUIRE(mf.read_at(8192, buf, sizeof(buf)) == 0);        // beyond new EOF
+    REQUIRE(mf.read_at(1 << 20, buf, sizeof(buf)) == 0);
 
-    assert(mf.seek(0, io::SeekOrigin::Begin));
-    assert(mf.read(buf, sizeof(buf)) == sizeof(buf));
+    REQUIRE(mf.seek(0, io::SeekOrigin::Begin));
+    REQUIRE(mf.read(buf, sizeof(buf)) == sizeof(buf));
     mf.close();
 #endif
     std::cout << "[PASS] truncation_after_map_read_fails_gracefully\n";
@@ -171,27 +173,27 @@ void test_unmappable_and_empty_files() {
     const fs::path dir = make_dir("failopen");
     // Missing file: open fails (buffered fallback territory).
     io::MappedFile mf;
-    assert(!mf.open(dir / "does_not_exist.bin"));
+    REQUIRE(!mf.open(dir / "does_not_exist.bin"));
     // Empty file: mapping is pointless — open fails, callers fall back.
     { std::ofstream f(dir / "empty.bin", std::ios::binary); }
-    assert(!mf.open(dir / "empty.bin"));
+    REQUIRE(!mf.open(dir / "empty.bin"));
     std::cout << "[PASS] mmap_unavailable_falls_back: unmappable/empty open fails clean\n";
     rm(dir);
 }
 
 } // namespace
 
-int main() {
-#ifdef _MSC_VER
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    test_map_read_basics();
-    test_truncation_after_map_read_fails_gracefully();
-    test_unmappable_and_empty_files();
-    std::cout << "All mapped_file_tests passed.\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_map_read_basics", test_map_read_basics, false},
+    {"test_truncation_after_map_read_fails_gracefully",
+     test_truncation_after_map_read_fails_gracefully, false},
+    {"test_unmappable_and_empty_files", test_unmappable_and_empty_files, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All mapped_file_tests passed.\n";
+    return rc;
 }

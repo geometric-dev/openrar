@@ -28,6 +28,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 using namespace openrar;
 using namespace openrar::test;
@@ -65,7 +67,7 @@ std::vector<std::string> listed_names(const fs::path& arc) {
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
     OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
     const fs::path dir = make_dir("gap");
 
@@ -158,7 +160,7 @@ int main() {
     if (!spliced) {
         std::error_code ec;
         fs::remove_all(dir, ec);
-        return 1;
+        throw std::runtime_error("return-1 path reached");
     }
 
     // 3. The reader must fall back to the linear scan and still see ALL six
@@ -179,6 +181,18 @@ int main() {
 
     std::error_code ec;
     fs::remove_all(dir, ec);
-    if (fails == 0) std::printf("[qo-fallback] QO partial-cache fallback: OK\n");
-    return fails == 0 ? 0 : 1;
+    if (fails != 0) throw std::logic_error(std::to_string(fails) + " failed checks");
+    if (!openrar::test::last_run_was_filtered())
+        std::printf("[qo-fallback] QO partial-cache fallback: OK\n");
+    if (fails != 0) throw std::logic_error(std::to_string(fails) + " failed checks");
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }

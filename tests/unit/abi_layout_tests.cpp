@@ -20,10 +20,13 @@
 #include <openrar/openrar_dll.h>
 
 #include "test_support.hpp"
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #include <cstddef>
 #include <utility>
 #include <cstdint>
+#include <stdexcept>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -343,7 +346,7 @@ void check_archive_info_t(const StructGolden& s) {
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
     OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
     // 1. C-mode compile + layout of the public header.
     CHECK(abi_c_mode_version_probe());
@@ -410,6 +413,16 @@ int main() {
     CHECK(openrar_package_version_string() != nullptr);
     CHECK(std::strlen(openrar_package_version_string()) > 0);
 
-    if (fails == 0) std::printf("[abi] layout golden + C-compat + feature mask: OK\n");
-    return fails == 0 ? 0 : 1;
+    if (fails != 0) throw std::logic_error(std::to_string(fails) + " failed checks");
+    if (!openrar::test::last_run_was_filtered())
+        std::printf("[abi] layout golden + C-compat + feature mask: OK\n");
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }

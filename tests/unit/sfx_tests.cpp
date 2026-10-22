@@ -23,6 +23,8 @@
 #include <vector>
 #ifdef _MSC_VER
 #include <crtdbg.h>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 #endif
 
 using namespace openrar;
@@ -38,14 +40,14 @@ static std::vector<core::byte> bytes(const std::string& s) {
 
 static void test_parse_empty_and_prose() {
     sfx::SfxConfig cfg = sfx::parse_sfx_config({});
-    assert(!cfg.has_directives());
-    assert(!cfg.invalid_utf8);
+    REQUIRE(!cfg.has_directives());
+    REQUIRE(!cfg.invalid_utf8);
 
     // Prose without '=' is ignored silently (dialog bodies live in Text=).
     std::string prose = "This installer will install things.\nPlease wait.\n";
     cfg = sfx::parse_sfx_config({prose.begin(), prose.end()});
-    assert(!cfg.has_directives());
-    assert(cfg.ignored_unknown_keys == 0);
+    REQUIRE(!cfg.has_directives());
+    REQUIRE(cfg.ignored_unknown_keys == 0);
     std::cout << "[PASS] sfx parse: empty comment and prose ignored\n";
 }
 
@@ -68,40 +70,40 @@ static void test_parse_full_feature() {
                       "Overwrite=2\r\n"
                       "TempMode=x\r\n";
     sfx::SfxConfig cfg = sfx::parse_sfx_config({cmt.begin(), cmt.end()});
-    assert(!cfg.invalid_utf8);
-    assert(cfg.title == "My Installer");
-    assert(cfg.path == "tools\\");
-    assert(cfg.text_lines.size() == 2 && cfg.text_lines[1] == "Second line.");
-    assert(cfg.license_lines.size() == 2);
-    assert(cfg.presetup.size() == 1 && cfg.presetup[0] == "prep.exe");
-    assert(cfg.setup.size() == 2 && cfg.setup[0] == "setup.exe /silent");
-    assert(cfg.delete_patterns.size() == 2 && cfg.delete_patterns[1] == "old\\*.log");
-    assert(cfg.shortcuts.size() == 1 && cfg.shortcuts[0].name == "Tool A" &&
-           cfg.shortcuts[0].folder == "DESKTOP" && cfg.shortcuts[0].icon_index == "0");
-    assert(cfg.silent == sfx::SilentMode::Headless);
-    assert(cfg.overwrite == sfx::OverwriteDirective::SkipExisting);
-    assert(cfg.tempmode);
-    assert(cfg.has_directives());
+    REQUIRE(!cfg.invalid_utf8);
+    REQUIRE(cfg.title == "My Installer");
+    REQUIRE(cfg.path == "tools\\");
+    REQUIRE((cfg.text_lines.size() == 2 && cfg.text_lines[1] == "Second line."));
+    REQUIRE(cfg.license_lines.size() == 2);
+    REQUIRE((cfg.presetup.size() == 1 && cfg.presetup[0] == "prep.exe"));
+    REQUIRE((cfg.setup.size() == 2 && cfg.setup[0] == "setup.exe /silent"));
+    REQUIRE((cfg.delete_patterns.size() == 2 && cfg.delete_patterns[1] == "old\\*.log"));
+    REQUIRE((cfg.shortcuts.size() == 1 && cfg.shortcuts[0].name == "Tool A" &&
+             cfg.shortcuts[0].folder == "DESKTOP" && cfg.shortcuts[0].icon_index == "0"));
+    REQUIRE(cfg.silent == sfx::SilentMode::Headless);
+    REQUIRE(cfg.overwrite == sfx::OverwriteDirective::SkipExisting);
+    REQUIRE(cfg.tempmode);
+    REQUIRE(cfg.has_directives());
     std::cout << "[PASS] sfx parse: full feature set, BOM/CRLF, accumulation, last-wins\n";
 }
 
 static void test_parse_key_normalization_and_case() {
     std::string cmt = "SETUP=a.exe\nSetup=b.exe\nsetup=c.exe\n";
     sfx::SfxConfig cfg = sfx::parse_sfx_config({cmt.begin(), cmt.end()});
-    assert(cfg.setup.size() == 3 && cfg.setup[2] == "c.exe");
+    REQUIRE((cfg.setup.size() == 3 && cfg.setup[2] == "c.exe"));
 
     // Leading spaces on the key are tolerated; the value after the FIRST
     // '=' is verbatim (spaces kept).
     cfg = sfx::parse_sfx_config(bytes("  Path = kept "));
-    assert(cfg.path == " kept ");
+    REQUIRE(cfg.path == " kept ");
     std::cout << "[PASS] sfx parse: key case-folding and split-at-first-equals\n";
 }
 
 static void test_parse_unknown_keys_and_prose_count() {
     std::string cmt = "Foo=1\nBarBaz=2\nSetup=ok.exe\nNotAKey\n";
     sfx::SfxConfig cfg = sfx::parse_sfx_config({cmt.begin(), cmt.end()});
-    assert(cfg.setup.size() == 1);
-    assert(cfg.ignored_unknown_keys == 2); // Foo, BarBaz; "NotAKey" is prose
+    REQUIRE(cfg.setup.size() == 1);
+    REQUIRE(cfg.ignored_unknown_keys == 2); // Foo, BarBaz; "NotAKey" is prose
     std::cout << "[PASS] sfx parse: unknown keys counted, prose silent\n";
 }
 
@@ -110,26 +112,26 @@ static void test_parse_caps() {
     std::string big(5000, 'x');
     std::string cmt = "Text=" + big + "\nSetup=ok.exe\n";
     sfx::SfxConfig cfg = sfx::parse_sfx_config({cmt.begin(), cmt.end()});
-    assert(cfg.text_lines.empty() && cfg.ignored_over_limit_lines == 1);
-    assert(cfg.setup.size() == 1);
+    REQUIRE((cfg.text_lines.empty() && cfg.ignored_over_limit_lines == 1));
+    REQUIRE(cfg.setup.size() == 1);
 
     // Line cap: 65 recognized directives => truncated, the rest ignored.
     std::string many;
     for (int i = 0; i < 65; ++i) many += "Delete=p" + std::to_string(i) + "\n";
     many += "Setup=late.exe\n";
     cfg = sfx::parse_sfx_config({many.begin(), many.end()});
-    assert(cfg.truncated && cfg.delete_patterns.size() == 64);
-    assert(cfg.setup.empty());
+    REQUIRE((cfg.truncated && cfg.delete_patterns.size() == 64));
+    REQUIRE(cfg.setup.empty());
 
     // Shortcut field caps: >6 fields or an oversized field is a malformed line.
     // (Key present — without "Shortcut=" the line is prose and ignored.)
     std::string seven = "Shortcut=a,DESKTOP,n,d,i,0,extra\n";
     cfg = sfx::parse_sfx_config({seven.begin(), seven.end()});
-    assert(cfg.shortcuts.empty() && cfg.ignored_over_limit_lines == 1);
+    REQUIRE((cfg.shortcuts.empty() && cfg.ignored_over_limit_lines == 1));
     std::string bigfield(1025, 'y');
     std::string oversized = "Shortcut=t,f,n,d," + bigfield + ",0\n";
     cfg = sfx::parse_sfx_config({oversized.begin(), oversized.end()});
-    assert(cfg.shortcuts.empty() && cfg.ignored_over_limit_lines == 1);
+    REQUIRE((cfg.shortcuts.empty() && cfg.ignored_over_limit_lines == 1));
     std::cout << "[PASS] sfx parse: line/value/field caps degrade, never abort\n";
 }
 
@@ -138,17 +140,17 @@ static void test_parse_silent_overwrite_values() {
         std::string cmt = std::string("Silent=") + v;
         return sfx::parse_sfx_config({cmt.begin(), cmt.end()}).silent;
     };
-    assert(one("1") == sfx::SilentMode::HideStart);
-    assert(one("2") == sfx::SilentMode::Headless);
-    assert(one("3") == sfx::SilentMode::Off); // unknown value: off
+    REQUIRE(one("1") == sfx::SilentMode::HideStart);
+    REQUIRE(one("2") == sfx::SilentMode::Headless);
+    REQUIRE(one("3") == sfx::SilentMode::Off); // unknown value: off
 
     auto ow = [](const char* v) {
         std::string cmt = std::string("Overwrite=") + v;
         return sfx::parse_sfx_config({cmt.begin(), cmt.end()}).overwrite;
     };
-    assert(ow("1") == sfx::OverwriteDirective::OverwriteAll);
-    assert(ow("2") == sfx::OverwriteDirective::SkipExisting);
-    assert(ow("9") == sfx::OverwriteDirective::Ask);
+    REQUIRE(ow("1") == sfx::OverwriteDirective::OverwriteAll);
+    REQUIRE(ow("2") == sfx::OverwriteDirective::SkipExisting);
+    REQUIRE(ow("9") == sfx::OverwriteDirective::Ask);
     std::cout << "[PASS] sfx parse: Silent/Overwrite value mapping\n";
 }
 
@@ -158,8 +160,8 @@ static void test_parse_invalid_utf8_disables() {
     // partially-parsed hostile comment must not run.
     std::string cmt = "Setup=good.exe\nText=\xc0\xaf\n";
     sfx::SfxConfig cfg = sfx::parse_sfx_config({cmt.begin(), cmt.end()});
-    assert(cfg.invalid_utf8);
-    assert(!cfg.has_directives());
+    REQUIRE(cfg.invalid_utf8);
+    REQUIRE(!cfg.has_directives());
     std::cout << "[PASS] sfx parse: invalid UTF-8 disables all directives\n";
 }
 
@@ -179,19 +181,19 @@ static void test_reader_comment_roundtrip_and_absent() {
     ArchiveMutator::PreparedAdd p;
     p.entry_name = "payload.txt";
     p.src_path = src;
-    assert(ArchiveMutator::prepare_add_file(src, "payload.txt", 0, "", p));
+    REQUIRE(ArchiveMutator::prepare_add_file(src, "payload.txt", 0, "", p));
     files.push_back(std::move(p));
-    assert(ArchiveMutator::write_batch_add(arc, files, /*sfx_stub=*/{}, /*password=*/"",
-                                           /*encrypt_headers=*/false, {}, /*solid=*/false, cmt));
+    REQUIRE(ArchiveMutator::write_batch_add(arc, files, /*sfx_stub=*/{}, /*password=*/"",
+                                            /*encrypt_headers=*/false, {}, /*solid=*/false, cmt));
 
     ArchiveReader rd;
-    assert(rd.open(arc));
+    REQUIRE(rd.open(arc));
     std::vector<core::byte> out;
-    assert(rd.read_archive_comment(out));
-    assert(std::string(out.begin(), out.end()) == comment);
+    REQUIRE(rd.read_archive_comment(out));
+    REQUIRE(std::string(out.begin(), out.end()) == comment);
     sfx::SfxConfig cfg = sfx::parse_sfx_config(out);
-    assert(cfg.setup.size() == 1 && cfg.setup[0] == "probe.exe");
-    assert(cfg.path == "bin\\");
+    REQUIRE((cfg.setup.size() == 1 && cfg.setup[0] == "probe.exe"));
+    REQUIRE(cfg.path == "bin\\");
     rd.close();
 
     // No comment => false, out empty.
@@ -200,13 +202,13 @@ static void test_reader_comment_roundtrip_and_absent() {
     ArchiveMutator::PreparedAdd p2;
     p2.entry_name = "payload.txt";
     p2.src_path = src;
-    assert(ArchiveMutator::prepare_add_file(src, "payload.txt", 0, "", p2));
+    REQUIRE(ArchiveMutator::prepare_add_file(src, "payload.txt", 0, "", p2));
     files2.push_back(std::move(p2));
-    assert(ArchiveMutator::write_batch_add(plain, files2));
+    REQUIRE(ArchiveMutator::write_batch_add(plain, files2));
     ArchiveReader rd2;
-    assert(rd2.open(plain));
+    REQUIRE(rd2.open(plain));
     std::vector<core::byte> out2;
-    assert(!rd2.read_archive_comment(out2) && out2.empty());
+    REQUIRE((!rd2.read_archive_comment(out2) && out2.empty()));
     rd2.close();
     fs::remove(arc);
     fs::remove(plain);
@@ -230,15 +232,15 @@ static void test_reader_comment_size_cap() {
     ArchiveMutator::PreparedAdd p;
     p.entry_name = "payload.txt";
     p.src_path = src;
-    assert(ArchiveMutator::prepare_add_file(src, "payload.txt", 0, "", p));
+    REQUIRE(ArchiveMutator::prepare_add_file(src, "payload.txt", 0, "", p));
     files.push_back(std::move(p));
-    assert(ArchiveMutator::write_batch_add(arc, files, /*sfx_stub=*/{}, /*password=*/"",
-                                           /*encrypt_headers=*/false, {}, /*solid=*/false, big));
+    REQUIRE(ArchiveMutator::write_batch_add(arc, files, /*sfx_stub=*/{}, /*password=*/"",
+                                            /*encrypt_headers=*/false, {}, /*solid=*/false, big));
 
     ArchiveReader rd;
-    assert(rd.open(arc));
+    REQUIRE(rd.open(arc));
     std::vector<core::byte> out;
-    assert(!rd.read_archive_comment(out) && out.empty());
+    REQUIRE((!rd.read_archive_comment(out) && out.empty()));
     rd.close();
     fs::remove(arc);
     fs::remove(src);
@@ -286,39 +288,39 @@ void test_consent_engine_basic_and_batch() {
     {
         FakeBackend be(true, {sfx::ConsentAnswer::Run, sfx::ConsentAnswer::Deny});
         sfx::SfxConsentEngine eng(be);
-        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
-        assert(eng.ask(make_req(sfx::DirectiveType::Delete)) == sfx::ConsentDecision::Deny);
-        assert(eng.prompts_used() == 2 && !eng.aborted());
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Delete)) == sfx::ConsentDecision::Deny);
+        REQUIRE((eng.prompts_used() == 2 && !eng.aborted()));
     }
 
     // RunAll batch: same type runs without prompting; other types still prompt.
     {
         FakeBackend be(true, {sfx::ConsentAnswer::RunAll});
         sfx::SfxConsentEngine eng(be);
-        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
-        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
-        assert(eng.prompts_used() == 1);
-        assert(eng.ask(make_req(sfx::DirectiveType::Delete)) == sfx::ConsentDecision::Deny);
-        assert(eng.prompts_used() == 2);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        REQUIRE(eng.prompts_used() == 1);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Delete)) == sfx::ConsentDecision::Deny);
+        REQUIRE(eng.prompts_used() == 2);
     }
 
     // DenyAll batch mirrors it.
     {
         FakeBackend be(true, {sfx::ConsentAnswer::DenyAll});
         sfx::SfxConsentEngine eng(be);
-        assert(eng.ask(make_req(sfx::DirectiveType::Presetup)) == sfx::ConsentDecision::Deny);
-        assert(eng.ask(make_req(sfx::DirectiveType::Presetup)) == sfx::ConsentDecision::Deny);
-        assert(eng.prompts_used() == 1);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Presetup)) == sfx::ConsentDecision::Deny);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Presetup)) == sfx::ConsentDecision::Deny);
+        REQUIRE(eng.prompts_used() == 1);
     }
 
     // Abort latches: every later ask denied, aborted() true, no new prompts.
     {
         FakeBackend be(true, {sfx::ConsentAnswer::Abort});
         sfx::SfxConsentEngine eng(be);
-        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
-        assert(eng.aborted());
-        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
-        assert(eng.prompts_used() == 1);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
+        REQUIRE(eng.aborted());
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
+        REQUIRE(eng.prompts_used() == 1);
     }
     std::cout << "[PASS] consent engine: run/deny, per-type batches, abort latch" << std::endl;
 }
@@ -332,30 +334,30 @@ void test_consent_engine_cap_and_noninteractive() {
         FakeBackend be(true, {}, sfx::ConsentAnswer::Run); // always willing
         sfx::SfxConsentEngine eng(be, /*prompt_cap=*/8);
         for (int i = 0; i < 8; ++i) {
-            assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+            REQUIRE(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
         }
-        assert(eng.prompts_used() == 8);
-        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
-        assert(eng.aborted());
-        assert(eng.prompts_used() == 8);
+        REQUIRE(eng.prompts_used() == 8);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
+        REQUIRE(eng.aborted());
+        REQUIRE(eng.prompts_used() == 8);
     }
 
     // Cap latches the run even for previously batch-approved types.
     {
         FakeBackend be(true, {sfx::ConsentAnswer::RunAll});
         sfx::SfxConsentEngine eng(be, /*prompt_cap=*/1);
-        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
-        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
-        assert(eng.ask(make_req(sfx::DirectiveType::Delete)) == sfx::ConsentDecision::Deny);
-        assert(eng.aborted());
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Run);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Delete)) == sfx::ConsentDecision::Deny);
+        REQUIRE(eng.aborted());
     }
 
     // Non-interactive backend: every ask denied WITHOUT calling the backend.
     {
         FakeBackend be(false, {});
         sfx::SfxConsentEngine eng(be);
-        assert(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
-        assert(eng.prompts_used() == 0 && !eng.aborted() && be.asks() == 0);
+        REQUIRE(eng.ask(make_req(sfx::DirectiveType::Setup)) == sfx::ConsentDecision::Deny);
+        REQUIRE((eng.prompts_used() == 0 && !eng.aborted() && be.asks() == 0));
     }
 
     // Console backend interactivity (isatty(stdin)) is covered by the
@@ -384,23 +386,23 @@ static void test_process_exec_resolution() {
     }
 #ifndef _WIN32
     std::string chmod_cmd = "chmod +x \"" + (dest / probe_name).string() + "\"";
-    assert(std::system(chmod_cmd.c_str()) == 0);
+    REQUIRE(std::system(chmod_cmd.c_str()) == 0);
 #endif
 
     // Destination-relative resolution (allow_dest=true).
     const std::string found =
         sfx::resolve_command_executable(probe_name, dest.string(), /*allow_dest=*/true);
-    assert(!found.empty() && found.find(probe_name) != std::string::npos);
+    REQUIRE((!found.empty() && found.find(probe_name) != std::string::npos));
 
     // Disallowed destination + unknown name => not found.
-    assert(
+    REQUIRE(
         sfx::resolve_command_executable(probe_name, dest.string(), /*allow_dest=*/false).empty());
-    assert(sfx::resolve_command_executable("definitely_missing_sfx_probe.exe", dest.string(), true)
-               .empty());
+    REQUIRE(sfx::resolve_command_executable("definitely_missing_sfx_probe.exe", dest.string(), true)
+                .empty());
 
     // Absolute path passes through.
     const std::string abs = "\"" + g_self_exe + "\"";
-    assert(!sfx::resolve_command_executable(abs, dest.string(), /*allow_dest=*/false).empty());
+    REQUIRE(!sfx::resolve_command_executable(abs, dest.string(), /*allow_dest=*/false).empty());
     fs::remove_all(dest);
     std::cout << "[PASS] process exec: destination/PATH/absolute resolution" << std::endl;
 }
@@ -423,14 +425,14 @@ static void test_process_exec_spawn_exit_code() {
     std::cout << "[+] test_process_exec_spawn_exit_code" << std::endl;
     std::string cmd, exe;
     probe_invocation("--sfx-probe-exit 7", cmd, exe);
-    assert(!exe.empty());
+    REQUIRE(!exe.empty());
     sfx::ExecResult r = sfx::spawn_contained(cmd, exe, "", {});
-    assert(r.spawned && r.contained && !r.cancelled);
-    assert(r.exit_code == 7);
+    REQUIRE((r.spawned && r.contained && !r.cancelled));
+    REQUIRE(r.exit_code == 7);
 
     probe_invocation("--sfx-probe-exit 0", cmd, exe);
     r = sfx::spawn_contained(cmd, exe, "", {});
-    assert(r.spawned && r.exit_code == 0);
+    REQUIRE((r.spawned && r.exit_code == 0));
 
     // Bare-name regression (the bundle's `Setup=runbench.exe`): the resolved
     // file lives in working_dir while the command is a bare token. The old
@@ -448,12 +450,12 @@ static void test_process_exec_spawn_exit_code() {
 #endif
     fs::copy_file(fs::absolute(g_self_exe), bare_exe, fs::copy_options::overwrite_existing);
 #ifndef _WIN32
-    assert(std::system(("chmod +x \"" + bare_exe.string() + "\"").c_str()) == 0);
+    REQUIRE(std::system(("chmod +x \"" + bare_exe.string() + "\"").c_str()) == 0);
 #endif
     const std::string bare_cmd = bare_exe.filename().string() + " --sfx-probe-exit 5";
     r = sfx::spawn_contained(bare_cmd, bare_exe.string(), bare_dir.string(), {});
-    assert(r.spawned && r.contained && !r.cancelled);
-    assert(r.exit_code == 5);
+    REQUIRE((r.spawned && r.contained && !r.cancelled));
+    REQUIRE(r.exit_code == 5);
     fs::remove_all(bare_dir);
 #endif
 
@@ -471,7 +473,7 @@ static void test_process_exec_cancellation() {
     std::cout << "[+] test_process_exec_cancellation" << std::endl;
     std::string cmd, exe;
     probe_invocation("--sfx-probe-sleep 30", cmd, exe);
-    assert(!exe.empty());
+    REQUIRE(!exe.empty());
     const auto t0 = std::chrono::steady_clock::now();
     const auto start = t0;
     sfx::ExecResult r = sfx::spawn_contained(cmd, exe, "", [&start]() {
@@ -481,8 +483,8 @@ static void test_process_exec_cancellation() {
     });
     const double elapsed =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    assert(r.spawned && r.contained && r.cancelled);
-    assert(elapsed < 5.0 && "cancellation must kill the contained tree promptly");
+    REQUIRE((r.spawned && r.contained && r.cancelled));
+    REQUIRE((elapsed < 5.0 && "cancellation must kill the contained tree promptly"));
     std::cout << "[PASS] process exec: cancellation kills the contained tree" << std::endl;
 }
 
@@ -502,55 +504,30 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     if (argc > 0 && argv[0] != nullptr) g_self_exe = argv[0];
-#ifdef _MSC_VER
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    // abort() must print to stderr, never pop the modal "abort() has been
-    // called" dialog — under ctest a dialog silently hangs the test forever
-    // (same class of failure the assert routing above exists to prevent).
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    try {
+    static const openrar::test::Case k_cases[] = {
+        {"test_parse_empty_and_prose", test_parse_empty_and_prose, false},
+        {"test_parse_full_feature", test_parse_full_feature, false},
+        {"test_parse_key_normalization_and_case", test_parse_key_normalization_and_case, false},
+        {"test_parse_unknown_keys_and_prose_count", test_parse_unknown_keys_and_prose_count, false},
+        {"test_parse_caps", test_parse_caps, false},
+        {"test_parse_silent_overwrite_values", test_parse_silent_overwrite_values, false},
+        {"test_parse_invalid_utf8_disables", test_parse_invalid_utf8_disables, false},
+        {"test_reader_comment_roundtrip_and_absent", test_reader_comment_roundtrip_and_absent,
+         false},
+        {"test_reader_comment_size_cap", test_reader_comment_size_cap, false},
+        {"test_consent_engine_basic_and_batch", test_consent_engine_basic_and_batch, false},
+        {"test_consent_engine_cap_and_noninteractive", test_consent_engine_cap_and_noninteractive,
+         false},
+        {"test_process_exec_resolution", test_process_exec_resolution, false},
+        {"test_process_exec_spawn_exit_code", test_process_exec_spawn_exit_code, false},
+        {"test_process_exec_cancellation", test_process_exec_cancellation, false},
+    };
+    openrar::test::route_crt_asserts_to_stderr();
+    if (!openrar::test::is_list_only(argc, argv) && !openrar::test::last_run_was_filtered())
         std::cout << "Running v1.23.0 SFX M1 unit tests...\n";
-        test_parse_empty_and_prose();
-        std::cout << std::flush;
-        test_parse_full_feature();
-        std::cout << std::flush;
-        test_parse_key_normalization_and_case();
-        std::cout << std::flush;
-        test_parse_unknown_keys_and_prose_count();
-        std::cout << std::flush;
-        test_parse_caps();
-        std::cout << std::flush;
-        test_parse_silent_overwrite_values();
-        std::cout << std::flush;
-        test_parse_invalid_utf8_disables();
-        std::cout << std::flush;
-        test_reader_comment_roundtrip_and_absent();
-        std::cout << std::flush;
-        test_reader_comment_size_cap();
-        std::cout << std::flush;
-        test_consent_engine_basic_and_batch();
-        std::cout << std::flush;
-        test_consent_engine_cap_and_noninteractive();
-        std::cout << std::flush;
-        test_process_exec_resolution();
-        std::cout << std::flush;
-        test_process_exec_spawn_exit_code();
-        std::cout << std::flush;
-        test_process_exec_cancellation();
-        std::cout << std::flush;
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
         std::cout << "All SFX M1+M2+M3 unit tests PASSED!\n";
-    } catch (const std::exception& ex) {
-        std::fprintf(stderr, "[sfx-tests] exception: %s\n", ex.what());
-        std::fflush(stderr);
-        return 2;
-    } catch (...) {
-        std::fprintf(stderr, "[sfx-tests] unknown exception\n");
-        std::fflush(stderr);
-        return 2;
-    }
-    return 0;
+    return rc;
 }

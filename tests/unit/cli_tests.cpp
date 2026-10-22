@@ -24,6 +24,8 @@
 #include <vector>
 #include "../../src/cli/progress.hpp"
 #include "../../src/cli/tui.hpp"
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 #ifdef _WIN32
 #include <windows.h>
 #include <share.h>
@@ -100,7 +102,7 @@ static std::string get_cli_path() {
 void test_cli_help() {
     std::string cmd = get_cli_path() + " > " DEVNULL " 2>&1";
     int res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     std::cout << "[PASS] CLI Help & Banner Output\n";
 }
 
@@ -112,36 +114,36 @@ void test_cli_lifecycle() {
 
     // Create a file to move
     { std::ofstream(f1) << "OPENRAR CLI TEST SUITE ITEM"; }
-    assert(std::filesystem::exists(f1));
+    REQUIRE(std::filesystem::exists(f1));
 
     std::string exe = get_cli_path();
 
     // Move file into archive
     std::string cmd_move = exe + " m build/cli_test.rar build/cli_doc.txt > " DEVNULL " 2>&1";
     int res_move = std::system(cmd_move.c_str());
-    assert(res_move == 0);
-    assert(!std::filesystem::exists(f1));
-    assert(std::filesystem::exists(test_arc));
+    REQUIRE(res_move == 0);
+    REQUIRE(!std::filesystem::exists(f1));
+    REQUIRE(std::filesystem::exists(test_arc));
 
     // Test archive
     std::string cmd_test = exe + " t build/cli_test.rar > " DEVNULL " 2>&1";
     int res_test = std::system(cmd_test.c_str());
-    assert(res_test == 0);
+    REQUIRE(res_test == 0);
 
     // List archive (bare)
     std::string cmd_lb = exe + " lb build/cli_test.rar > " DEVNULL " 2>&1";
     int res_lb = std::system(cmd_lb.c_str());
-    assert(res_lb == 0);
+    REQUIRE(res_lb == 0);
 
     // Lock archive
     std::string cmd_lock = exe + " k build/cli_test.rar > " DEVNULL " 2>&1";
     int res_lock = std::system(cmd_lock.c_str());
-    assert(res_lock == 0);
+    REQUIRE(res_lock == 0);
 
     // Attempt delete on locked archive -> should fail
     std::string cmd_del = exe + " d build/cli_test.rar cli_doc.txt > " DEVNULL " 2>&1";
     int res_del = std::system(cmd_del.c_str());
-    assert(res_del != 0);
+    REQUIRE(res_del != 0);
 
     std::filesystem::remove(test_arc);
     std::cout << "[PASS] CLI Lifecycle (m -> t -> lb -> k -> rejected d)\n";
@@ -155,7 +157,7 @@ void test_cli_quiet_list_missing_archive_fails() {
     // the archive argument to actually reach list_archive.
     int res = std::system(
         (get_cli_path() + " l build/cli_no_such_archive.rar -q > " DEVNULL " 2>&1").c_str());
-    assert(res != 0);
+    REQUIRE(res != 0);
 
     // Quiet list of a VALID archive: real exit code (0), zero output printed.
     std::filesystem::path arc = "build/cli_quiet_ok.rar";
@@ -167,17 +169,17 @@ void test_cli_quiet_list_missing_archive_fails() {
         std::ofstream payload(src);
         payload << "OpenRAR quiet-list payload";
     }
-    assert(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "payload.txt"));
+    REQUIRE(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "payload.txt"));
     res = std::system(
         (get_cli_path() + " lb " + arc.string() + " -q > " + captured.string() + " 2>&1").c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     std::string data;
     {
         std::ifstream out(captured, std::ios::binary);
         data.assign((std::istreambuf_iterator<char>(out)), std::istreambuf_iterator<char>());
     } // close the handle BEFORE remove() below: an open ifstream makes
     // std::filesystem::remove throw a sharing-violation filesystem_error.
-    assert(data.empty());
+    REQUIRE(data.empty());
 
     std::filesystem::remove(arc);
     std::filesystem::remove(captured);
@@ -199,11 +201,11 @@ void test_cli_list_sanitizes_esc_entry_name() {
         std::ofstream payload(src);
         payload << "OpenRAR ESC-name payload";
     }
-    assert(std::filesystem::exists(src));
+    REQUIRE(std::filesystem::exists(src));
 
     const std::string evil_name = "evil\x1b]0;pwned\x07name.txt";
     bool added = openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, evil_name);
-    assert(added);
+    REQUIRE(added);
 
     // No quoting of the path arguments: std::system routes through cmd /c,
     // which (with >2 quotes on the line) strips the first AND last quote of
@@ -211,7 +213,7 @@ void test_cli_list_sanitizes_esc_entry_name() {
     // contain no spaces, same as the rest of this suite.
     std::string cmd = get_cli_path() + " lb " + arc.string() + " > " + captured.string() + " 2>&1";
     int res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     std::string data;
     {
@@ -221,10 +223,10 @@ void test_cli_list_sanitizes_esc_entry_name() {
     // std::filesystem::remove throw a sharing-violation filesystem_error.
     // No raw ESC (CSI/OSC introducer) or BEL (OSC terminator) byte may leak
     // into the captured output...
-    assert(data.find('\x1b') == std::string::npos);
-    assert(data.find('\x07') == std::string::npos);
+    REQUIRE(data.find('\x1b') == std::string::npos);
+    REQUIRE(data.find('\x07') == std::string::npos);
     // ...and the entry must still be listed, control bytes replaced with '?'.
-    assert(data.find("evil?]0;pwned?name.txt") != std::string::npos);
+    REQUIRE(data.find("evil?]0;pwned?name.txt") != std::string::npos);
 
     std::filesystem::remove(arc);
     std::filesystem::remove(captured);
@@ -241,52 +243,52 @@ void test_sanitize_for_display() {
     std::cout << "[+] test_sanitize_for_display" << std::endl;
 
     // ASCII passthrough.
-    assert(sanitize_for_display("plain-file_v2 [ok].txt") == "plain-file_v2 [ok].txt");
+    REQUIRE(sanitize_for_display("plain-file_v2 [ok].txt") == "plain-file_v2 [ok].txt");
 
     // ESC-led CSI / OSC / DCS injection: the ESC introducer (and any other
     // C0 terminator like BEL) becomes '?', the visible text stays — the
     // sequence can no longer fire, which is the contract, not redaction.
-    assert(sanitize_for_display("\x1b[2J\x1b[H") == "?[2J?[H");
-    assert(sanitize_for_display("\x1b]0;pwned\x07") == "?]0;pwned?");
-    assert(sanitize_for_display("\x1bP+q54sc;tm\x1b\\") == "?P+q54sc;tm?\\");
+    REQUIRE(sanitize_for_display("\x1b[2J\x1b[H") == "?[2J?[H");
+    REQUIRE(sanitize_for_display("\x1b]0;pwned\x07") == "?]0;pwned?");
+    REQUIRE(sanitize_for_display("\x1bP+q54sc;tm\x1b\\") == "?P+q54sc;tm?\\");
 
     // C1 controls (U+0080..009F), incl. the 8-bit CSI U+009B.
-    assert(sanitize_for_display("a\xc2"
-                                "\x9b"
-                                "b") == "a??b");      // U+009B
-    assert(sanitize_for_display("\xc2\x85") == "??"); // U+0085 NEL
+    REQUIRE(sanitize_for_display("a\xc2"
+                                 "\x9b"
+                                 "b") == "a??b");      // U+009B
+    REQUIRE(sanitize_for_display("\xc2\x85") == "??"); // U+0085 NEL
 
     // Bidi direction attacks: RTL/LTR overrides, isolates, marks.
-    assert(sanitize_for_display("invoice\xe2\x80\xae"
-                                "exe.pdf") == "invoice???exe.pdf"); // RLO
-    assert(sanitize_for_display("\xe2\x81\xa6"
-                                "txt\xe2\x81\xa9") == "???txt???"); // LRI/PDI
-    assert(sanitize_for_display("a\xe2\x80\x8f"
-                                "b") == "a???b"); // RLM
-    assert(sanitize_for_display("note\xe2\x80\xa8"
-                                "line") == "note???line");                  // LINE SEP
-    assert(sanitize_for_display("invoice\xc2\xad.pdf") == "invoice??.pdf"); // soft hyphen
+    REQUIRE(sanitize_for_display("invoice\xe2\x80\xae"
+                                 "exe.pdf") == "invoice???exe.pdf"); // RLO
+    REQUIRE(sanitize_for_display("\xe2\x81\xa6"
+                                 "txt\xe2\x81\xa9") == "???txt???"); // LRI/PDI
+    REQUIRE(sanitize_for_display("a\xe2\x80\x8f"
+                                 "b") == "a???b"); // RLM
+    REQUIRE(sanitize_for_display("note\xe2\x80\xa8"
+                                 "line") == "note???line");                  // LINE SEP
+    REQUIRE(sanitize_for_display("invoice\xc2\xad.pdf") == "invoice??.pdf"); // soft hyphen
 
     // Invalid UTF-8: lone continuation, overlong, surrogates, out of range,
     // bad lead, truncated tail — one '?' per byte, nothing consumed blindly.
-    assert(sanitize_for_display("a\x80"
-                                "b") == "a?b");
-    assert(sanitize_for_display("\xc0\xaf") == "??");           // overlong '/'
-    assert(sanitize_for_display("\xe0\x80\xaf") == "???");      // overlong '/'
-    assert(sanitize_for_display("\xed\xa0\x80") == "???");      // UTF-16 surrogate
-    assert(sanitize_for_display("\xf5\x80\x80\x80") == "????"); // > U+10FFFF lead
-    assert(sanitize_for_display("tail\xe2\x80") == "tail??");   // truncated sequence
-    assert(sanitize_for_display("\xc2") == "?");                // truncated 2-byte
+    REQUIRE(sanitize_for_display("a\x80"
+                                 "b") == "a?b");
+    REQUIRE(sanitize_for_display("\xc0\xaf") == "??");           // overlong '/'
+    REQUIRE(sanitize_for_display("\xe0\x80\xaf") == "???");      // overlong '/'
+    REQUIRE(sanitize_for_display("\xed\xa0\x80") == "???");      // UTF-16 surrogate
+    REQUIRE(sanitize_for_display("\xf5\x80\x80\x80") == "????"); // > U+10FFFF lead
+    REQUIRE(sanitize_for_display("tail\xe2\x80") == "tail??");   // truncated sequence
+    REQUIRE(sanitize_for_display("\xc2") == "?");                // truncated 2-byte
 
     // Valid non-ASCII passes through byte-identical (accents, CJK, emoji).
     const std::string legit = "h\xc3\xa9llo w\xc3\xb6rld \xe4\xb8\xad\xe6\x96\x87 \xf0\x9f\xa6\x96";
-    assert(sanitize_for_display(legit) == legit);
+    REQUIRE(sanitize_for_display(legit) == legit);
 
     // Mixed: hostile pieces replaced ('?' per source byte), legitimate text
     // and structure kept.
-    assert(sanitize_for_display("r\xc2\xad"
-                                "sum\xc3\xa9\xe2\x80\xae"
-                                ".txt") == "r??sum\xc3\xa9???.txt");
+    REQUIRE(sanitize_for_display("r\xc2\xad"
+                                 "sum\xc3\xa9\xe2\x80\xae"
+                                 ".txt") == "r??sum\xc3\xa9???.txt");
 
     // v1.28 directive 7: the sanitizer is IDEMPOTENT — the render-time choke
     // point re-sanitizes everything it is handed, which is only free because
@@ -295,8 +297,8 @@ void test_sanitize_for_display() {
     const std::string idem_hostile =
         std::string("\x1b]0;t") + "\xe2\x80\xae" + "\xc2\x85" + "\xff\xfe" + ".txt";
     const std::string once = sanitize_for_display(idem_hostile);
-    assert(sanitize_for_display(once) == once);
-    assert(sanitize_for_display(sanitize_for_display(legit)) == legit);
+    REQUIRE(sanitize_for_display(once) == once);
+    REQUIRE(sanitize_for_display(sanitize_for_display(legit)) == legit);
 
     std::cout << "[PASS] sanitize_for_display negative coverage (ESC/CSI/OSC, C1, bidi, "
                  "invalid UTF-8) + idempotency\n";
@@ -340,17 +342,17 @@ void test_cli_mt_batch_equivalence() {
         root.string() + "/a_text.txt " + root.string() + "/sub " + root.string() + "/c_empty.txt";
     int res = std::system(
         (exe + " a " + arc1.string() + " -mt1 " + src_list + " > " DEVNULL " 2>&1").c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     res = std::system(
         (exe + " a " + arc4.string() + " -mt4 " + src_list + " > " DEVNULL " 2>&1").c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     res = std::system(
         (exe + " x " + arc1.string() + " " + out1.string() + " > " DEVNULL " 2>&1").c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     res = std::system(
         (exe + " x " + arc4.string() + " " + out4.string() + " > " DEVNULL " 2>&1").c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     // Compare extracted trees: same file set, same bytes.
     std::vector<std::string> names;
@@ -359,14 +361,14 @@ void test_cli_mt_batch_equivalence() {
             names.push_back(e.path().lexically_relative(out1).generic_string());
     }
     std::sort(names.begin(), names.end());
-    assert(names.size() == 4);
+    REQUIRE(names.size() == 4);
     for (const auto& name : names) {
         std::ifstream f1(out1 / name, std::ios::binary);
         std::ifstream f4(out4 / name, std::ios::binary);
-        assert(f1 && f4);
+        REQUIRE((f1 && f4));
         std::string d1((std::istreambuf_iterator<char>(f1)), std::istreambuf_iterator<char>());
         std::string d4((std::istreambuf_iterator<char>(f4)), std::istreambuf_iterator<char>());
-        assert(d1 == d4);
+        REQUIRE(d1 == d4);
     }
 
     // -mt0 (auto) must also be accepted.
@@ -375,9 +377,9 @@ void test_cli_mt_batch_equivalence() {
     res = std::system((exe + " a " + arc_auto.string() + " -mt0 " + root.string() +
                        "/a_text.txt > " DEVNULL " 2>&1")
                           .c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     res = std::system((exe + " t " + arc_auto.string() + " > " DEVNULL " 2>&1").c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     fs::remove_all(root, ec);
     fs::remove(arc1, ec);
@@ -409,7 +411,7 @@ void test_cli_overwrite_modes() {
     // The archive is built via the mutator so the stored entry name is exactly
     // "cli_ov_src.txt", independent of CLI path-normalization rules.
     { std::ofstream(src) << "VERSION-ONE"; }
-    assert(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "cli_ov_src.txt"));
+    REQUIRE(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "cli_ov_src.txt"));
 
     auto extract = [&](const char* extra_switch) {
         return std::system((get_cli_path() + " x " + arc.string() + " " + out.string() + " " +
@@ -422,28 +424,28 @@ void test_cli_overwrite_modes() {
     };
 
     int res = extract("");
-    assert(res == 0);
-    assert(read_target() == "VERSION-ONE");
+    REQUIRE(res == 0);
+    REQUIRE(read_target() == "VERSION-ONE");
 
     // Simulate a locally-edited file on disk, then check each mode.
     { std::ofstream(target, std::ios::binary) << "LOCAL-EDIT"; }
 
     // -o-: never overwrite — the on-disk edit must survive.
     res = extract("-o-");
-    assert(res == 0);
-    assert(read_target() == "LOCAL-EDIT");
+    REQUIRE(res == 0);
+    REQUIRE(read_target() == "LOCAL-EDIT");
 
     // -y: assume Yes on the overwrite query — the archive version must win.
     res = extract("-y");
-    assert(res == 0);
-    assert(read_target() == "VERSION-ONE");
+    REQUIRE(res == 0);
+    REQUIRE(read_target() == "VERSION-ONE");
 
     // Default with non-interactive stdin: auto-Yes (backward-compatible with
     // the pre-query behavior every scripted caller relies on).
     { std::ofstream(target, std::ios::binary) << "LOCAL-EDIT"; }
     res = extract("");
-    assert(res == 0);
-    assert(read_target() == "VERSION-ONE");
+    REQUIRE(res == 0);
+    REQUIRE(read_target() == "VERSION-ONE");
 
     fs::remove(src, ec);
     fs::remove(arc, ec);
@@ -470,7 +472,7 @@ void test_cli_help_switch_parity() {
         std::ofstream(src) << "parity payload";
         std::ofstream(cmt) << "comment file";
     }
-    assert(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "payload.txt"));
+    REQUIRE(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "payload.txt"));
 
     const char* switches[] = {
         "-ed", "-ep", "-ep1", "-ep2",  "-ep3", "-ol",  "-ol-",     "-os",       "-ow",  "-plain",
@@ -484,30 +486,30 @@ void test_cli_help_switch_parity() {
         if (res != 0) {
             std::cerr << "  switch rejected: " << sw << " (exit " << res << ")\n";
         }
-        assert(res == 0);
+        REQUIRE(res == 0);
         std::string data;
         {
             std::ifstream f(captured, std::ios::binary);
             data.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         }
-        assert(data.find("unknown switch") == std::string::npos);
-        assert(data.find("Error:") == std::string::npos);
+        REQUIRE(data.find("unknown switch") == std::string::npos);
+        REQUIRE(data.find("Error:") == std::string::npos);
     }
 
     // -- end-of-options: everything after it is a name, even "-weird".
     std::string cmd =
         get_cli_path() + " lb -- " + arc.string() + " > " + captured.string() + " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
+    REQUIRE(std::system(cmd.c_str()) == 0);
 
     // -z takes a file argument: comment is only consumed by a/u/f/m, so lb
     // must accept the switch without erroring on the missing file check.
     cmd = get_cli_path() + " lb " + arc.string() + " -z" + cmt.string() + " > " +
           captured.string() + " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
+    REQUIRE(std::system(cmd.c_str()) == 0);
     {
         std::ifstream f(captured, std::ios::binary);
         std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        assert(data.find("unknown switch") == std::string::npos);
+        REQUIRE(data.find("unknown switch") == std::string::npos);
     }
 
     fs::remove(src, ec);
@@ -522,13 +524,13 @@ static void test_cli_version() {
     fs::path out_file = "test_cli_version.txt";
     std::string cmd = get_cli_path() + " --version > " + out_file.string() + " 2>&1";
     int res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     std::string data;
     {
         std::ifstream f(out_file, std::ios::binary);
         data.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     }
-    assert(data.find(std::string("OpenRAR ") + OPENRAR_VERSION_STRING) != std::string::npos);
+    REQUIRE(data.find(std::string("OpenRAR ") + OPENRAR_VERSION_STRING) != std::string::npos);
     std::error_code ec;
     fs::remove(out_file, ec);
     std::cout << "[PASS] CLI --version parity\n";
@@ -547,20 +549,20 @@ static void test_cli_sfx() {
     }
     std::string cmd =
         get_cli_path() + " a -q " + arc.string() + " " + sample.string() + " > " DEVNULL " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
-    assert(fs::exists(arc));
+    REQUIRE(std::system(cmd.c_str()) == 0);
+    REQUIRE(fs::exists(arc));
 
     // Convert to sfx
     cmd = get_cli_path() + " s -q " + arc.string() + " > " DEVNULL " 2>&1";
     int s_res = std::system(cmd.c_str());
     if (s_res == 0) {
-        assert(fs::exists(exe_arc));
+        REQUIRE(fs::exists(exe_arc));
         // Test integrity of the SFX
         cmd = get_cli_path() + " t -q " + exe_arc.string() + " > " DEVNULL " 2>&1";
-        assert(std::system(cmd.c_str()) == 0);
+        REQUIRE(std::system(cmd.c_str()) == 0);
         // Double-sfx conversion must be rejected
         cmd = get_cli_path() + " s " + exe_arc.string() + " > " DEVNULL " 2>&1";
-        assert(std::system(cmd.c_str()) != 0);
+        REQUIRE(std::system(cmd.c_str()) != 0);
     }
 
     fs::remove_all("test_sfx_dir", ec);
@@ -582,15 +584,15 @@ static void test_cli_hardlinks() {
     if (!ec) {
         std::string cmd = get_cli_path() + " a -oh -q " + arc.string() + " " + f1.string() + " " +
                           f2.string() + " > " DEVNULL " 2>&1";
-        assert(std::system(cmd.c_str()) == 0);
-        assert(fs::exists(arc));
+        REQUIRE(std::system(cmd.c_str()) == 0);
+        REQUIRE(fs::exists(arc));
 
         // Test extraction
         fs::path out_dir = "test_hl_dir/out";
         fs::create_directories(out_dir, ec);
         cmd = get_cli_path() + " x -q " + arc.string() + " " + out_dir.string() +
               "/ > " DEVNULL " 2>&1";
-        assert(std::system(cmd.c_str()) == 0);
+        REQUIRE(std::system(cmd.c_str()) == 0);
     }
     fs::remove_all("test_hl_dir", ec);
     std::cout << "[PASS] CLI hardlink archiving (-oh) & extraction\n";
@@ -633,14 +635,14 @@ static void test_cli_v1_10_features() {
     std::string cmd = get_cli_path() + " a -q " + arc1.string() + " @" + listfile.string() +
                       " > " DEVNULL " 2>&1";
     int rc = std::system(cmd.c_str());
-    assert(rc == 0);
-    assert(fs::exists(arc1));
+    REQUIRE(rc == 0);
+    REQUIRE(fs::exists(arc1));
 
     // List bare to verify only a.txt and b.txt are present
     fs::path list_out = temp_dir / "list.txt";
     cmd = get_cli_path() + " lb " + arc1.string() + " > " + list_out.string();
     rc = std::system(cmd.c_str());
-    assert(rc == 0);
+    REQUIRE(rc == 0);
     {
         std::ifstream lf(list_out);
         std::string s;
@@ -649,7 +651,7 @@ static void test_cli_v1_10_features() {
             while (!s.empty() && (s.back() == '\r' || s.back() == ' ')) s.pop_back();
             if (!s.empty()) names.push_back(s);
         }
-        assert(names.size() == 2);
+        REQUIRE(names.size() == 2);
     }
 
     // 2. Test -x<pattern> exclusion
@@ -657,11 +659,11 @@ static void test_cli_v1_10_features() {
     cmd = get_cli_path() + " a -q -x*.log " + arc2.string() + " " + f_a.string() + " " +
           f_b.string() + " " + f_c.string() + " > " DEVNULL " 2>&1";
     rc = std::system(cmd.c_str());
-    assert(rc == 0);
+    REQUIRE(rc == 0);
 
     cmd = get_cli_path() + " lb " + arc2.string() + " > " + list_out.string();
     rc = std::system(cmd.c_str());
-    assert(rc == 0);
+    REQUIRE(rc == 0);
     {
         std::ifstream lf(list_out);
         std::string s;
@@ -670,9 +672,9 @@ static void test_cli_v1_10_features() {
             while (!s.empty() && (s.back() == '\r' || s.back() == ' ')) s.pop_back();
             if (!s.empty()) names.push_back(s);
         }
-        assert(names.size() == 2);
+        REQUIRE(names.size() == 2);
         for (const auto& n : names) {
-            assert(n.find(".log") == std::string::npos);
+            REQUIRE(n.find(".log") == std::string::npos);
         }
     }
 
@@ -687,11 +689,11 @@ static void test_cli_v1_10_features() {
     cmd = get_cli_path() + " a -q -x@" + ex_list.string() + " " + arc3.string() + " " +
           f_a.string() + " " + f_b.string() + " " + f_c.string() + " > " DEVNULL " 2>&1";
     rc = std::system(cmd.c_str());
-    assert(rc == 0);
+    REQUIRE(rc == 0);
 
     cmd = get_cli_path() + " lb " + arc3.string() + " > " + list_out.string();
     rc = std::system(cmd.c_str());
-    assert(rc == 0);
+    REQUIRE(rc == 0);
     {
         std::ifstream lf(list_out);
         std::string s;
@@ -700,19 +702,19 @@ static void test_cli_v1_10_features() {
             while (!s.empty() && (s.back() == '\r' || s.back() == ' ')) s.pop_back();
             if (!s.empty()) names.push_back(s);
         }
-        assert(names.size() == 1);
-        assert(names[0].find(".log") != std::string::npos);
+        REQUIRE(names.size() == 1);
+        REQUIRE(names[0].find(".log") != std::string::npos);
     }
 
     // 4. Test 'p' (print to stdout)
     fs::path p_out = temp_dir / "p_out.txt";
     cmd = get_cli_path() + " p " + arc1.string() + " a.txt > " + p_out.string();
     rc = std::system(cmd.c_str());
-    assert(rc == 0);
+    REQUIRE(rc == 0);
     {
         std::ifstream pf(p_out, std::ios::binary);
         std::string content((std::istreambuf_iterator<char>(pf)), std::istreambuf_iterator<char>());
-        assert(content == "payload alpha");
+        REQUIRE(content == "payload alpha");
     }
 
     fs::remove_all(temp_dir, ec);
@@ -748,13 +750,13 @@ void test_cli_dict_size_flag() {
     std::string cmd = exe + " a -q -m3 -md16m " + arc_16m.string() + " " + src_file.string() +
                       " > " DEVNULL " 2>&1";
     int res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     {
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc_16m));
+        REQUIRE(r.open(arc_16m));
         const auto* e = find_file(r);
-        assert(e != nullptr);
-        assert(e->header.win_size == 16 * 1024 * 1024);
+        REQUIRE(e != nullptr);
+        REQUIRE(e->header.win_size == 16 * 1024 * 1024);
     }
 
     // 2. Valid -md64m with -m5
@@ -762,13 +764,13 @@ void test_cli_dict_size_flag() {
     cmd = exe + " a -q -m5 -md64m " + arc_64m.string() + " " + src_file.string() +
           " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     {
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc_64m));
+        REQUIRE(r.open(arc_64m));
         const auto* e = find_file(r);
-        assert(e != nullptr);
-        assert(e->header.win_size == 64 * 1024 * 1024);
+        REQUIRE(e != nullptr);
+        REQUIRE(e->header.win_size == 64 * 1024 * 1024);
     }
 
     // 3. Non-power-of-two -md10m is now valid with RAR 7.0 dictionary sizing
@@ -776,13 +778,13 @@ void test_cli_dict_size_flag() {
     cmd =
         exe + " a -q -md10m " + arc_npot.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     {
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc_npot));
+        REQUIRE(r.open(arc_npot));
         const auto* e = find_file(r);
-        assert(e != nullptr);
-        assert(e->header.win_size == 10 * 1024 * 1024);
+        REQUIRE(e != nullptr);
+        REQUIRE(e->header.win_size == 10 * 1024 * 1024);
     }
 
     // 3b. Invalid -md invalid syntax (e.g. -mdxyz) -> fail
@@ -790,14 +792,14 @@ void test_cli_dict_size_flag() {
     cmd =
         exe + " a -q -mdxyz " + arc_bad1.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res != 0);
+    REQUIRE(res != 0);
 
     // 4. Invalid -md out of range (< 128k, e.g. -md64k) -> fail
     fs::path arc_bad2 = temp_dir / "bad2.rar";
     cmd =
         exe + " a -q -md64k " + arc_bad2.string() + " " + src_file.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res != 0);
+    REQUIRE(res != 0);
 
     fs::remove_all(temp_dir, ec);
     std::cout << "[PASS] CLI -md<size> dictionary configuration\n";
@@ -819,9 +821,9 @@ static std::vector<char> make_pattern_bytes(size_t n, unsigned seed) {
 static void write_pattern_file(const std::filesystem::path& p, size_t n, unsigned seed) {
     std::vector<char> data = make_pattern_bytes(n, seed);
     std::ofstream f(p, std::ios::binary);
-    assert(f);
+    REQUIRE(f);
     f.write(data.data(), static_cast<std::streamsize>(data.size()));
-    assert(f);
+    REQUIRE(f);
 }
 
 // Incompressible pseudo-noise (LCG): for corpora whose similarity must come
@@ -840,9 +842,9 @@ static std::vector<char> make_noise_bytes(size_t n, unsigned seed) {
 static void write_noise_file(const std::filesystem::path& p, size_t n, unsigned seed) {
     std::vector<char> data = make_noise_bytes(n, seed);
     std::ofstream f(p, std::ios::binary);
-    assert(f);
+    REQUIRE(f);
     f.write(data.data(), static_cast<std::streamsize>(data.size()));
-    assert(f);
+    REQUIRE(f);
 }
 
 static bool file_bytes_equal(const std::filesystem::path& a, const std::filesystem::path& b) {
@@ -888,40 +890,40 @@ static void test_oi_creation_side_emitted() {
                       dup.string() + " " + uniq.string() + " " + s1.string() + " " + s2.string() +
                       " > " DEVNULL " 2>&1";
     int res = std::system(cmd.c_str());
-    assert(res == 0);
-    assert(fs::exists(arc));
+    REQUIRE(res == 0);
+    REQUIRE(fs::exists(arc));
 
     // Header-level assertions: the duplicate became a FILECOPY redir to the
     // master; everything else is an ordinary stored/packed entry.
     {
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc));
+        REQUIRE(r.open(arc));
         std::map<std::string, const openrar::archive::ArchiveEntry*> by_name;
         for (const auto& e : r.entries()) {
             if (!e.header.is_service) by_name[e.header.file_name] = &e;
         }
-        assert(by_name.size() == 5);
+        REQUIRE(by_name.size() == 5);
         const auto* aa = by_name["aa.bin"];
         const auto* ab = by_name["ab.bin"];
         const auto* zz = by_name["zz.bin"];
         const auto* q1 = by_name["s1.bin"];
         const auto* q2 = by_name["s2.bin"];
-        assert(aa && ab && zz && q1 && q2);
-        assert(aa->header.redir_type == 0 && aa->data_size > 0);
-        assert(zz->header.redir_type == 0 && zz->data_size > 0);
+        REQUIRE((aa && ab && zz && q1 && q2));
+        REQUIRE((aa->header.redir_type == 0 && aa->data_size > 0));
+        REQUIRE((zz->header.redir_type == 0 && zz->data_size > 0));
         // Threshold: sub-64KiB identical pair is stored, never referenced.
-        assert(q1->header.redir_type == 0 && q2->header.redir_type == 0);
+        REQUIRE((q1->header.redir_type == 0 && q2->header.redir_type == 0));
         // The duplicate: FHEXTRA_REDIR type 5, no data area.
-        assert(ab->header.redir_type == 5);
-        assert(ab->header.redir_target == "aa.bin");
-        assert(!ab->header.redir_dir_target);
-        assert(ab->data_size == 0);
+        REQUIRE(ab->header.redir_type == 5);
+        REQUIRE(ab->header.redir_target == "aa.bin");
+        REQUIRE(!ab->header.redir_dir_target);
+        REQUIRE(ab->data_size == 0);
     }
 
     // `t` must pass: integrity of the archive including the redir entries.
     cmd = get_cli_path() + " t " + arc.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     // Extraction (-ol: redirs are links default-deny, v1.24 §6.1) reproduces
     // every byte, including the referenced duplicate.
@@ -929,12 +931,12 @@ static void test_oi_creation_side_emitted() {
     cmd = get_cli_path() + " x -ol -q " + arc.string() + " " + out_dir.string() +
           " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
-    assert(file_bytes_equal(master, out_dir / "aa.bin"));
-    assert(file_bytes_equal(master, out_dir / "ab.bin")); // FILECOPY copy of the target
-    assert(file_bytes_equal(uniq, out_dir / "zz.bin"));
-    assert(file_bytes_equal(s1, out_dir / "s1.bin"));
-    assert(file_bytes_equal(s1, out_dir / "s2.bin"));
+    REQUIRE(res == 0);
+    REQUIRE(file_bytes_equal(master, out_dir / "aa.bin"));
+    REQUIRE(file_bytes_equal(master, out_dir / "ab.bin")); // FILECOPY copy of the target
+    REQUIRE(file_bytes_equal(uniq, out_dir / "zz.bin"));
+    REQUIRE(file_bytes_equal(s1, out_dir / "s1.bin"));
+    REQUIRE(file_bytes_equal(s1, out_dir / "s2.bin"));
 
     fs::remove_all(temp_dir, ec);
     std::cout << "[PASS] oi_creation_side_emitted (plan test 1)\n";
@@ -974,57 +976,57 @@ static void test_cdc_filecopy_precedence() {
                       " " + a2.string() + " " + b.string() + " " + b2.string() + " " + c.string() +
                       " " + d.string() + " > " DEVNULL " 2>&1";
     int res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     {
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc));
+        REQUIRE(r.open(arc));
         std::map<std::string, const openrar::archive::ArchiveEntry*> by_name;
         for (const auto& e : r.entries()) {
             if (!e.header.is_service) by_name[e.header.file_name] = &e;
         }
-        assert(by_name.size() == 6);
+        REQUIRE(by_name.size() == 6);
         const auto* pa = by_name["a.bin"];
         const auto* pa2 = by_name["a2.bin"];
         const auto* pb = by_name["b.bin"];
         const auto* pb2 = by_name["b2.bin"];
         const auto* pc = by_name["c.bin"];
         const auto* pd = by_name["d.bin"];
-        assert(pa && pa2 && pb && pb2 && pc && pd);
+        REQUIRE((pa && pa2 && pb && pb2 && pc && pd));
         // References: FILECOPY, no data area.
-        assert(pa2->header.redir_type == 5 && pa2->header.redir_target == "a.bin");
-        assert(pa2->data_size == 0);
-        assert(pb2->header.redir_type == 5 && pb2->header.redir_target == "b.bin");
-        assert(pb2->data_size == 0);
+        REQUIRE((pa2->header.redir_type == 5 && pa2->header.redir_target == "a.bin"));
+        REQUIRE(pa2->data_size == 0);
+        REQUIRE((pb2->header.redir_type == 5 && pb2->header.redir_target == "b.bin"));
+        REQUIRE(pb2->data_size == 0);
         // One continuous solid run: the chain head is the only non-solid
         // entry; refs and every later data entry carry the solid bit (the
         // window persists across no-data-area refs — v1.40.0 layout).
-        assert(pa->header.is_solid == 0);  // first chain head
-        assert(pa2->header.is_solid != 0); // ref inside the active run
-        assert(pb->header.is_solid != 0);  // continues across the a2 ref
-        assert(pb2->header.is_solid != 0); // ref inside the active run
-        assert(pc->header.is_solid != 0);  // continues across the b2 ref
-        assert(pd->header.is_solid != 0);  // continues the run
+        REQUIRE(pa->header.is_solid == 0);  // first chain head
+        REQUIRE(pa2->header.is_solid != 0); // ref inside the active run
+        REQUIRE(pb->header.is_solid != 0);  // continues across the a2 ref
+        REQUIRE(pb2->header.is_solid != 0); // ref inside the active run
+        REQUIRE(pc->header.is_solid != 0);  // continues across the b2 ref
+        REQUIRE(pd->header.is_solid != 0);  // continues the run
         // Identical content never double-packed: a2/b2 carry no packed data.
-        assert(pb->data_size > 0 && pc->data_size > 0);
+        REQUIRE((pb->data_size > 0 && pc->data_size > 0));
     }
 
     // Solid chain decodable across the redir gaps: test + extraction.
     cmd = get_cli_path() + " t " + arc.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     fs::path out_dir = temp_dir / "out";
     cmd = get_cli_path() + " x -ol -q " + arc.string() + " " + out_dir.string() +
           " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
-    assert(file_bytes_equal(a, out_dir / "a.bin"));
-    assert(file_bytes_equal(a, out_dir / "a2.bin"));
-    assert(file_bytes_equal(b, out_dir / "b.bin"));
-    assert(file_bytes_equal(b, out_dir / "b2.bin"));
-    assert(file_bytes_equal(c, out_dir / "c.bin"));
-    assert(file_bytes_equal(d, out_dir / "d.bin"));
+    REQUIRE(res == 0);
+    REQUIRE(file_bytes_equal(a, out_dir / "a.bin"));
+    REQUIRE(file_bytes_equal(a, out_dir / "a2.bin"));
+    REQUIRE(file_bytes_equal(b, out_dir / "b.bin"));
+    REQUIRE(file_bytes_equal(b, out_dir / "b2.bin"));
+    REQUIRE(file_bytes_equal(c, out_dir / "c.bin"));
+    REQUIRE(file_bytes_equal(d, out_dir / "d.bin"));
 
     fs::remove_all(temp_dir, ec);
     std::cout << "[PASS] cdc_filecopy_precedence (plan test 5)\n";
@@ -1056,14 +1058,14 @@ static void test_oi_switch_modes() {
         std::string cmd = exe + " a -oi3 " + arc.string() + " " + m1.string() + " " + m2.string() +
                           " " + u1.string() + " > " + list_out.string() + " 2>&1";
         int res = std::system(cmd.c_str());
-        assert(res == 0);
-        assert(!fs::exists(arc)); // list+exit never archives
+        REQUIRE(res == 0);
+        REQUIRE(!fs::exists(arc)); // list+exit never archives
         std::ifstream in(list_out, std::ios::binary);
-        assert(in);
+        REQUIRE(in);
         std::string out_text((std::istreambuf_iterator<char>(in)),
                              std::istreambuf_iterator<char>());
-        assert(out_text.find("Identical files") != std::string::npos);
-        assert(out_text.find("ab.bin -> aa.bin") != std::string::npos);
+        REQUIRE(out_text.find("Identical files") != std::string::npos);
+        REQUIRE(out_text.find("ab.bin -> aa.bin") != std::string::npos);
     }
 
     // -oi4: no duplicates -> proceeds with a normal archive.
@@ -1076,12 +1078,12 @@ static void test_oi_switch_modes() {
         std::string cmd = exe + " a -oi4 -q " + arc.string() + " " + p1.string() + " " +
                           p2.string() + " > " DEVNULL " 2>&1";
         int res = std::system(cmd.c_str());
-        assert(res == 0);
-        assert(fs::exists(arc));
+        REQUIRE(res == 0);
+        REQUIRE(fs::exists(arc));
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc));
+        REQUIRE(r.open(arc));
         for (const auto& e : r.entries()) {
-            if (!e.header.is_service) assert(e.header.redir_type == 0);
+            if (!e.header.is_service) REQUIRE(e.header.redir_type == 0);
         }
     }
 
@@ -1097,24 +1099,24 @@ static void test_oi_switch_modes() {
         std::string cmd = exe + " a -oi2:0 " + arc.string() + " " + t1.string() + " " +
                           t2.string() + " > " + list_out.string() + " 2>&1";
         int res = std::system(cmd.c_str());
-        assert(res == 0);
-        assert(fs::exists(arc));
+        REQUIRE(res == 0);
+        REQUIRE(fs::exists(arc));
         std::ifstream in(list_out, std::ios::binary);
-        assert(in);
+        REQUIRE(in);
         std::string out_text((std::istreambuf_iterator<char>(in)),
                              std::istreambuf_iterator<char>());
-        assert(out_text.find("t2.bin -> t1.bin") != std::string::npos);
+        REQUIRE(out_text.find("t2.bin -> t1.bin") != std::string::npos);
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc));
+        REQUIRE(r.open(arc));
         int redirs = 0;
         for (const auto& e : r.entries()) {
             if (e.header.is_service) continue;
             if (e.header.redir_type == 5) {
-                assert(e.header.redir_target == "t1.bin");
+                REQUIRE(e.header.redir_target == "t1.bin");
                 redirs++;
             }
         }
-        assert(redirs == 1);
+        REQUIRE(redirs == 1);
     }
 
     // -oi5 is not a mode (0-4 is the whole scale; CDC packing is -cdc, M2b).
@@ -1123,8 +1125,8 @@ static void test_oi_switch_modes() {
         std::string cmd =
             exe + " a -oi5 " + arc.string() + " " + m1.string() + " > " DEVNULL " 2>&1";
         int res = system_exit_code(std::system(cmd.c_str()));
-        assert(res == 7); // EXIT_USAGE
-        assert(!fs::exists(arc));
+        REQUIRE(res == 7); // EXIT_USAGE
+        REQUIRE(!fs::exists(arc));
     }
 
     // -oi with multi-volume is refused fail-closed (exit 7), no archive.
@@ -1133,7 +1135,7 @@ static void test_oi_switch_modes() {
         std::string cmd = exe + " a -oi1 -v1m " + arc.string() + " " + m1.string() + " " +
                           m2.string() + " > " DEVNULL " 2>&1";
         int res = system_exit_code(std::system(cmd.c_str()));
-        assert(res == 7);
+        REQUIRE(res == 7);
     }
 
     fs::remove_all(temp_dir, ec);
@@ -1142,7 +1144,7 @@ static void test_oi_switch_modes() {
 
 static std::vector<char> read_whole_file(const std::filesystem::path& p) {
     std::ifstream f(p, std::ios::binary);
-    assert(f);
+    REQUIRE(f);
     return std::vector<char>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
@@ -1180,9 +1182,9 @@ static void test_cdc_packing_order_stable() {
         std::vector<char> mid = make_noise_bytes(sz / 4, 32);
         std::copy(mid.begin(), mid.end(), data.begin() + static_cast<std::ptrdiff_t>(sz / 3));
         std::ofstream f(v1, std::ios::binary);
-        assert(f);
+        REQUIRE(f);
         f.write(data.data(), static_cast<std::streamsize>(data.size()));
-        assert(f);
+        REQUIRE(f);
     }
 
     std::string exe = get_cli_path();
@@ -1192,20 +1194,20 @@ static void test_cdc_packing_order_stable() {
                           " " + dup.string() + " " + u1.string() + " " + v1.string() +
                           " > " DEVNULL " 2>&1";
         int res = std::system(cmd.c_str());
-        assert(res == 0);
+        REQUIRE(res == 0);
         return arc;
     };
     fs::path arc1 = create("cdc_mt1.rar", "-mt1");
     fs::path arc2 = create("cdc_mt8.rar", "-mt8");
 
     // Ordering stability: byte-identical archives at any -mt.
-    assert(read_whole_file(arc1) == read_whole_file(arc2));
+    REQUIRE(read_whole_file(arc1) == read_whole_file(arc2));
 
     // Redir interaction: the exact duplicate became a FILECOPY to its master,
     // carries no data, and the master precedes it in the packed order.
     {
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc1));
+        REQUIRE(r.open(arc1));
         size_t base_pos = SIZE_MAX, dup_pos = SIZE_MAX;
         size_t file_idx = 0;
         for (const auto& e : r.entries()) {
@@ -1213,28 +1215,28 @@ static void test_cdc_packing_order_stable() {
             if (e.header.file_name == "base.bin") base_pos = file_idx;
             if (e.header.file_name == "dup.bin") {
                 dup_pos = file_idx;
-                assert(e.header.redir_type == 5);
-                assert(e.header.redir_target == "base.bin");
-                assert(e.data_size == 0);
+                REQUIRE(e.header.redir_type == 5);
+                REQUIRE(e.header.redir_target == "base.bin");
+                REQUIRE(e.data_size == 0);
             }
             ++file_idx;
         }
-        assert(base_pos != SIZE_MAX && dup_pos != SIZE_MAX);
-        assert(base_pos < dup_pos);
+        REQUIRE((base_pos != SIZE_MAX && dup_pos != SIZE_MAX));
+        REQUIRE(base_pos < dup_pos);
     }
 
     // `t` + extraction identity (references materialize under -ol).
     std::string cmd = exe + " t " + arc1.string() + " > " DEVNULL " 2>&1";
     int res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     fs::path out_dir = temp_dir / "out";
     cmd = exe + " x -ol -q " + arc1.string() + " " + out_dir.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
-    assert(file_bytes_equal(base, out_dir / "base.bin"));
-    assert(file_bytes_equal(base, out_dir / "dup.bin"));
-    assert(file_bytes_equal(u1, out_dir / "u1.bin"));
-    assert(file_bytes_equal(v1, out_dir / "v1.bin"));
+    REQUIRE(res == 0);
+    REQUIRE(file_bytes_equal(base, out_dir / "base.bin"));
+    REQUIRE(file_bytes_equal(base, out_dir / "dup.bin"));
+    REQUIRE(file_bytes_equal(u1, out_dir / "u1.bin"));
+    REQUIRE(file_bytes_equal(v1, out_dir / "v1.bin"));
 
     fs::remove_all(temp_dir, ec);
     std::cout << "[PASS] cdc_packing_order_stable (plan test 3 + redir interaction)\n";
@@ -1267,23 +1269,23 @@ static void test_cdc_index_cap_falls_back_reported() {
     cmd += " > " + list_out.string() + " 2>&1";
     int res = std::system(cmd.c_str());
     set_cap_env("");
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     std::ifstream in(list_out, std::ios::binary);
-    assert(in);
+    REQUIRE(in);
     std::string out_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    assert(out_text.find("fingerprint index cap reached") != std::string::npos);
-    assert(out_text.find("original order") != std::string::npos);
+    REQUIRE(out_text.find("fingerprint index cap reached") != std::string::npos);
+    REQUIRE(out_text.find("original order") != std::string::npos);
 
     // The fallback archive is valid, deterministic, and byte-faithful.
     {
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc));
+        REQUIRE(r.open(arc));
         size_t file_entries = 0;
         for (const auto& e : r.entries()) {
             if (!e.header.is_service) ++file_entries;
         }
-        assert(file_entries == 6);
+        REQUIRE(file_entries == 6);
     }
     fs::path arc2 = temp_dir / "cap2.rar";
     set_cap_env("5");
@@ -1292,15 +1294,15 @@ static void test_cdc_index_cap_falls_back_reported() {
     cmd2 += " > " DEVNULL " 2>&1";
     res = std::system(cmd2.c_str());
     set_cap_env("");
-    assert(res == 0);
-    assert(read_whole_file(arc) == read_whole_file(arc2));
+    REQUIRE(res == 0);
+    REQUIRE(read_whole_file(arc) == read_whole_file(arc2));
 
     fs::path out_dir = temp_dir / "out";
     cmd = exe + " x -ol -q " + arc.string() + " " + out_dir.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
     for (const auto& f : files) {
-        assert(file_bytes_equal(f, out_dir / f.filename()));
+        REQUIRE(file_bytes_equal(f, out_dir / f.filename()));
     }
 
     fs::remove_all(temp_dir, ec);
@@ -1336,9 +1338,9 @@ static void test_cdc_reduction_report_three_numbers() {
         std::vector<char> mid = make_noise_bytes(mid_len, mid_seed);
         std::copy(mid.begin(), mid.end(), data.begin() + static_cast<std::ptrdiff_t>(mid_off));
         std::ofstream f(p, std::ios::binary);
-        assert(f);
+        REQUIRE(f);
         f.write(data.data(), static_cast<std::streamsize>(data.size()));
-        assert(f);
+        REQUIRE(f);
     };
     write_variant(v1, 53);
     write_variant(v2, 54);
@@ -1352,19 +1354,19 @@ static void test_cdc_reduction_report_three_numbers() {
     fs::path store_arc = temp_dir / "store.rar";
     std::string cmd = exe + " a -m0 -q " + store_arc.string() + " " + files + " > " DEVNULL " 2>&1";
     int res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     fs::path plain_arc = temp_dir / "plain.rar";
     cmd = exe + " a -s -md1m -q " + plain_arc.string() + " " + files + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     fs::path cdc_arc = temp_dir / "cdc.rar";
     fs::path list_out = temp_dir / "cdc.out";
     cmd = exe + " a -cdc -md1m " + cdc_arc.string() + " " + files + " > " + list_out.string() +
           " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     const uint64_t store_size = std::filesystem::file_size(store_arc, ec);
     const uint64_t plain_size = std::filesystem::file_size(plain_arc, ec);
@@ -1374,24 +1376,24 @@ static void test_cdc_reduction_report_three_numbers() {
 
     // The pack-time report carries logical/packed/window/flag.
     std::ifstream in(list_out, std::ios::binary);
-    assert(in);
+    REQUIRE(in);
     std::string out_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    assert(out_text.find("cdc: logical=") != std::string::npos);
-    assert(out_text.find("flag=reordered") != std::string::npos);
+    REQUIRE(out_text.find("cdc: logical=") != std::string::npos);
+    REQUIRE(out_text.find("flag=reordered") != std::string::npos);
 
     // The gate: CDC-packed must beat plain-solid at the same window.
-    assert(cdc_size < plain_size);
+    REQUIRE(cdc_size < plain_size);
 
     // Extraction identity for the packed archive.
     fs::path out_dir = temp_dir / "out";
     cmd = exe + " x -ol -q " + cdc_arc.string() + " " + out_dir.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
-    assert(file_bytes_equal(base, out_dir / "base.bin"));
-    assert(file_bytes_equal(v1, out_dir / "v1.bin"));
-    assert(file_bytes_equal(v2, out_dir / "v2.bin"));
-    assert(file_bytes_equal(u1, out_dir / "u1.bin"));
-    assert(file_bytes_equal(u2, out_dir / "u2.bin"));
+    REQUIRE(res == 0);
+    REQUIRE(file_bytes_equal(base, out_dir / "base.bin"));
+    REQUIRE(file_bytes_equal(v1, out_dir / "v1.bin"));
+    REQUIRE(file_bytes_equal(v2, out_dir / "v2.bin"));
+    REQUIRE(file_bytes_equal(u1, out_dir / "u1.bin"));
+    REQUIRE(file_bytes_equal(u2, out_dir / "u2.bin"));
 
     fs::remove_all(temp_dir, ec);
     std::cout << "[PASS] cdc_reduction_report_three_numbers (plan test 4)\n";
@@ -1423,36 +1425,36 @@ static void test_cdc_degenerate_inputs() {
                       " " + e2.string() + " " + t1.string() + " " + t2.string() +
                       " > " DEVNULL " 2>&1";
     int res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     // Original order preserved end-to-end (no affinity edges anywhere).
     {
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc));
+        REQUIRE(r.open(arc));
         std::vector<std::string> names;
         for (const auto& e : r.entries()) {
             if (!e.header.is_service) {
                 names.push_back(e.header.file_name);
-                assert(e.header.redir_type == 0); // no affinity edges materialized
+                REQUIRE(e.header.redir_type == 0); // no affinity edges materialized
             }
         }
-        assert(
+        REQUIRE(
             (names == std::vector<std::string>{"big.bin", "e1.bin", "e2.bin", "t1.bin", "t2.bin"}));
     }
 
     cmd = exe + " t " + arc.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     fs::path out_dir = temp_dir / "out";
     cmd = exe + " x -ol -q " + arc.string() + " " + out_dir.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
-    assert(fs::file_size(out_dir / "e1.bin", ec) == 0);
-    assert(fs::file_size(out_dir / "e2.bin", ec) == 0);
-    assert(file_bytes_equal(t1, out_dir / "t1.bin"));
-    assert(file_bytes_equal(t2, out_dir / "t2.bin"));
-    assert(file_bytes_equal(big, out_dir / "big.bin"));
+    REQUIRE(res == 0);
+    REQUIRE(fs::file_size(out_dir / "e1.bin", ec) == 0);
+    REQUIRE(fs::file_size(out_dir / "e2.bin", ec) == 0);
+    REQUIRE(file_bytes_equal(t1, out_dir / "t1.bin"));
+    REQUIRE(file_bytes_equal(t2, out_dir / "t2.bin"));
+    REQUIRE(file_bytes_equal(big, out_dir / "big.bin"));
 
     fs::remove_all(temp_dir, ec);
     std::cout << "[PASS] cdc_degenerate_inputs (plan test 9)\n";
@@ -1523,19 +1525,19 @@ static void test_timestamp_clamped_flag() {
         g << bad_text;
     }
     // 2020-01-01: comfortably inside [1970, 3000].
-    assert(test_set_mtime_unix(ok_file, 1577836800));
+    REQUIRE(test_set_mtime_unix(ok_file, 1577836800));
     const long long ok_mtime = test_read_mtime_unix(ok_file);
-    assert(ok_mtime == 1577836800);
+    REQUIRE(ok_mtime == 1577836800);
 
     // Build the archive in-process for exact header-field control:
     // bad.bin carries ONLY a pre-1970 mtime_win (utime/htime zeroed).
     fs::path arc = temp_dir / "ts.rar";
     {
         std::vector<openrar::archive::ArchiveMutator::PreparedAdd> prepared(2);
-        assert(openrar::archive::ArchiveMutator::prepare_add_file(ok_file, "ok.bin", 0, "",
-                                                                  prepared[0]));
-        assert(openrar::archive::ArchiveMutator::prepare_add_file(bad_file, "bad.bin", 0, "",
-                                                                  prepared[1]));
+        REQUIRE(openrar::archive::ArchiveMutator::prepare_add_file(ok_file, "ok.bin", 0, "",
+                                                                   prepared[0]));
+        REQUIRE(openrar::archive::ArchiveMutator::prepare_add_file(bad_file, "bad.bin", 0, "",
+                                                                   prepared[1]));
         prepared[1].fb.utime_unix = 0;
         prepared[1].fb.htime_is_unix = false;
         prepared[1].fb.htime_mtime_unix = 0;
@@ -1543,8 +1545,8 @@ static void test_timestamp_clamped_flag() {
         const long long pre1970_unix = -315619200LL;
         prepared[1].fb.mtime_win =
             static_cast<unsigned long long>((pre1970_unix + 11644473600LL) * 10000000LL);
-        assert(openrar::archive::ArchiveMutator::write_batch_add(arc, prepared, {}, "", false, {},
-                                                                 false));
+        REQUIRE(openrar::archive::ArchiveMutator::write_batch_add(arc, prepared, {}, "", false, {},
+                                                                  false));
     }
 
     // Extract with the JSON summary; stderr carries the report line.
@@ -1554,27 +1556,27 @@ static void test_timestamp_clamped_flag() {
     std::string cmd = get_cli_path() + " x --json-summary=" + json_path.string() + " " +
                       arc.string() + " " + out_dir.string() + " 2> " + err_path.string();
     int res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     // The out-of-bounds stamp clamped to the bounds minimum (1970-01-01).
-    assert(test_read_mtime_unix(out_dir / "bad.bin") == 0);
+    REQUIRE(test_read_mtime_unix(out_dir / "bad.bin") == 0);
     // The in-bounds stamp restored exactly (file mtime parity fix).
-    assert(test_read_mtime_unix(out_dir / "ok.bin") == ok_mtime);
+    REQUIRE(test_read_mtime_unix(out_dir / "ok.bin") == ok_mtime);
 
     // JSON summary flags the clamped entry; stderr carries the report line.
     {
         std::ifstream j(json_path, std::ios::binary);
-        assert(j);
+        REQUIRE(j);
         std::string json_text((std::istreambuf_iterator<char>(j)),
                               std::istreambuf_iterator<char>());
-        assert(json_text.find("timestamp_clamped") != std::string::npos);
+        REQUIRE(json_text.find("timestamp_clamped") != std::string::npos);
     }
     {
         std::ifstream e(err_path, std::ios::binary);
-        assert(e);
+        REQUIRE(e);
         std::string err_text((std::istreambuf_iterator<char>(e)), std::istreambuf_iterator<char>());
-        assert(err_text.find("timestamp out of bounds, clamped") != std::string::npos);
-        assert(err_text.find("bad.bin") != std::string::npos);
+        REQUIRE(err_text.find("timestamp out of bounds, clamped") != std::string::npos);
+        REQUIRE(err_text.find("bad.bin") != std::string::npos);
     }
 
     fs::remove_all(temp_dir, ec);
@@ -1602,21 +1604,21 @@ static void test_cdc_packed_caps_enforced() {
         std::vector<char> mid = make_noise_bytes(sz / 4, 71);
         std::copy(mid.begin(), mid.end(), data.begin() + static_cast<std::ptrdiff_t>(sz / 4));
         std::ofstream f(v1, std::ios::binary);
-        assert(f);
+        REQUIRE(f);
         f.write(data.data(), static_cast<std::streamsize>(data.size()));
-        assert(f);
+        REQUIRE(f);
     }
     fs::path arc = temp_dir / "caps.rar";
     std::string cmd = get_cli_path() + " a -cdc -md1m -q " + arc.string() + " " + base.string() +
                       " " + v1.string() + " > " DEVNULL " 2>&1";
     int res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     {
         openrar::archive::ArchiveReader r;
         int status = 0;
         std::string detail;
-        assert(r.open_ex(arc, "", status, detail));
+        REQUIRE(r.open_ex(arc, "", status, detail));
 
         // Cumulative cap below the first member's size: must fire mid-decode.
         openrar::archive::ExtractionLimits limits;
@@ -1624,26 +1626,26 @@ static void test_cdc_packed_caps_enforced() {
         openrar::archive::LimitState state;
         std::vector<unsigned char> out;
         int rc = r.extract_entry_to_memory(0, out, 1 << 20, {}, &limits, &state);
-        assert(rc == openrar::archive::RAR_ERR_LIMIT_EXCEEDED);
-        assert(state.total_out <= limits.max_total_output_bytes);
+        REQUIRE(rc == openrar::archive::RAR_ERR_LIMIT_EXCEEDED);
+        REQUIRE(state.total_out <= limits.max_total_output_bytes);
 
         // Fresh reader state, generous cap: full decode succeeds and the
         // bytes are exact — the cap is the only thing that ever stops it.
         openrar::archive::ArchiveReader r2;
-        assert(r2.open_ex(arc, "", status, detail));
+        REQUIRE(r2.open_ex(arc, "", status, detail));
         openrar::archive::ExtractionLimits wide;
         openrar::archive::LimitState wide_state;
         for (size_t i = 0; i < 2; ++i) {
             out.clear();
             rc = r2.extract_entry_to_memory(i, out, 4 << 20, {}, &wide, &wide_state);
-            assert(rc == openrar::archive::RAR_OK);
+            REQUIRE(rc == openrar::archive::RAR_OK);
             const fs::path src = (i == 0) ? base : v1;
             std::ifstream f(src, std::ios::binary);
-            assert(f);
+            REQUIRE(f);
             std::vector<char> raw((std::istreambuf_iterator<char>(f)),
                                   std::istreambuf_iterator<char>());
-            assert(out.size() == raw.size());
-            assert(std::memcmp(out.data(), raw.data(), raw.size()) == 0);
+            REQUIRE(out.size() == raw.size());
+            REQUIRE(std::memcmp(out.data(), raw.data(), raw.size()) == 0);
         }
     }
 
@@ -1673,15 +1675,15 @@ static void test_cdc_packed_rr_repair() {
         std::vector<char> mid = make_noise_bytes(sz / 4, 82);
         std::copy(mid.begin(), mid.end(), data.begin() + static_cast<std::ptrdiff_t>(sz / 3));
         std::ofstream f(v1, std::ios::binary);
-        assert(f);
+        REQUIRE(f);
         f.write(data.data(), static_cast<std::streamsize>(data.size()));
-        assert(f);
+        REQUIRE(f);
     }
     fs::path arc = temp_dir / "cdc_rr.rar";
     std::string exe = get_cli_path();
     // Capture the child's output instead of discarding it. This pack fails
     // intermittently on windows-2022 x64 (docs/followup-cli-tests-flake.md) and
-    // a bare assert(res == 0) hid the cause: the log is printed on failure so
+    // a bare REQUIRE(res == 0) hid the cause: the log is printed on failure so
     // the next occurrence is diagnosable rather than a bare assertion.
     fs::path pack_log = temp_dir / "pack.log";
     std::string cmd = exe + " a -cdc -md1m -rr5 -q " + arc.string() + " " + base.string() + " " +
@@ -1694,7 +1696,7 @@ static void test_cdc_packed_rr_repair() {
                                  std::istreambuf_iterator<char>())
                   << std::endl;
     }
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     // Control: the intact archive tests clean and has an inline RR.
     fs::path test_log = temp_dir / "test.log";
@@ -1707,7 +1709,7 @@ static void test_cdc_packed_rr_repair() {
                                  std::istreambuf_iterator<char>())
                   << std::endl;
     }
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     // Damage the packed region: flip 8 bytes at ~40% of the archive size
     // (headers sit at the front, RR parity at the end). The shipped repair
@@ -1717,43 +1719,43 @@ static void test_cdc_packed_rr_repair() {
     // count NR could theoretically cover.
     {
         std::ifstream in(arc, std::ios::binary);
-        assert(in);
+        REQUIRE(in);
         std::vector<char> buf((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
         in.close();
-        assert(buf.size() > 4 * 1024);
+        REQUIRE(buf.size() > 4 * 1024);
         const size_t pos1 = buf.size() * 2 / 5;
         for (size_t i = 0; i < 8; ++i) {
             buf[pos1 + i] = static_cast<char>(buf[pos1 + i] ^ 0xA5);
         }
         std::ofstream out(arc, std::ios::binary | std::ios::trunc);
-        assert(out);
+        REQUIRE(out);
         out.write(buf.data(), static_cast<std::streamsize>(buf.size()));
-        assert(out);
+        REQUIRE(out);
     }
 
     // The damage is real: integrity check fails before repair.
     cmd = exe + " t " + arc.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res != 0);
+    REQUIRE(res != 0);
 
     // Repair reconstructs the packed solid data from parity.
     cmd = exe + " r " + arc.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     cmd = exe + " t " + arc.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     // Byte-exact recovery of every member.
     fs::path out_dir = temp_dir / "out";
     cmd = exe + " x -q " + arc.string() + " " + out_dir.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    assert(res == 0);
-    assert(file_bytes_equal(base, out_dir / "base.bin"));
-    assert(file_bytes_equal(v1, out_dir / "v1.bin"));
-    assert(file_bytes_equal(u1, out_dir / "u1.bin"));
+    REQUIRE(res == 0);
+    REQUIRE(file_bytes_equal(base, out_dir / "base.bin"));
+    REQUIRE(file_bytes_equal(v1, out_dir / "v1.bin"));
+    REQUIRE(file_bytes_equal(u1, out_dir / "u1.bin"));
 
     fs::remove_all(temp_dir, ec);
     std::cout << "[PASS] cdc_packed_rr_repair (plan test 7)\n";
@@ -1773,7 +1775,7 @@ static void test_oi34_no_archive_no_dispatch() {
     const std::string body(128 * 1024, 'D');
     for (const fsx::path& p : {f1, f2}) {
         std::ofstream f(p, std::ios::binary);
-        assert(f);
+        REQUIRE(f);
         f.write(body.data(), static_cast<std::streamsize>(body.size()));
     }
 
@@ -1784,21 +1786,21 @@ static void test_oi34_no_archive_no_dispatch() {
     std::string cmd = get_cli_path() + " a -oi3 -rr3 -q " + arc.string() + " " + f1.string() + " " +
                       f2.string() + " 2> " + err_log.string();
     const int res = std::system(cmd.c_str());
-    assert(res == 0);
-    assert(!fsx::exists(arc, ec));
+    REQUIRE(res == 0);
+    REQUIRE(!fsx::exists(arc, ec));
     std::ifstream ef(err_log, std::ios::binary);
     std::string err((std::istreambuf_iterator<char>(ef)), std::istreambuf_iterator<char>());
-    assert(err.find("recovery") == std::string::npos);
+    REQUIRE(err.find("recovery") == std::string::npos);
 
     // -oi4 WITH duplicates: exit before any archive is written (no rr).
     fsx::path arc4 = temp_dir / "oi4.rar";
     cmd = get_cli_path() + " a -oi4 -rr3 -q " + arc4.string() + " " + f1.string() + " " +
           f2.string() + " 2> " + err_log.string();
-    assert(std::system(cmd.c_str()) == 0);
-    assert(!fsx::exists(arc4, ec));
+    REQUIRE(std::system(cmd.c_str()) == 0);
+    REQUIRE(!fsx::exists(arc4, ec));
     std::ifstream ef4(err_log, std::ios::binary);
     std::string err4((std::istreambuf_iterator<char>(ef4)), std::istreambuf_iterator<char>());
-    assert(err4.find("recovery") == std::string::npos);
+    REQUIRE(err4.find("recovery") == std::string::npos);
 
     // -oi4 WITHOUT duplicates: normal add flow — the archive IS created and
     // the post-add -rr dispatch runs against the real file successfully.
@@ -1810,8 +1812,8 @@ static void test_oi34_no_archive_no_dispatch() {
     fsx::path arc5 = temp_dir / "oi4clean.rar";
     cmd = get_cli_path() + " a -oi4 -rr3 -q " + arc5.string() + " " + u1.string() +
           " > " DEVNULL " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
-    assert(fsx::exists(arc5, ec));
+    REQUIRE(std::system(cmd.c_str()) == 0);
+    REQUIRE(fsx::exists(arc5, ec));
 
     fsx::remove_all(temp_dir, ec);
     std::cout << "[PASS] oi34_no_archive_no_dispatch: post-add dispatch skipped\n";
@@ -1854,50 +1856,50 @@ static void test_motw_propagation_cli() {
     fsx::path arc = temp_dir / "marked.rar";
     std::string cmd =
         get_cli_path() + " a -q " + arc.string() + " " + src.string() + " > " DEVNULL " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
+    REQUIRE(std::system(cmd.c_str()) == 0);
 
     // Mark the ARCHIVE file itself (the only provenance surface).
     const auto gen3_bytes = openrar::io::generate_zone_identifier_content(3);
     const std::string gen3(gen3_bytes.begin(), gen3_bytes.end());
-    assert(openrar::io::write_alternate_stream(arc, ":Zone.Identifier", gen3.data(), gen3.size()));
+    REQUIRE(openrar::io::write_alternate_stream(arc, ":Zone.Identifier", gen3.data(), gen3.size()));
 
     // Default (-oz implied ON): extracted file carries a fresh mark.
     fsx::path out1 = temp_dir / "out1";
     cmd = get_cli_path() + " x -q " + arc.string() + " " + out1.string() + " > " DEVNULL " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
+    REQUIRE(std::system(cmd.c_str()) == 0);
     std::string got;
-    assert(read_zone_ads_content(out1 / "a.txt", got));
-    assert(got == gen3); // generated locally, byte-exact
+    REQUIRE(read_zone_ads_content(out1 / "a.txt", got));
+    REQUIRE(got == gen3); // generated locally, byte-exact
     std::cout << "[PASS] motw_propagated_from_archive_ads (plan test 9)\n";
 
     // plan test 10: the archive's HostUrl/ReferrerUrl never travel — the
     // extracted mark is exactly the generated content.
     const char* tainted = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=http://evil.example\r\n"
                           "ReferrerUrl=http://referrer.example\r\n";
-    assert(openrar::io::write_alternate_stream(arc, ":Zone.Identifier", tainted, strlen(tainted)));
+    REQUIRE(openrar::io::write_alternate_stream(arc, ":Zone.Identifier", tainted, strlen(tainted)));
     fsx::path out2 = temp_dir / "out2";
     cmd = get_cli_path() + " x -q " + arc.string() + " " + out2.string() + " > " DEVNULL " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
-    assert(read_zone_ads_content(out2 / "a.txt", got));
-    assert(got == gen3);
-    assert(got.find("evil") == std::string::npos);
+    REQUIRE(std::system(cmd.c_str()) == 0);
+    REQUIRE(read_zone_ads_content(out2 / "a.txt", got));
+    REQUIRE(got == gen3);
+    REQUIRE(got.find("evil") == std::string::npos);
     std::cout << "[PASS] motw_hosturl_never_copied (plan test 10)\n";
 
     // plan test 11: -oz- disables propagation entirely.
     fsx::path out3 = temp_dir / "out3";
     cmd =
         get_cli_path() + " x -oz- -q " + arc.string() + " " + out3.string() + " > " DEVNULL " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
-    assert(!read_zone_ads_content(out3 / "a.txt", got));
+    REQUIRE(std::system(cmd.c_str()) == 0);
+    REQUIRE(!read_zone_ads_content(out3 / "a.txt", got));
 
     // Unmarked archive: zero writes.
     fsx::path arc2 = temp_dir / "clean.rar";
     cmd = get_cli_path() + " a -q " + arc2.string() + " " + src.string() + " > " DEVNULL " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
+    REQUIRE(std::system(cmd.c_str()) == 0);
     fsx::path out4 = temp_dir / "out4";
     cmd = get_cli_path() + " x -q " + arc2.string() + " " + out4.string() + " > " DEVNULL " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
-    assert(!read_zone_ads_content(out4 / "a.txt", got));
+    REQUIRE(std::system(cmd.c_str()) == 0);
+    REQUIRE(!read_zone_ads_content(out4 / "a.txt", got));
     std::cout << "[PASS] motw_disabled_by_flag + unmarked-no-writes (plan test 11)\n";
 
     fsx::remove_all(temp_dir, ec);
@@ -1929,7 +1931,7 @@ static void test_zone_stream_never_restored() {
     openrar::archive::ArchiveMutator::PreparedAdd p;
     p.entry_name = "a.txt";
     p.src_path = src;
-    assert(openrar::archive::ArchiveMutator::prepare_add_file(src, "a.txt", 0, "", p));
+    REQUIRE(openrar::archive::ArchiveMutator::prepare_add_file(src, "a.txt", 0, "", p));
     openrar::archive::ArchiveMutator::PreparedAdd zone_child;
     zone_child.fb.is_service = true;
     zone_child.fb.service_type = "STM";
@@ -1949,14 +1951,14 @@ static void test_zone_stream_never_restored() {
     std::vector<openrar::archive::ArchiveMutator::PreparedAdd> batch;
     batch.push_back(std::move(p));
     std::string detail;
-    assert(openrar::archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {},
-                                                                false, {}, detail) == 0);
+    REQUIRE(openrar::archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {},
+                                                                 false, {}, detail) == 0);
 
     // The archive really contains the zone stream (the skip happens at
     // restore, not because the data vanished).
     {
         openrar::archive::ArchiveReader r;
-        assert(r.open(arc));
+        REQUIRE(r.open(arc));
         bool saw_zone_child = false;
         for (const auto& e : r.entries()) {
             if (e.header.is_service && e.header.service_type == "STM" &&
@@ -1965,7 +1967,7 @@ static void test_zone_stream_never_restored() {
                 saw_zone_child = true;
             }
         }
-        assert(saw_zone_child);
+        REQUIRE(saw_zone_child);
     }
 
     // Extract: the file lands, the zone stream does not, and the skip is
@@ -1975,13 +1977,13 @@ static void test_zone_stream_never_restored() {
     // NOTE: no -q here — quiet mode suppresses the W: line this test asserts.
     std::string cmd = get_cli_path() + " x " + arc.string() + " " + out.string() + " 2> " +
                       err_log.string() + " > " DEVNULL "";
-    assert(std::system(cmd.c_str()) == 0);
+    REQUIRE(std::system(cmd.c_str()) == 0);
     std::ifstream ef(err_log, std::ios::binary);
     std::string err((std::istreambuf_iterator<char>(ef)), std::istreambuf_iterator<char>());
-    assert(err.find("zone stream") != std::string::npos);
+    REQUIRE(err.find("zone stream") != std::string::npos);
     std::string got;
-    assert(!read_zone_ads_content(out / "a.txt", got)); // never restored
-    assert(file_bytes_equal(src, out / "a.txt"));
+    REQUIRE(!read_zone_ads_content(out / "a.txt", got)); // never restored
+    REQUIRE(file_bytes_equal(src, out / "a.txt"));
 
     fsx::remove_all(temp_dir, ec);
     std::cout << "[PASS] zone_stream_never_restored (plan test 7, WinRAR-shaped)\n";
@@ -2004,17 +2006,17 @@ static void test_os_excludes_zone_capture() {
         f << "os-zone-body";
     }
     const char* zone = "[ZoneTransfer]\r\nZoneId=3\r\n";
-    assert(openrar::io::write_alternate_stream(src, ":Zone.Identifier", zone, strlen(zone)));
+    REQUIRE(openrar::io::write_alternate_stream(src, ":Zone.Identifier", zone, strlen(zone)));
     const char* note = "hello-note";
-    assert(openrar::io::write_alternate_stream(src, ":note.txt", note, strlen(note)));
+    REQUIRE(openrar::io::write_alternate_stream(src, ":note.txt", note, strlen(note)));
 
     fsx::path arc = temp_dir / "os.rar";
     std::string cmd =
         get_cli_path() + " a -os -q " + arc.string() + " " + src.string() + " > " DEVNULL " 2>&1";
-    assert(std::system(cmd.c_str()) == 0);
+    REQUIRE(std::system(cmd.c_str()) == 0);
 
     openrar::archive::ArchiveReader r;
-    assert(r.open(arc));
+    REQUIRE(r.open(arc));
     bool saw_note = false;
     bool saw_zone = false;
     for (const auto& e : r.entries()) {
@@ -2026,8 +2028,8 @@ static void test_os_excludes_zone_capture() {
             saw_note = true;
         }
     }
-    assert(saw_note);
-    assert(!saw_zone);
+    REQUIRE(saw_note);
+    REQUIRE(!saw_zone);
 
     fsx::remove_all(temp_dir, ec);
     std::cout << "[PASS] os_excludes_zone_at_capture (plan test 8)\n";
@@ -2066,7 +2068,7 @@ static void write_hostile_archive(const std::filesystem::path& arc, const std::s
                                   const std::vector<std::pair<std::string, std::string>>& entries,
                                   const std::string& owner_entry_name) {
     openrar::io::FileStream out;
-    assert(out.open(arc, openrar::io::FileMode::CreateAlways));
+    REQUIRE(out.open(arc, openrar::io::FileMode::CreateAlways));
     using openrar::format::FileBlock;
     using openrar::format::HeaderWriter;
     HeaderWriter::write_signature(out);
@@ -2083,7 +2085,7 @@ static void write_hostile_archive(const std::filesystem::path& arc, const std::s
     openrar::crypto::Crc32 crc;
     crc.update(comment.data(), comment.size());
     cmt.data_crc32 = crc.get();
-    assert(HeaderWriter::write_file_block(out, cmt));
+    REQUIRE(HeaderWriter::write_file_block(out, cmt));
     out.write(comment.data(), comment.size());
     for (const auto& [name, content] : entries) {
         FileBlock fb;
@@ -2098,7 +2100,7 @@ static void write_hostile_archive(const std::filesystem::path& arc, const std::s
             fb.owner_user = owner_user;
             fb.owner_group = owner_group;
         }
-        assert(HeaderWriter::write_file_block(out, fb));
+        REQUIRE(HeaderWriter::write_file_block(out, fb));
         out.write(content.data(), content.size());
     }
     openrar::format::EndArcBlock eb;
@@ -2146,33 +2148,33 @@ void test_hostile_render_surfaces_e2e() {
 
     // l: comment + names render sanitized; zero raw hostile bytes.
     int res = system_exit_code(run_cli_capture("l " + arc.string(), captured));
-    assert(res == 0);
+    REQUIRE(res == 0);
     std::string data = slurp_file(captured);
-    assert(!has_raw_hostile_bytes(data));
-    assert(data.find("?[2Jclear") != std::string::npos); // comment mangled, text kept
-    assert(data.find("inv???exe.txt") != std::string::npos);
-    assert(data.find("x?[4;20Hy.txt") != std::string::npos);
+    REQUIRE(!has_raw_hostile_bytes(data));
+    REQUIRE(data.find("?[2Jclear") != std::string::npos); // comment mangled, text kept
+    REQUIRE(data.find("inv???exe.txt") != std::string::npos);
+    REQUIRE(data.find("x?[4;20Hy.txt") != std::string::npos);
 
     // lb: names only.
     res = system_exit_code(run_cli_capture("lb " + arc.string(), captured));
-    assert(res == 0);
+    REQUIRE(res == 0);
     data = slurp_file(captured);
-    assert(!has_raw_hostile_bytes(data));
-    assert(data.find("inv???exe.txt") != std::string::npos);
+    REQUIRE(!has_raw_hostile_bytes(data));
+    REQUIRE(data.find("inv???exe.txt") != std::string::npos);
 
     // lt: the owner names (FHEXTRA_UOWNER) render sanitized (plan test 3).
     res = system_exit_code(run_cli_capture("lt " + arc.string(), captured));
-    assert(res == 0);
+    REQUIRE(res == 0);
     data = slurp_file(captured);
-    assert(!has_raw_hostile_bytes(data));
-    assert(data.find("?]0;pwned?adm / ev???il??") != std::string::npos);
+    REQUIRE(!has_raw_hostile_bytes(data));
+    REQUIRE(data.find("?]0;pwned?adm / ev???il??") != std::string::npos);
 
     // t: per-file testing lines sanitized.
     res = system_exit_code(run_cli_capture("t " + arc.string(), captured));
-    assert(res == 0);
+    REQUIRE(res == 0);
     data = slurp_file(captured);
-    assert(!has_raw_hostile_bytes(data));
-    assert(data.find("inv???exe.txt") != std::string::npos);
+    REQUIRE(!has_raw_hostile_bytes(data));
+    REQUIRE(data.find("inv???exe.txt") != std::string::npos);
 
     // x: per-file lines sanitized; the invalid-UTF-8 name lands under its
     // lossless %XX escape (displayed ≡ extracted, §4.4). The run also emits
@@ -2180,20 +2182,20 @@ void test_hostile_render_surfaces_e2e() {
     // the raw on-disk name (valid UTF-8, RLO is a legal filename) — the
     // terminal sanitizer owns rendering, the JSON owns on-disk truth.
     res = system_exit_code(run_cli_capture("x " + arc.string() + " " + out_dir.string(), captured));
-    assert(res == 0);
+    REQUIRE(res == 0);
     data = slurp_file(captured);
     const size_t json_at = data.find("{\"schema_version\"");
-    assert(json_at != std::string::npos);
+    REQUIRE(json_at != std::string::npos);
     const std::string human = data.substr(0, json_at);
     const std::string json_doc = data.substr(json_at);
-    assert(!has_raw_hostile_bytes(human));
-    assert(openrar::io::is_valid_utf8(json_doc)); // JSON: valid UTF-8, not '?'-mangled
-    assert(human.find("bad%FF%FE.txt") != std::string::npos);
+    REQUIRE(!has_raw_hostile_bytes(human));
+    REQUIRE(openrar::io::is_valid_utf8(json_doc)); // JSON: valid UTF-8, not '?'-mangled
+    REQUIRE(human.find("bad%FF%FE.txt") != std::string::npos);
     bool found_escaped = false;
     for (const auto& e : fs::directory_iterator(out_dir)) {
         if (e.path().filename().string() == "bad%FF%FE.txt") found_escaped = true;
     }
-    assert(found_escaped);
+    REQUIRE(found_escaped);
 
     fs::remove(arc, ec);
     fs::remove(captured, ec);
@@ -2218,9 +2220,9 @@ void test_json_escape_utf8_validity() {
     he.status = "extracted";
     hostile.entries.push_back(he);
     const std::string j1 = openrar::archive::to_json(hostile);
-    assert(openrar::io::is_valid_utf8(j1));
-    assert(j1.find("\\uFFFD") != std::string::npos);
-    for (const unsigned char c : j1) assert(c < 0x80); // pure ASCII (no raw char)
+    REQUIRE(openrar::io::is_valid_utf8(j1));
+    REQUIRE(j1.find("\\uFFFD") != std::string::npos);
+    for (const unsigned char c : j1) REQUIRE(c < 0x80); // pure ASCII (no raw char)
 
     // Valid non-ASCII (CJK) passes through as valid UTF-8 — not escaped away.
     ExtractionReport cjk;
@@ -2230,15 +2232,15 @@ void test_json_escape_utf8_validity() {
     ce.status = "extracted";
     cjk.entries.push_back(ce);
     const std::string j2 = openrar::archive::to_json(cjk);
-    assert(openrar::io::is_valid_utf8(j2));
-    assert(j2.find("\xe4\xb8\xad\xe6\x96\x87.txt") != std::string::npos);
+    REQUIRE(openrar::io::is_valid_utf8(j2));
+    REQUIRE(j2.find("\xe4\xb8\xad\xe6\x96\x87.txt") != std::string::npos);
 
     // Mixed hostile + legit in one field: only the broken bytes substitute.
     ExtractionReport mixed;
     mixed.archive = std::string("ok") + "\xff" + "\xe4\xb8\xad" + ".rar";
     const std::string j3 = openrar::archive::to_json(mixed);
-    assert(openrar::io::is_valid_utf8(j3));
-    assert(j3.find("ok\\uFFFD\xe4\xb8\xad.rar") != std::string::npos);
+    REQUIRE(openrar::io::is_valid_utf8(j3));
+    REQUIRE(j3.find("ok\\uFFFD\xe4\xb8\xad.rar") != std::string::npos);
     std::cout << "[PASS] json_summary_valid_utf8_hostile_paths (\\uFFFD escape, CJK passthrough)\n";
 }
 
@@ -2304,10 +2306,10 @@ void test_local_path_warnings_sanitized() {
 #endif
     (void)res; // the add may fail overall; the W: line is the contract
     const std::string data = slurp_file(captured);
-    assert(data.find('\x1b') == std::string::npos);
-    assert(data.find('\x07') == std::string::npos);
-    assert(data.find("cannot read") != std::string::npos);
-    assert(data.find("?[3Barn?") != std::string::npos); // sanitized local name
+    REQUIRE(data.find('\x1b') == std::string::npos);
+    REQUIRE(data.find('\x07') == std::string::npos);
+    REQUIRE(data.find("cannot read") != std::string::npos);
+    REQUIRE(data.find("?[3Barn?") != std::string::npos); // sanitized local name
 
     fs::remove_all(dir, ec);
     fs::remove(arc, ec);
@@ -2324,13 +2326,13 @@ void test_vt_capability_follows_sink() {
     openrar::cli::g_quiet_mode = false;
     const bool cout_vt = openrar::cli::is_vt_supported_fd(1);
     const bool cerr_vt = openrar::cli::is_vt_supported_fd(2);
-    assert(openrar::cli::is_vt_supported_for(std::cout) == cout_vt);
-    assert(openrar::cli::is_vt_supported_for(std::cerr) == cerr_vt);
+    REQUIRE(openrar::cli::is_vt_supported_for(std::cout) == cout_vt);
+    REQUIRE(openrar::cli::is_vt_supported_for(std::cerr) == cerr_vt);
     // The suppression switches gate BOTH sinks (L3 contract).
     openrar::cli::g_plain_mode = true;
-    assert(!openrar::cli::is_vt_supported_fd(1) && !openrar::cli::is_vt_supported_fd(2));
+    REQUIRE((!openrar::cli::is_vt_supported_fd(1) && !openrar::cli::is_vt_supported_fd(2)));
     openrar::cli::g_quiet_mode = true;
-    assert(!openrar::cli::is_vt_supported_fd(1));
+    REQUIRE(!openrar::cli::is_vt_supported_fd(1));
     openrar::cli::g_plain_mode = false;
     openrar::cli::g_quiet_mode = false;
     std::cout << "[PASS] vt_capability_follows_sink (fd seam + suppression switches)\n";
@@ -2402,46 +2404,46 @@ void test_renderer_core() {
     // test 8: region stays 4 lines and fits ANY width (20..200).
     for (int width : {20, 40, 80, 200}) {
         const auto lines = tui_split_lines(render_tui(st, width));
-        assert(lines.size() == 4);
+        REQUIRE(lines.size() == 4);
         for (const auto& line : lines) {
-            assert(tui_visible_cols(line) <= static_cast<size_t>(width));
+            REQUIRE(tui_visible_cols(line) <= static_cast<size_t>(width));
         }
     }
     // A 300-char name cannot wrap the region at width 30.
     st.current_name = std::string(300, 'a') + ".bin";
     for (const auto& line : tui_split_lines(render_tui(st, 30))) {
-        assert(tui_visible_cols(line) <= static_cast<size_t>(30));
+        REQUIRE(tui_visible_cols(line) <= static_cast<size_t>(30));
     }
 
     // test 9: CJK name truncates on sequence boundaries ('…' appended, the
     // whole line stays valid UTF-8 — no split bytes).
     st.current_name = "\xe4\xb8\xad\xe6\x96\x87\xe6\x96\x87\xe4\xbb\xb6\xe5\x90\x8d.dat";
     for (const auto& line : tui_split_lines(render_tui(st, 24))) {
-        assert(openrar::io::is_valid_utf8(line));
-        assert(tui_visible_cols(line) <= static_cast<size_t>(24));
+        REQUIRE(openrar::io::is_valid_utf8(line));
+        REQUIRE(tui_visible_cols(line) <= static_cast<size_t>(24));
     }
-    assert(render_tui(st, 24).find("\xe2\x80\xa6") != std::string::npos);
+    REQUIRE(render_tui(st, 24).find("\xe2\x80\xa6") != std::string::npos);
     // A short name is never truncated.
     st.current_name = "ok.txt";
-    assert(render_tui(st, 120).find("ok.txt") != std::string::npos);
-    assert(render_tui(st, 120).find("\xe2\x80\xa6") == std::string::npos);
+    REQUIRE(render_tui(st, 120).find("ok.txt") != std::string::npos);
+    REQUIRE(render_tui(st, 120).find("\xe2\x80\xa6") == std::string::npos);
 
     // §7.1 choke point: the renderer re-sanitizes the name field — a raw
     // ESC-led sequence never appears, the '?'-substituted text does.
     st.current_name = std::string("x") + "\x1b[4;20H" + "y.txt";
     const std::string hostile = render_tui(st, 120);
-    assert(hostile.find("\x1b[4;20H") == std::string::npos);
-    assert(hostile.find("x?[4;20Hy.txt") != std::string::npos);
+    REQUIRE(hostile.find("\x1b[4;20H") == std::string::npos);
+    REQUIRE(hostile.find("x?[4;20Hy.txt") != std::string::npos);
 
     // Spin mode renders exactly ONE line; zero totals do not divide by zero.
     TuiState sp;
     sp.mode = TuiState::Mode::Spin;
     sp.spin_frame = "\xe2\xa0\x8b";
     sp.spin_message = "Scanning files";
-    assert(tui_split_lines(render_tui(sp, 40)).size() == 1);
+    REQUIRE(tui_split_lines(render_tui(sp, 40)).size() == 1);
     TuiState zero;
     zero.badge = "X";
-    assert(!render_tui(zero, 80).empty());
+    REQUIRE(!render_tui(zero, 80).empty());
     std::cout << "[PASS] renderer_width_clamp_no_wrap + truncate_utf8_safe + choke point\n";
 }
 
@@ -2453,7 +2455,7 @@ void test_renderer_core() {
 void test_keyboard_cancel_nontty_nop() {
     auto& kb = openrar::cli::KeyboardCancel::instance();
     kb.arm(false);
-    assert(!kb.active());
+    REQUIRE(!kb.active());
     kb.pause();
     kb.resume();
     kb.arm(true);       // stdin piped under ctest → still disarmed
@@ -2462,8 +2464,8 @@ void test_keyboard_cancel_nontty_nop() {
         kb.resume();
     }
     kb.disarm();
-    assert(!kb.active());
-    assert(!openrar::cli::g_tui_cancel.load());
+    REQUIRE(!kb.active());
+    REQUIRE(!openrar::cli::g_tui_cancel.load());
     std::cout << "[PASS] renderer_cancel_state_machine (non-TTY legs, flag clean)\n";
 }
 
@@ -2510,22 +2512,22 @@ void test_midfile_cancel_via_hooks() {
     }
     int res = system_exit_code(
         run_cli_capture("a -m0 -q " + arc.string() + " " + src.string(), captured));
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     set_cancel_hook("OPENRAR_TEST_CANCEL_AFTER_BYTES", "1048576");
     res = system_exit_code(run_cli_capture("x " + arc.string() + " " + out.string(), captured));
     set_cancel_hook("OPENRAR_TEST_CANCEL_AFTER_BYTES", "");
-    assert(res == 255); // EXIT_USER_BREAK (pinned taxonomy)
+    REQUIRE(res == 255); // EXIT_USER_BREAK (pinned taxonomy)
     const std::string data = slurp_file(captured);
-    assert(data.find("User break") != std::string::npos);
-    assert(data.find("\"aborted\":true") != std::string::npos);
-    assert(!dir_has_tmp_leftovers(out));             // AtomicWriter abandoned + removed
-    assert(!fs::exists(out / "cli_cancel_big.bin")); // never committed
+    REQUIRE(data.find("User break") != std::string::npos);
+    REQUIRE(data.find("\"aborted\":true") != std::string::npos);
+    REQUIRE(!dir_has_tmp_leftovers(out));             // AtomicWriter abandoned + removed
+    REQUIRE(!fs::exists(out / "cli_cancel_big.bin")); // never committed
 
     // Without the hook the same archive extracts cleanly (hook is inert).
     res = system_exit_code(run_cli_capture("x " + arc.string() + " " + out.string(), captured));
-    assert(res == 0);
-    assert(fs::exists(out / "cli_cancel_big.bin"));
+    REQUIRE(res == 0);
+    REQUIRE(fs::exists(out / "cli_cancel_big.bin"));
 
     fs::remove(arc, ec);
     fs::remove(captured, ec);
@@ -2556,18 +2558,18 @@ void test_parallel_cancel_journal_sweep() {
         srcs += " " + f.string();
     }
     int res = system_exit_code(run_cli_capture("a -m0 -q " + arc.string() + srcs, captured));
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     set_cancel_hook("OPENRAR_TEST_CANCEL_AFTER_FILES", "2");
     res =
         system_exit_code(run_cli_capture("x -mt4 " + arc.string() + " " + out.string(), captured));
     set_cancel_hook("OPENRAR_TEST_CANCEL_AFTER_FILES", "");
-    assert(res == 255);
+    REQUIRE(res == 255);
     const std::string data = slurp_file(captured);
-    assert(data.find("User break") != std::string::npos);
-    assert(data.find("\"aborted\":true") != std::string::npos);
-    assert(data.find("\"unprocessed\"") != std::string::npos);
-    assert(!dir_has_tmp_leftovers(out));
+    REQUIRE(data.find("User break") != std::string::npos);
+    REQUIRE(data.find("\"aborted\":true") != std::string::npos);
+    REQUIRE(data.find("\"unprocessed\"") != std::string::npos);
+    REQUIRE(!dir_has_tmp_leftovers(out));
 
     fs::remove(arc, ec);
     fs::remove(captured, ec);
@@ -2584,7 +2586,7 @@ void test_parallel_cancel_journal_sweep() {
 // extraction must fail with the CRC exit code (3) on every engine.
 static void write_bad_crc_archive(const std::filesystem::path& arc) {
     openrar::io::FileStream out;
-    assert(out.open(arc, openrar::io::FileMode::CreateAlways));
+    REQUIRE(out.open(arc, openrar::io::FileMode::CreateAlways));
     openrar::format::HeaderWriter::write_signature(out);
     openrar::format::MainBlock mb;
     openrar::format::HeaderWriter::write_main_block(out, mb);
@@ -2596,7 +2598,7 @@ static void write_bad_crc_archive(const std::filesystem::path& arc) {
     fb.win_size = 0;
     fb.has_crc32 = true;
     fb.data_crc32 = 0xDEADBEEF; // payload below hashes to something else
-    assert(openrar::format::HeaderWriter::write_file_block(out, fb));
+    REQUIRE(openrar::format::HeaderWriter::write_file_block(out, fb));
     out.write("payload!", 8);
     openrar::format::EndArcBlock eb;
     openrar::format::HeaderWriter::write_end_block(out, eb);
@@ -2621,10 +2623,10 @@ void test_non_tty_degradation_contract() {
         payload << "ntty payload";
     }
     fs::remove(clean_arc);
-    assert(openrar::archive::ArchiveMutator::add_file_to_archive(clean_arc, clean_src,
-                                                                 "ntty_one.txt"));
-    assert(openrar::archive::ArchiveMutator::add_file_to_archive(clean_arc, clean_src,
-                                                                 "ntty_two.txt"));
+    REQUIRE(openrar::archive::ArchiveMutator::add_file_to_archive(clean_arc, clean_src,
+                                                                  "ntty_one.txt"));
+    REQUIRE(openrar::archive::ArchiveMutator::add_file_to_archive(clean_arc, clean_src,
+                                                                  "ntty_two.txt"));
 
     fs::path hostile_arc = "build/cli_ntty_hostile.rar";
     fs::remove(hostile_arc);
@@ -2645,7 +2647,7 @@ void test_non_tty_degradation_contract() {
     fs::remove(enc_arc);
     int res = system_exit_code(run_cli_capture(
         "a -hppw123 -q " + enc_arc.string() + " " + clean_src.string(), "build/cli_ntty_e1.txt"));
-    assert(res == 0);
+    REQUIRE(res == 0);
 
     auto run = [&](const std::string& args, const std::filesystem::path& out_f,
                    const std::filesystem::path& err_f) {
@@ -2658,7 +2660,7 @@ void test_non_tty_degradation_contract() {
         return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     };
     auto assert_no_esc = [](const std::string& data) {
-        assert(data.find('\x1b') == std::string::npos);
+        REQUIRE(data.find('\x1b') == std::string::npos);
     };
 
     fs::path out1 = "build/cli_ntty_o1.txt";
@@ -2678,15 +2680,15 @@ void test_non_tty_degradation_contract() {
             std::error_code ec2;
             fs::remove_all(*ods[i], ec2);
             res = run("x " + hostile_arc.string() + " " + ods[i]->string(), *outs[i], *errs[i]);
-            assert(res == 0);
+            REQUIRE(res == 0);
             assert_no_esc(slurp(*outs[i]));
             assert_no_esc(slurp(*errs[i]));
             // Non-JSON mode: per-file lines on stdout, warnings on stderr.
-            assert(slurp(*outs[i]).find("Extracting") != std::string::npos);
-            assert(slurp(*outs[i]).find("inv???exe.txt") != std::string::npos);
+            REQUIRE(slurp(*outs[i]).find("Extracting") != std::string::npos);
+            REQUIRE(slurp(*outs[i]).find("inv???exe.txt") != std::string::npos);
         }
     }
-    assert(slurp(err1) == slurp(err2));
+    REQUIRE(slurp(err1) == slurp(err2));
 
     // test 16: exit-code parity across legs — 0, 13, no-mask nonzero, 11, 3.
     std::error_code ec;
@@ -2694,35 +2696,35 @@ void test_non_tty_degradation_contract() {
     fs::remove_all(outd2, ec);
     const int rc_clean_a = run("x " + clean_arc.string() + " " + outd1.string(), out1, err1);
     const int rc_clean_b = run("x " + clean_arc.string() + " " + outd2.string(), out2, err2);
-    assert(rc_clean_a == 0 && rc_clean_b == rc_clean_a);
+    REQUIRE((rc_clean_a == 0 && rc_clean_b == rc_clean_a));
     const int rc_garbage_a = run("x " + garbage.string() + " " + outd1.string(), out1, err1);
     const int rc_garbage_b = run("x " + garbage.string() + " " + outd2.string(), out2, err2);
-    assert(rc_garbage_a == 13 && rc_garbage_b == rc_garbage_a);
+    REQUIRE((rc_garbage_a == 13 && rc_garbage_b == rc_garbage_a));
     const int rc_nomask_a =
         run("x " + clean_arc.string() + " " + outd1.string() + " *.nomask", out1, err1);
     const int rc_nomask_b =
         run("x " + clean_arc.string() + " " + outd2.string() + " *.nomask", out2, err2);
-    assert(rc_nomask_a != 0 && rc_nomask_b == rc_nomask_a);
+    REQUIRE((rc_nomask_a != 0 && rc_nomask_b == rc_nomask_a));
     const int rc_pw_a = run("x -pwrong " + enc_arc.string() + " " + outd1.string(), out1, err1);
     const int rc_pw_b = run("x -pwrong " + enc_arc.string() + " " + outd2.string(), out2, err2);
-    assert(rc_pw_a == 11 && rc_pw_b == rc_pw_a);
+    REQUIRE((rc_pw_a == 11 && rc_pw_b == rc_pw_a));
     const int rc_crc_a = run("x " + badcrc_arc.string() + " " + outd1.string(), out1, err1);
     const int rc_crc_b = run("x " + badcrc_arc.string() + " " + outd2.string(), out2, err2);
     // Parity only: the disk-x path reports corrupt payload as fatal (2) —
     // the CRC=3 mapping is pinned on the p/t legs (interop stage 15).
-    assert(rc_crc_a != 0 && rc_crc_b == rc_crc_a);
+    REQUIRE((rc_crc_a != 0 && rc_crc_b == rc_crc_a));
 
     // test 17: -q silences the human output (stderr empty; stdout carries the
     // always-on machine JSON summary only); -plain renders but never emits
     // VT bytes (same as default in CI).
     fs::remove_all(outd1, ec);
     res = run("x -q " + clean_arc.string() + " " + outd1.string(), out1, err1);
-    assert(res == 0);
-    assert(slurp(err1).empty());
-    assert(slurp(out1).find("{\"schema_version\"") == 0);
+    REQUIRE(res == 0);
+    REQUIRE(slurp(err1).empty());
+    REQUIRE(slurp(out1).find("{\"schema_version\"") == 0);
     fs::remove_all(outd1, ec);
     res = run("x -plain " + clean_arc.string() + " " + outd1.string(), out1, err1);
-    assert(res == 0);
+    REQUIRE(res == 0);
     assert_no_esc(slurp(out1));
     assert_no_esc(slurp(err1));
 
@@ -2730,11 +2732,11 @@ void test_non_tty_degradation_contract() {
     // JSON document; humans live on stderr.
     fs::remove_all(outd1, ec);
     res = run("x --json-summary " + hostile_arc.string() + " " + outd1.string(), out1, err1);
-    assert(res == 0);
+    REQUIRE(res == 0);
     const std::string json_out = slurp(out1);
-    assert(json_out.find("{\"schema_version\"") == 0);
-    assert(openrar::io::is_valid_utf8(json_out));
-    assert(slurp(err1).find("Extracting from") != std::string::npos);
+    REQUIRE(json_out.find("{\"schema_version\"") == 0);
+    REQUIRE(openrar::io::is_valid_utf8(json_out));
+    REQUIRE(slurp(err1).find("Extracting from") != std::string::npos);
 
     // test 19: `p` prints data bytes to stdout (pipe semantics — exempt) and
     // its error lines carry sanitized names (the CRC path prints one).
@@ -2742,15 +2744,15 @@ void test_non_tty_degradation_contract() {
         const std::string cmd = get_cli_path() + " p " + hostile_arc.string() +
                                 " < " DEVNULL " > " + out1.string() + " 2> " + err1.string();
         res = system_exit_code(std::system(cmd.c_str()));
-        assert(res == 0);
+        REQUIRE(res == 0);
         assert_no_esc(slurp(err1));
         const std::string cmd2 = get_cli_path() + " p " + badcrc_arc.string() +
                                  " < " DEVNULL " > " + out2.string() + " 2> " + err2.string();
         res = system_exit_code(std::system(cmd2.c_str()));
-        assert(res == 3);
+        REQUIRE(res == 3);
         const std::string perr = slurp(err2);
         assert_no_esc(perr);
-        assert(perr.find("Checksum error in crc.txt") != std::string::npos);
+        REQUIRE(perr.find("Checksum error in crc.txt") != std::string::npos);
     }
 
     // cleanup
@@ -2801,38 +2803,38 @@ void test_bench_json_schema_roundtrip() {
     const std::string cmd = bench + " --json --quick --suite cdc_fingerprint < " DEVNULL " > " +
                             out.string() + " 2> " + err.string();
     const int res = system_exit_code(std::system(cmd.c_str()));
-    assert(res == 0);
+    REQUIRE(res == 0);
     const std::string doc = slurp_file(out);
-    assert(doc.find("{\"schema_version\":1") == 0);
-    assert(doc.find("\"host\":{") != std::string::npos);
-    assert(doc.find("\"cpu\":") != std::string::npos);
-    assert(doc.find("\"cores\":") != std::string::npos);
-    assert(doc.find("\"protocol\":{") != std::string::npos);
-    assert(doc.find("\"warmup\":1") != std::string::npos);
-    assert(doc.find("\"spread_pct\":") != std::string::npos);
-    assert(doc.find("\"passes\":[") != std::string::npos);
-    assert(openrar::io::is_valid_utf8(doc));
+    REQUIRE(doc.find("{\"schema_version\":1") == 0);
+    REQUIRE(doc.find("\"host\":{") != std::string::npos);
+    REQUIRE(doc.find("\"cpu\":") != std::string::npos);
+    REQUIRE(doc.find("\"cores\":") != std::string::npos);
+    REQUIRE(doc.find("\"protocol\":{") != std::string::npos);
+    REQUIRE(doc.find("\"warmup\":1") != std::string::npos);
+    REQUIRE(doc.find("\"spread_pct\":") != std::string::npos);
+    REQUIRE(doc.find("\"passes\":[") != std::string::npos);
+    REQUIRE(openrar::io::is_valid_utf8(doc));
     // stdout purity: nothing but the JSON document on stdout.
     for (const auto& line : tui_split_lines(doc)) {
-        assert(line.empty() || line.rfind("{\"schema_version\"", 0) == 0 ||
-               line.rfind(",\"host\"", 0) == 0 || line.rfind(",\"protocol\"", 0) == 0 ||
-               line.rfind(",\"suites\"", 0) == 0 || line.rfind("  {", 0) == 0 ||
-               line.rfind("]") == 0 || line == "}" || line == "}");
+        REQUIRE((line.empty() || line.rfind("{\"schema_version\"", 0) == 0 ||
+                 line.rfind(",\"host\"", 0) == 0 || line.rfind(",\"protocol\"", 0) == 0 ||
+                 line.rfind(",\"suites\"", 0) == 0 || line.rfind("  {", 0) == 0 ||
+                 line.rfind("]") == 0 || line == "}" || line == "}"));
     }
 
     // --strict deterministic legs via the threshold hook: a negative
     // threshold always fires (exit 1); a huge one never does (exit 0).
     const std::string strict_bad = bench + " --strict --spread-threshold-pct -1 --suite " +
                                    "cdc_fingerprint < " DEVNULL " > " + DEVNULL " 2>&1";
-    assert(system_exit_code(std::system(strict_bad.c_str())) == 1);
+    REQUIRE(system_exit_code(std::system(strict_bad.c_str())) == 1);
     const std::string strict_ok =
         bench + " --strict --spread-threshold-pct 1000000 --suite cdc_fingerprint < " DEVNULL
                 " > " DEVNULL " 2>&1";
-    assert(system_exit_code(std::system(strict_ok.c_str())) == 0);
+    REQUIRE(system_exit_code(std::system(strict_ok.c_str())) == 0);
 
     // Unknown suite name is a usage error (exit 2).
     const std::string bad_suite = bench + " --suite no_such_suite < " DEVNULL " > " DEVNULL " 2>&1";
-    assert(system_exit_code(std::system(bad_suite.c_str())) == 2);
+    REQUIRE(system_exit_code(std::system(bad_suite.c_str())) == 2);
 
     fs::remove(out, ec);
     fs::remove(err, ec);
@@ -2854,77 +2856,69 @@ void test_bench_cdc_three_number_suite() {
         "--suite cdc_three_number_cdc_packed < " DEVNULL " > " +
         out.string() + " 2>&1";
     const int res = system_exit_code(std::system(cmd.c_str()));
-    assert(res == 0);
+    REQUIRE(res == 0);
     const std::string data = slurp_file(out);
     auto value_of = [&data](const std::string& name) -> double {
         const size_t at = data.find(name);
-        assert(at != std::string::npos);
+        REQUIRE(at != std::string::npos);
         const size_t eq = data.find('=', at);
         return std::atof(data.c_str() + eq + 1);
     };
     const double store = value_of("cdc_three_number_store");
     const double plain = value_of("cdc_three_number_plain_solid");
     const double packed = value_of("cdc_three_number_cdc_packed");
-    assert(store > plain);
-    assert(plain > packed); // the reduction direction (plan test 4, bench leg)
-    assert(data.find("(spread 0.0%)") != std::string::npos); // deterministic bytes
+    REQUIRE(store > plain);
+    REQUIRE(plain > packed); // the reduction direction (plan test 4, bench leg)
+    REQUIRE(data.find("(spread 0.0%)") != std::string::npos); // deterministic bytes
     fs::remove(out, ec);
     std::cout << "[PASS] bench_cdc_three_number_suite (store > plain-solid > CDC-packed)\n";
 }
 
-int main() {
-#ifdef _MSC_VER
-    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
-    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
-    // test process forever while ctest moves on, leaving file locks behind.
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
-    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
-    // process still hangs after printing the assert.
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    std::cout << "Running Clean-Room Milestone 7 CLI Verification...\n";
-    test_cli_help();
-    test_cli_version();
-    test_cli_sfx();
-    test_cli_hardlinks();
-    test_cli_lifecycle();
-    test_cli_quiet_list_missing_archive_fails();
-    test_cli_list_sanitizes_esc_entry_name();
-    test_cli_mt_batch_equivalence();
-    test_cli_overwrite_modes();
-    test_cli_help_switch_parity();
-    test_cli_v1_10_features();
-    test_cli_dict_size_flag();
-    test_oi_creation_side_emitted();
-    test_cdc_filecopy_precedence();
-    test_oi_switch_modes();
-    test_cdc_packing_order_stable();
-    test_cdc_index_cap_falls_back_reported();
-    test_cdc_reduction_report_three_numbers();
-    test_cdc_degenerate_inputs();
-    test_timestamp_clamped_flag();
-    test_cdc_packed_caps_enforced();
-    test_cdc_packed_rr_repair();
-    test_oi34_no_archive_no_dispatch();
-    test_motw_propagation_cli();
-    test_zone_stream_never_restored();
-    test_os_excludes_zone_capture();
-    test_sanitize_for_display();
-    test_hostile_render_surfaces_e2e();
-    test_json_escape_utf8_validity();
-    test_local_path_warnings_sanitized();
-    test_vt_capability_follows_sink();
-    test_renderer_core();
-    test_keyboard_cancel_nontty_nop();
-    test_midfile_cancel_via_hooks();
-    test_parallel_cancel_journal_sweep();
-    test_non_tty_degradation_contract();
-    test_bench_json_schema_roundtrip();
-    test_bench_cdc_three_number_suite();
-    std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_cli_help", test_cli_help, false},
+    {"test_cli_version", test_cli_version, false},
+    {"test_cli_sfx", test_cli_sfx, false},
+    {"test_cli_hardlinks", test_cli_hardlinks, false},
+    {"test_cli_lifecycle", test_cli_lifecycle, false},
+    {"test_cli_quiet_list_missing_archive_fails", test_cli_quiet_list_missing_archive_fails, false},
+    {"test_cli_list_sanitizes_esc_entry_name", test_cli_list_sanitizes_esc_entry_name, false},
+    {"test_cli_mt_batch_equivalence", test_cli_mt_batch_equivalence, false},
+    {"test_cli_overwrite_modes", test_cli_overwrite_modes, false},
+    {"test_cli_help_switch_parity", test_cli_help_switch_parity, false},
+    {"test_cli_v1_10_features", test_cli_v1_10_features, false},
+    {"test_cli_dict_size_flag", test_cli_dict_size_flag, false},
+    {"test_oi_creation_side_emitted", test_oi_creation_side_emitted, false},
+    {"test_cdc_filecopy_precedence", test_cdc_filecopy_precedence, false},
+    {"test_oi_switch_modes", test_oi_switch_modes, false},
+    {"test_cdc_packing_order_stable", test_cdc_packing_order_stable, false},
+    {"test_cdc_index_cap_falls_back_reported", test_cdc_index_cap_falls_back_reported, false},
+    {"test_cdc_reduction_report_three_numbers", test_cdc_reduction_report_three_numbers, false},
+    {"test_cdc_degenerate_inputs", test_cdc_degenerate_inputs, false},
+    {"test_timestamp_clamped_flag", test_timestamp_clamped_flag, false},
+    {"test_cdc_packed_caps_enforced", test_cdc_packed_caps_enforced, false},
+    {"test_cdc_packed_rr_repair", test_cdc_packed_rr_repair, false},
+    {"test_oi34_no_archive_no_dispatch", test_oi34_no_archive_no_dispatch, false},
+    {"test_motw_propagation_cli", test_motw_propagation_cli, false},
+    {"test_zone_stream_never_restored", test_zone_stream_never_restored, false},
+    {"test_os_excludes_zone_capture", test_os_excludes_zone_capture, false},
+    {"test_sanitize_for_display", test_sanitize_for_display, false},
+    {"test_hostile_render_surfaces_e2e", test_hostile_render_surfaces_e2e, false},
+    {"test_json_escape_utf8_validity", test_json_escape_utf8_validity, false},
+    {"test_local_path_warnings_sanitized", test_local_path_warnings_sanitized, false},
+    {"test_vt_capability_follows_sink", test_vt_capability_follows_sink, false},
+    {"test_renderer_core", test_renderer_core, false},
+    {"test_keyboard_cancel_nontty_nop", test_keyboard_cancel_nontty_nop, false},
+    {"test_midfile_cancel_via_hooks", test_midfile_cancel_via_hooks, false},
+    {"test_parallel_cancel_journal_sweep", test_parallel_cancel_journal_sweep, false},
+    {"test_non_tty_degradation_contract", test_non_tty_degradation_contract, false},
+    {"test_bench_json_schema_roundtrip", test_bench_json_schema_roundtrip, false},
+    {"test_bench_cdc_three_number_suite", test_bench_cdc_three_number_suite, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All Milestone 7 CLI Primitives PASSED!\n";
+    return rc;
 }

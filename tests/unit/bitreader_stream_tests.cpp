@@ -23,6 +23,8 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 using namespace openrar;
 using namespace openrar::compress;
@@ -88,7 +90,7 @@ void differential(const char* label, size_t data_len, size_t chunk, uint32_t see
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
     // Chunk sizes around the staging-buffer geometry: exactly the 64 KiB the
@@ -124,18 +126,30 @@ int main() {
         core::uint64 a = stream.peek_bits64(20);
         core::uint64 b = whole.peek_bits64(20);
         if (a != b || a != 0) {
-            std::cout << "[FAIL] eof-pad: stream=" << a << " whole=" << b << "\n";
+            if (!openrar::test::last_run_was_filtered())
+                std::cout << "[FAIL] eof-pad: stream=" << a << " whole=" << b << "\n";
             ++g_failures;
         } else if (stream.bit_pos() != whole.bit_pos()) {
             std::cout << "[FAIL] eof-pad: bit_pos " << stream.bit_pos() << " vs " << whole.bit_pos()
                       << "\n";
             ++g_failures;
         } else {
-            std::cout << "eof-pad: OK\n";
+            if (!openrar::test::last_run_was_filtered()) std::cout << "eof-pad: OK\n";
         }
     }
 
-    if (g_failures != 0) return 1;
-    std::cout << "All BitReader variant probes PASSED\n";
-    return 0;
+    if (g_failures != 0) throw std::logic_error("BitReader variant probes failed");
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "All BitReader variant probes PASSED\n";
+    return;
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }
