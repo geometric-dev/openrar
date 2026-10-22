@@ -77,6 +77,10 @@ public:
     // generic parse failure.
     bool saw_crypt_header() const { return saw_crypt_header_; }
     bool crypt_version_unsupported() const { return crypt_unsupported_; }
+    // M-12: an entry's declared data area ran past the end of its volume
+    // (truncated archive). open() still lists the clamped entry so repair
+    // and test can localise damage; open_ex(strict_volumes) fails instead.
+    bool has_truncated_data() const { return truncated_data_; }
     core::uint64 sfx_offset() const { return sfx_offset_; }
     // Path this reader was opened from (the first volume for multi-volume
     // sets) — collision-check input for the DLL mutation surface.
@@ -382,6 +386,7 @@ private:
     void* duplicate_attached_handle() const;
     bool saw_crypt_header_{false};
     bool crypt_unsupported_{false};
+    bool truncated_data_{false}; // M-12
     core::uint64 sfx_offset_{0};
     unsigned decode_threads_{0}; // 0 = D9 default (2); 1 = sequential
     format::MainBlock main_block_;

@@ -108,23 +108,24 @@ bool should_use_parallel_decode(size_t pack_size, size_t dest_size, size_t win_s
 
 bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size_t win_size,
                   Decompressor50::OutputCallback flush_cb, ParallelDecodeDiag* diag,
-                  unsigned requested_threads) {
+                  unsigned requested_threads, bool extra_dist) {
     if (diag) *diag = ParallelDecodeDiag{};
     if (flush_cb == nullptr || src == nullptr || src_size == 0 || dest_size == 0) return false;
 
     auto run_sequential = [&]() {
-        Decompressor50 seq(win_size);
+        Decompressor50 seq(win_size, extra_dist);
         return seq.decompress(src, src_size, dest_size, /*solid=*/false, flush_cb);
     };
 
     unsigned workers = 0;
-    if (!should_use_parallel_decode(src_size, dest_size, win_size, /*solid_entry=*/false,
+    if (extra_dist ||
+        !should_use_parallel_decode(src_size, dest_size, win_size, /*solid_entry=*/false,
                                     requested_threads, &workers)) {
         return run_sequential();
     }
 
     // ── Phase 0: pre-scan (fail => sequential, F1) ─────────────────────────
-    Decompressor50 ps(win_size);
+    Decompressor50 ps(win_size, extra_dist);
     Decompressor50::PrescanTimeline tl;
     if (!ps.prescan_member(src, src_size, tl)) {
         if (diag) diag->fell_back = true;
@@ -229,7 +230,7 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
         }
     };
     auto worker_body = [&](unsigned w) {
-        Decompressor50 wdec(win_size);
+        Decompressor50 wdec(win_size, extra_dist);
         for (size_t s = w; s < nspans; s += workers) {
             // Decode freely; publish through the bounded window.
             const uint32_t first = span_first[s], last = span_last[s];
@@ -292,7 +293,7 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
     // ── Phase 2: the applier on the caller's thread ────────────────────────
     const auto t_start = std::chrono::steady_clock::now();
     if (trace) std::fprintf(stderr, "[pd] applier starting\n");
-    Decompressor50 applier(win_size);
+    Decompressor50 applier(win_size, extra_dist);
     bool applied_ok = applier.apply_begin();
     if (trace) std::fprintf(stderr, "[pd] applier begin ok=%d\n", (int)applied_ok);
     size_t total = 0;

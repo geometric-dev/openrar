@@ -58,6 +58,35 @@ inline void write_le64(void* ptr, uint64 val) {
     write_le32(p + 4, static_cast<uint32>((val >> 32) & 0xFFFFFFFF));
 }
 
+// Host byte order. MSVC targets are all little-endian; GCC/Clang expose
+// __BYTE_ORDER__. C++17 has no std::endian.
+#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) &&                                    \
+    __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define OPENRAR_BIG_ENDIAN 1
+#endif
+
+// Hot-path little-endian loads (C-07): one unaligned load (memcpy) on LE
+// hosts, plus a byte swap on BE hosts. Use these wherever the VALUE's byte
+// order matters (ctz-based first-mismatch search, rolling-hash extraction);
+// read_le32/read_le64 above are the portable but byte-wise equivalents.
+inline uint32 load_le32(const void* ptr) {
+    uint32 v;
+    std::memcpy(&v, ptr, 4);
+#ifdef OPENRAR_BIG_ENDIAN
+    v = __builtin_bswap32(v);
+#endif
+    return v;
+}
+
+inline uint64 load_le64(const void* ptr) {
+    uint64 v;
+    std::memcpy(&v, ptr, 8);
+#ifdef OPENRAR_BIG_ENDIAN
+    v = __builtin_bswap64(v);
+#endif
+    return v;
+}
+
 inline uint32 read_be32(const void* ptr) {
     const auto* p = static_cast<const uint8*>(ptr);
     return (static_cast<uint32>(p[0]) << 24) | (static_cast<uint32>(p[1]) << 16) |

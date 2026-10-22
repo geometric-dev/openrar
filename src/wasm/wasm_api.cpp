@@ -1,4 +1,5 @@
 #include "wasm_api.hpp"
+#include "../api/abi_contract.hpp"
 #include "../compress/compressor50.hpp"
 #include "../compress/decompressor50.hpp"
 #include "../compress/stream_encoder.hpp"
@@ -217,12 +218,9 @@ int openrar_stream_finish(uint32_t handle, uint8_t** out_ptr, size_t* out_len) {
         if (!enc) return -1;
         std::vector<uint8_t> out;
         if (!enc->finish(out)) return -1;
-        uint8_t* buf = static_cast<uint8_t*>(std::malloc(out.size() > 0 ? out.size() : 1));
-        if (!buf && !out.empty()) return -1;
-        if (!out.empty()) std::memcpy(buf, out.data(), out.size());
-        *out_ptr = out.empty() ? nullptr : buf;
+        *out_ptr = openrar::api::heap_dup(out.data(), out.size());
+        if (!*out_ptr && !out.empty()) return -1;
         *out_len = out.size();
-        if (out.empty()) std::free(buf);
         return 0;
     } catch (...) {
         return -1;
@@ -310,12 +308,9 @@ int openrar_stream_decompress_finish(uint32_t handle, uint8_t** out_ptr, size_t*
         if (!dec) return -1;
         std::vector<uint8_t> out;
         if (!dec->finish(out)) return -1;
-        uint8_t* buf = static_cast<uint8_t*>(std::malloc(out.size() > 0 ? out.size() : 1));
-        if (!buf && !out.empty()) return -1;
-        if (!out.empty()) std::memcpy(buf, out.data(), out.size());
-        *out_ptr = out.empty() ? nullptr : buf;
+        *out_ptr = openrar::api::heap_dup(out.data(), out.size());
+        if (!*out_ptr && !out.empty()) return -1;
         *out_len = out.size();
-        if (out.empty()) std::free(buf);
         return 0;
     } catch (...) {
         return -1;

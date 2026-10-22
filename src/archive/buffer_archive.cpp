@@ -338,6 +338,7 @@ WalkStatus walk_headers(Source& src, const WalkHooks& hooks,
             e.packed_size = fb.pack_size < 0 ? 0 : static_cast<uint64_t>(fb.pack_size);
             e.method = static_cast<int>(fb.method);
             e.win_size = fb.win_size;
+            e.extra_dist = fb.extra_dist;
             e.is_encrypted = fb.is_encrypted;
             e.header_offset = head_start;
             e.data_offset = head_end;
@@ -686,7 +687,7 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
         // Use the window written into the file header. If 0 (which shouldn't happen
         // for valid RAR5 files but might in edge cases), default to 32 MiB.
         size_t win = e.win_size > 0 ? static_cast<size_t>(e.win_size) : 32 * 1024 * 1024;
-        compress::Decompressor50 unpacker(win);
+        compress::Decompressor50 unpacker(win, e.extra_dist);
         if (!unpacker.decompress_to_vector(payload, static_cast<size_t>(e.data_size), out)) {
             if (unpacker.last_error() == compress::DecompressErrorCode::AllocationFailed) {
                 return RAR_ERR_NOMEM;

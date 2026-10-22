@@ -72,7 +72,6 @@ private:
     core::uint32 get_bits(unsigned int count); // count <= 24 (strict)
     void consume(unsigned int count);
     void align_byte();
-    bool read_byte(core::byte& out); // byte-agnostic single byte
 
     // Zero-fill peek (Huffman only): resolves against zeros at EOF; the
     // resolved code length is validated against real availability.
@@ -138,15 +137,20 @@ private:
 
     InputFn input_fn_;
     SinkFn sink_;
-    std::vector<core::byte> out_buf_;
-    size_t out_len_{0};
 
-    // sliding window (32 KiB ring per RFC 1951)
+    // H-13: one linear buffer serves as both the RFC 1951 32 KiB window and
+    // the 64 KiB output chunk: [0, WINDOW_SIZE) holds the history preceding
+    // the current chunk, [WINDOW_SIZE, WINDOW_SIZE + out_len_) is the chunk
+    // being produced. Every output byte is written once (the old ring window
+    // + separate out_buf_ wrote each byte twice), match sources are plain
+    // pointers (no ring wrap), and after each flush the last 32 KiB slide
+    // down to become the next chunk's history.
     static constexpr size_t WINDOW_SIZE = 32768;
-    static constexpr size_t WINDOW_MASK = WINDOW_SIZE - 1;
-    std::vector<core::byte> window_;
-    size_t window_pos_{0}; // next write slot
-    size_t window_fill_{0};
+    static constexpr size_t OUT_CHUNK = 65536;
+    std::vector<core::byte> buf_;
+    size_t out_len_{0};
+    size_t window_fill_{0}; // bytes of valid history (capped at WINDOW_SIZE)
+    core::byte* out_ptr() { return buf_.data() + WINDOW_SIZE + out_len_; }
 
     bool have_fixed_{false};
     HuffmanTable fixed_litlen_;

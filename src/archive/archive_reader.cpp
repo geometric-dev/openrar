@@ -14,6 +14,7 @@
 #include "../crypto/blake2sp.hpp"
 #include "../crypto/aes256.hpp"
 #include "../crypto/pbkdf2.hpp"
+#include "../crypto/sha256.hpp"
 #include "../compress/parallel_decode.hpp"
 #include "../compress/decompressor50.hpp"
 
@@ -53,6 +54,23 @@ namespace {
 void secure_zero(void* p, size_t n) {
     volatile core::byte* v = static_cast<volatile core::byte*>(p);
     while (n--) *v++ = 0;
+}
+
+// H-15: per-file encryption gate, mirroring HeaderCryptReader::init. Only
+// crypt version 0 (AES-256/PBKDF2) exists; anything else is refused rather
+// than decrypted under the wrong scheme.
+bool supported_file_crypt(const format::FileBlock& h) {
+    return h.crypt_version == 0 && h.lg2_count < 25;
+}
+
+// H-15: a stored PswCheck is trusted only when its SHA-256 checksum (first
+// 4 bytes) verifies. A damaged check field is treated as absent - the data
+// checksum then decides - instead of producing a false "bad password".
+bool trusted_psw_check(const format::FileBlock& h) {
+    if (!h.has_psw_check) return false;
+    core::byte digest[crypto::Sha256::DIGEST_SIZE];
+    crypto::Sha256::compute(h.psw_check.data(), h.psw_check.size(), digest);
+    return std::memcmp(digest, h.psw_check_csum.data(), h.psw_check_csum.size()) == 0;
 }
 
 // Filename pattern check for RAR5 new-numbering sets: ".partNN." with NN
@@ -744,6 +762,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
         detail_out = std::move(detail);
         return false;
     };
+    truncated_data_ = false; // M-12: per-scan
     LimitState local_state;
     if (!state) state = &local_state;
     // Preserve original stream for single-volume compat, but multivolume scan uses per-volume streams
@@ -1240,7 +1259,13 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                 e.data_size = admit;
                 e.extents.push_back({vpath, e.data_offset, admit});
                 raw_out.push_back(std::move(e));
-                if (data_size > avail) break;
+                if (data_size > avail) {
+                    // M-12: recorded so strict opens fail fast (matching
+                    // BufferArchive::list's RAR_ERR_TRUNCATED); the tolerant
+                    // open() keeps listing the clamped entry for repair/test.
+                    truncated_data_ = true;
+                    break;
+                }
                 if (admit > 0) {
                     vs.seek(static_cast<core::int64>(admit), io::SeekOrigin::Current);
                 }
@@ -1431,6 +1456,8 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
     if (status_out == RAR_ERR_LIMIT_EXCEEDED) return false;
     if (missing_required && strict_volumes)
         return fail(RAR_ERR_MISSING_VOLUME, "missing volume: " + io::u8_str(missing_volume_path_));
+    if (truncated_data_ && strict_volumes)
+        return fail(RAR_ERR_TRUNCATED, "entry data extends past the end of the volume");
     if (!first_main_read) {
         // A HEAD_CRYPT block that could not be passed (no password, wrong
         // password, unknown crypto version) dies before the main header —
@@ -1538,11 +1565,11 @@ size_t ArchiveReader::solid_run_head(size_t idx) const {
 int ArchiveReader::derive_entry_keys(const ArchiveEntry& entry, crypto::Rar5Keys& keys) {
     if (!entry.header.is_encrypted) return RAR_OK;
     if (password_.empty()) return RAR_ERR_ENCRYPTED;
-    if (entry.header.lg2_count >= 25) return RAR_ERR_UNSUPPORTED_FEATURE;
+    if (!supported_file_crypt(entry.header)) return RAR_ERR_UNSUPPORTED_FEATURE; // H-15
     crypto::Pbkdf2Rar5::derive_keys(password_, entry.header.salt.data(), 16,
                                     1U << entry.header.lg2_count, keys);
-    if (entry.header.has_psw_check && !crypto::Pbkdf2Rar5::constant_time_equal(
-                                          keys.psw_check, entry.header.psw_check.data(), 8)) {
+    if (trusted_psw_check(entry.header) && !crypto::Pbkdf2Rar5::constant_time_equal(
+                                               keys.psw_check, entry.header.psw_check.data(), 8)) {
         bad_password_ = true;
         return RAR_ERR_BAD_PASSWORD;
     }
@@ -2191,7 +2218,8 @@ bool ArchiveReader::select_unpacker(const ArchiveEntry& entry, UnpackerSelection
             sel.solid = true;
         } else {
             if (!solid_unpacker_ || solid_unpacker_->win_size() < win) {
-                solid_unpacker_ = std::make_unique<compress::Decompressor50>(win);
+                solid_unpacker_ =
+                    std::make_unique<compress::Decompressor50>(win, entry.header.extra_dist);
                 if (solid_unpacker_->last_error() != compress::DecompressErrorCode::Ok) {
                     last_decompress_error_ = solid_unpacker_->last_error();
                     solid_unpacker_.reset();
@@ -2202,11 +2230,14 @@ bool ArchiveReader::select_unpacker(const ArchiveEntry& entry, UnpackerSelection
             sel.unpacker = solid_unpacker_.get();
             sel.solid = false;
         }
+        // The flavor is per member (a RAR7 member may continue a RAR5 solid
+        // stream), so a reused chain decoder is re-pointed every time.
+        sel.unpacker->set_extra_dist(entry.header.extra_dist);
     } else {
         if (win == 0) {
             win = 32 * 1024 * 1024;
         }
-        sel.local = std::make_unique<compress::Decompressor50>(win);
+        sel.local = std::make_unique<compress::Decompressor50>(win, entry.header.extra_dist);
         if (sel.local->last_error() != compress::DecompressErrorCode::Ok) {
             last_decompress_error_ = sel.local->last_error();
             return false;
@@ -2234,7 +2265,8 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry, const core::byt
         compress::ParallelDecodeDiag diag;
         if (compress::should_use_parallel_decode(src_size, dest, win, false, decode_threads_,
                                                  nullptr)) {
-            if (compress::decode_entry(src, src_size, dest, win, flush_cb, &diag, decode_threads_))
+            if (compress::decode_entry(src, src_size, dest, win, flush_cb, &diag, decode_threads_,
+                                       entry.header.extra_dist))
                 return true;
             // Fail-safe-identical (plan R5/F1-F3): a parallel-stage failure
             // before any emission already retried the sequential path
@@ -2289,7 +2321,7 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry,
             if (pulled) {
                 compress::ParallelDecodeDiag diag;
                 if (compress::decode_entry(packed.data(), packed.size(), dest, win, flush_cb, &diag,
-                                           decode_threads_)) {
+                                           decode_threads_, entry.header.extra_dist)) {
                     return true;
                 }
                 return false;
@@ -3074,14 +3106,14 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             solid_chain_ok_ = false;
             return false;
         }
-        if (entry.header.lg2_count >= 25) {
+        if (!supported_file_crypt(entry.header)) { // H-15: version + KDF cap
             solid_chain_ok_ = false;
             return false;
         }
         crypto::Rar5Keys keys;
         crypto::Pbkdf2Rar5::derive_keys(pass, entry.header.salt.data(), 16,
                                         1U << entry.header.lg2_count, keys);
-        if (entry.header.has_psw_check) {
+        if (trusted_psw_check(entry.header)) { // H-15: csum-gated
             // Constant-time compare, matching the header-decrypt path: an
             // early-exit memcmp would leak the count of leading matching
             // PswCheck bytes through extraction timing.
@@ -3305,8 +3337,9 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
         return true;
     }
 
-    if (!stream_.seek(static_cast<core::int64>(entry.data_offset), io::SeekOrigin::Begin))
-        return fail();
+    io::FileStream vs;
+    if (!open_extent_source(path_, vs)) return fail();
+    if (!vs.seek(static_cast<core::int64>(entry.data_offset), io::SeekOrigin::Begin)) return fail();
     core::byte buf[8192];
     core::uint64 remaining = entry.data_size;
     crypto::Blake2sp blake;
@@ -3317,7 +3350,7 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
     while (remaining > 0) {
         size_t take =
             static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
-        if (stream_.read(buf, take) != take) return fail();
+        if (vs.read(buf, take) != take) return fail();
         if (disk_poll_cancel()) return fail();
         if (out.write(buf, take) != take) return fail();
         disk_progress_done_ += take;

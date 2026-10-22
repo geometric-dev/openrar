@@ -38,7 +38,8 @@ namespace {
 // ─── Scalar Implementation & Constants ───────────────────────────────────────
 
 inline core::uint32 rotr(core::uint32 x, unsigned int n) {
-    return (x >> n) | (x << (32 - n));
+    // L-03: UB-free for every n (incl. 0); compiles to a single ror.
+    return (x >> (n & 31u)) | (x << ((0u - n) & 31u));
 }
 
 inline core::uint32 ch(core::uint32 x, core::uint32 y, core::uint32 z) {

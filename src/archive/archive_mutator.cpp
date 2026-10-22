@@ -1523,7 +1523,8 @@ bool ArchiveMutator::prepare_add_file(
                         used_parallel = true;
                         compress::ParallelCompressConfig pcfg;
                         pcfg.method = method;
-                        pcfg.win_size = static_cast<size_t>(win_size);
+                        pcfg.win_size =
+                            static_cast<size_t>(compress::lz_window_for_input(win_size, file_sz));
                         pcfg.threads = eff_threads;
                         compress::ParallelBlockPipeline pipeline(pcfg);
                         core::uint32 stream_crc = 0;
@@ -1537,7 +1538,10 @@ bool ArchiveMutator::prepare_add_file(
                     } else {
                         // Sequential spool path: honor the caller's filter config
                         // (parity with the direct-stream path, which passes it too).
-                        compress::StreamEncoder encoder(method, win_size, filter_cfg);
+                        compress::StreamEncoder encoder(
+                            method,
+                            static_cast<size_t>(compress::lz_window_for_input(win_size, file_sz)),
+                            filter_cfg);
                         struct FlushCtx {
                             decltype(write_spool_chunk)* writer;
                             bool ok;
@@ -2629,7 +2633,8 @@ int ArchiveMutator::write_batch_add_ex(
                 if (stream_ok && use_parallel) {
                     compress::ParallelCompressConfig pcfg;
                     pcfg.method = static_cast<int>(pf.fb.method);
-                    pcfg.win_size = static_cast<size_t>(pf.fb.win_size);
+                    pcfg.win_size = static_cast<size_t>(
+                        compress::lz_window_for_input(pf.fb.win_size, pf.fb.unp_size));
                     pcfg.threads = pf.direct_stream_threads;
                     compress::ParallelBlockPipeline pipeline(pcfg);
                     core::uint32 stream_crc = 0;
@@ -2653,7 +2658,11 @@ int ArchiveMutator::write_batch_add_ex(
                         bool ok;
                     } fctx{&out, &actual_pack_size, true};
 
-                    compress::StreamEncoder encoder(pf.fb.method, pf.fb.win_size, filter_cfg);
+                    compress::StreamEncoder encoder(
+                        pf.fb.method,
+                        static_cast<size_t>(
+                            compress::lz_window_for_input(pf.fb.win_size, pf.fb.unp_size)),
+                        filter_cfg);
                     encoder.set_flush(
                         [](void* user, const core::byte* data, size_t size) -> int {
                             auto* ctx = static_cast<DirectFlushCtx*>(user);
@@ -3425,7 +3434,9 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
             // this function's own in-memory branch — honours it), so the same
             // file compressed differently depending on its size and whether the
             // archive was multivolume (v1.41.1 fix).
-            compress::StreamEncoder encoder(method, win_size, filter_cfg);
+            compress::StreamEncoder encoder(
+                method, static_cast<size_t>(compress::lz_window_for_input(win_size, file_sz)),
+                filter_cfg);
             struct FlushCtx {
                 decltype(write_spool_chunk)* writer;
                 bool ok;

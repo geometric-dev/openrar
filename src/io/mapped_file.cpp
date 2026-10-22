@@ -48,11 +48,10 @@ struct MappedFile::Impl {
     size_t length = 0;
 };
 
-MappedFile::MappedFile() : impl_(new Impl) {}
+MappedFile::MappedFile() : impl_(std::make_unique<Impl>()) {}
 
 MappedFile::~MappedFile() {
     close();
-    delete impl_;
 }
 
 bool MappedFile::open(const std::filesystem::path& path) {
@@ -105,15 +104,10 @@ core::uint64 MappedFile::size() const {
 }
 
 bool MappedFile::seek(core::int64 offset, SeekOrigin origin) {
-    core::uint64 next = cursor_;
-    if (origin == SeekOrigin::Begin) {
-        next = offset < 0 ? 0 : static_cast<core::uint64>(offset);
-    } else if (origin == SeekOrigin::Current) {
-        next = static_cast<core::uint64>(static_cast<core::int64>(cursor_) + offset);
-    } else {
-        next = static_cast<core::uint64>(static_cast<core::int64>(size_) + offset);
-    }
-    if (next > size_) return false;
+    // M-05: overflow-free, and a negative Begin offset fails like
+    // FileStream/BufferStream instead of silently clamping to 0.
+    core::uint64 next = 0;
+    if (!resolve_seek(cursor_, size_, offset, origin, next)) return false;
     cursor_ = next;
     return true;
 }
@@ -144,11 +138,10 @@ struct MappedFile::Impl {
     size_t length = 0;
 };
 
-MappedFile::MappedFile() : impl_(new Impl) {}
+MappedFile::MappedFile() : impl_(std::make_unique<Impl>()) {}
 
 MappedFile::~MappedFile() {
     close();
-    delete impl_;
 }
 
 bool MappedFile::open(const std::filesystem::path& path) {
@@ -199,15 +192,10 @@ core::uint64 MappedFile::size() const {
 }
 
 bool MappedFile::seek(core::int64 offset, SeekOrigin origin) {
-    core::uint64 next = cursor_;
-    if (origin == SeekOrigin::Begin) {
-        next = offset < 0 ? 0 : static_cast<core::uint64>(offset);
-    } else if (origin == SeekOrigin::Current) {
-        next = static_cast<core::uint64>(static_cast<core::int64>(cursor_) + offset);
-    } else {
-        next = static_cast<core::uint64>(static_cast<core::int64>(size_) + offset);
-    }
-    if (next > size_) return false;
+    // M-05: overflow-free, and a negative Begin offset fails like
+    // FileStream/BufferStream instead of silently clamping to 0.
+    core::uint64 next = 0;
+    if (!resolve_seek(cursor_, size_, offset, origin, next)) return false;
     cursor_ = next;
     return true;
 }

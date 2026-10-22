@@ -388,6 +388,11 @@ struct BufferArchiveHandle : ArchiveHandleBase {
 
     int list(uint32_t* count, void** entries_out, void** paths_out,
              size_t* paths_size_out) override {
+        BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         return pack_list_outputs(entries, count, entries_out, paths_out, paths_size_out);
     }
     int extract(uint32_t entry_index, uint8_t** out_ptr, size_t* out_len) override {
@@ -608,6 +613,11 @@ struct FileArchiveHandle : ArchiveHandleBase {
 
     int list(uint32_t* count, void** entries_out, void** paths_out,
              size_t* paths_size_out) override {
+        BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         return pack_list_outputs(entries, count, entries_out, paths_out, paths_size_out);
     }
     int extract(uint32_t entry_index, uint8_t** out_ptr, size_t* out_len) override {
@@ -788,6 +798,11 @@ struct FileArchiveHandle : ArchiveHandleBase {
         *out = openrar_entry_ex_t{};
         *extra_out = nullptr;
         *extra_size_out = 0;
+        BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         if (entry_index >= entries.size()) {
             set_error("entry_index OOR");
             return RAR_ERR_INVALID_ARG;
@@ -933,6 +948,11 @@ struct FileArchiveHandle : ArchiveHandleBase {
         *owner_out = openrar_entry_owner_t{};
         if (username_out) *username_out = nullptr;
         if (groupname_out) *groupname_out = nullptr;
+        BusyGuard bg(busy);
+        if (!bg.claimed) {
+            set_error("handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         if (entry_index >= entries.size()) {
             set_error("entry_index OOR");
             return RAR_ERR_INVALID_ARG;
@@ -1185,15 +1205,12 @@ int OPENRAR_DLL_CALL openrar_archive_extract(const uint8_t* data, size_t size, u
         std::vector<uint8_t> out;
         rc = ba.extract(data, size, entry_index, out);
         if (rc != RAR_OK) return rc;
-        uint8_t* buf = static_cast<uint8_t*>(std::malloc(out.size() ? out.size() : 1));
-        if (!buf && !out.empty()) {
+        *out_ptr = openrar::api::heap_dup(out.data(), out.size());
+        if (!*out_ptr && !out.empty()) {
             set_error("oom");
             return RAR_ERR_NOMEM;
         }
-        if (!out.empty()) std::memcpy(buf, out.data(), out.size());
-        *out_ptr = out.empty() ? nullptr : buf;
         *out_len = out.size();
-        if (out.empty()) std::free(buf);
         return RAR_OK;
     } catch (const std::exception& e) {
         set_error(e.what());
@@ -1306,7 +1323,7 @@ int OPENRAR_DLL_CALL openrar_archive_create(const uint8_t* const* paths_arr,
             }
             if (!d) d = reinterpret_cast<const uint8_t*>("");
             size_t plen = 0;
-            while (plen < 4096 && p[plen] != 0) ++plen;
+            while (plen <= 2048 && p[plen] != 0) ++plen;
             std::string path(reinterpret_cast<const char*>(p), plen);
             bool is_dir = !path.empty() && path.back() == '/';
             std::string err;
@@ -1319,13 +1336,11 @@ int OPENRAR_DLL_CALL openrar_archive_create(const uint8_t* const* paths_arr,
         std::vector<uint8_t> out;
         int rc = openrar::archive::create_archive(files, out, method, window_log2);
         if (rc != RAR_OK) return rc;
-        uint8_t* buf = static_cast<uint8_t*>(std::malloc(out.size() ? out.size() : 1));
-        if (!buf) {
+        *out_ptr = openrar::api::heap_dup(out.data(), out.size());
+        if (!*out_ptr && !out.empty()) {
             set_error("oom");
             return RAR_ERR_NOMEM;
         }
-        if (!out.empty()) std::memcpy(buf, out.data(), out.size());
-        *out_ptr = buf;
         *out_len = out.size();
         return RAR_OK;
     } catch (const std::exception& e) {
@@ -2351,6 +2366,7 @@ struct StreamHandle {
     void* prog_user{nullptr};
     openrar_cancel_cb cancel_cb{nullptr};
     void* cancel_user{nullptr};
+    std::atomic<bool> busy{false};
 };
 // Shared contract table: pin() returns a shared_ptr so feed/finish can work
 // with the table lock released (L12: host callbacks must never run under the
@@ -2394,6 +2410,11 @@ int OPENRAR_DLL_CALL openrar_stream_feed(uint32_t handle, const uint8_t* src, si
     try {
         auto h = g_stream_handles.pin(handle);
         if (!h) return RAR_ERR_INVALID_ARG;
+        BusyGuard bg(h->busy);
+        if (!bg.claimed) {
+            set_error("stream handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         // L12 (via HandleTable::pin): no host callback runs under the table
         // mutex — the shared_ptr pins the entry's lifetime, so the cancel poll
         // and enc->feed() below run with no lock held.
@@ -2415,6 +2436,11 @@ int OPENRAR_DLL_CALL openrar_stream_finish(uint32_t handle, uint8_t** out_ptr, s
         *out_len = 0;
         auto h = g_stream_handles.pin(handle);
         if (!h) return RAR_ERR_INVALID_ARG;
+        BusyGuard bg(h->busy);
+        if (!bg.claimed) {
+            set_error("stream handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         // L12 (via HandleTable::pin): cancel poll and enc->finish() run with
         // no table lock held (see feed).
         if (h->cancel_cb && h->cancel_cb(h->cancel_user)) return RAR_ERR_ABORTED;
@@ -2452,6 +2478,11 @@ int OPENRAR_DLL_CALL openrar_stream_set_progress(uint32_t handle, openrar_progre
     try {
         auto h = g_stream_handles.pin(handle);
         if (!h) return RAR_ERR_INVALID_ARG;
+        BusyGuard bg(h->busy);
+        if (!bg.claimed) {
+            set_error("stream handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         h->prog_cb = cb;
         h->prog_user = user;
         if (cb)
@@ -2471,6 +2502,11 @@ int OPENRAR_DLL_CALL openrar_stream_set_cancel(uint32_t handle, openrar_cancel_c
     try {
         auto h = g_stream_handles.pin(handle);
         if (!h) return RAR_ERR_INVALID_ARG;
+        BusyGuard bg(h->busy);
+        if (!bg.claimed) {
+            set_error("stream handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         h->cancel_cb = cb;
         h->cancel_user = user;
         h->enc->set_cancel(cb, user);

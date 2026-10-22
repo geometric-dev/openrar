@@ -39,8 +39,9 @@ private:
     ForeignStatus walk_central_directory(const ExtractionLimits& limits, ReaderHooks hooks,
                                          std::string& detail);
     ForeignStatus preflight_cd_vs_lfh(std::string& detail);
-    bool parse_zip64_extra(const core::byte* p, size_t n, bool need_sizes, bool need_offset,
-                           core::uint64& unp, core::uint64& pack, core::uint64& offset) const;
+    bool parse_zip64_extra(const core::byte* p, size_t n, bool need_unp, bool need_pack,
+                           bool need_offset, core::uint64& unp, core::uint64& pack,
+                           core::uint64& offset) const;
 
     std::filesystem::path path_;
     io::FileStream file_;
