@@ -314,16 +314,22 @@ static void test_info_comment_and_volumes() {
     void* cmt = nullptr;
     size_t cmt_len = 0;
     const int info_rc = openrar_archive_handle_info(h, &info, &cmt, &cmt_len);
+    // openrar_archive_info_t is a packed struct: recovery_size sits at offset
+    // 12, so a reference bound to it (which doctest's expression
+    // decomposition does) is a misaligned reference - undefined behaviour
+    // that UBSan reports. The member is copied to a local, and the
+    // comparisons use the parenthesized form so no reference is bound.
+    const size_t recovery_size = info.recovery_size;
     std::cout << "  info rc=" << info_rc << " comment_len=" << info.comment_len
               << " cmt_len=" << cmt_len << " cmt_null=" << (cmt == nullptr)
-              << " rr=" << info.recovery_size << " err=" << last_error() << "\n"
+              << " rr=" << recovery_size << " err=" << last_error() << "\n"
               << std::flush;
     REQUIRE(info_rc == RAR_OK);
-    REQUIRE(info.comment_len == comment_text.size());
+    REQUIRE((info.comment_len == comment_text.size()));
     REQUIRE((cmt != nullptr && cmt_len == comment_text.size()));
     REQUIRE(std::string(static_cast<const char*>(cmt), cmt_len) == comment_text);
     REQUIRE((info.volume_count == 1 && info.volume_index == 0));
-    REQUIRE(info.recovery_size == 0);
+    REQUIRE((recovery_size == 0));
     REQUIRE((info.flags & 0x1u) == 0); // not MHFL_VOLUME
     openrar_free(cmt);
     openrar_archive_close(h);
@@ -352,7 +358,8 @@ static void test_info_comment_and_volumes() {
     h = openrar_archive_open_file(rr.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
     REQUIRE(h != 0);
     REQUIRE(openrar_archive_handle_info(h, &info, &cmt, &cmt_len) == RAR_OK);
-    REQUIRE(info.recovery_size > 0);
+    // Parenthesized: the packed member must not be bound to a reference.
+    REQUIRE((info.recovery_size > 0));
     openrar_archive_close(h);
 
     // Multi-volume set: volume_count matches the set size, index 0.
