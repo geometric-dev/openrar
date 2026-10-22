@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.45.0] - 2026-10-21
+
+Rollup release. It carries the uncommitted v1.43 census work and the v1.44 A-6
+back-shift, the v1.44 verification substrate, v1.45 milestones M0-M2 (build
+modularization), and the remediation of the Phase 2 code audit
+(`docs/review-master-plan.md`). The rest of the v1.45 roadmap item (M3 onward)
+continues as v1.45.x patches.
+### Changed
+
+- **Encoder output changes (A-6 back-shift).** `find_match_impl` now trades a
+  floor-legal alternative candidate for the shipped one when it saves at least
+  8 static bits on both branches. Measured on real corpora, `-mt1`: -0.11% to
+  -0.55% packed size (corpus.txt m3 1,808,074 -> 1,802,501), pack time +0.4-0.6%.
+  Streams are valid RAR5 and decode identically, but archives are not byte-identical
+  to v1.42.x output. `OPENRAR_NO_BACKSHIFT=1` reproduces the previous bytes exactly.
+- **Dictionary table flavor now follows the header, not the window.** The
+  446-entry ExtraDist tables are selected by `unp_ver 1` *without*
+  `FCI_RAR5_COMPAT` (what unrar does); a RAR5-algorithm member may declare any
+  window up to 64 GiB with 430-entry tables. The encoder always writes 430-entry
+  tables (match distance capped at 4 GiB) and the decoder takes the flavor per
+  member from the header, including partway through a solid chain.
+  **Compatibility note:** archives written by an earlier openrar with a dictionary
+  above 4 GiB *and* more than 4 GiB of input carry 446-entry tables behind a
+  RAR5-compat header. RAR has never been able to read those and openrar now rejects
+  them as well. Smaller inputs were always written with 430-entry tables and are
+  unaffected.
+- **Decoder window is allocated as output arrives.** A large declared
+  dictionary no longer commits memory up front: on 64-bit the window reserves
+  address space and commits pages as the output grows (a growable vector
+  below 64 MiB and on 32-bit/WASM). A 64 GiB-declared archive tests with a
+  9 MiB peak, and a few-hundred-byte hostile header can no longer make the
+  decoder commit 64 GiB. Members no longer zero the whole window at start.
+- **Encoder memory is bounded by the input.** The streaming, parallel and
+  solid encoders size match-finder state from the input rather than the
+  declared dictionary (`-md8g` over a 24 MiB file used to fail with
+  out-of-memory). Headers still record the declared size.
+- Build: `CMakeLists.txt` is a 72-line orchestrator over `cmake/*.cmake`
+  modules; the DLL no longer double-compiles the two stream TUs; sanitizer
+  builds use `-DOPENRAR_SANITIZE=<list>` (`cmake/sanitizers.cmake`); `-DOPENRAR_SANITIZERS=ON`
+  remains an alias for `address,undefined`.
+### Added
+
+- **Verification substrate (v1.44).** A standalone test runner
+  (`tests/support/test_runner.*`) with `--test-case`, JUnit output and per-case
+  timing over all unit suites, built on vendored doctest 2.4.12; `docs/FMM.md`
+  failure-mode map; `tools/anchor_lint.py` (CI `roadmap-lint`) and the
+  assert ledger `docs/v1.44-verification-ledger.md`; the fail-closed
+  `tools/ctest_to_junit.py` aggregator wired into every CI lane.
+- `tests/fuzz/fuzz_target.cpp`: libFuzzer target with four lanes (hostile decode
+  over both table flavors, compress/decompress round trip with truncation and
+  bit-flip oracles, sequential-vs-two-phase differential, BitReader model
+  check). Registered in ctest and the nightly fuzz job.
+- `tests/bench/bench_target.cpp`: compress/decompress/Delta throughput at
+  64 B-1 MiB with a per-iteration allocation counter (Google Benchmark when
+  installed, built-in runner otherwise).
+- Interop gate: Track 19 (dictionaries 64m-64g, both directions against
+  UnRAR/RAR, plus a peak-memory check), Track 20 (opt-in `OPENRAR_GATE_HEAVY=1`:
+  a real RAR7-algorithm member over 4.5 GiB), and `--only <track>`.
+### Fixed
+
+- **Recovery:** repair of multi-physical-shard records no longer trusts an
+  unvalidated shard count (heap overflow on 32-bit, multi-GiB allocation on
+  64-bit); `.rev` repair renames corrupt volumes aside only after the decoder
+  initialises and restores them on any later failure; duplicate `.rev` slots are
+  no longer counted as extra parity.
+- **Decoder:** match distances are decoded and range-checked in 64 bits before
+  use (shift-by-32+ UB and window-check bypass on 32-bit/WASM); symbols or
+  lengths built from zero padding past the end of a truncated stream now fail the
+  stream (`BitReader::truncated()`); 58-64-bit peeks no longer zero-fill with
+  input remaining; a token overrunning its block's bit size is rejected
+  consistently by the sequential and two-phase decoders; the unflushed-output
+  limit now leaves headroom for one maximal match, so valid streams at the
+  64 KiB window floor no longer fail (found by the new fuzz target).
+- **Encoder:** a member with an explicit dictionary under 128 KiB and `unp_ver==1` now always carries `FCI_RAR5_COMPAT` (it was written only for windows of at least 128 KiB, so the encoder's 430-entry tables met a 446-entry decoder); distance-0 self-matches from a 4 GiB hash-chain alias are
+  rejected; match finding loads are little-endian on every host; the lazy-match
+  clamp respects the filter region at `cur_ + 1`.
+- **Foreign formats:** ZIP64 extra fields are parsed per field (a >4 GiB file
+  that compressed below 4 GiB no longer misreads the local offset as the packed
+  size), and extent checks cannot wrap; TAR members whose size comes from a pax
+  `size` record are framed correctly; pax uid/gid are overflow-checked; ZIP and
+  transcode timestamp conversion no longer overflows signed 64-bit. The ZIP NTFS extra (0x000A) read the tag/size pair from the reserved word, so NTFS timestamps were never honored (DOS time was always used); they now are, clamped to 1970-3000.
+- **Archive parsing:** truncated `FHEXTRA_CRYPT` records fail the header
+  instead of yielding zeroed key material; per-file encryption checks the crypt
+  version and gates `PswCheck` on its SHA-256 checksum; an extra area larger than
+  the room after the fixed fields is rejected; `open_ex(strict_volumes)` fails
+  on an entry whose data runs past the end of its volume.
+- **Streams:** `StreamDecoder` output retained without a flush sink is capped
+  (decompression-bomb vector on WASM/DLL); `MappedFile`/`BufferStream` seeks no
+  longer overflow signed 64-bit and a negative absolute offset fails.
+- Unit-test runner: four suites passed a hard-coded case count lower than their
+  case table, so newly added cases were silently skipped; every suite now derives
+  the count from its table.
+### Performance
+
+- Delta filter: in-place with no per-call buffer, SSE2/NEON kernels for 2 and
+  4 channels, single sequential pass for other channel counts.
+- `BitOutput` writes through a raw cursor with geometric growth; `price_fresh`
+  uses a bit scan; BLAKE2sp runs 8-way on AVX2 (runtime-selected, byte-identical
+  to the scalar path); Inflate uses one linear window/output buffer, bulk stored
+  blocks and doubling overlap copies; the header reader, prescan, and recovery
+  repair loops drop per-call allocations.
+### Verification and known gaps
+
+- Windows x64 Release: 46/46 ctest suites, 27/27 interop gate stages, and the
+  fuzz standalone sweeps pass.
+- Regression tests added for C-01 (hostile RR reassembly geometry), C-03
+  (sub-128 KiB dictionary round trip), C-04 (zero-distance candidate) and C-08
+  (ZIP NTFS FILETIME, reachable on x64).
+- Known gaps, no CI leg exists: C-02 (32-bit/WASM distance shift) and C-07
+  (big-endian loads and the NEON mask) are fixed by review only, with no 32-bit
+  or big-endian test run. Also not run for this release: the clang
+  libFuzzer/ASan/UBSan lane (it runs in the nightly job) and the NEON Delta
+  kernels (reviewed, no ARM host). The Track 19 cases that RAR/UnRAR could not
+  verify for lack of RAM (the 64g cases and some 8g) are checked by openrar only;
+  the gate lists them. Track 20's encode leg needs ~48 GiB and was not run.
+
 ## [1.42.1] - 2026-10-15
 
 Completes the v1.42.0 WASM worker fix: the per-call `Worker` probe made the real
