@@ -58,9 +58,9 @@ void CdcStreamChunker::feed(const core::byte* data, size_t n, std::vector<CdcChu
     const core::uint64 mask_light = owner_.mask_ >> 1;
 
     while (i < n) {
-        if (pending_size_ < CdcChunker::MIN_CHUNK - 1) {
+        if (pending_size_ < CdcChunker::CDC_MIN_CHUNK - 1) {
             size_t skip =
-                std::min(n - i, static_cast<size_t>(CdcChunker::MIN_CHUNK - 1) - pending_size_);
+                std::min(n - i, static_cast<size_t>(CdcChunker::CDC_MIN_CHUNK - 1) - pending_size_);
             for (size_t k = 0; k < skip; ++k) {
                 h_ = (h_ << 1) + owner_.table_[static_cast<unsigned char>(data[i + k])];
             }
@@ -70,9 +70,9 @@ void CdcStreamChunker::feed(const core::byte* data, size_t n, std::vector<CdcChu
             if (i == n) break;
         }
 
-        if (pending_size_ < CdcChunker::AVG_CHUNK - 1) {
-            size_t end =
-                std::min(n, i + (static_cast<size_t>(CdcChunker::AVG_CHUNK - 1) - pending_size_));
+        if (pending_size_ < CdcChunker::CDC_AVG_CHUNK - 1) {
+            size_t end = std::min(
+                n, i + (static_cast<size_t>(CdcChunker::CDC_AVG_CHUNK - 1) - pending_size_));
             while (i < end) {
                 h_ = (h_ << 1) + owner_.table_[static_cast<unsigned char>(data[i++])];
                 ++pending_size_;
@@ -89,7 +89,7 @@ void CdcStreamChunker::feed(const core::byte* data, size_t n, std::vector<CdcChu
             h_ = (h_ << 1) + owner_.table_[static_cast<unsigned char>(data[i++])];
             ++pending_size_;
             ++fed_;
-            if ((h_ & mask_light) == 0 || pending_size_ == CdcChunker::MAX_CHUNK) {
+            if ((h_ & mask_light) == 0 || pending_size_ == CdcChunker::CDC_MAX_CHUNK) {
                 emit(out);
                 break;
             }

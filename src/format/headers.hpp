@@ -244,6 +244,13 @@ struct FileBlock {
     core::uint64 win_size{0};
     bool is_solid{false};
     core::uint32 unp_ver{0}; // 0 = RAR5, 1 = RAR7
+    // RAR7 compression ALGORITHM: unp_ver 1 WITHOUT FCI_RAR5_COMPAT. Only
+    // this selects the 446-entry ExtraDist tables (DCX = 80 distance slots);
+    // unp_ver 1 WITH the compat flag is RAR7 dictionary sizing over the RAR5
+    // algorithm (430 tables, distances <= 4 GiB) - unrar archive_reader.cpp sets
+    // VER_PACK5 for it and Unpack sets ExtraDist only for VER_PACK7. The
+    // table flavor is a property of this flag, never of the window size.
+    bool extra_dist{false};
 
     core::uint32 host_os{0}; // 0 = Windows, 1 = Unix
     std::string file_name;

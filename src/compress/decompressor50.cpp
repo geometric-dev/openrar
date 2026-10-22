@@ -5,6 +5,20 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cassert>
+#include <cstdint>
+
+// WindowBuffer's reserve/commit path.
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif !defined(__EMSCRIPTEN__) && !defined(__wasm__)
+#include <sys/mman.h>
+#endif
 
 namespace openrar::compress {
 
@@ -12,11 +26,33 @@ namespace openrar::compress {
 // BitReader : bit_pos based, MSB first, zero padded beyond end
 // ------------------------------------------------------------------
 BitReader::BitReader(const core::byte* data, size_t size)
-    : p_(data), end_(data + size), acc_(0), n_(0), consumed_(0), size_(size), fetched_(size) {}
+    : p_(data), end_(data), acc_(0), n_(0), consumed_(0), size_(data ? size : 0),
+      fetched_(data ? size : 0) {
+    if (data) end_ = data + size;
+}
 
 BitReader::BitReader(InputCallback cb, size_t size)
     : cb_(cb), buf_(65536), p_(buf_.data()), end_(buf_.data()), acc_(0), n_(0), consumed_(0),
       size_(size), fetched_(0) {}
+
+// Pull the next callback chunk into buf_. Only valid when p_ >= end_ (every
+// staged byte already moved into acc_). Returns false at the true end of the
+// stream or when the callback is starved.
+bool BitReader::fetch_chunk() {
+    if (!cb_ || fetched_ >= size_) return false;
+    size_t to_read = std::min<size_t>(buf_.size(), size_ - fetched_);
+    size_t n = cb_(buf_.data(), to_read);
+    // InputCallback is a PUBLIC std::function API owned by the embedding
+    // (DLL / wasm / host), so its return value cannot be trusted to fit the
+    // buffer it was offered. Unclamped, an over-reporting callback parks end_
+    // past the staging vector and every later memcpy reads out of bounds
+    // (v1.41.1).
+    n = std::min(n, to_read);
+    p_ = buf_.data();
+    end_ = p_ + n;
+    fetched_ += n;
+    return n != 0;
+}
 
 void BitReader::refill() {
     // Fill the accumulator to at least 57 bits, fetching successive input
@@ -42,21 +78,7 @@ void BitReader::refill() {
         return;
     }
     for (;;) {
-        if (p_ >= end_) {
-            if (!cb_ || fetched_ >= size_) return; // true end of stream
-            size_t to_read = std::min<size_t>(buf_.size(), size_ - fetched_);
-            size_t n = cb_(buf_.data(), to_read);
-            // InputCallback is a PUBLIC std::function API owned by the
-            // embedding (DLL / wasm / host), so its return value cannot be
-            // trusted to fit the buffer it was offered. Unclamped, an
-            // over-reporting callback parks end_ past the staging vector and
-            // every later memcpy in this loop reads out of bounds (v1.41.1).
-            n = std::min(n, to_read);
-            p_ = buf_.data();
-            end_ = p_ + n;
-            fetched_ += n;
-            if (n == 0) return; // input starved; treat as end of stream
-        }
+        if (p_ >= end_ && !fetch_chunk()) return; // true end of stream / starved
         unsigned int max_bytes = (64 - n_) / 8;
         unsigned int k = std::min<unsigned int>(max_bytes, static_cast<unsigned int>(end_ - p_));
         if (k == 0) return; // accumulator holds >= 57 bits
@@ -105,6 +127,19 @@ core::uint64 BitReader::peek_bits64(unsigned int count) {
     if (n_ < count) refill();
     unsigned int take = std::min(count, n_);
     if (take == count) return acc_ >> (n_ - count);
+    // H-05: refill() works in whole bytes and stops once n_ > 56, so a
+    // 58..64-bit peek can come up 1..7 bits short with input still unread.
+    // Those bits live in the next unread byte: splice them in without
+    // consuming it. (n_ in 57..63 here means acc_ holds exactly n_ valid
+    // low bits, so the shift below cannot lose data.)
+    if (n_ >= 57) {
+        if (p_ >= end_) fetch_chunk(); // all staged bytes are already in acc_
+        if (p_ < end_) {
+            const unsigned int extra = count - n_; // 1..7
+            const core::uint64 next = *p_;
+            return (acc_ << extra) | (next >> (8 - extra));
+        }
+    }
     if (take == 0) return 0; // starved accumulator: zero-pad without a shift-by-64 UB
     return (acc_ >> (n_ - take)) << (count - take);
 }
@@ -125,6 +160,7 @@ core::uint32 BitReader::get_bits(unsigned int count) {
     consumed_ += take;
     n_ = 0;
     acc_ = 0;
+    truncated_ = true; // H-07: zero-padded past the end of input
     return val;
 }
 
@@ -153,6 +189,7 @@ void BitReader::consume_bits(unsigned int count) {
     if (count == 0) return;
     if (n_ < count) refill();
     unsigned int take = std::min(count, n_);
+    if (take < count) truncated_ = true; // H-07: consumed padding, not input
     consumed_ += take;
     n_ -= take;
     acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
@@ -266,7 +303,7 @@ core::uint32 HuffmanDecoder::decode(BitReader& reader) const {
 // ------------------------------------------------------------------
 // Decompressor50
 // ------------------------------------------------------------------
-Decompressor50::Decompressor50(size_t win_size) {
+Decompressor50::Decompressor50(size_t win_size, bool extra_dist) {
     // win_size == 0 is rejected here: a zero window makes the circular-window
     // arithmetic (modulo win_size_, window_[win_pos_]) undefined. Callers that
     // genuinely want a placeholder window get the default 2 MiB one
@@ -276,24 +313,31 @@ Decompressor50::Decompressor50(size_t win_size) {
     last_error_ = DecompressErrorCode::Ok;
     last_error_str_.clear();
 
-    // Two failure modes for the sliding dictionary allocation:
-    //   (a) declared size exceeds this build's ALLOC_LIMIT (1 GiB). The spec
-    //       ceilings SPEC_MAX_V0 (4 GiB, version0) and SPEC_MAX_V1 (1 TiB,
-    //       version1) are both strictly greater than ALLOC_LIMIT, so any
-    //       value past either spec limit necessarily trips this branch —
-    //       no separate SPEC* check is needed. The archive layer maps
-    //       spec-invalid dictionary bits to a sentinel > ALLOC_LIMIT
+    // Two failure modes for the sliding dictionary:
+    //   (a) declared size exceeds this build's ALLOC_LIMIT (64 GiB on 64-bit,
+    //       1 GiB on 32-bit/WASM). The archive layer maps spec-invalid
+    //       dictionary bits to a sentinel > ALLOC_LIMIT
     //       (format/header_reader.cpp), which lands here.
-    //   (b) size is within limits but the OS refuses the allocation.
+    //   (b) the OS refuses memory while the window grows with the decoded
+    //       output (ApplyEngine::grow -> AllocationFailed). The declared size
+    //       is a ceiling, not an up-front commitment.
     if (engine_.win_size_ > ALLOC_LIMIT) {
         last_error_ = DecompressErrorCode::DictionaryTooLarge;
         last_error_str_ = "dictionary too large";
     }
     std::fill(std::begin(old_dist_), std::end(old_dist_), static_cast<size_t>(-1));
-    // use_extra_dist_ enables the RAR7 446-symbol table whose extra distance
-    // slots 68-79 need d_bits up to 38 for windows > 4 GiB.
-    use_extra_dist_ = (engine_.win_size_ > (4ULL * 1024 * 1024 * 1024));
+    use_extra_dist_ = extra_dist;
     cur_table_size_ = use_extra_dist_ ? 446 : 430;
+}
+
+void Decompressor50::set_extra_dist(bool extra_dist) {
+    if (extra_dist == use_extra_dist_) return;
+    use_extra_dist_ = extra_dist;
+    cur_table_size_ = use_extra_dist_ ? 446 : 430;
+    // Code lengths of the other flavor cannot be reused: force the member
+    // to transmit its own tables.
+    tables_ready_ = false;
+    std::fill(std::begin(table_), std::end(table_), static_cast<core::byte>(0));
 }
 
 // ── ApplyEngine (v1.37.0 plan M0, review R1): the single apply path ─────────
@@ -304,30 +348,129 @@ Decompressor50::Decompressor50(size_t win_size) {
 // the full gate.
 
 void Decompressor50::ApplyEngine::init(size_t win_size) {
-    win_size_ = win_size;
-    win_mask_ = win_size_ ? win_size_ - 1 : 0;
+    win_size_ = std::max<size_t>(win_size, 0x10000);
+    win_mask_ = win_size_ - 1;
     win_pow2_ = (win_size_ & (win_size_ - 1)) == 0;
 }
 
-bool Decompressor50::ApplyEngine::ensure_window_alloc() {
-    if (window_ready_ || win_size_ == 0) return true;
-    try {
-        window_.assign(win_size_, 0);
-        window_ready_ = true;
-    } catch (...) {
-        window_.clear();
+// ── WindowBuffer ───────────────────────────────────────────────────────
+namespace {
+#if SIZE_MAX > 0xFFFFFFFFu && !defined(__EMSCRIPTEN__) && !defined(__wasm__)
+constexpr bool kWindowVm = true;
+#else
+constexpr bool kWindowVm = false;
+#endif
+// Below this, a vector (and its occasional copy) is cheaper than a mapping.
+constexpr size_t kWindowVmThreshold = 64u << 20;
+constexpr size_t kWindowCommitGranule = 1u << 20;
+} // namespace
+
+bool WindowBuffer::init(size_t max_bytes) {
+    release();
+    if (kWindowVm && max_bytes > kWindowVmThreshold) {
+#if defined(_WIN32)
+        void* p = VirtualAlloc(nullptr, max_bytes, MEM_RESERVE, PAGE_NOACCESS);
+        if (p == nullptr) return false;
+#elif SIZE_MAX > 0xFFFFFFFFu && !defined(__EMSCRIPTEN__) && !defined(__wasm__)
+        void* p =
+            mmap(nullptr, max_bytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (p == MAP_FAILED) return false;
+#else
+        void* p = nullptr;
         return false;
+#endif
+        base_ = static_cast<core::byte*>(p);
+        reserved_ = max_bytes;
+        vm_ = true;
     }
     return true;
 }
 
+bool WindowBuffer::grow_to(size_t n) {
+    if (n <= size_) return true;
+    if (!vm_) {
+        try {
+            vec_.resize(n);
+        } catch (...) {
+            return false; // strong guarantee: vec_ unchanged
+        }
+        base_ = vec_.data();
+        size_ = vec_.size();
+        return true;
+    }
+    if (n > reserved_) return false;
+    if (n > committed_) {
+        // Commit whole granules; committed pages read as zero.
+        size_t target =
+            (n + kWindowCommitGranule - 1) / kWindowCommitGranule * kWindowCommitGranule;
+        if (target > reserved_) target = reserved_;
+        const size_t delta = target - committed_;
+#if defined(_WIN32)
+        if (VirtualAlloc(base_ + committed_, delta, MEM_COMMIT, PAGE_READWRITE) == nullptr)
+            return false;
+#elif SIZE_MAX > 0xFFFFFFFFu && !defined(__EMSCRIPTEN__) && !defined(__wasm__)
+        if (mprotect(base_ + committed_, delta, PROT_READ | PROT_WRITE) != 0) return false;
+#else
+        (void)delta;
+        return false;
+#endif
+        committed_ = target;
+    }
+    size_ = n;
+    return true;
+}
+
+void WindowBuffer::release() {
+    if (vm_ && base_ != nullptr) {
+#if defined(_WIN32)
+        VirtualFree(base_, 0, MEM_RELEASE);
+#elif SIZE_MAX > 0xFFFFFFFFu && !defined(__EMSCRIPTEN__) && !defined(__wasm__)
+        munmap(base_, reserved_);
+#endif
+    }
+    vec_.clear();
+    vec_.shrink_to_fit();
+    base_ = nullptr;
+    size_ = reserved_ = committed_ = 0;
+    vm_ = false;
+}
+
+bool Decompressor50::ApplyEngine::ensure_window_alloc() {
+    if (window_ready_ || win_size_ == 0) return true;
+    if (!window_.init(win_size_) || !window_.grow_to(std::min(win_size_, INITIAL_WINDOW))) {
+        window_.release();
+        cap_ = 0;
+        return false;
+    }
+    cap_ = window_.size();
+    window_ready_ = true;
+    return true;
+}
+
+bool Decompressor50::ApplyEngine::grow(size_t n) {
+    // Only reachable while cap_ < win_size_, i.e. before the first wrap:
+    // the data is the linear prefix [0, win_pos_), and both storage kinds
+    // keep it in place. Reaching win_size_ switches to the full ring for
+    // good.
+    if (cap_ == win_size_) return true;
+    const size_t need =
+        (n >= win_size_ - win_pos_) ? win_size_ : win_pos_ + n; // clamp at the ring end
+    if (need <= cap_) return true;
+    // Geometric (x2) growth amortises the vector's copies; the VM path grows
+    // by the same steps, which also bounds the commit-call count.
+    size_t next = cap_ > win_size_ / 2 ? win_size_ : std::max(cap_ * 2, need);
+    if (next > win_size_) next = win_size_;
+    if (!window_.grow_to(next)) return false;
+    cap_ = window_.size();
+    return true;
+}
+
 void Decompressor50::ApplyEngine::reset_window() {
-    if (window_ready_) std::fill(window_.begin(), window_.end(), static_cast<core::byte>(0));
     win_pos_ = 0;
     first_win_done_ = false;
 }
 
-void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
+bool Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
                                              [[maybe_unused]] size_t total_written) {
 #ifdef OPENRAR_CROSS_VALIDATE
     if (val_src_ != nullptr) {
@@ -364,7 +507,10 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
     }
 #endif
 
-    if (distance == 0 || distance > win_size_) return;
+    if (distance == 0 || distance > win_size_) return true; // callers validate first
+    // Lazy window: every path below writes [win_pos_, win_pos_ + length)
+    // (wrapping only once the full ring exists), so reserve that span.
+    if (!reserve(length)) return false;
     size_t src = wrap_up(win_pos_ + win_size_ - distance);
     if (distance > win_pos_ && !first_win_done_) {
         // INTENDED (RAR5 spec): references past written data on the first
@@ -377,7 +523,7 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
             if (win_pos_ == 0) first_win_done_ = true;
             rem_zero -= chunk;
         }
-        return;
+        return true;
     }
 
     if (src == win_pos_) {
@@ -387,14 +533,14 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
         // as memcpy (dst == src) or a chunked loop with gap 0.
         win_pos_ = wrap_up(win_pos_ + length);
         if (win_pos_ == 0) first_win_done_ = true;
-        return;
+        return true;
     }
 
     if (distance == 1 && win_pos_ + length <= win_size_) {
         std::memset(&window_[win_pos_], window_[src], length);
         win_pos_ = wrap_up(win_pos_ + length);
         if (win_pos_ == 0) first_win_done_ = true;
-        return;
+        return true;
     }
 
     // Linear (non-circular) distance between source and destination regions in
@@ -408,7 +554,7 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
         std::memcpy(&window_[win_pos_], &window_[src], length);
         win_pos_ = wrap_up(win_pos_ + length);
         if (win_pos_ == 0) first_win_done_ = true;
-        return;
+        return true;
     }
 
     while (length > 0) {
@@ -439,11 +585,15 @@ void Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
         length -= chunk;
         if (win_pos_ == 0) first_win_done_ = true;
     }
+    return true;
 }
 
 bool Decompressor50::ApplyEngine::flush_plain_up_to(size_t target, size_t total_written,
                                                     size_t dest_size, OutputCallback cb) {
+    if (last_flushed_ > total_written) return false;
+    if (total_written - last_flushed_ > win_size_) return false;
     if (target > dest_size) target = dest_size;
+    if (target > total_written) target = total_written;
     while (last_flushed_ < target) {
         size_t chunk = target - last_flushed_;
         size_t back = (total_written - last_flushed_) % win_size_;
@@ -474,7 +624,10 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
     };
     while (filters_head_ < filters_.size()) {
         const auto& f = filters_[filters_head_];
-        if (f.block_start + f.block_length <= abs_pos()) {
+        const bool region_complete =
+            f.block_start <= abs_pos() &&
+            static_cast<core::uint64>(f.block_length) <= abs_pos() - f.block_start;
+        if (region_complete) {
             // 1. Flush any plain data preceding this filter:
             size_t region_local = local_region_start(f);
             if (last_flushed_ < region_local) {
@@ -483,6 +636,10 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
 
             // 2. Extract filter region from circular window WITHOUT modifying window_:
             size_t len = f.block_length;
+            const core::uint64 prior64 =
+                f.block_start < base_at_entry ? base_at_entry - f.block_start : 0;
+            if (prior64 > f.block_length) return false;
+            const size_t prior = static_cast<size_t>(prior64);
             if (len > 0) {
                 if (abs_pos() - f.block_start >= win_size_) {
                     return false;
@@ -524,21 +681,17 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
                 }
 
                 // 3. Emit filtered bytes directly to flush_cb (never touching window_!)
-                size_t to_emit = len;
-                if (last_flushed_ + to_emit > dest_size) {
-                    to_emit = dest_size - last_flushed_;
+                if (dest_size != SIZE_MAX) {
+                    if (prior != 0) return false;
+                    if (last_flushed_ > dest_size || len > dest_size - last_flushed_) return false;
                 }
-                if (to_emit > 0) {
-                    if (cb && !cb(emit_ptr, to_emit)) return false;
-                    last_flushed_ += to_emit;
-                }
+                if (cb && !cb(emit_ptr, len)) return false;
+                last_flushed_ += len - prior;
             }
             ++filters_head_;
         } else {
             if (flush_all) {
-                if (f.block_start < abs_pos()) {
-                    return false;
-                }
+                if (f.block_length != 0) return false;
                 ++filters_head_;
                 continue;
             } else {
@@ -580,6 +733,37 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
 
     return flush_plain_up_to(safe_limit, total_written, dest_size, cb);
 }
+
+namespace {
+// C-02: shared by decompress_internal() and decode_span() so the two decoders
+// cannot drift. The distance is accumulated in 64 bits regardless of the
+// target's size_t: with the RAR7 ExtraDist table d_bits reaches 38, and even
+// the 64-slot table produces > 4 GiB distances (slots 64/65) that would wrap
+// into [1, win_size_] on ILP32/WASM32 and slip past the window check.
+// Returns 0 on truncated input (0 is never a valid 1-based distance).
+core::uint64 decode_match_distance(BitReader& reader, const HuffmanDecoder& ldd,
+                                   core::uint32 dist_slot) {
+    if (dist_slot < 4) return 1u + static_cast<core::uint64>(dist_slot);
+    const core::uint32 d_bits = dist_slot / 2 - 1; // 1..38 (slot < 80)
+    core::uint64 distance = 1u + (static_cast<core::uint64>(2u | (dist_slot & 1u)) << d_bits);
+    if (d_bits >= 4) {
+        if (d_bits > 4) {
+            const core::uint32 n = d_bits - 4;
+            if (reader.bits_remaining() < n) return 0;
+            const core::uint64 extra = (d_bits > 36)
+                                           ? reader.get_bits64(n)
+                                           : static_cast<core::uint64>(reader.get_bits(n));
+            distance += extra << 4;
+        }
+        if (reader.bits_remaining() < 1) return 0;
+        distance += ldd.decode(reader);
+    } else {
+        if (reader.bits_remaining() < d_bits) return 0;
+        distance += reader.get_bits(d_bits);
+    }
+    return distance;
+}
+} // namespace
 
 core::uint32 Decompressor50::slot_to_length(BitReader& reader, core::uint32 slot) {
     core::uint32 length = 2;
@@ -803,6 +987,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
 
     size_t total_written = 0;
     engine_.begin_call(); // call-local flush cursor (was a local last_flushed)
+    const size_t flush_cadence = engine_.flush_cadence();
     // Aggregate filter budget for this decode (report M7).
     size_t filters_total_len = 0;
     // Pending regions are recorded in ABSOLUTE file coordinates (block_start
@@ -817,9 +1002,20 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     // construction. base_at_entry + total_written reproduce the lambda's
     // abs_pos()/local_region_start() captures exactly.
 
+    // H-06: a token (or table description) that ends past the block's
+    // declared bit size is malformed. Failing here keeps the sequential
+    // decoder's verdict identical to decode_span()/prescan_member(), which
+    // restart every block at its exact byte boundary instead of aligning
+    // from wherever the over-read left the reader.
+    auto overran_block = [&](size_t bit) {
+        return header.block_size > 0 && bit > end_bit;
+    };
+    if (overran_block(cur_bit())) return false;
+
     while (total_written < dest_size) {
         size_t cb = cur_bit();
         if (cb >= end_bit) {
+            if (overran_block(cb)) return false;
             if (single_block) break;
             if (header.last_block_in_file) break;
             if (!read_block_header(reader, header)) break;
@@ -838,11 +1034,14 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
         }
 
         core::uint32 slot = ld_decoder_.decode(reader);
+        // H-07: the symbol was assembled from zero padding past the end of a
+        // truncated stream - fail instead of emitting a fabricated token.
+        if (reader.truncated()) return false;
         assert(slot < 306 && "Main LD table slot out of bounds");
         if (slot < 256) {
-            engine_.write_literal(slot);
+            if (!engine_.write_literal(slot)) return window_alloc_failed();
             ++total_written;
-            if (total_written - engine_.last_flushed_ >= 65536) {
+            if (total_written - engine_.last_flushed_ >= flush_cadence) {
                 if (!engine_.flush_pending(false, base_at_entry, total_written, dest_size,
                                            flush_cb))
                     return false;
@@ -881,15 +1080,18 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             FilterEntry fe;
             fe.type = static_cast<core::uint8>(f_type);
             fe.channels = static_cast<core::uint8>(f_ch);
+            const core::uint64 rel_start = static_cast<core::uint64>(total_written) + f_start;
+            if (rel_start < f_start || base_at_entry > UINT64_MAX - rel_start) return false;
             // ABSOLUTE file coordinates: carried across per-block calls without
             // frame drift (see abs_pos()/local_region_start() above).
-            fe.block_start = static_cast<size_t>(base_at_entry) + total_written + f_start;
+            fe.block_start = base_at_entry + rel_start;
+            if (fe.block_start > static_cast<core::uint64>(SIZE_MAX)) return false;
             // E8/E8E9/ARM transform base is the offset WITHIN the member: the
             // reference resets it per member even on solid chains
             // (oracle-verified, v1.36.x — a carried base corrupted every
             // non-first solid member with E8-filtered content).
-            fe.file_offset =
-                base_at_entry + static_cast<core::uint64>(total_written) - member_start_ + f_start;
+            if (base_at_entry < member_start_) return false;
+            fe.file_offset = fe.block_start - member_start_;
             fe.block_length = f_len;
             // A filter region larger than the window can never be applied
             // intact: by the time the region ends, its start has been
@@ -902,6 +1104,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             // When dest_size == SIZE_MAX (streaming via decompress_to_vector),
             // the addition dest_size + win_size_ wraps modulo 2^64, so we
             // skip the check to avoid a false-positive abort.
+            if (filters_total_len > SIZE_MAX - static_cast<size_t>(f_len)) return false;
             filters_total_len += static_cast<size_t>(f_len);
             if (dest_size != SIZE_MAX && dest_size <= SIZE_MAX - engine_.win_size_ &&
                 filters_total_len > dest_size + engine_.win_size_) {
@@ -912,7 +1115,8 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             // output beyond the region data and out of frame order.
             if (!engine_.filters_.empty()) {
                 const FilterEntry& prev = engine_.filters_.back();
-                if (fe.block_start < prev.block_start + prev.block_length) {
+                if (fe.block_start < prev.block_start ||
+                    fe.block_start - prev.block_start < prev.block_length) {
                     return false;
                 }
             }
@@ -943,9 +1147,9 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
                 core::uint32 len = static_cast<core::uint32>(last_length_);
                 if (len > dest_size - total_written)
                     len = static_cast<core::uint32>(dest_size - total_written);
-                engine_.copy_match(distance, len, total_written);
+                if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
                 total_written += len;
-                if (total_written - engine_.last_flushed_ >= 65536) {
+                if (total_written - engine_.last_flushed_ >= flush_cadence) {
                     if (!engine_.flush_pending(false, base_at_entry, total_written, dest_size,
                                                flush_cb))
                         return false;
@@ -957,36 +1161,16 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             core::uint32 len = slot_to_length(reader, slot - 262);
             if (reader.bits_remaining() < 1) return false;
             core::uint32 dist_slot = dd_decoder_.decode(reader);
-            assert(dist_slot < (use_extra_dist_ ? 80 : 64) && "Distance slot out of bounds");
-            size_t distance = 1;
-            core::uint32 d_bits = 0;
-            if (dist_slot < 4) {
-                distance += dist_slot;
-                d_bits = 0;
-            } else {
-                d_bits = dist_slot / 2 - 1;
-                distance += static_cast<size_t>(2 | (dist_slot & 1)) << d_bits;
-            }
-            if (d_bits > 0) {
-                if (d_bits >= 4) {
-                    if (d_bits > 4) {
-                        if (reader.bits_remaining() < d_bits - 4) return false;
-                        core::uint64 extra = 0;
-                        if (d_bits > 36) {
-                            extra = reader.get_bits64(d_bits - 4);
-                        } else {
-                            extra = reader.get_bits(d_bits - 4);
-                        }
-                        distance += static_cast<size_t>(extra) << 4;
-                    }
-                    if (reader.bits_remaining() < 1) return false;
-                    core::uint32 low = ldd_decoder_.decode(reader);
-                    distance += low;
-                } else {
-                    if (reader.bits_remaining() < d_bits) return false;
-                    distance += reader.get_bits(d_bits);
-                }
-            }
+            // Release-safe replacement for the old assert.
+            if (dist_slot >= (use_extra_dist_ ? 80u : 64u)) return false;
+            // C-02: decoded and validated in 64 bits BEFORE it is stored in
+            // old_dist_ or narrowed to size_t. A distance beyond the window
+            // cannot be copied; fail the stream instead of desyncing the
+            // output accounting (report M6).
+            const core::uint64 d64 = decode_match_distance(reader, ldd_decoder_, dist_slot);
+            if (d64 == 0 || d64 > static_cast<core::uint64>(engine_.win_size_)) return false;
+            if (reader.truncated()) return false; // H-07: length/distance bits were padding
+            const size_t distance = static_cast<size_t>(d64);
             if (distance > 0x100) {
                 ++len;
                 if (distance > 0x2000) {
@@ -999,15 +1183,11 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             old_dist_[1] = old_dist_[0];
             old_dist_[0] = distance;
             last_length_ = len;
-            // A distance beyond the window cannot be copied; fail the stream
-            // instead of silently skipping and desyncing the output
-            // accounting (report M6). (The old assert vanished in Release.)
-            if (distance == 0 || distance > engine_.win_size_) return false;
             if (len > dest_size - total_written)
                 len = static_cast<core::uint32>(dest_size - total_written);
-            engine_.copy_match(distance, len, total_written);
+            if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
             total_written += len;
-            if (total_written - engine_.last_flushed_ >= 65536) {
+            if (total_written - engine_.last_flushed_ >= flush_cadence) {
                 if (!engine_.flush_pending(false, base_at_entry, total_written, dest_size,
                                            flush_cb))
                     return false;
@@ -1026,12 +1206,13 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             if (reader.bits_remaining() < 1) return false;
             core::uint32 len_slot = rd_decoder_.decode(reader);
             core::uint32 len = slot_to_length(reader, len_slot);
+            if (reader.truncated()) return false; // H-07
             last_length_ = len;
             if (len > dest_size - total_written)
                 len = static_cast<core::uint32>(dest_size - total_written);
-            engine_.copy_match(distance, len, total_written);
+            if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
             total_written += len;
-            if (total_written - engine_.last_flushed_ >= 65536) {
+            if (total_written - engine_.last_flushed_ >= flush_cadence) {
                 if (!engine_.flush_pending(false, base_at_entry, total_written, dest_size,
                                            flush_cb))
                     return false;
@@ -1039,6 +1220,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             continue;
         }
     }
+    if (overran_block(cur_bit())) return false; // H-06: final token overran
 
     // End-of-call flush. Whole-stream calls and the final block of a
     // per-block stream flush strictly: incomplete regions mean a corrupt
@@ -1067,9 +1249,9 @@ bool Decompressor50::prescan_member(const core::byte* src, size_t src_size, Pres
     if (src == nullptr || src_size == 0) return false;
     if (last_error_ != DecompressErrorCode::Ok) return false;
 
-    // Same table flavor the applier/worker instances derive from the entry's
-    // window size (decompress_internal does this per member).
-    use_extra_dist_ = (engine_.win_size_ > (4ULL * 1024 * 1024 * 1024));
+    // Table flavor is this instance's configured one (constructor /
+    // set_extra_dist), the same flavor the worker and applier instances are
+    // built with.
     cur_table_size_ = use_extra_dist_ ? 446 : 430;
     tables_ready_ = false;
     std::fill(std::begin(table_), std::end(table_), static_cast<core::byte>(0));
@@ -1082,6 +1264,14 @@ bool Decompressor50::prescan_member(const core::byte* src, size_t src_size, Pres
     size_t pos = 0;
     uint32_t cur_desc = 0;
     bool first = true;
+    // H-12: the encoder flushes a block every ~32 KiB of tokens, so packed
+    // bytes / 32 KiB is a good first guess; capped so a hostile stream
+    // cannot make the reservation itself the amplification.
+    {
+        const size_t guess = std::min<size_t>(src_size / 32768 + 1, 4096);
+        out.blocks.reserve(guess);
+        out.descriptions.reserve(guess);
+    }
     while (true) {
         if (out.blocks.size() >= PRESCAN_MAX_BLOCKS) return false; // R2 cap
         if (pos >= src_size) return false; // ran off the end without LastBlock
@@ -1127,6 +1317,13 @@ bool Decompressor50::prescan_member(const core::byte* src, size_t src_size, Pres
 }
 
 bool Decompressor50::initialize_from_description(const PrescanDescription& desc) {
+    // A description must match the flavor this instance was configured for;
+    // > 4 GiB distances are still rejected per token (64-bit decode, checked
+    // against win_size_), so 32-bit targets need no blanket refusal.
+    if (desc.extra_dist != use_extra_dist_) {
+        last_error_ = DecompressErrorCode::InvalidInput;
+        return false;
+    }
     use_extra_dist_ = desc.extra_dist;
     cur_table_size_ = use_extra_dist_ ? 446 : 430;
     if (desc.lengths.size() != cur_table_size_) {
@@ -1287,6 +1484,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
                 return false;
             }
             core::uint32 slot = ld_decoder_.decode(reader);
+            if (reader.truncated()) return false; // H-07: padded symbol
             if (slot < 256) {
                 push_lit(slot);
                 continue;
@@ -1347,36 +1545,13 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
                 core::uint32 len = slot_to_length(reader, slot - 262);
                 if (reader.bits_remaining() < 1) return false;
                 core::uint32 dist_slot = dd_decoder_.decode(reader);
-                assert(dist_slot < (use_extra_dist_ ? 80 : 64) && "Distance slot out of bounds");
-                size_t distance = 1;
-                core::uint32 d_bits = 0;
-                if (dist_slot < 4) {
-                    distance += dist_slot;
-                    d_bits = 0;
-                } else {
-                    d_bits = dist_slot / 2 - 1;
-                    distance += static_cast<size_t>(2 | (dist_slot & 1)) << d_bits;
-                }
-                if (d_bits > 0) {
-                    if (d_bits >= 4) {
-                        if (d_bits > 4) {
-                            if (reader.bits_remaining() < d_bits - 4) return false;
-                            core::uint64 extra = 0;
-                            if (d_bits > 36) {
-                                extra = reader.get_bits64(d_bits - 4);
-                            } else {
-                                extra = reader.get_bits(d_bits - 4);
-                            }
-                            distance += static_cast<size_t>(extra) << 4;
-                        }
-                        if (reader.bits_remaining() < 1) return false;
-                        core::uint32 low = ldd_decoder_.decode(reader);
-                        distance += low;
-                    } else {
-                        if (reader.bits_remaining() < d_bits) return false;
-                        distance += reader.get_bits(d_bits);
-                    }
-                }
+                if (dist_slot >= (use_extra_dist_ ? 80u : 64u)) return false;
+                // C-02: 64-bit decode + validate before narrowing (shared helper
+                // with decompress_internal so the engines cannot drift).
+                const core::uint64 d64 = decode_match_distance(reader, ldd_decoder_, dist_slot);
+                if (d64 == 0 || d64 > static_cast<core::uint64>(engine_.win_size_)) return false;
+                if (reader.truncated()) return false; // H-07
+                const size_t distance = static_cast<size_t>(d64);
                 // The distance-band ladder applies HERE, exactly once: the
                 // record carries the adjusted length and the applier never
                 // re-applies it (Gate 0 section 0).
@@ -1414,6 +1589,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
             if (reader.bits_remaining() < 1) return false;
             core::uint32 len_slot = rd_decoder_.decode(reader);
             core::uint32 len = slot_to_length(reader, len_slot);
+            if (reader.truncated()) return false; // H-07
             close_run();
             OpRecord r;
             r.tag = static_cast<core::uint8>(OpRecord::Tag::Rep);
@@ -1423,6 +1599,13 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
             out.recs.push_back(r);
             rec_bytes_now += sizeof(OpRecord);
             total_local += len;
+        }
+        // H-06: same verdict as decompress_internal - a token that ends past
+        // the declared block bit size is malformed, not silently tolerated.
+        if (header.block_size > 0 && reader.bit_pos() > end_bit) {
+            last_error_ = DecompressErrorCode::InvalidInput;
+            last_error_str_ = "token overran block bit size";
+            return false;
         }
         if (bi == last_block && expect.last_block) out.saw_last_block = true;
     }
@@ -1463,8 +1646,9 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
     // bytes flush at the 64 KiB output cadence and at filter completions
     // (inside engine_.flush_pending). Filter records skip the cadence check
     // exactly like the sequential filter-token branch.
+    const size_t flush_cadence = engine_.flush_cadence();
     auto cadence = [&]() -> bool {
-        if (total_written - engine_.last_flushed_ < 65536) return true;
+        if (total_written - engine_.last_flushed_ < flush_cadence) return true;
         return engine_.flush_pending(false, 0, total_written, dest_size, flush_cb);
     };
 
@@ -1507,17 +1691,18 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
                 // flush attempt below still fires at the same positions, so
                 // callback chunk boundaries are unchanged.
                 const size_t pending = total_written - engine_.last_flushed_;
-                if (pending < 65536) {
-                    const size_t to_cadence = 65536 - pending;
+                if (pending < flush_cadence) {
+                    const size_t to_cadence = flush_cadence - pending;
                     if (to_cadence < stretch) stretch = to_cadence;
                 }
+                if (!engine_.reserve(stretch)) return window_alloc_failed();
                 std::memcpy(engine_.window_.data() + engine_.win_pos_, srcp, stretch);
                 engine_.win_pos_ = engine_.wrap_up(engine_.win_pos_ + stretch);
                 if (engine_.win_pos_ == 0) engine_.first_win_done_ = true;
                 srcp += stretch;
                 total_written += stretch;
                 remaining -= stretch;
-                if (total_written - engine_.last_flushed_ >= 65536) {
+                if (total_written - engine_.last_flushed_ >= flush_cadence) {
                     if (!engine_.flush_pending(false, 0, total_written, dest_size, flush_cb))
                         return false;
                 }
@@ -1539,7 +1724,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
             last_length_ = len;
             if (distance == 0 || distance > engine_.win_size_) return false;
             if (len > dest_size - total_written) len = dest_size - total_written;
-            engine_.copy_match(distance, len, total_written);
+            if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
             total_written += len;
             if (!cadence()) return false;
             continue;
@@ -1560,7 +1745,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
             last_length_ = r.a;
             size_t len = r.a;
             if (len > dest_size - total_written) len = dest_size - total_written;
-            engine_.copy_match(distance, len, total_written);
+            if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
             total_written += len;
             if (!cadence()) return false;
             continue;
@@ -1576,7 +1761,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
                 }
                 size_t len = last_length_;
                 if (len > dest_size - total_written) len = dest_size - total_written;
-                engine_.copy_match(distance, len, total_written);
+                if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
                 total_written += len;
                 if (!cadence()) return false;
             }
@@ -1596,10 +1781,12 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
         FilterEntry fe;
         fe.type = static_cast<core::uint8>(r.aux & 7);
         fe.channels = static_cast<core::uint8>(((r.aux >> 3) & 31) + 1);
-        fe.block_start = total_written + r.a;
+        const core::uint64 rel_start = static_cast<core::uint64>(total_written) + r.a;
+        if (rel_start < r.a || rel_start > static_cast<core::uint64>(SIZE_MAX)) return false;
+        fe.block_start = rel_start;
         // Per-member transform base (v1.36.16): the base is the offset
         // WITHIN the member; the applier's frame IS the member frame.
-        fe.file_offset = static_cast<core::uint64>(total_written) + r.a;
+        fe.file_offset = rel_start;
         fe.block_length = r.b;
         // A filter region larger than the window can never be applied
         // intact (report M5).
@@ -1607,6 +1794,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
         // Aggregate budget against unbounded scheduled transform work
         // (report M7); dest_size == SIZE_MAX is a sequential-streaming
         // shape that never reaches the applier, kept for symmetry.
+        if (filters_total_len_ > SIZE_MAX - static_cast<size_t>(fe.block_length)) return false;
         filters_total_len_ += static_cast<size_t>(fe.block_length);
         if (dest_size != SIZE_MAX && dest_size <= SIZE_MAX - engine_.win_size_ &&
             filters_total_len_ > dest_size + engine_.win_size_) {
@@ -1617,7 +1805,10 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
         // of frame order (the sequential rejection, verbatim).
         if (!engine_.filters_.empty()) {
             const FilterEntry& prev = engine_.filters_.back();
-            if (fe.block_start < prev.block_start + prev.block_length) return false;
+            if (fe.block_start < prev.block_start ||
+                fe.block_start - prev.block_start < prev.block_length) {
+                return false;
+            }
         }
         if (engine_.filters_.size() - engine_.filters_head_ >= 65536) return false;
 #ifdef OPENRAR_CROSS_VALIDATE

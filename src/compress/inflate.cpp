@@ -29,8 +29,6 @@ constexpr core::uint8 CODE_LENGTH_ORDER[19] = {16, 17, 18, 0, 8,  7, 9,  6, 10, 
                                                11, 4,  12, 3, 13, 2, 14, 1, 15};
 
 constexpr size_t IN_CHUNK = 65536;
-constexpr size_t OUT_CHUNK = 65536;
-constexpr core::uint32 STORED_CHUNK = 4096;
 
 } // namespace
 
@@ -135,7 +133,7 @@ core::uint32 Inflate::HuffmanTable::decode_canonical(core::uint32 peek15) const 
 // ------------------------------------------------------------------
 
 Inflate::Inflate(core::uint64 max_inflight_output)
-    : max_out_(max_inflight_output), in_buf_(IN_CHUNK), out_buf_(OUT_CHUNK), window_(WINDOW_SIZE) {}
+    : max_out_(max_inflight_output), in_buf_(IN_CHUNK), buf_(WINDOW_SIZE + OUT_CHUNK) {}
 
 void Inflate::reset() {
     in_pos_ = in_end_ = 0;
@@ -148,7 +146,6 @@ void Inflate::reset() {
     total_out_ = 0;
     total_in_ = 0;
     out_len_ = 0;
-    window_pos_ = 0;
     window_fill_ = 0;
     have_fixed_ = false;
 }
@@ -245,12 +242,6 @@ void Inflate::align_byte() {
         return;
     }
     consume(rem);
-}
-
-bool Inflate::read_byte(core::byte& out) {
-    if (!ensure_bits(8)) return false;
-    out = static_cast<core::byte>(get_bits(8));
-    return true;
 }
 
 core::uint32 Inflate::reverse_bits(core::uint32 value, unsigned int nbits) {
@@ -360,87 +351,37 @@ bool Inflate::read_dynamic_tables() {
 
 InflateError Inflate::flush_output() {
     if (out_len_ == 0) return InflateError::Ok;
+    const core::byte* chunk = buf_.data() + WINDOW_SIZE;
     if (total_out_ + out_len_ > max_out_) {
         // Emit up to the cap, then report the breach (D5: the cap is a hard
         // in-flight bound; partial output is the caller's discard).
         const core::uint64 room = max_out_ - total_out_;
         const size_t take = static_cast<size_t>(room < out_len_ ? room : out_len_);
         if (take > 0) {
-            if (sink_ && !sink_(out_buf_.data(), take)) return InflateError::SinkFailed;
+            if (sink_ && !sink_(chunk, take)) return InflateError::SinkFailed;
             total_out_ += take;
         }
         return InflateError::OutputCapExceeded;
     }
-    if (sink_ && !sink_(out_buf_.data(), out_len_)) return InflateError::SinkFailed;
+    if (sink_ && !sink_(chunk, out_len_)) return InflateError::SinkFailed;
     total_out_ += out_len_;
+    // H-13: the last WINDOW_SIZE bytes of [history | chunk] become the next
+    // chunk's history. Bytes older than window_fill_ are never addressed
+    // (window_copy rejects dist > window_fill_), so stale contents are fine.
+    std::memmove(buf_.data(), buf_.data() + out_len_, WINDOW_SIZE);
     out_len_ = 0;
     return InflateError::Ok;
 }
 
 InflateError Inflate::emit(const core::byte* data, size_t size) {
-    size_t pos = 0;
-    while (pos < size) {
-        size_t chunk = size - pos;
-        size_t out_rem = out_buf_.size() - out_len_;
-        size_t win_rem = WINDOW_SIZE - window_pos_;
-        if (chunk > out_rem) chunk = out_rem;
-        if (chunk > win_rem) chunk = win_rem;
-        std::memcpy(out_buf_.data() + out_len_, data + pos, chunk);
-        std::memcpy(window_.data() + window_pos_, data + pos, chunk);
+    while (size > 0) {
+        const size_t chunk = std::min(size, OUT_CHUNK - out_len_);
+        std::memcpy(out_ptr(), data, chunk);
         out_len_ += chunk;
-        window_pos_ = (window_pos_ + chunk) & WINDOW_MASK;
-        if (window_fill_ < WINDOW_SIZE) {
-            window_fill_ = std::min<size_t>(WINDOW_SIZE, window_fill_ + chunk);
-        }
-        pos += chunk;
-        if (out_len_ == out_buf_.size()) {
-            InflateError err = flush_output();
-            if (err != InflateError::Ok) return err;
-        }
-    }
-    return InflateError::Ok;
-}
-
-InflateError Inflate::emit_literal(core::byte b) {
-    out_buf_[out_len_++] = b;
-    window_[window_pos_] = b;
-    window_pos_ = (window_pos_ + 1) & WINDOW_MASK;
-    if (window_fill_ < WINDOW_SIZE) ++window_fill_;
-    if (out_len_ == out_buf_.size()) return flush_output();
-    return InflateError::Ok;
-}
-
-InflateError Inflate::window_copy(core::uint32 dist, core::uint32 len) {
-    if (dist == 0 || dist > window_fill_) return InflateError::DistanceTooFar;
-    while (len > 0) {
-        const size_t src = (window_pos_ + WINDOW_SIZE - dist) & WINDOW_MASK;
-        size_t chunk = len;
-        size_t out_rem = out_buf_.size() - out_len_;
-        size_t win_dst_rem = WINDOW_SIZE - window_pos_;
-        size_t win_src_rem = WINDOW_SIZE - src;
-        if (chunk > out_rem) chunk = out_rem;
-        if (chunk > win_dst_rem) chunk = win_dst_rem;
-        if (chunk > win_src_rem) chunk = win_src_rem;
-
-        if (dist == 1) {
-            const core::byte b = window_[src];
-            std::memset(out_buf_.data() + out_len_, b, chunk);
-            std::memset(window_.data() + window_pos_, b, chunk);
-        } else if (src == window_pos_) {
-            std::memcpy(out_buf_.data() + out_len_, window_.data() + window_pos_, chunk);
-        } else {
-            size_t gap = (src < window_pos_) ? (window_pos_ - src) : (src - window_pos_);
-            if (chunk > gap) chunk = gap;
-            std::memcpy(out_buf_.data() + out_len_, window_.data() + src, chunk);
-            std::memcpy(window_.data() + window_pos_, window_.data() + src, chunk);
-        }
-        out_len_ += chunk;
-        window_pos_ = (window_pos_ + chunk) & WINDOW_MASK;
-        if (window_fill_ < WINDOW_SIZE) {
-            window_fill_ = std::min<size_t>(WINDOW_SIZE, window_fill_ + chunk);
-        }
-        len -= static_cast<core::uint32>(chunk);
-        if (out_len_ == out_buf_.size()) {
+        window_fill_ = std::min(WINDOW_SIZE, window_fill_ + chunk);
+        data += chunk;
+        size -= chunk;
+        if (out_len_ == OUT_CHUNK) {
             const InflateError err = flush_output();
             if (err != InflateError::Ok) return err;
         }
@@ -448,6 +389,49 @@ InflateError Inflate::window_copy(core::uint32 dist, core::uint32 len) {
     return InflateError::Ok;
 }
 
+InflateError Inflate::emit_literal(core::byte b) {
+    buf_[WINDOW_SIZE + out_len_++] = b;
+    if (window_fill_ < WINDOW_SIZE) ++window_fill_;
+    if (out_len_ == OUT_CHUNK) return flush_output();
+    return InflateError::Ok;
+}
+
+InflateError Inflate::window_copy(core::uint32 dist, core::uint32 len) {
+    if (dist == 0 || dist > window_fill_) return InflateError::DistanceTooFar;
+    while (len > 0) {
+        // dist <= window_fill_ <= WINDOW_SIZE keeps src inside buf_: the
+        // history region always holds the WINDOW_SIZE bytes before the chunk.
+        core::byte* dst = out_ptr();
+        const core::byte* src = dst - dist;
+        const size_t chunk = std::min<size_t>(len, OUT_CHUNK - out_len_);
+        if (dist >= chunk) {
+            std::memcpy(dst, src, chunk); // no overlap
+        } else if (dist == 1) {
+            std::memset(dst, *src, chunk);
+        } else {
+            // H-13: overlapping match. [src, dst) is one period; copying
+            // [src, src + n) to the write cursor with n = (cursor - src)
+            // keeps the region periodic and doubles the copyable span each
+            // step, so a dist-2 length-258 match is ~8 memcpys, not 129.
+            core::byte* d = dst;
+            size_t left = chunk;
+            while (left > 0) {
+                const size_t n = std::min(static_cast<size_t>(d - src), left);
+                std::memcpy(d, src, n);
+                d += n;
+                left -= n;
+            }
+        }
+        out_len_ += chunk;
+        window_fill_ = std::min(WINDOW_SIZE, window_fill_ + chunk);
+        len -= static_cast<core::uint32>(chunk);
+        if (out_len_ == OUT_CHUNK) {
+            const InflateError err = flush_output();
+            if (err != InflateError::Ok) return err;
+        }
+    }
+    return InflateError::Ok;
+}
 // ------------------------------------------------------------------
 // Decode
 // ------------------------------------------------------------------
@@ -487,18 +471,29 @@ InflateError Inflate::decode(const InputFn& in, const SinkFn& sink) {
             const core::uint32 nlen = get_bits(16);
             if (truncated_) return InflateError::TruncatedInput;
             if ((len ^ 0xFFFF) != nlen) return InflateError::BadStoredLen;
-            core::byte scratch[STORED_CHUNK];
+            // H-13: stored payloads are byte-aligned. Drain the whole bytes
+            // still held in the bit accumulator, then copy straight out of
+            // the input staging buffer instead of one read_byte() per byte.
             core::uint32 left = len;
-            while (left > 0) {
-                const core::uint32 take = left < STORED_CHUNK ? left : STORED_CHUNK;
-                for (core::uint32 r = 0; r < take; ++r) {
-                    core::byte b = 0;
-                    if (!read_byte(b)) return InflateError::TruncatedInput;
-                    scratch[r] = b;
-                }
-                const InflateError err = emit(scratch, take);
+            while (left > 0 && real_bits_ >= 8) {
+                const InflateError err = emit_literal(static_cast<core::byte>(get_bits(8)));
                 if (err != InflateError::Ok) return err;
-                left -= take;
+                --left;
+            }
+            if (left > 0 && bit_count_ != 0) {
+                // Unreachable after align_byte() (the accumulator is filled
+                // and drained in whole bytes); fail closed rather than mix
+                // the accumulator with direct buffer reads.
+                return InflateError::TruncatedInput;
+            }
+            while (left > 0) {
+                if (in_pos_ >= in_end_ && !refill_input()) return InflateError::TruncatedInput;
+                const size_t n = std::min<size_t>(left, in_end_ - in_pos_);
+                const InflateError err = emit(in_buf_.data() + in_pos_, n);
+                if (err != InflateError::Ok) return err;
+                in_pos_ += n;
+                consumed_bits_ += static_cast<core::uint64>(n) * 8;
+                left -= static_cast<core::uint32>(n);
             }
         } else if (btype == 1) {
             const InflateError ferr = build_fixed_tables();

@@ -1048,7 +1048,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         return r.test_entry_stream(job.index, hooks) == archive::RAR_OK ? TestResult::Ok
                                                                         : TestResult::Failed;
     };
-    int skipped_count = 0;
+    std::atomic<int> skipped_count{0};
     auto test_verdict_str = [](TestResult r) -> const char* {
         switch (r) {
         case TestResult::Ok:
@@ -1141,7 +1141,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
     // Taxonomy: unverified encrypted entries / BADPSW are password
     // failures (11); other verification failures are checksum- or
     // structure-level (3, matching WinRAR t on damaged archives).
-    return skipped_count > 0 ? EXIT_BAD_PASSWORD : EXIT_CRC;
+    return skipped_count.load(std::memory_order_relaxed) > 0 ? EXIT_BAD_PASSWORD : EXIT_CRC;
 }
 
 int delete_from_archive(const std::string& arc_path, const std::vector<std::string>& files) {
@@ -1511,8 +1511,17 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     std::unique_ptr<compress::SolidPacker> solid_packer;
     std::vector<char> solid_chain_member(queue.size(), 0);
     if (solid && queue.size() > 1 && method > 0) {
+        // LZ window bounded by the whole run's input (headers still record
+        // the snapped declared window): -md8g -s over a few MiB must not
+        // allocate match-finder state for 8 GiB.
+        core::uint64 run_bytes = 0;
+        for (const auto& q : queue) {
+            if (!q.is_dir && !q.is_symlink && !q.is_hardlink && !q.is_filecopy)
+                run_bytes += q.file_size;
+        }
         solid_packer = std::make_unique<compress::SolidPacker>(
-            method, static_cast<size_t>(compress::snap_window_to_fci_grid(eff_dict)));
+            method, static_cast<size_t>(compress::lz_window_for_input(
+                        compress::snap_window_to_fci_grid(eff_dict), run_bytes)));
         for (size_t i = 0; i < queue.size(); ++i) {
             solid_chain_member[i] = comp_plan.entries[i].is_solid_chain ? 1 : 0;
         }

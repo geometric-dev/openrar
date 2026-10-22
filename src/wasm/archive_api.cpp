@@ -1,6 +1,7 @@
 #include "archive_api.hpp"
 #include "../archive/buffer_archive.hpp"
 
+#include <atomic>
 #include <exception>
 #include <cstdlib>
 #include <cstring>
@@ -196,15 +197,12 @@ int openrar_archive_extract(const uint8_t* data, size_t size, uint32_t entry_ind
         // malloc(0) may legally return NULL, which the check below would
         // misreport as OOM for a successfully extracted empty entry (report M12);
         // mirror the dll handler's size?size:1 convention.
-        uint8_t* buf = static_cast<uint8_t*>(std::malloc(out.size() ? out.size() : 1));
-        if (!buf && !out.empty()) {
+        *out_ptr = openrar::api::heap_dup(out.data(), out.size());
+        if (!*out_ptr && !out.empty()) {
             set_error(RAR_ERR_NOMEM, "out of memory");
             return RAR_ERR_NOMEM;
         }
-        if (!out.empty()) std::memcpy(buf, out.data(), out.size());
-        *out_ptr = out.empty() ? nullptr : buf;
         *out_len = out.size();
-        if (out.empty()) std::free(buf);
         return RAR_OK;
     } catch (const std::exception& e) {
         set_error(RAR_ERR_NOMEM, e.what());
@@ -281,7 +279,7 @@ int openrar_archive_create(const uint8_t* const* paths_arr, const uint8_t* const
             // Find NUL-terminator; if not found, take up to 4 KiB and let
             // validate_archive_path handle the rest.
             size_t plen = 0;
-            while (plen < 4096 && p[plen] != 0) ++plen;
+            while (plen <= 2048 && p[plen] != 0) ++plen;
             std::string path(reinterpret_cast<const char*>(p), plen);
             bool is_dir = !path.empty() && path.back() == '/';
             std::string err;
@@ -456,6 +454,20 @@ struct ArchiveHandle {
     openrar::archive::LimitState limit_state;
     openrar::archive::ExtractionLimits limits;
     bool has_limits{false};
+    std::atomic<bool> busy{false};
+};
+
+struct BusyGuard {
+    std::atomic<bool>& flag;
+    bool claimed{false};
+    explicit BusyGuard(std::atomic<bool>& f) : flag(f) {
+        bool expected = false;
+        claimed = flag.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+                                               std::memory_order_acquire);
+    }
+    ~BusyGuard() {
+        if (claimed) flag.store(false, std::memory_order_release);
+    }
 };
 // Shared contract table: pin() hands out a shared_ptr so work and host
 // callbacks run with NO table lock held (report L12).
@@ -515,6 +527,11 @@ int openrar_archive_handle_list(uint32_t handle, uint32_t* count, void** entries
             set_error(RAR_ERR_INVALID_ARG, "invalid handle");
             return RAR_ERR_INVALID_ARG;
         }
+        BusyGuard bg(h->busy);
+        if (!bg.claimed) {
+            set_error(RAR_ERR_BUSY, "handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         *count = 0;
         *entries_out = nullptr;
         *paths_out = nullptr;
@@ -567,6 +584,11 @@ int openrar_archive_handle_extract(uint32_t handle, uint32_t entry_index, uint8_
             set_error(RAR_ERR_INVALID_ARG, "invalid handle");
             return RAR_ERR_INVALID_ARG;
         }
+        BusyGuard bg(h->busy);
+        if (!bg.claimed) {
+            set_error(RAR_ERR_BUSY, "handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         if (entry_index >= h->entries.size()) {
             set_error(RAR_ERR_INVALID_ARG, "entry_index out of range");
             return RAR_ERR_INVALID_ARG;
@@ -615,6 +637,11 @@ int openrar_archive_handle_extract_all2(uint32_t handle, const ArchiveHooks* hoo
             set_error(RAR_ERR_INVALID_ARG, "invalid handle");
             return RAR_ERR_INVALID_ARG;
         }
+        BusyGuard bg(h->busy);
+        if (!bg.claimed) {
+            set_error(RAR_ERR_BUSY, "handle is busy with active operation");
+            return RAR_ERR_BUSY;
+        }
         // pin() releases the table lock before this point: progress/cancel
         // callbacks run with no handle-table lock held (report L12), and the
         // shared_ptr keeps the handle alive even if another thread closes it.
@@ -645,6 +672,11 @@ int openrar_archive_handle_set_limits(uint32_t handle, uint64_t max_member_bytes
         if (!h) {
             set_error(RAR_ERR_INVALID_ARG, "invalid handle");
             return RAR_ERR_INVALID_ARG;
+        }
+        BusyGuard bg(h->busy);
+        if (!bg.claimed) {
+            set_error(RAR_ERR_BUSY, "handle is busy with active operation");
+            return RAR_ERR_BUSY;
         }
         h->limits.max_member_output_bytes = max_member_bytes;
         h->limits.max_total_output_bytes = max_total_bytes;

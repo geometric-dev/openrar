@@ -5,7 +5,9 @@
 #include <windows.h>
 #include <winioctl.h>
 #include <aclapi.h>
+#include <algorithm>
 #include <cctype>
+#include <cstring>
 #pragma comment(lib, "advapi32.lib")
 
 namespace openrar::io {
@@ -216,99 +218,79 @@ bool parse_reparse_buffer(const core::byte* data, size_t size, RedirEntry& out_r
     out_redir.target.clear();
     out_redir.is_directory = false;
 
-    if (!data || size < 8) {
-        return false;
-    }
+    if (!data || size < 8) return false;
 
-    const auto* rdb = reinterpret_cast<const REPARSE_DATA_BUFFER*>(data);
-    if (size < 8 + static_cast<size_t>(rdb->ReparseDataLength)) {
-        return false;
-    }
+    const core::uint32 tag = core::read_le32(data);
+    const size_t data_len = core::read_le16(data + 4);
+    if (data_len > size - 8) return false;
 
-    if (rdb->ReparseTag == IO_REPARSE_TAG_MOUNT_POINT) {
-        // MountPointReparseBuffer fields: SubstituteNameOffset(2) + SubstituteNameLength(2) +
-        //                                  PrintNameOffset(2) + PrintNameLength(2) = 8 bytes
-        if (rdb->ReparseDataLength < 8 || size < 16) {
+    auto decode_path = [&](size_t path_base, size_t offset, size_t length, size_t path_limit,
+                           std::wstring& target) -> bool {
+        if ((offset & 1) || (length & 1)) return false;
+        if (offset > path_limit || length > path_limit - offset) return false;
+        if (length == 0) return false;
+        const size_t chars = length / sizeof(wchar_t);
+        std::vector<wchar_t> wide(chars);
+        std::memcpy(wide.data(), data + path_base + offset, length);
+        target.assign(wide.begin(), wide.end());
+        if (target.find(L'\0') != std::wstring::npos) return false;
+        if (target.rfind(L"\\??\\", 0) == 0 || target.rfind(L"\\\\?\\", 0) == 0) {
+            target = target.substr(4);
+        }
+        return !target.empty();
+    };
+    auto valid_span = [](size_t offset, size_t length, size_t limit) -> bool {
+        if (length == 0) return true;
+        if ((offset & 1) || (length & 1)) return false;
+        return offset <= limit && length <= limit - offset;
+    };
+
+    if (tag == IO_REPARSE_TAG_MOUNT_POINT) {
+        constexpr size_t kFields = 8;
+        constexpr size_t kPathBase = 16;
+        if (data_len < kFields || size < kPathBase) return false;
+        const size_t sub_off = core::read_le16(data + 8);
+        const size_t sub_len = core::read_le16(data + 10);
+        const size_t print_off = core::read_le16(data + 12);
+        const size_t print_len = core::read_le16(data + 14);
+        const size_t path_limit = std::min(data_len - kFields, size - kPathBase);
+        if (!valid_span(sub_off, sub_len, path_limit) ||
+            !valid_span(print_off, print_len, path_limit)) {
             return false;
         }
-        const auto& mp = rdb->MountPointReparseBuffer;
-        size_t path_limit = std::min(static_cast<size_t>(rdb->ReparseDataLength - 8),
-                                     static_cast<size_t>(size - 16));
 
-        // Offsets and lengths must be 2-byte aligned and within bounds
-        if ((mp.PrintNameOffset & 1) || (mp.PrintNameLength & 1) || (mp.SubstituteNameOffset & 1) ||
-            (mp.SubstituteNameLength & 1)) {
-            return false;
-        }
-        if (static_cast<size_t>(mp.PrintNameOffset) + mp.PrintNameLength > path_limit ||
-            static_cast<size_t>(mp.SubstituteNameOffset) + mp.SubstituteNameLength > path_limit) {
-            return false;
-        }
-
+        const size_t off = print_len > 0 ? print_off : sub_off;
+        const size_t len = print_len > 0 ? print_len : sub_len;
+        std::wstring target;
+        if (!decode_path(kPathBase, off, len, path_limit, target)) return false;
         out_redir.type = RedirType::Junction;
         out_redir.is_directory = true;
-
-        const wchar_t* p = nullptr;
-        size_t len = 0;
-        if (mp.PrintNameLength > 0) {
-            p = reinterpret_cast<const wchar_t*>(reinterpret_cast<const char*>(mp.PathBuffer) +
-                                                 mp.PrintNameOffset);
-            len = mp.PrintNameLength / sizeof(wchar_t);
-        } else if (mp.SubstituteNameLength > 0) {
-            p = reinterpret_cast<const wchar_t*>(reinterpret_cast<const char*>(mp.PathBuffer) +
-                                                 mp.SubstituteNameOffset);
-            len = mp.SubstituteNameLength / sizeof(wchar_t);
-        }
-
-        if (p && len > 0) {
-            std::wstring target_w(p, len);
-            if (target_w.rfind(L"\\??\\", 0) == 0 || target_w.rfind(L"\\\\?\\", 0) == 0) {
-                target_w = target_w.substr(4);
-            }
-            out_redir.target = wide_to_utf8(target_w);
-        }
+        out_redir.target = wide_to_utf8(target);
         return true;
-    } else if (rdb->ReparseTag == IO_REPARSE_TAG_SYMLINK) {
-        // SymbolicLinkReparseBuffer fields: SubstituteNameOffset(2) + SubstituteNameLength(2) +
-        //                                   PrintNameOffset(2) + PrintNameLength(2) + Flags(4) = 12 bytes
-        if (rdb->ReparseDataLength < 12 || size < 20) {
-            return false;
-        }
-        const auto& sl = rdb->SymbolicLinkReparseBuffer;
-        size_t path_limit = std::min(static_cast<size_t>(rdb->ReparseDataLength - 12),
-                                     static_cast<size_t>(size - 20));
+    }
 
-        if ((sl.PrintNameOffset & 1) || (sl.PrintNameLength & 1) || (sl.SubstituteNameOffset & 1) ||
-            (sl.SubstituteNameLength & 1)) {
-            return false;
-        }
-        if (static_cast<size_t>(sl.PrintNameOffset) + sl.PrintNameLength > path_limit ||
-            static_cast<size_t>(sl.SubstituteNameOffset) + sl.SubstituteNameLength > path_limit) {
+    if (tag == IO_REPARSE_TAG_SYMLINK) {
+        constexpr size_t kFields = 12;
+        constexpr size_t kPathBase = 20;
+        if (data_len < kFields || size < kPathBase) return false;
+        const size_t sub_off = core::read_le16(data + 8);
+        const size_t sub_len = core::read_le16(data + 10);
+        const size_t print_off = core::read_le16(data + 12);
+        const size_t print_len = core::read_le16(data + 14);
+        const size_t flags = core::read_le32(data + 16);
+        const size_t path_limit = std::min(data_len - kFields, size - kPathBase);
+        if (!valid_span(sub_off, sub_len, path_limit) ||
+            !valid_span(print_off, print_len, path_limit)) {
             return false;
         }
 
+        const size_t off = print_len > 0 ? print_off : sub_off;
+        const size_t len = print_len > 0 ? print_len : sub_len;
+        std::wstring target;
+        if (!decode_path(kPathBase, off, len, path_limit, target)) return false;
         out_redir.type = RedirType::WinSymlink;
-        out_redir.is_directory = (sl.Flags & 1) != 0;
-
-        const wchar_t* p = nullptr;
-        size_t len = 0;
-        if (sl.PrintNameLength > 0) {
-            p = reinterpret_cast<const wchar_t*>(reinterpret_cast<const char*>(sl.PathBuffer) +
-                                                 sl.PrintNameOffset);
-            len = sl.PrintNameLength / sizeof(wchar_t);
-        } else if (sl.SubstituteNameLength > 0) {
-            p = reinterpret_cast<const wchar_t*>(reinterpret_cast<const char*>(sl.PathBuffer) +
-                                                 sl.SubstituteNameOffset);
-            len = sl.SubstituteNameLength / sizeof(wchar_t);
-        }
-
-        if (p && len > 0) {
-            std::wstring target_w(p, len);
-            if (target_w.rfind(L"\\??\\", 0) == 0 || target_w.rfind(L"\\\\?\\", 0) == 0) {
-                target_w = target_w.substr(4);
-            }
-            out_redir.target = wide_to_utf8(target_w);
-        }
+        out_redir.is_directory = (flags & 1) != 0;
+        out_redir.target = wide_to_utf8(target);
         return true;
     }
 
@@ -327,7 +309,7 @@ bool read_reparse_info(const std::filesystem::path& path, RedirEntry& out_redir)
         return false;
     }
 
-    core::byte buf[16384];
+    alignas(16) core::byte buf[16384];
     DWORD bytes_returned = 0;
     BOOL res = DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, nullptr, 0, buf, sizeof(buf),
                                &bytes_returned, nullptr);
@@ -376,32 +358,32 @@ bool create_reparse_link(const std::filesystem::path& link_path, const RedirEntr
         }
         std::wstring sub_name = L"\\??\\" + print_name;
 
-        size_t sub_len_bytes = sub_name.size() * sizeof(wchar_t);
-        size_t print_len_bytes = print_name.size() * sizeof(wchar_t);
-        size_t path_buf_size = sub_len_bytes + sizeof(wchar_t) + print_len_bytes + sizeof(wchar_t);
-        size_t total_size = 8 + 8 + path_buf_size;
+        const size_t sub_len_bytes = sub_name.size() * sizeof(wchar_t);
+        const size_t print_len_bytes = print_name.size() * sizeof(wchar_t);
+        const size_t print_off = sub_len_bytes + sizeof(wchar_t);
+        const size_t path_buf_size = print_off + print_len_bytes + sizeof(wchar_t);
+        const size_t total_size = 16 + path_buf_size;
+        if (sub_len_bytes > 0xFFFF || print_len_bytes > 0xFFFF || print_off > 0xFFFF ||
+            total_size - 8 > 0xFFFF) {
+            std::filesystem::remove(link_path, ec);
+            return false;
+        }
 
         std::vector<core::byte> buf(total_size, 0);
-        auto* rdb = reinterpret_cast<REPARSE_DATA_BUFFER*>(buf.data());
-        rdb->ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
-        rdb->ReparseDataLength = static_cast<USHORT>(total_size - 8);
-        rdb->Reserved = 0;
-
-        rdb->MountPointReparseBuffer.SubstituteNameOffset = 0;
-        rdb->MountPointReparseBuffer.SubstituteNameLength = static_cast<USHORT>(sub_len_bytes);
-        rdb->MountPointReparseBuffer.PrintNameOffset =
-            static_cast<USHORT>(sub_len_bytes + sizeof(wchar_t));
-        rdb->MountPointReparseBuffer.PrintNameLength = static_cast<USHORT>(print_len_bytes);
-
-        char* path_buf = reinterpret_cast<char*>(rdb->MountPointReparseBuffer.PathBuffer);
-        std::memcpy(path_buf + rdb->MountPointReparseBuffer.SubstituteNameOffset, sub_name.c_str(),
-                    sub_len_bytes);
-        std::memcpy(path_buf + rdb->MountPointReparseBuffer.PrintNameOffset, print_name.c_str(),
-                    print_len_bytes);
+        core::write_le32(buf.data(), IO_REPARSE_TAG_MOUNT_POINT);
+        core::write_le16(buf.data() + 4, static_cast<core::uint16>(total_size - 8));
+        core::write_le16(buf.data() + 6, 0);
+        core::write_le16(buf.data() + 8, 0);
+        core::write_le16(buf.data() + 10, static_cast<core::uint16>(sub_len_bytes));
+        core::write_le16(buf.data() + 12, static_cast<core::uint16>(print_off));
+        core::write_le16(buf.data() + 14, static_cast<core::uint16>(print_len_bytes));
+        std::memcpy(buf.data() + 16, sub_name.data(), sub_len_bytes);
+        std::memcpy(buf.data() + 16 + print_off, print_name.data(), print_len_bytes);
 
         DWORD bytes_returned = 0;
-        BOOL res = DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, rdb, static_cast<DWORD>(total_size),
-                                   nullptr, 0, &bytes_returned, nullptr);
+        BOOL res =
+            DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, buf.data(), static_cast<DWORD>(total_size),
+                            nullptr, 0, &bytes_returned, nullptr);
         CloseHandle(h);
         if (!res) {
             std::filesystem::remove(link_path, ec);
