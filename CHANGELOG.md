@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.45.0] - 2026-10-21
+## [1.45.0] - 2026-10-22
 
 Rollup release. It carries the uncommitted v1.43 census work and the v1.44 A-6
 back-shift, the v1.44 verification substrate, v1.45 milestones M0-M2 (build
