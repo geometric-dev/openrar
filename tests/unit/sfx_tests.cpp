@@ -23,9 +23,10 @@
 #include <vector>
 #ifdef _MSC_VER
 #include <crtdbg.h>
+#endif
+
 #include <doctest.h>
 #include "../support/test_runner.hpp"
-#endif
 
 using namespace openrar;
 using namespace openrar::archive;
