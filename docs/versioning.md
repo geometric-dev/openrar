@@ -13,8 +13,23 @@ The release version lives in `CMakeLists.txt`:
 project(openrar VERSION 1.2.0 LANGUAGES CXX)
 ```
 
-Everything else derives from it or is synced to it in the same release commit
-(`wasm/js/package.json`, `CHANGELOG.md`).
+Everything else derives from it or is synced to it in the same release commit.
+There are **five** copies the CI version gate compares (the gate is stricter
+than this list used to be — the list below is the authority):
+
+| File | Line | Field |
+|---|---|---|
+| `CMakeLists.txt` | 8 | `project(openrar VERSION X.Y.Z ...)` — the source of truth |
+| `wasm/js/package.json` | 3 | `"version"` |
+| `bindings/python/pyproject.toml` | 7 | `version` |
+| `bindings/python/openrar/__init__.py` | 36 | `__version__` |
+| `bindings/csharp/OpenRAR/OpenRAR.NET.csproj` | 10 | `<Version>` |
+
+Plus `CHANGELOG.md`, whose newest `## [X.Y.Z]` heading must match. The gate
+that enforces the five copies is the `version consistency` step in
+`.github/workflows/build.yml` (gate leg). `include/openrar/version.h.in` is
+**not** a copy to bump — it is a template filled from `project(VERSION)` by
+`configure_file` (`cmake/openrar_sources.cmake`).
 
 ## Patch = commit counter
 
