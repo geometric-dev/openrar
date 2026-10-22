@@ -1426,6 +1426,267 @@ def test_track18_solid_filtered_chain(openrar, unrar, rar):
     return True
 
 
+# ── Track 19/20: large dictionaries (lazy window + table flavor) ───────────
+
+def _peak_rss_run(cmd, cwd=None):
+    """Run cmd; return (rc, out, err, peak_resident_bytes or None)."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class PMC(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t)]
+        p = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        out, err = p.communicate()
+        pmc = PMC()
+        pmc.cb = ctypes.sizeof(PMC)
+        ok = ctypes.windll.psapi.GetProcessMemoryInfo(wintypes.HANDLE(int(p._handle)),
+                                                      ctypes.byref(pmc), pmc.cb)
+        peak = max(pmc.PeakWorkingSetSize, pmc.PeakPagefileUsage) if ok else None
+        return (p.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace"),
+                peak)
+    import resource
+    before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    r = subprocess.run(cmd, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    peak = after * 1024 if after > before else None  # ru_maxrss is KiB on Linux
+    return r.returncode, r.stdout, r.stderr, peak
+
+
+def _ld_corpus(td):
+    """Inputs covering the large-dictionary paths: a small file, a multi-
+    block file large enough for the chunk-parallel encoder (-mt), x86 code
+    for the E8 filter, 16-bit stereo PCM for Delta, and a solid set with
+    cross-file redundancy."""
+    rnd = random.Random(19)
+    files = {}
+    small = td / "small.txt"
+    small.write_bytes(b"".join(b"line %06d of the large-dictionary corpus\n" % i
+                               for i in range(80000)))
+    files["small"] = [small]
+    big = td / "big.bin"
+    block = bytes(rnd.getrandbits(8) for _ in range(1 << 16))
+    with open(big, "wb") as f:  # 24 MiB: long-range repeats of 64 KiB blocks
+        for i in range(384):
+            f.write(block if i % 3 else bytes(rnd.getrandbits(8) for _ in range(1 << 16)))
+    files["parallel"] = [big]
+    exe = td / "code.exe"
+    with open(exe, "wb") as f:  # call-heavy pseudo x86
+        for i in range(400000):
+            f.write(b"\x55\x48\x89\xe5\xe8" + struct.pack("<i", rnd.randint(-65536, 65536)))
+    files["e8"] = [exe]
+    wav = td / "pcm.wav"
+    with open(wav, "wb") as f:
+        import math
+        for i in range(1 << 20):
+            s = int(12000 * math.sin(i / 37.0)) + rnd.randint(-40, 40)
+            f.write(struct.pack("<hh", s, -s))
+    files["delta"] = [wav]
+    solid = []
+    shared = bytes(rnd.getrandbits(8) for _ in range(300000))
+    for k in range(3):
+        p = td / f"solid{k}.dat"
+        p.write_bytes(bytes(rnd.getrandbits(8) for _ in range(50000)) + shared)
+        solid.append(p)
+    files["solid"] = solid
+    return files
+
+
+_LD_REF_MEMORY_SKIPS = []
+
+
+def _ld_check_x(exe, xargs, arc, srcs, td, tag, reference=False):
+    """Extract arc with exe and compare every file's hash to srcs.
+
+    reference=True: RAR/UnRAR often reserve most of the declared dictionary
+    up front (observed for -md8g on a 24 MiB member and every -md64g case),
+    so they cannot verify those archives on a host with less free RAM. Their
+    out-of-memory exit (8) is recorded and reported as a coverage gap, not a
+    failure; any other error still fails.
+    """
+    ex = td / f"x_{tag}"
+    shutil.rmtree(ex, ignore_errors=True)
+    ex.mkdir()
+    try:
+        rc, out, err = run([exe] + xargs + [str(arc), str(ex) + os.sep], cwd=str(td))
+        # RAR/UnRAR exit code 8 is documented as "not enough memory" (the
+        # message is suppressed under -inul).
+        if rc != 0 and reference and rc == 8:
+            _LD_REF_MEMORY_SKIPS.append(tag)
+            return True
+        if rc != 0:
+            print(f"  FAIL: {tag}: extract rc={rc}\n{out}{err}")
+            return False
+        for s in srcs:
+            got = find_extracted(ex, s.name)
+            if got is None or sha256(got) != sha256(s):
+                print(f"  FAIL: {tag}: {s.name} {'missing' if got is None else 'hash mismatch'}")
+                return False
+        return True
+    finally:
+        shutil.rmtree(ex, ignore_errors=True)
+
+
+def test_track19_large_dictionary(openrar, unrar, rar):
+    """Dictionaries 64 MiB .. 64 GiB, both directions, every encoder path.
+
+    openrar -> RAR/UnRAR/openrar: the declared window crosses the 1 GiB
+    (unp_ver 0 -> 1), non-pow2 (fractional FCI), and 4 GiB (table flavor)
+    boundaries. RAR rejects > 4 GiB dictionaries without -mdx<size>, so the
+    reference tools are given the opt-in. RAR -> openrar: same dictionaries.
+    Memory: openrar's peak RSS testing a 64 GiB-declared archive must track
+    the decoded output, not the declaration (lazy window).
+    """
+    print("[Track 19] Large dictionaries (64m..64g): openrar <-> RAR/UnRAR, lazy window...",
+          flush=True)
+    if not _oracle_or_skip(unrar, "Track 19"):
+        return True
+    dicts = ["64m", "1g", "3g", "4g", "5g", "8g", "64g"]
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+        corpus = _ld_corpus(td)
+        cases = 0
+        for md in dicts:
+            for kind, srcs in corpus.items():
+                sw = ["-q", f"-md{md}"]
+                if kind == "solid":
+                    sw.append("-s")
+                if kind == "parallel":
+                    sw.append("-mt4")
+                if kind == "e8":
+                    sw.append("-mcE+")
+                if kind == "delta":
+                    sw.append("-mcD+")
+                arc = td / f"o_{kind}_{md}.rar"
+                rc, out, err = run([openrar, "a"] + sw + [str(arc)] + [s.name for s in srcs],
+                                   cwd=str(td))
+                if rc != 0:
+                    print(f"  FAIL: openrar a {' '.join(sw)} ({kind}) rc={rc}\n{out}{err}")
+                    return False
+                # Reference decoders (the opt-in only matters above 4 GiB).
+                if not _ld_check_x(unrar, ["x", "-y", "-mdx64g"], arc, srcs, td,
+                                   f"unrar_{kind}_{md}", reference=True):
+                    return False
+                if rar and not _ld_check_x(rar, ["x", "-y", "-inul", "-mdx64g"], arc, srcs, td,
+                                           f"rar_{kind}_{md}", reference=True):
+                    return False
+                if not _ld_check_x(openrar, ["x", "-y", "-q"], arc, srcs, td,
+                                   f"self_{kind}_{md}"):
+                    return False
+                # RAR -> openrar with the same switches. RAR accepts
+                # non-power-of-two sizes only above 4 GiB (-md5g ok, -md3g
+                # "Unknown option"), so 3g is openrar-direction only.
+                if rar and md != "3g":
+                    rsw = [f"-md{md}", "-ep", "-inul"]
+                    if kind == "solid":
+                        rsw.append("-s")
+                    rarc = td / f"r_{kind}_{md}.rar"
+                    rc, out, err = run([rar, "a"] + rsw + [str(rarc)] + [s.name for s in srcs],
+                                       cwd=str(td))
+                    if rc != 0:
+                        print(f"  FAIL: rar a {' '.join(rsw)} ({kind}) rc={rc}\n{out}{err}")
+                        return False
+                    if not _ld_check_x(openrar, ["x", "-y", "-q"], rarc, srcs, td,
+                                       f"rar2self_{kind}_{md}"):
+                        return False
+                    rc, out, err = run([openrar, "t", "-q", str(rarc)], cwd=str(td))
+                    if rc != 0:
+                        print(f"  FAIL: openrar t on RAR -md{md} ({kind}) rc={rc}\n{out}{err}")
+                        return False
+                cases += 1
+
+        # Lazy window: a 64 GiB declaration over ~24 MiB of output.
+        arc = td / "o_parallel_64g.rar"
+        rc, out, err, peak = _peak_rss_run([openrar, "t", "-q", "-mt1", str(arc)], cwd=str(td))
+        if rc != 0:
+            print(f"  FAIL: openrar t (memory probe) rc={rc}\n{out}{err}")
+            return False
+        if peak is not None:
+            limit = 512 * 1024 * 1024
+            print(f"    - openrar t on a 64 GiB-declared archive: peak {peak / 2**20:.0f} MiB")
+            if peak > limit:
+                print(f"  FAIL: peak memory {peak / 2**20:.0f} MiB exceeds "
+                      f"{limit / 2**20:.0f} MiB: window is not lazy")
+                return False
+    if _LD_REF_MEMORY_SKIPS:
+        print(f"    - NOT reference-verified (tool out of memory): "
+              f"{', '.join(_LD_REF_MEMORY_SKIPS)}")
+    print(f"  OK Track 19: {cases} dictionary/corpus cases round-trip in both directions")
+    return True
+
+
+def test_track20_rar7_algorithm(openrar, unrar, rar):
+    """RAR7-algorithm member (446-entry ExtraDist tables) decoded by openrar.
+
+    RAR shrinks the dictionary to the input size, and only writes the RAR7
+    algorithm (unp_ver 1 without FCI_RAR5_COMPAT) when the dictionary
+    exceeds 4 GiB, so this needs a > 4 GiB input and ~5 GiB of RAM in each
+    decoder. Opt-in: OPENRAR_GATE_HEAVY=1.
+    """
+    print("[Track 20] RAR7-algorithm (> 4 GiB, ExtraDist) member decode...", flush=True)
+    if os.environ.get("OPENRAR_GATE_HEAVY") != "1":
+        print("  SKIP Track 20 (set OPENRAR_GATE_HEAVY=1; needs ~10 GiB disk, ~5 GiB RAM)")
+        return True
+    if not rar:
+        print("  SKIP Track 20 (rar.exe not found)")
+        return True
+    with tempfile.TemporaryDirectory() as td:
+        td = pathlib.Path(td)
+        src = td / "huge.bin"
+        rnd = random.Random(20)
+        head = bytes(rnd.getrandbits(8) for _ in range(1 << 20))
+        filler = bytes(rnd.getrandbits(8) for _ in range(1 << 20))
+        # 4.5 GiB: a 1 MiB block at the start that recurs past the 4 GiB
+        # mark, so a match distance > 4 GiB exists for the encoder to use.
+        with open(src, "wb") as f:
+            f.write(head)
+            for i in range(4 * 1024 + 256):
+                f.write(head if i == 4 * 1024 + 128 else filler[i % 7:] + filler[:i % 7])
+        h0 = sha256(src)
+        arc = td / "rar7.rar"
+        rc, out, err = run([rar, "a", "-ep", "-inul", "-m1", "-md6g", str(arc), src.name],
+                           cwd=str(td))
+        if rc != 0:
+            print(f"  FAIL: rar a -md6g rc={rc}\n{out}{err}")
+            return False
+        rc, out, err = run([rar, "lt", str(arc)], cwd=str(td))
+        algo = next((l.strip() for l in out.splitlines() if "Compression" in l), "?")
+        print(f"    - RAR wrote: {algo}")
+        if "v70" not in algo:
+            print("  FAIL: RAR did not emit a RAR7-algorithm member; cannot test ExtraDist")
+            return False
+        if not _ld_check_x(openrar, ["x", "-y", "-q"], arc, [src], td, "rar7_self"):
+            return False
+        print("    - openrar decoded the RAR7-algorithm member byte-identically")
+        # Our encoder on the same input. Its match finder keeps ~5-9 bytes
+        # of state per window byte, so -md6g over 4.5 GiB needs tens of GiB:
+        # a separate opt-in so the decode check above runs on normal hosts.
+        if os.environ.get("OPENRAR_GATE_HEAVY_ENCODE") != "1":
+            print("  OK Track 20 (decode). Encode leg SKIPPED: set OPENRAR_GATE_HEAVY_ENCODE=1 "
+                  "(needs ~48 GiB RAM)")
+            return True
+        oarc = td / "o_huge.rar"
+        rc, out, err = run([openrar, "a", "-q", "-m1", "-md6g", str(oarc), src.name],
+                           cwd=str(td))
+        if rc != 0:
+            print(f"  FAIL: openrar a -md6g rc={rc}\n{out}{err}")
+            return False
+        if not _ld_check_x(rar, ["x", "-y", "-inul", "-mdx8g"], oarc, [src], td, "self_rar7"):
+            return False
+        del h0
+    print("  OK Track 20: RAR7-algorithm member decodes byte-identically")
+    return True
+
+
 def main():
     import time
     t0 = time.time()
@@ -1464,7 +1725,18 @@ def main():
         (test_track16_differential_7z, (openrar, unrar, rar)),
         (test_track17_long_match, (openrar, unrar, rar)),
         (test_track18_solid_filtered_chain, (openrar, unrar, rar)),
+        (test_track19_large_dictionary, (openrar, unrar, rar)),
+        (test_track20_rar7_algorithm, (openrar, unrar, rar)),
     ]
+
+    # --only <substr>[,<substr>...]: run just the matching stages (e.g.
+    # --only track19,track20). Skipped stages are reported, never silent.
+    if "--only" in sys.argv:
+        i = sys.argv.index("--only")
+        wanted = sys.argv[i + 1].split(",") if i + 1 < len(sys.argv) else []
+        kept = [(fn, a) for fn, a in stages if any(w in fn.__name__ for w in wanted)]
+        print(f"--only {','.join(wanted)}: running {len(kept)} of {len(stages)} stages")
+        stages = kept
 
     for fn, args in stages:
         if not fn(*args):

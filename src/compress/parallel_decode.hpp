@@ -57,9 +57,13 @@ bool should_use_parallel_decode(size_t pack_size, size_t dest_size, size_t win_s
 // entry with the sequential taxonomy; a failure before any emission runs
 // the sequential path and returns its verdict (F1/F2/F3 — the diag's
 // fell_back flag makes fallback observable to tests).
+//
+// extra_dist is the member's table flavor (FileBlock::extra_dist). RAR7-
+// algorithm members always take the sequential path: the operation records
+// carry u32 distances, which cannot hold ExtraDist's > 4 GiB distances.
 bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size_t win_size,
                   Decompressor50::OutputCallback flush_cb, ParallelDecodeDiag* diag = nullptr,
-                  unsigned requested_threads = 0);
+                  unsigned requested_threads = 0, bool extra_dist = false);
 
 } // namespace openrar::compress
 

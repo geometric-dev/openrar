@@ -32,7 +32,9 @@ struct BufferArchiveEntry {
     uint64_t mtime{0};       // UNIX seconds (converted from DOS time on disk)
     uint32_t crc32{0};       // CRC32 if has_crc32; 0 when absent
     int method{0};           // 0/1/2/3/4/5
-    uint64_t win_size{0};    // compression window size
+    uint64_t win_size{0};
+    bool extra_dist{
+        false}; // RAR7-algorithm member (446 tables); FileBlock::extra_dist    // compression window size
     bool is_encrypted{false};
     uint64_t header_offset{0}; // absolute byte offset of header in source buffer
     uint64_t data_offset{0};   // absolute byte offset of payload start in source buffer
