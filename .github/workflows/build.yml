@@ -22,6 +22,22 @@ permissions:
   contents: read
 
 jobs:
+  roadmap-lint:
+    # v1.44 M3: anchor lint as a pre-tag gate (CI wiring additive per plan §5).
+    # Fails the build if roadmap file:line anchors no longer resolve, the
+    # v1.44 verification ledger drifts from recomputation, or docs/FMM.md
+    # range disjointness is violated.
+    name: Roadmap anchor lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Run anchor lint
+        run: python3 tools/anchor_lint.py --release v1.44
+
   build-and-test:
     name: ${{ matrix.os }} - ${{ matrix.compiler }} (${{ matrix.build_type }})${{ matrix.arch_suffix }}
     runs-on: ${{ matrix.os }}
@@ -187,6 +203,24 @@ jobs:
         run: |
           ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
 
+      - name: Aggregate JUnit report (v1.45 M0 gate)
+        # v1.45 M0 gate 4: every ctest lane produces a machine-readable JUnit
+        # file via the fail-closed aggregator (test_runner LastTest.log tags).
+        # --min-tests makes a silent loss of registered suites fail the lane
+        # rather than emit a shallow-green report. The artifact upload below
+        # mirrors the lane name so run-over-run regressions are diffable per
+        # matrix entry.
+        if: matrix.arch != 'arm64' && always()
+        run: python tools/ctest_to_junit.py --log build/Testing/Temporary/LastTest.log --out build/junit-report.xml --min-tests 20
+
+      - name: Upload JUnit report
+        if: matrix.arch != 'arm64' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.build_type }}
+          path: build/junit-report.xml
+          if-no-files-found: error
+
       - name: Kernel throughput report (native x86-64, informational)
         # Real AVX2/SSE2 hardware numbers for the v1.22.0 SIMD arc. Native
         # runners are shared and noisy: the median-of-passes protocol damps
@@ -303,6 +337,18 @@ jobs:
 
       - name: Run unit tests under QEMU (aarch64 NEON / scalar paths)
         run: ctest --test-dir build -C Release --output-on-failure -E 'sandbox_worker_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance'
+
+      - name: Aggregate JUnit report (v1.45 M0 gate)
+        if: always()
+        run: python tools/ctest_to_junit.py --log build/Testing/Temporary/LastTest.log --out build/junit-report.xml --min-tests 20
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-qemu-aarch64
+          path: build/junit-report.xml
+          if-no-files-found: error
 
       - name: Assert NEON RS16 kernel activated (not the scalar fallback)
         # Same R1 silent-degradation guard as the SDE GFNI gate: a build
@@ -541,7 +587,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang
       - name: Configure (ASan + UBSan)
         run: |
-          cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DOPENRAR_SANITIZE=address,undefined
       - name: Build
         run: cmake --build build --parallel $(nproc)
       # Exclusions, and why each one is excluded (docs/verification-legs.md):
@@ -563,6 +609,18 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|archive_tests|sfx_tests|sfx_pipeline_tests|sfx_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance'
 
+      - name: Aggregate JUnit report (v1.45 M0 gate)
+        if: always()
+        run: python tools/ctest_to_junit.py --log build/Testing/Temporary/LastTest.log --out build/junit-report.xml --min-tests 20
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-sanitizers
+          path: build/junit-report.xml
+          if-no-files-found: error
+
   tsan:
     # v1.30 M5: ThreadSanitizer on the threaded suites (parallel pipeline,
     # slot readers, TUI single-writer).
@@ -575,7 +633,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang
       - name: Configure (TSan)
         run: |
-          cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DCMAKE_C_FLAGS="-fsanitize=thread -g"             -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+          cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DOPENRAR_SANITIZE=thread
       - name: Build
         run: cmake --build build --parallel $(nproc)
       - name: Threaded suites under TSan
@@ -592,6 +650,18 @@ jobs:
         # and slot-reader paths are not yet instrumented under TSan.
         run: ctest --test-dir build --output-on-failure -R 'parallel_compress_tests'
 
+      - name: Aggregate JUnit report (v1.45 M0 gate)
+        if: always()
+        run: python tools/ctest_to_junit.py --log build/Testing/Temporary/LastTest.log --out build/junit-report.xml --min-tests 1
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-tsan
+          path: build/junit-report.xml
+          if-no-files-found: error
+
   msan:
     # v1.30 M5: MSan is BEST-EFFORT on the Linux/clang leg (§7.2 revised):
     # it requires an instrumented libc++, cannot gate the MSVC matrix, and
@@ -606,7 +676,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang libc++-dev libc++abi-dev
       - name: Configure (MSan, instrumented libc++)
         run: |
-          cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DCMAKE_C_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins -stdlib=libc++ -g"             -DCMAKE_CXX_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins -stdlib=libc++ -g"             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=memory -stdlib=libc++"             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=memory -stdlib=libc++" || true
+          cmake -B build -G Ninja             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++             -DCMAKE_BUILD_TYPE=Debug -DOPENRAR_INMEM_ARCHIVE=ON             -DOPENRAR_SANITIZE=memory || true
       - name: Build (best-effort)
         run: cmake --build build --parallel $(nproc) || true
       - name: Report
@@ -626,6 +696,16 @@ jobs:
           else
             echo "MSan leg completed clean (best-effort leg, non-gating)"
           fi
+          python tools/ctest_to_junit.py --log build/Testing/Temporary/LastTest.log --out build/junit-report.xml --min-tests 1
+          echo "junit-report.xml written (MSan leg)"
+
+      - name: Upload JUnit report (msan)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-msan
+          path: build/junit-report.xml
+          if-no-files-found: warn
 
   # bindings/csharp previously had NO automated verification of any kind:
   # neither workflow had a dotnet step, and the library did not even compile
@@ -725,3 +805,4 @@ jobs:
           subject-path: |
             openrar-*/openrar-*.zip
             SHA256SUMS
+
