@@ -2215,7 +2215,7 @@ std::vector<core::byte> t9_far_repeat() {
 void sha256_hex(const std::vector<core::byte>& d, char* out /* 65 bytes */) {
     core::byte dig[32];
     crypto::Sha256::compute(d.data(), d.size(), dig);
-    for (int i = 0; i < 32; ++i) std::sprintf(out + i * 2, "%02x", dig[i]);
+    for (int i = 0; i < 32; ++i) std::snprintf(out + i * 2, 3, "%02x", dig[i]);
     out[64] = 0;
 }
 
