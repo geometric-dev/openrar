@@ -18,8 +18,21 @@ private:
     static const size_t OUTBUF_SIZE = 0x40000;
 
     std::vector<core::byte> buf_;
-    io::FileStream* dest_file_;
-    std::vector<core::byte>* mem_dest_;
+    io::FileStream* dest_file_{nullptr};
+    std::vector<core::byte>* mem_dest_{nullptr};
+
+    // H-10: raw write cursor into the ACTIVE vector (*mem_dest_, else buf_).
+    // The vector's size() is a zero-filled physical extent that grows
+    // geometrically; the logical size is wp_ - base_. put_bits() used to call
+    // vector::resize() (a zero-fill plus a size store through the vector) for
+    // every 32-bit word, which also kept the compiler from holding the write
+    // position in a register, and grew capacity linearly by OUTBUF_SIZE.
+    // commit() trims the vector back to its logical size; it runs at every
+    // point that hands the vector to an observer (flush_buf / set_memory, and
+    // therefore finish_block_data).
+    core::byte* base_{nullptr};
+    core::byte* wp_{nullptr};
+    core::byte* wend_{nullptr};
 
     core::uint64 block_bytes_{0};
     core::uint64 block_bits_{0};
@@ -30,17 +43,89 @@ private:
     // (sweep finding M5).
     bool write_failed_{false};
 
+    std::vector<core::byte>& active() { return mem_dest_ != nullptr ? *mem_dest_ : buf_; }
+    size_t logical_size() const { return static_cast<size_t>(wp_ - base_); }
+
+    // Point the cursor at the end of the active vector's current contents.
+    void bind() {
+        std::vector<core::byte>& v = active();
+        base_ = v.data();
+        wp_ = base_ + v.size();
+        wend_ = wp_;
+    }
+    // Trim the active vector to the bytes actually written.
+    void commit() {
+        active().resize(logical_size());
+        bind();
+    }
+    // Ensure at least `need` writable bytes past the cursor (amortized O(1)).
+    void grow(size_t need) {
+        std::vector<core::byte>& v = active();
+        const size_t used = logical_size();
+        const size_t want = std::max(v.size() * 2, used + std::max<size_t>(need, 4096));
+        v.resize(want);
+        base_ = v.data();
+        wp_ = base_ + used;
+        wend_ = base_ + v.size();
+    }
+
 public:
-    BitOutput()
-        : dest_file_(nullptr), mem_dest_(nullptr), block_bytes_(0), block_bits_(0), acc_(0),
-          acc_bits_(0) {}
+    BitOutput() { bind(); }
+    // Copies and moves must re-derive the cursor from the DESTINATION's
+    // storage: a member-wise copy would leave wp_ pointing into the source
+    // (Compressor50 is copy-assigned by StreamEncoder::reset()).
+    BitOutput(const BitOutput& o) { *this = o; }
+    BitOutput& operator=(const BitOutput& o) {
+        if (this == &o) return *this;
+        const size_t used = o.logical_size();
+        buf_ = o.buf_;
+        dest_file_ = o.dest_file_;
+        mem_dest_ = o.mem_dest_;
+        block_bytes_ = o.block_bytes_;
+        block_bits_ = o.block_bits_;
+        acc_ = o.acc_;
+        acc_bits_ = o.acc_bits_;
+        write_failed_ = o.write_failed_;
+        std::vector<core::byte>& v = active();
+        base_ = v.data();
+        wp_ = base_ + used;
+        wend_ = base_ + v.size();
+        return *this;
+    }
+    BitOutput(BitOutput&& o) noexcept { *this = std::move(o); }
+    BitOutput& operator=(BitOutput&& o) noexcept {
+        if (this == &o) return *this;
+        const size_t used = o.logical_size();
+        buf_ = std::move(o.buf_);
+        dest_file_ = o.dest_file_;
+        mem_dest_ = o.mem_dest_;
+        block_bytes_ = o.block_bytes_;
+        block_bits_ = o.block_bits_;
+        acc_ = o.acc_;
+        acc_bits_ = o.acc_bits_;
+        write_failed_ = o.write_failed_;
+        std::vector<core::byte>& v = active();
+        base_ = v.data();
+        wp_ = base_ + used;
+        wend_ = base_ + v.size();
+        o.buf_.clear();
+        o.dest_file_ = nullptr;
+        o.mem_dest_ = nullptr;
+        o.block_bytes_ = o.block_bits_ = o.acc_ = 0;
+        o.acc_bits_ = 0;
+        o.write_failed_ = false;
+        o.bind();
+        return *this;
+    }
 
     void set_dest_file(io::FileStream* dest) { dest_file_ = dest; }
-    void set_memory(std::vector<core::byte>* mem) { mem_dest_ = mem; }
-
-    core::uint64 get_block_bytes() const {
-        return block_bytes_ + (mem_dest_ != nullptr ? mem_dest_->size() : buf_.size());
+    void set_memory(std::vector<core::byte>* mem) {
+        commit();
+        mem_dest_ = mem;
+        bind();
     }
+
+    core::uint64 get_block_bytes() const { return block_bytes_ + logical_size(); }
     core::uint64 get_block_bits() const { return block_bits_; }
     bool failed() const { return write_failed_; }
 
@@ -59,46 +144,47 @@ public:
 #else
             val = __builtin_bswap32(val);
 #endif
-            std::vector<core::byte>& dst = (mem_dest_ != nullptr) ? *mem_dest_ : buf_;
-            size_t sz = dst.size();
-            if (sz + 4 > dst.capacity()) dst.reserve(sz + OUTBUF_SIZE);
-            dst.resize(sz + 4);
-            std::memcpy(&dst[sz], &val, 4);
+            if (static_cast<size_t>(wend_ - wp_) < 4) grow(4);
+            std::memcpy(wp_, &val, 4);
+            wp_ += 4;
             acc_bits_ -= 32;
-            if (mem_dest_ == nullptr && dst.size() >= OUTBUF_SIZE) flush_buf();
+            if (mem_dest_ == nullptr && logical_size() >= OUTBUF_SIZE) flush_buf();
         }
     }
 
     void flush_buf() {
         if (mem_dest_ != nullptr) {
+            commit();
             if (!buf_.empty()) {
+                // Bytes staged in buf_ before set_memory() switched targets.
                 mem_dest_->insert(mem_dest_->end(), buf_.begin(), buf_.end());
                 buf_.clear();
+                bind(); // insert may have reallocated *mem_dest_
             }
             return;
         }
-        if (buf_.empty()) return;
+        const size_t n = logical_size();
+        if (n == 0) return;
         if (dest_file_ != nullptr) {
-            size_t wrote = dest_file_->write(buf_.data(), buf_.size());
-            if (wrote != buf_.size()) write_failed_ = true;
+            size_t wrote = dest_file_->write(base_, n);
+            if (wrote != n) write_failed_ = true;
             block_bytes_ += wrote;
         }
-        buf_.clear();
+        wp_ = base_; // keep the physical extent for the next OUTBUF_SIZE run
     }
 
     void align_byte() {
-        std::vector<core::byte>& dst = (mem_dest_ != nullptr) ? *mem_dest_ : buf_;
+        if (static_cast<size_t>(wend_ - wp_) < 8) grow(8); // <= 4 whole + 1 partial
         while (acc_bits_ >= 8) {
-            dst.push_back(static_cast<core::byte>(acc_ >> (acc_bits_ - 8)));
+            *wp_++ = static_cast<core::byte>(acc_ >> (acc_bits_ - 8));
             acc_bits_ -= 8;
         }
         if (acc_bits_ > 0) {
-            core::byte partial = static_cast<core::byte>(acc_ << (8 - acc_bits_));
-            dst.push_back(partial);
+            *wp_++ = static_cast<core::byte>(acc_ << (8 - acc_bits_));
         }
         acc_ = 0;
         acc_bits_ = 0;
-        if (mem_dest_ == nullptr && dst.size() >= OUTBUF_SIZE) flush_buf();
+        if (mem_dest_ == nullptr && logical_size() >= OUTBUF_SIZE) flush_buf();
     }
 
     void reset_block_count() {
@@ -107,8 +193,10 @@ public:
         block_bits_ = 0;
     }
 
-    // Re-arm for the next block in place. Writes directly into `*mem` when
-    // non-null, avoiding staging through `buf_` and copying into `block_mem_`.
+    // Re-arm for the next block in place. Writes directly into *mem when
+    // non-null, avoiding staging through buf_ and copying into block_mem_.
+    // The previous target is NOT committed: the caller owns and may already
+    // have cleared it; the cursor simply rebinds to *mem's current end.
     void reset_for_block(std::vector<core::byte>* mem) {
         buf_.clear();
         dest_file_ = nullptr;
@@ -116,6 +204,7 @@ public:
         if (mem != nullptr && mem->capacity() < OUTBUF_SIZE * 2 + 64) {
             mem->reserve(OUTBUF_SIZE * 2 + 64);
         }
+        bind();
         block_bytes_ = 0;
         block_bits_ = 0;
         acc_ = 0;
@@ -126,7 +215,7 @@ public:
     inline void put_bits64(core::uint64 value, core::uint32 num_bits) {
         assert(num_bits <= 64);
         // MSB-first: emit the high (num_bits - 32) bits, then the low 32 bits.
-        // The high part is `value >> 32` (the top bits) — NOT `value >>
+        // The high part is `value >> 32` (the top bits) - NOT `value >>
         // (num_bits - 32)`, which only coincides for num_bits == 64 and
         // silently emitted the wrong bits for every 33..63-bit field. Latent
         // until emit_tokens' distance path packed a code+extra into one
@@ -144,7 +233,6 @@ public:
         flush_buf();
     }
 };
-
 struct Compressor50Token {
     enum class TokenType : core::byte {
         Literal = 0,
@@ -440,14 +528,15 @@ private:
         }
     }
 
-    // 32-bit truncation of absolute positions is safe here. The match_length_simd
-    // function performs a physical post-reconstruction verification of the matched bytes.
-    // If a hash chain collision spans exactly a 4GB interval, the bytes will differ and
-    // it will be safely rejected.
+    // 32-bit truncation of absolute positions. A stale entry that aliases at a
+    // non-zero distance is caught by match_length_simd's byte verification. An
+    // entry from EXACTLY 2^32 bytes earlier aliases to dist32 == 0, i.e. the
+    // candidate is pos itself: byte verification trivially "matches" it, so it
+    // must be rejected here (C-04) or the encoder emits a distance-0 match.
     inline core::int64 reconstruct_pos(core::uint64 pos, core::uint32 trunc) {
         if (trunc == 0xFFFFFFFFu) return -1;
         core::uint32 dist32 = static_cast<core::uint32>(pos) - trunc;
-        if (dist32 > max_dist_ || dist32 > pos) return -1;
+        if (dist32 == 0 || dist32 > max_dist_ || dist32 > pos) return -1;
         return static_cast<core::int64>(pos - dist32);
     }
 
@@ -459,6 +548,78 @@ private:
         size_t length;
         core::int64 candidate;
     };
+    // H1 chain-budget reachability probe (RAT-F, v1.43 M3). LOG-ONLY and
+    // observational: counters cannot change an emitted byte. Enabled
+    // PROGRAMMATICALLY by the census/probe tool, never by the shipping encode
+    // path and never via a 7th env switch (see V-3 six-switch drift). The
+    // counters classify WHY find_match_impl's chain walk stopped.
+    struct H1ProbeStats {
+        core::uint64 calls{0};             // instrumented walks
+        core::uint64 budget_exhausted{0};  // (a) chain spent, a candidate remained
+        core::uint64 supply_exhausted{0};  // (d) chain ran out of nodes first
+        core::uint64 nice_len_break{0};    // (b) nice_len/limit break
+        core::uint64 max_dist_break{0};    // (c) candidate left the window
+        core::uint64 recoverable{0};       // (a) sites where an unbudgeted
+                                           //     re-walk found a STRICTLY longer match
+        core::uint64 recoverable_bytes{0}; // SUM of (ext.length - best.length) there
+        core::uint64 max_delta{0};         // largest single-site gain (bytes)
+    };
+    bool h1_probe_on_{false};
+    H1ProbeStats h1_probe_{};
+    // Nodes the counterfactual unbudgeted re-walk may examine per (a) site.
+    // Chains are strictly backward-pointing, so this terminates; it is an upper
+    // bound, not a literal infinity.
+    core::uint32 h1_probe_extra_chain_{0x10000};
+    // RAT-A axis-5 arbiter cost-pricing probe (v1.43 M2). LOG-ONLY: measures how
+    // often a cost-aware arbiter (encoded-length-field + distance-code cost) would
+    // choose a DIFFERENT token than the current length-only rule
+    // (`rep_best_len + 1 > best.length`). Changes no emitted byte. Approximate
+    // price model (documented at the decision site); sized to establish the
+    // disagreement RATE and DIRECTION, not exact bit counts.
+    struct ArbiterProbeStats {
+        core::uint64 decisions{0};         // token selections examined
+        core::uint64 contested{0};         // both fresh + rep viable (arbiter chose)
+        core::uint64 differs{0};           // cost-aware would pick the other one
+        core::uint64 prefer_rep{0};        // disagreements: cost-aware wants rep
+        core::uint64 prefer_fresh{0};      // disagreements: cost-aware wants fresh
+        core::uint64 bits_saved{0};        // sum (cost_current - cost_costaware), >= 0
+        core::uint64 big_disagreements{0}; // disagreements saving > 8 bits
+        // Axis-6 per-band walk slots (A-6 probe, from the SAME chain walk).
+        // Scope: candidates the walk SIMD-measured — early-guard candidates
+        // (4-byte-mismatch / best-length prefilter) are skipped conservatively,
+        // and reps are excluded because they are identical in both worlds.
+        core::uint64 lit_positions{0};   // shipped choice degrades to literal(s)
+        core::uint64 fresh_positions{0}; // shipped choice = admissible fresh best
+        core::uint64 band_fixable{0};    // literal positions where another band slot is admissible
+        core::uint64 band_fix_bits{0};   // est bits recovered (7*L - fresh price)
+        core::uint64 band_swap{0};       // admissible best where a different band is cheaper
+        core::uint64 band_swap_bits{0};  // est bits recovered there
+        core::uint64 fix_band[4] = {0, 0, 0, 0};  // which band supplied the fix
+        core::uint64 swap_band[4] = {0, 0, 0, 0}; // which band won the swap
+        // Profitability split: a swap's DOWNSTREAM cost is an alignment shift
+        // of <= inc_b bytes (~7 bits/byte, the v1.43 concession measurement's
+        // realized rate) — so swaps saving < 8 bits are plausibly net-negative.
+        core::uint64 swap_profit{0};      // swaps saving >= 8 bits
+        core::uint64 swap_profit_bits{0}; // their recovered bit sum
+    };
+    bool arb_probe_on_{false};
+    ArbiterProbeStats arb_probe_{};
+    // Suppression for the RAT-F counterfactual re-walk (h1_reason == 1
+    // recursively re-enters find_match_impl with the same flags). v1.44: this
+    // flag is LOAD-BEARING for shipped behavior, not probe hygiene alone — the
+    // band-slot harvest AND the shipped back-shift eval both gate on it, so a
+    // re-walk (whose result is discarded) records no slots and mutates no
+    // candidate. The flips around the re-walk call must always be paired; a
+    // leaked true would silently disable the shipped back-shift for a whole
+    // file (a scoped guard owns one pair inside find_match_impl).
+    bool arb_probe_suppress_{false};
+    // v1.44 A-6 shipped back-shift master gate (default ON = the improvement
+    // ships). Runtime escape hatch for measurement A/B (gated by the
+    // OPENRAR_NO_BACKSHIFT environment variable, read once per process):
+    // with the gate off the resolver reproduces the pre-v1.44 byte stream
+    // exactly — harvest and axis-6 accounting still run, only the mutation
+    // branches are skipped. Same design role as the lastlen suppression hook.
+    bool back_shift_enable_{true};
     template <bool LargeWindow>
     MatchInfo find_match_impl(core::uint64 pos, core::uint32 max_chain, core::uint32 nice_len);
     MatchInfo find_match(core::uint64 pos, core::uint32 max_chain, core::uint32 nice_len);
@@ -560,10 +721,29 @@ public:
 
     void set_memory_dest(std::vector<core::byte>* mem) { mem_out_ = mem; }
 
+    // RAT-F probe control (v1.43 M3). Tool-driven only. h1_probe_reset()
+    // clears counters; read h1_probe_stats() after a run. extra_chain sets the
+    // unbudgeted counterfactual re-walk budget (default 65536).
+    void h1_probe_enable(bool on) { h1_probe_on_ = on; }
+    void h1_probe_reset() { h1_probe_ = H1ProbeStats{}; }
+    const H1ProbeStats& h1_probe_stats() const { return h1_probe_; }
+    void h1_probe_set_extra_chain(core::uint32 n) { h1_probe_extra_chain_ = n; }
+
+    // RAT-A axis-5 arbiter probe control (v1.43 M2). Tool-driven, log-only.
+    void arb_probe_enable(bool on) { arb_probe_on_ = on; }
+    void arb_probe_reset() { arb_probe_ = ArbiterProbeStats{}; }
+    const ArbiterProbeStats& arb_probe_stats() const { return arb_probe_; }
+    // v1.44 A-6 back-shift control: measurement/tooling hook with the same
+    // shape as set_lastlen_suppressed (tests + arbprobe timing A/B); the
+    // constructor applies the OPENRAR_NO_BACKSHIFT environment once so the
+    // CLI can A/B the same binary's shipped bytes.
+    void back_shift_enable(bool on) { back_shift_enable_ = on; }
+
     void init(io::FileStream* src, io::FileStream* dest, int method, core::uint64 src_file_size,
               size_t win_size);
     void begin_archive(io::FileStream* dest, int method, size_t win_size);
     void start_file(io::FileStream* src, core::uint64 src_file_size, bool continue_window);
+
 
     void set_external_buffer(const core::byte* src, size_t n) {
         external_buf_ = true;

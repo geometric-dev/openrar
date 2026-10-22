@@ -412,92 +412,277 @@ void Filters50::apply_arm(core::byte* data, size_t size, core::uint64 file_offse
 #endif
 }
 
+namespace {
+
+// Delta planar layout (spec 04-filters): channel c's bytes are stored
+// contiguously, channels in order. With full = size / channels rows and
+// rem = size % channels, channel c holds full + (c < rem) bytes, so its plane
+// starts at c * full + min(c, rem).
+inline size_t delta_plane_base(size_t full, size_t rem, size_t c) {
+    return c * full + (c < rem ? c : rem);
+}
+
+// H-08: in-place calls (src == dest) need one scratch buffer the size of the
+// region, because the planar<->interleaved transform is a permutation. Reuse
+// a per-thread buffer instead of allocating and zero-filling one per call.
+core::byte* delta_scratch(size_t size) {
+    thread_local std::vector<core::byte> scratch;
+    if (scratch.size() < size) scratch.resize(size);
+    return scratch.data();
+}
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+// Broadcast byte 15 of v to all lanes (SSE2 only, no GPR round-trip).
+inline __m128i broadcast_last_byte(__m128i v) {
+    __m128i t = _mm_unpackhi_epi8(v, v); // words 4..7 = b12b12 .. b15b15
+    t = _mm_shufflehi_epi16(t, 0xFF);    // words 4..7 = b15b15
+    return _mm_shuffle_epi32(t, 0xFF);   // all dwords = b15b15b15b15
+}
+
+// Delta decode of one 16-byte channel run: out[i] = carry - sum(src[0..i]).
+// carry holds the previous run's last output, broadcast; updated in place.
+inline __m128i delta_decode16(__m128i v, __m128i& carry) {
+    __m128i x = _mm_sub_epi8(_mm_setzero_si128(), v);
+    x = _mm_add_epi8(x, _mm_slli_si128(x, 1));
+    x = _mm_add_epi8(x, _mm_slli_si128(x, 2));
+    x = _mm_add_epi8(x, _mm_slli_si128(x, 4));
+    x = _mm_add_epi8(x, _mm_slli_si128(x, 8));
+    x = _mm_add_epi8(x, carry);
+    carry = broadcast_last_byte(x);
+    return x;
+}
+
+// Delta encode of one 16-byte channel run: out[i] = prev[i] - cur[i], where
+// prev is cur shifted by one byte with the previous run's last byte in front.
+inline __m128i delta_encode16(__m128i cur, __m128i& last) {
+    const __m128i prev = _mm_or_si128(_mm_slli_si128(cur, 1), _mm_srli_si128(last, 15));
+    last = cur;
+    return _mm_sub_epi8(prev, cur);
+}
+
+// Even / odd byte lanes of two vectors, packed (32 interleaved -> 2 x 16).
+inline __m128i even_bytes(__m128i a, __m128i b) {
+    const __m128i m = _mm_set1_epi16(0x00FF);
+    return _mm_packus_epi16(_mm_and_si128(a, m), _mm_and_si128(b, m));
+}
+inline __m128i odd_bytes(__m128i a, __m128i b) {
+    return _mm_packus_epi16(_mm_srli_epi16(a, 8), _mm_srli_epi16(b, 8));
+}
+#elif defined(__aarch64__) || defined(_M_ARM64)
+inline uint8x16_t delta_decode16(uint8x16_t v, uint8x16_t& carry) {
+    const uint8x16_t zero = vdupq_n_u8(0);
+    uint8x16_t x = vsubq_u8(zero, v);
+    x = vaddq_u8(x, vextq_u8(zero, x, 15));
+    x = vaddq_u8(x, vextq_u8(zero, x, 14));
+    x = vaddq_u8(x, vextq_u8(zero, x, 12));
+    x = vaddq_u8(x, vextq_u8(zero, x, 8));
+    x = vaddq_u8(x, carry);
+    carry = vdupq_n_u8(vgetq_lane_u8(x, 15));
+    return x;
+}
+inline uint8x16_t delta_encode16(uint8x16_t cur, uint8x16_t& last) {
+    const uint8x16_t prev = vextq_u8(last, cur, 15); // [last[15], cur[0..14]]
+    last = cur;
+    return vsubq_u8(prev, cur);
+}
+#endif
+
+// H-09: multi-channel Delta decode (planar src -> interleaved out) in ONE
+// sequential pass over `out`. The old form made `channels` strided passes
+// over the whole region, defeating both vectorisation and the cache; this
+// reads `channels` sequential planes in lockstep. SIMD kernels cover the
+// common 2- and 4-channel (16-bit mono/stereo PCM) shapes.
+void delta_decode_multi(const core::byte* src, core::byte* out, size_t size, size_t channels) {
+    const size_t full = size / channels;
+    const size_t rem = size % channels;
+    size_t base[32];
+    for (size_t c = 0; c < channels; ++c) base[c] = delta_plane_base(full, rem, c);
+
+    size_t r = 0;
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    if (channels == 2) {
+        __m128i c0 = _mm_setzero_si128(), c1 = _mm_setzero_si128();
+        for (; r + 16 <= full; r += 16) {
+            const __m128i a = delta_decode16(
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + base[0] + r)), c0);
+            const __m128i b = delta_decode16(
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + base[1] + r)), c1);
+            core::byte* o = out + 2 * r;
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(o), _mm_unpacklo_epi8(a, b));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(o + 16), _mm_unpackhi_epi8(a, b));
+        }
+    } else if (channels == 4) {
+        __m128i c0 = _mm_setzero_si128(), c1 = c0, c2 = c0, c3 = c0;
+        for (; r + 16 <= full; r += 16) {
+            const __m128i a = delta_decode16(
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + base[0] + r)), c0);
+            const __m128i b = delta_decode16(
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + base[1] + r)), c1);
+            const __m128i c = delta_decode16(
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + base[2] + r)), c2);
+            const __m128i d = delta_decode16(
+                _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + base[3] + r)), c3);
+            const __m128i ab_lo = _mm_unpacklo_epi8(a, b), ab_hi = _mm_unpackhi_epi8(a, b);
+            const __m128i cd_lo = _mm_unpacklo_epi8(c, d), cd_hi = _mm_unpackhi_epi8(c, d);
+            core::byte* o = out + 4 * r;
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(o), _mm_unpacklo_epi16(ab_lo, cd_lo));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(o + 16), _mm_unpackhi_epi16(ab_lo, cd_lo));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(o + 32), _mm_unpacklo_epi16(ab_hi, cd_hi));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(o + 48), _mm_unpackhi_epi16(ab_hi, cd_hi));
+        }
+    }
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    if (channels == 2) {
+        uint8x16_t c0 = vdupq_n_u8(0), c1 = c0;
+        for (; r + 16 <= full; r += 16) {
+            uint8x16x2_t v;
+            v.val[0] = delta_decode16(vld1q_u8(src + base[0] + r), c0);
+            v.val[1] = delta_decode16(vld1q_u8(src + base[1] + r), c1);
+            vst2q_u8(out + 2 * r, v);
+        }
+    } else if (channels == 4) {
+        uint8x16_t c0 = vdupq_n_u8(0), c1 = c0, c2 = c0, c3 = c0;
+        for (; r + 16 <= full; r += 16) {
+            uint8x16x4_t v;
+            v.val[0] = delta_decode16(vld1q_u8(src + base[0] + r), c0);
+            v.val[1] = delta_decode16(vld1q_u8(src + base[1] + r), c1);
+            v.val[2] = delta_decode16(vld1q_u8(src + base[2] + r), c2);
+            v.val[3] = delta_decode16(vld1q_u8(src + base[3] + r), c3);
+            vst4q_u8(out + 4 * r, v);
+        }
+    }
+#endif
+    // Scalar continuation (all other channel counts, and SIMD tails): the
+    // running value per channel is the last byte already emitted for it.
+    core::byte prev[32];
+    for (size_t c = 0; c < channels; ++c) prev[c] = r ? out[(r - 1) * channels + c] : 0;
+    for (; r < full; ++r) {
+        core::byte* o = out + r * channels;
+        for (size_t c = 0; c < channels; ++c) {
+            prev[c] = static_cast<core::byte>(prev[c] - src[base[c] + r]);
+            o[c] = prev[c];
+        }
+    }
+    for (size_t c = 0; c < rem; ++c) { // channels with one extra (partial-row) byte
+        out[full * channels + c] = static_cast<core::byte>(prev[c] - src[base[c] + full]);
+    }
+}
+
+// H-09: inverse of delta_decode_multi (interleaved src -> planar out), one
+// sequential pass over `src`.
+void delta_encode_multi(const core::byte* src, core::byte* out, size_t size, size_t channels) {
+    const size_t full = size / channels;
+    const size_t rem = size % channels;
+    size_t base[32];
+    for (size_t c = 0; c < channels; ++c) base[c] = delta_plane_base(full, rem, c);
+
+    size_t r = 0;
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    if (channels == 2) {
+        __m128i l0 = _mm_setzero_si128(), l1 = l0;
+        for (; r + 16 <= full; r += 16) {
+            const core::byte* s = src + 2 * r;
+            const __m128i v0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s));
+            const __m128i v1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s + 16));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + base[0] + r),
+                             delta_encode16(even_bytes(v0, v1), l0));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + base[1] + r),
+                             delta_encode16(odd_bytes(v0, v1), l1));
+        }
+    } else if (channels == 4) {
+        __m128i l0 = _mm_setzero_si128(), l1 = l0, l2 = l0, l3 = l0;
+        for (; r + 16 <= full; r += 16) {
+            const core::byte* s = src + 4 * r;
+            const __m128i v0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s));
+            const __m128i v1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s + 16));
+            const __m128i v2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s + 32));
+            const __m128i v3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s + 48));
+            // Two de-interleave rounds: positions 0,2,.. / 1,3,.. then mod 4.
+            const __m128i e01 = even_bytes(v0, v1), o01 = odd_bytes(v0, v1);
+            const __m128i e23 = even_bytes(v2, v3), o23 = odd_bytes(v2, v3);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + base[0] + r),
+                             delta_encode16(even_bytes(e01, e23), l0));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + base[1] + r),
+                             delta_encode16(even_bytes(o01, o23), l1));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + base[2] + r),
+                             delta_encode16(odd_bytes(e01, e23), l2));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + base[3] + r),
+                             delta_encode16(odd_bytes(o01, o23), l3));
+        }
+    }
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    if (channels == 2) {
+        uint8x16_t l0 = vdupq_n_u8(0), l1 = l0;
+        for (; r + 16 <= full; r += 16) {
+            const uint8x16x2_t v = vld2q_u8(src + 2 * r);
+            vst1q_u8(out + base[0] + r, delta_encode16(v.val[0], l0));
+            vst1q_u8(out + base[1] + r, delta_encode16(v.val[1], l1));
+        }
+    } else if (channels == 4) {
+        uint8x16_t l0 = vdupq_n_u8(0), l1 = l0, l2 = l0, l3 = l0;
+        for (; r + 16 <= full; r += 16) {
+            const uint8x16x4_t v = vld4q_u8(src + 4 * r);
+            vst1q_u8(out + base[0] + r, delta_encode16(v.val[0], l0));
+            vst1q_u8(out + base[1] + r, delta_encode16(v.val[1], l1));
+            vst1q_u8(out + base[2] + r, delta_encode16(v.val[2], l2));
+            vst1q_u8(out + base[3] + r, delta_encode16(v.val[3], l3));
+        }
+    }
+#endif
+    core::byte prev[32];
+    for (size_t c = 0; c < channels; ++c) prev[c] = r ? src[(r - 1) * channels + c] : 0;
+    for (; r < full; ++r) {
+        const core::byte* s = src + r * channels;
+        for (size_t c = 0; c < channels; ++c) {
+            out[base[c] + r] = static_cast<core::byte>(prev[c] - s[c]);
+            prev[c] = s[c];
+        }
+    }
+    for (size_t c = 0; c < rem; ++c) {
+        out[base[c] + full] = static_cast<core::byte>(prev[c] - src[full * channels + c]);
+    }
+}
+
+} // namespace
+
 bool Filters50::apply_delta(const core::byte* src, core::byte* dest, size_t size,
                             core::uint8 channels) {
     if (channels == 0 || channels > 32 || size == 0) {
         return false;
     }
 
-    // Guard against in-place aliasing (src == dest)
-    std::vector<core::byte> tmp;
-    core::byte* out = dest;
-    if (src == dest) {
-        tmp.resize(size);
-        out = tmp.data();
+    if (channels > 1) {
+        // Planar -> interleaved is a permutation: in-place needs scratch.
+        core::byte* out = (src == dest) ? delta_scratch(size) : dest;
+        delta_decode_multi(src, out, size, channels);
+        if (out != dest) std::memcpy(dest, out, size);
+        return true;
     }
 
-    size_t src_pos = 0;
-
+    // channels == 1 below. The kernel reads src[i] before writing dest[i] at
+    // the same index, so it is in-place safe: no scratch (H-08).
+    size_t pos = 0;
+    core::byte prev = 0;
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-    if (channels == 1) {
-        core::byte prev = 0;
-        __m128i vprev = _mm_setzero_si128();
-        while (src_pos + 16 <= size) {
-            __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + src_pos));
-            // Delta decode is Prev - Src (spec 04-filters): negate source then prefix-sum (addition)
-            __m128i vneg = _mm_sub_epi8(_mm_setzero_si128(), v);
-            vneg = _mm_add_epi8(vneg, _mm_slli_si128(vneg, 1));
-            vneg = _mm_add_epi8(vneg, _mm_slli_si128(vneg, 2));
-            vneg = _mm_add_epi8(vneg, _mm_slli_si128(vneg, 4));
-            vneg = _mm_add_epi8(vneg, _mm_slli_si128(vneg, 8));
-            vneg = _mm_add_epi8(vneg, vprev);
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + src_pos), vneg);
-            int top = _mm_extract_epi16(vneg, 7) >> 8;
-            vprev = _mm_set1_epi8(static_cast<char>(top));
-            src_pos += 16;
-        }
-        prev = static_cast<core::byte>(_mm_extract_epi16(vprev, 0));
-        while (src_pos < size) {
-            prev = static_cast<core::byte>(prev - src[src_pos]);
-            out[src_pos++] = prev;
-        }
-        if (src == dest) {
-            std::memcpy(dest, out, size);
-        }
-        return true;
+    __m128i carry = _mm_setzero_si128();
+    for (; pos + 16 <= size; pos += 16) {
+        const __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + pos));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dest + pos), delta_decode16(v, carry));
     }
+    if (pos) prev = dest[pos - 1];
 #elif defined(__aarch64__) || defined(_M_ARM64)
-    if (channels == 1) {
-        const uint8x16_t zero = vdupq_n_u8(0);
-        uint8x16_t vprev = zero;
-        while (src_pos + 16 <= size) {
-            uint8x16_t v = vld1q_u8(src + src_pos);
-            uint8x16_t vneg = vsubq_u8(zero, v);
-            vneg = vaddq_u8(vneg, vextq_u8(zero, vneg, 15));
-            vneg = vaddq_u8(vneg, vextq_u8(zero, vneg, 14));
-            vneg = vaddq_u8(vneg, vextq_u8(zero, vneg, 12));
-            vneg = vaddq_u8(vneg, vextq_u8(zero, vneg, 8));
-            vneg = vaddq_u8(vneg, vprev);
-            vst1q_u8(out + src_pos, vneg);
-            vprev = vdupq_n_u8(vgetq_lane_u8(vneg, 15));
-            src_pos += 16;
-        }
-        core::byte prev = vgetq_lane_u8(vprev, 0);
-        while (src_pos < size) {
-            prev = static_cast<core::byte>(prev - src[src_pos]);
-            out[src_pos++] = prev;
-        }
-        if (src == dest) {
-            std::memcpy(dest, out, size);
-        }
-        return true;
+    uint8x16_t carry = vdupq_n_u8(0);
+    for (; pos + 16 <= size; pos += 16) {
+        vst1q_u8(dest + pos, delta_decode16(vld1q_u8(src + pos), carry));
     }
+    if (pos) prev = dest[pos - 1];
 #endif
-
-    for (core::uint8 ch = 0; ch < channels; ++ch) {
-        core::byte prev = 0;
-        for (size_t dest_pos = ch; dest_pos < size; dest_pos += channels) {
-            prev = static_cast<core::byte>(prev - src[src_pos++]);
-            out[dest_pos] = prev;
-        }
-    }
-
-    if (src == dest) {
-        std::memcpy(dest, out, size);
+    for (; pos < size; ++pos) {
+        prev = static_cast<core::byte>(prev - src[pos]);
+        dest[pos] = prev;
     }
     return true;
 }
-
 void Filters50::encode_e8_scalar(core::byte* data, size_t size, core::uint64 file_offset,
                                  bool include_e9) {
     const core::uint32 file_size_mask = 0x01000000u; // 16MB modular cycle
@@ -770,58 +955,39 @@ bool Filters50::encode_delta(const core::byte* src, core::byte* dest, size_t siz
         return false;
     }
 
-    // Guard against in-place aliasing (src == dest)
-    std::vector<core::byte> tmp;
-    core::byte* out = dest;
-    if (src == dest) {
-        tmp.resize(size);
-        out = tmp.data();
-    }
-
-    if (channels == 1) {
-        out[0] = static_cast<core::byte>(0 - src[0]);
-        size_t pos = 1;
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-        while (pos + 16 <= size) {
-            __m128i v_prev = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + pos - 1));
-            __m128i v_cur = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + pos));
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + pos), _mm_sub_epi8(v_prev, v_cur));
-            pos += 16;
-        }
-#elif defined(__aarch64__) || defined(_M_ARM64)
-        while (pos + 16 <= size) {
-            uint8x16_t v_prev = vld1q_u8(src + pos - 1);
-            uint8x16_t v_cur = vld1q_u8(src + pos);
-            vst1q_u8(out + pos, vsubq_u8(v_prev, v_cur));
-            pos += 16;
-        }
-#endif
-        core::byte prev = src[pos - 1];
-        for (; pos < size; ++pos) {
-            core::byte val = src[pos];
-            out[pos] = static_cast<core::byte>(prev - val);
-            prev = val;
-        }
-        if (src == dest) {
-            std::memcpy(dest, out, size);
-        }
+    if (channels > 1) {
+        // Interleaved -> planar is a permutation: in-place needs scratch,
+        // reused per thread instead of allocated per call (H-08).
+        core::byte* out = (src == dest) ? delta_scratch(size) : dest;
+        delta_encode_multi(src, out, size, channels);
+        if (out != dest) std::memcpy(dest, out, size);
         return true;
     }
 
-    size_t dest_pos = 0;
-    for (core::uint8 ch = 0; ch < channels; ++ch) {
-        core::byte prev = 0;
-        for (size_t src_pos = ch; src_pos < size; src_pos += channels) {
-            core::byte val = src[src_pos];
-            out[dest_pos++] = static_cast<core::byte>(prev - val);
-            prev = val;
-        }
+    // channels == 1: out[i] = src[i-1] - src[i]. The previous input byte is
+    // carried in a register (never re-read from memory), so this is in-place
+    // safe as well (H-08).
+    size_t pos = 0;
+    core::byte prev = 0;
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    __m128i last = _mm_setzero_si128();
+    for (; pos + 16 <= size; pos += 16) {
+        const __m128i cur = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + pos));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dest + pos), delta_encode16(cur, last));
     }
-
-    if (src == dest) {
-        std::memcpy(dest, out, size);
+    if (pos) prev = static_cast<core::byte>(_mm_cvtsi128_si32(_mm_srli_si128(last, 15)));
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    uint8x16_t last = vdupq_n_u8(0);
+    for (; pos + 16 <= size; pos += 16) {
+        vst1q_u8(dest + pos, delta_encode16(vld1q_u8(src + pos), last));
+    }
+    if (pos) prev = vgetq_lane_u8(last, 15);
+#endif
+    for (; pos < size; ++pos) {
+        const core::byte val = src[pos];
+        dest[pos] = static_cast<core::byte>(prev - val);
+        prev = val;
     }
     return true;
 }
-
 } // namespace openrar::compress

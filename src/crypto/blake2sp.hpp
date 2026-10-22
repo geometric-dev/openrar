@@ -39,6 +39,10 @@ private:
         void finish(core::byte* out);
     };
 
+    // H-14: 8-way AVX2 bulk leaf update (x86-64 only; defined and called
+    // only when the build has the kernel and the CPU reports AVX2).
+    void update_bulk_avx2(const core::byte* in, size_t chunks);
+
     Blake2sState states_[PARALLELISM];
     Blake2sState root_state_;
     core::byte buf_[PARALLELISM * BLOCK_SIZE];

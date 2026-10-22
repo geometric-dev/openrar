@@ -62,14 +62,39 @@ struct StagingGuard {
 // the wall-clock target onto the fs clock (sub-second precision where the
 // FS supports it).
 bool set_staging_mtime(const std::filesystem::path& p, int64_t epoch_sec, int32_t nsec) {
-    const auto now_fs = std::filesystem::file_time_type::clock::now();
-    const auto now_sys = std::chrono::system_clock::now().time_since_epoch();
-    const auto target = std::chrono::seconds(epoch_sec) + std::chrono::nanoseconds(nsec);
-    const auto delta = target - now_sys;
+    // C-08: never convert the absolute epoch to nanoseconds - seconds(x) to
+    // nanoseconds overflows int64 (UB) for any date after 2262-04-11, which
+    // includes MtimeBounds::max (year 3000). Work in whole seconds, then add
+    // the small sub-second remainder, and clamp to what file_time_type holds.
+    using namespace std::chrono;
+    using FsClock = std::filesystem::file_time_type::clock;
+    using FsDur = std::filesystem::file_time_type::duration;
+    using FsTime = std::filesystem::file_time_type;
+
+    const auto now_fs = FsClock::now().time_since_epoch();
+    const auto now_sys = system_clock::now().time_since_epoch();
+    const auto now_fs_s = duration_cast<seconds>(now_fs);
+    const auto now_sys_s = duration_cast<seconds>(now_sys);
+
+    // |epoch_sec| <= 1e13 s (~317k years) keeps every sum below in range.
+    constexpr int64_t EPOCH_LIM = 10000000000000LL;
+    const int64_t es = std::clamp<int64_t>(epoch_sec, -EPOCH_LIM, EPOCH_LIM);
+    int64_t abs_fs_s = now_fs_s.count() + (es - now_sys_s.count());
+
+    // Clamp into the fs clock's representable range (margin for the
+    // sub-second term below, which lies in (-1 s, +2 s)).
+    const int64_t fs_max_s = duration_cast<seconds>(FsDur::max()).count() - 3;
+    const int64_t fs_min_s = duration_cast<seconds>(FsDur::min()).count() + 3;
+    abs_fs_s = std::clamp(abs_fs_s, fs_min_s, fs_max_s);
+
+    // Sub-second part: requested nsec plus the two clocks' fractional phases.
+    const auto frac = duration_cast<FsDur>(nanoseconds(nsec)) +
+                      duration_cast<FsDur>(now_fs - now_fs_s) -
+                      duration_cast<FsDur>(now_sys - now_sys_s);
+    const FsTime target{duration_cast<FsDur>(seconds(abs_fs_s)) + frac};
+
     std::error_code ec;
-    std::filesystem::last_write_time(
-        p, now_fs + std::chrono::duration_cast<std::filesystem::file_time_type::duration>(delta),
-        ec);
+    std::filesystem::last_write_time(p, target, ec);
     return !ec;
 }
 

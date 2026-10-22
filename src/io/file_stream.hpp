@@ -24,6 +24,29 @@ enum class CommitMode {
 
 enum class SeekOrigin { Begin, Current, End };
 
+// M-05: shared seek arithmetic for the in-memory streams (MappedFile,
+// BufferStream). Resolves origin + offset against [0, size] in unsigned
+// math, so no int64 addition can overflow (UB) and every out-of-range
+// target - including a negative Begin offset - is rejected rather than
+// clamped. Returns false and leaves `out` untouched on failure.
+inline bool resolve_seek(core::uint64 cursor, core::uint64 size, core::int64 offset,
+                         SeekOrigin origin, core::uint64& out) {
+    const core::uint64 base =
+        origin == SeekOrigin::Begin ? 0 : (origin == SeekOrigin::Current ? cursor : size);
+    if (base > size) return false;
+    if (offset >= 0) {
+        const core::uint64 fwd = static_cast<core::uint64>(offset);
+        if (fwd > size - base) return false;
+        out = base + fwd;
+    } else {
+        // -(offset + 1) + 1 avoids negating INT64_MIN.
+        const core::uint64 back = static_cast<core::uint64>(-(offset + 1)) + 1;
+        if (back > base) return false;
+        out = base - back;
+    }
+    return true;
+}
+
 // Minimal random-access read interface (v1.25 plan §1). Implemented by
 // FileStream (buffered syscall reads) and io::MappedFile (fault-guarded
 // mapped reads) so consumers — the header scanner — run unchanged on

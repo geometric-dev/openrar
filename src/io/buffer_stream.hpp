@@ -2,6 +2,7 @@
 #define OPENRAR_IO_BUFFER_STREAM_HPP
 
 #include "../core/types.hpp"
+#include "file_stream.hpp" // SeekOrigin, resolve_seek
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -41,15 +42,10 @@ public:
     }
 
     bool seek(int64_t off, SeekOrigin origin) {
-        int64_t new_pos = 0;
-        if (origin == SeekOrigin::Begin)
-            new_pos = off;
-        else if (origin == SeekOrigin::Current)
-            new_pos = static_cast<int64_t>(pos_) + off;
-        else
-            new_pos = static_cast<int64_t>(size_) + off;
-        if (new_pos < 0 || static_cast<core::uint64>(new_pos) > size_) return false;
-        pos_ = static_cast<core::uint64>(new_pos);
+        // M-05: unsigned resolution - pos_ + off can no longer overflow int64.
+        core::uint64 next = 0;
+        if (!resolve_seek(pos_, size_, off, origin, next)) return false;
+        pos_ = next;
         return true;
     }
 

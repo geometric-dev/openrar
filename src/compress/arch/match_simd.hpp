@@ -23,7 +23,11 @@
 #include <emmintrin.h>
 #include <immintrin.h>
 #define OPENRAR_HAS_X86_SIMD 1
-#elif defined(__aarch64__) || defined(__ARM_NEON) || defined(_M_ARM64)
+#elif (defined(__aarch64__) || defined(__ARM_NEON) || defined(_M_ARM64)) &&                        \
+    !defined(OPENRAR_BIG_ENDIAN)
+// C-07: the NEON kernel reads a u64 lane of a byte-compare mask and ctz's
+// it, which names the lowest-address byte only on little-endian hosts.
+// Big-endian AArch64 (aarch64_be) falls back to the scalar kernel.
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
@@ -38,9 +42,9 @@ inline size_t match_length_scalar(const core::byte* p, const core::byte* q, size
     if (cap == 0 || p[0] != q[0]) return 0;
     size_t i = 0;
     while (i + 8 <= cap) {
-        core::uint64 p_val, q_val;
-        std::memcpy(&p_val, p + i, 8);
-        std::memcpy(&q_val, q + i, 8);
+        // C-07: LE value so ctz names the lowest-address mismatching byte.
+        const core::uint64 p_val = core::load_le64(p + i);
+        const core::uint64 q_val = core::load_le64(q + i);
         if (p_val != q_val) {
 #if defined(_MSC_VER) && (defined(_M_AMD64) || defined(_M_X64) || defined(_M_ARM64))
             unsigned long index;
@@ -124,9 +128,9 @@ match_length_avx2(const core::byte* p, const core::byte* q, size_t cap) noexcept
             return cap;
         }
         if (cap - i >= 8) {
-            core::uint64 p_val, q_val;
-            std::memcpy(&p_val, p + i, 8);
-            std::memcpy(&q_val, q + i, 8);
+            // C-07: LE value so ctz names the lowest-address mismatching byte.
+            const core::uint64 p_val = core::load_le64(p + i);
+            const core::uint64 q_val = core::load_le64(q + i);
             if (p_val != q_val) {
 #if defined(_MSC_VER)
                 unsigned long index;
@@ -240,9 +244,9 @@ inline size_t match_length_neon(const core::byte* p, const core::byte* q, size_t
         i += 16;
     }
     if (i + 8 <= cap) {
-        core::uint64 p_val, q_val;
-        std::memcpy(&p_val, p + i, 8);
-        std::memcpy(&q_val, q + i, 8);
+        // C-07: LE value so ctz names the lowest-address mismatching byte.
+        const core::uint64 p_val = core::load_le64(p + i);
+        const core::uint64 q_val = core::load_le64(q + i);
         if (p_val != q_val) {
 #if defined(_MSC_VER) && defined(_M_ARM64)
             unsigned long index;
@@ -280,9 +284,9 @@ inline size_t match_length_wasm(const core::byte* p, const core::byte* q, size_t
         i += 16;
     }
     while (i + 8 <= cap) {
-        core::uint64 p_val, q_val;
-        std::memcpy(&p_val, p + i, 8);
-        std::memcpy(&q_val, q + i, 8);
+        // C-07: LE value so ctz names the lowest-address mismatching byte.
+        const core::uint64 p_val = core::load_le64(p + i);
+        const core::uint64 q_val = core::load_le64(q + i);
         if (p_val != q_val) {
             return i + __builtin_ctzll(p_val ^ q_val) / 8;
         }

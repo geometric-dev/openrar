@@ -29,9 +29,17 @@ struct CdcChunk {
 class CdcChunker {
 public:
     // Fixed parameters (plan §1): TargetAvg 64 KiB, min 16 KiB, max 256 KiB.
-    static constexpr core::uint32 MIN_CHUNK = 16u * 1024u;
-    static constexpr core::uint32 MAX_CHUNK = 256u * 1024u;
-    static constexpr core::uint32 AVG_CHUNK = 64u * 1024u;
+    //
+    // CDC_-prefixed deliberately: compressor50.hpp also defines MIN_CHUNK
+    // (1 MiB) and MAX_CHUNK (4 MiB) as *unqualified* names, and reuses that
+    // same pair for two different things in one file -- a chunk-size clamp
+    // (:663-667) and a per-thread-count clamp (:672). The halo a parallel
+    // fingerprint pass must overlap is exactly this MAX_CHUNK (256 KiB),
+    // because pending_size_ is capped by it; picking up the other constant
+    // would silently size the overlap wrong. See roadmap-v143.merged.md 8.3.
+    static constexpr core::uint32 CDC_MIN_CHUNK = 16u * 1024u;
+    static constexpr core::uint32 CDC_MAX_CHUNK = 256u * 1024u;
+    static constexpr core::uint32 CDC_AVG_CHUNK = 64u * 1024u;
 
     CdcChunker();
 
@@ -71,7 +79,7 @@ private:
 
     const CdcChunker& owner_;
     core::uint64 h_ = 0;      // Gear hash of the pending bytes
-    size_t pending_size_ = 0; // bytes since the last cut (<= MAX_CHUNK)
+    size_t pending_size_ = 0; // bytes since the last cut (<= CDC_MAX_CHUNK)
     core::uint64 fed_ = 0;    // total bytes fed (chunk offsets are stream-relative)
 };
 

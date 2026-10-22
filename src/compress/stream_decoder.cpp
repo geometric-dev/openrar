@@ -41,10 +41,22 @@ bool StreamDecoder::feed(const core::byte* src, size_t n) {
                 return false;
             }
         } else {
-            output_.insert(output_.end(), src, src + n);
+            if (!retain_output(src, n)) return false;
         }
         total_out_ += n;
         if (progress_cb_) progress_cb_(progress_user_, total_out_, total_out_);
+        return true;
+    }
+
+    // M-08: with nothing queued, decode every complete block straight from
+    // the caller's buffer and stage only the incomplete tail. The queue copy
+    // used to be paid on every byte of input.
+    if (in_head_ == in_queue_.size()) {
+        in_queue_.clear();
+        in_head_ = 0;
+        size_t consumed = 0;
+        if (!process_buffer(src, n, consumed)) return false;
+        if (consumed < n) in_queue_.insert(in_queue_.end(), src + consumed, src + n);
         return true;
     }
 
@@ -52,15 +64,61 @@ bool StreamDecoder::feed(const core::byte* src, size_t n) {
     return process_blocks();
 }
 
+// H-17: without a flush sink every decoded byte is retained in output_ until
+// take_output()/finish(). Cap the retained bytes at the same ceiling
+// decompress_to_vector() enforces, so a small decompression bomb fed through
+// the streaming API (wasm openrar_stream_decompress_feed) fails closed
+// instead of exhausting the heap.
+bool StreamDecoder::retain_output(const core::byte* data, size_t size) {
+    if (static_cast<core::uint64>(output_.size()) + size > MAX_RETAINED_OUTPUT) {
+        aborted_ = true;
+        return false;
+    }
+    output_.insert(output_.end(), data, data + size);
+    return true;
+}
+
 bool StreamDecoder::process_blocks() {
-    while (in_head_ < in_queue_.size() && !finished_) {
+    size_t consumed = 0;
+    const bool ok =
+        process_buffer(in_queue_.data() + in_head_, in_queue_.size() - in_head_, consumed);
+    in_head_ += consumed;
+    if (in_head_ == in_queue_.size()) {
+        in_queue_.clear();
+        in_head_ = 0;
+    } else if (in_head_ >= 0x40000) {
+        in_queue_.erase(in_queue_.begin(), in_queue_.begin() + in_head_);
+        in_head_ = 0;
+    }
+    return ok;
+}
+
+// Decode every complete block in [buf, buf + len). `consumed` reports the
+// bytes of whole blocks decoded; the remainder is an incomplete block the
+// caller must stage. buf must stay valid only for the duration of the call.
+bool StreamDecoder::process_buffer(const core::byte* buf, size_t len, size_t& consumed) {
+    consumed = 0;
+    // M-08: one OutputCallback for the whole batch instead of one
+    // std::function conversion per block.
+    const Decompressor50::OutputCallback sink = [this](const core::byte* data,
+                                                       size_t size) -> bool {
+        if (flush_cb_) {
+            if (flush_cb_(flush_user_, data, size) != 0) return false;
+        } else if (!retain_output(data, size)) {
+            return false;
+        }
+        total_out_ += size;
+        return true;
+    };
+
+    while (consumed < len && !finished_) {
         if (cancel_cb_ && cancel_cb_(cancel_user_)) {
             aborted_ = true;
             return false;
         }
 
-        const size_t avail = in_queue_.size() - in_head_;
-        const core::byte* q = in_queue_.data() + in_head_;
+        const size_t avail = len - consumed;
+        const core::byte* q = buf + consumed;
 
         // Need at least 3 bytes for a minimum block header: flags (1B), chk (1B), block_size (>=1B)
         if (avail < 3) break;
@@ -93,21 +151,9 @@ bool StreamDecoder::process_blocks() {
             break;
         }
 
-        // We have the entire block contiguous in in_queue_!
+        // The entire block is contiguous in buf.
         size_t written = 0;
         bool block_finished = false;
-
-        auto sink = [&](const core::byte* data, size_t size) -> bool {
-            if (flush_cb_) {
-                if (flush_cb_(flush_user_, data, size) != 0) {
-                    return false;
-                }
-            } else {
-                output_.insert(output_.end(), data, data + size);
-            }
-            total_out_ += size;
-            return true;
-        };
 
         bool ok = decompressor_.decompress_block(q, total_block_bytes, sink, &written,
                                                  &block_finished, has_decoded_block_);
@@ -122,19 +168,11 @@ bool StreamDecoder::process_blocks() {
         }
 
         // Advance read cursor past consumed block
-        in_head_ += total_block_bytes;
+        consumed += total_block_bytes;
 
         if (progress_cb_) {
             progress_cb_(progress_user_, total_out_, total_out_);
         }
-    }
-
-    if (in_head_ == in_queue_.size()) {
-        in_queue_.clear();
-        in_head_ = 0;
-    } else if (in_head_ >= 0x40000) {
-        in_queue_.erase(in_queue_.begin(), in_queue_.begin() + in_head_);
-        in_head_ = 0;
     }
     return true;
 }

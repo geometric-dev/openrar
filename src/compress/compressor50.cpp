@@ -2,12 +2,47 @@
 #include "arch/match_simd.hpp"
 #include "../core/thread_pool.hpp"
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <cassert>
 #include <cstdio>
 #include <memory>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 namespace openrar::compress {
+
+namespace {
+// H-11: floor(log2(v)) with floor_log2(0) == floor_log2(1) == 0, i.e. exactly
+// the `while (v > 1) { v >>= 1; ++n; }` loops it replaces, in one bit scan.
+inline core::uint32 floor_log2(core::uint64 v) {
+    v |= 1; // log2(0) := 0, and keeps the scan's input non-zero
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_AMD64) || defined(_M_ARM64))
+    unsigned long idx;
+    _BitScanReverse64(&idx, v);
+    return static_cast<core::uint32>(idx);
+#elif defined(_MSC_VER)
+    unsigned long idx;
+    const unsigned long hi = static_cast<unsigned long>(v >> 32);
+    if (hi != 0) {
+        _BitScanReverse(&idx, hi);
+        return static_cast<core::uint32>(idx) + 32;
+    }
+    _BitScanReverse(&idx, static_cast<unsigned long>(v));
+    return static_cast<core::uint32>(idx);
+#elif defined(__GNUC__) || defined(__clang__)
+    return 63u - static_cast<core::uint32>(__builtin_clzll(v));
+#else
+    core::uint32 n = 0;
+    while (v > 1) {
+        v >>= 1;
+        ++n;
+    }
+    return n;
+#endif
+}
+} // namespace
 
 /////////////////////////////////////////////////////////////////////////////
 // HuffmanBuilder
@@ -375,8 +410,32 @@ void Compressor50::reset_state() {
 }
 
 Compressor50::Compressor50() {
+    // v1.44 A-6 measurement escape hatch (read once per process): same role as
+    // the legacy knobs — the shipped default is the back-shift ON; the knob
+    // exists so the same binary can A/B its own selection (exact
+    // pre-v1.44 bytes) for timing/size verification.
+    if (const char* s = std::getenv("OPENRAR_NO_BACKSHIFT");
+        s && s[0] != '\0' && std::strcmp(s, "0") != 0) {
+        back_shift_enable_ = false;
+    }
     reset_state();
 }
+
+namespace {
+size_t normalize_window_size(size_t win_size, core::uint64* out_max_dist = nullptr) {
+    const core::uint64 sz_cap = sizeof(size_t) < 8 ? (1ULL << 30) : 0x1000000000ULL;
+    const core::uint64 max_retain = std::min<core::uint64>(
+        sz_cap, static_cast<core::uint64>(static_cast<size_t>(-1)) - 0x1000000);
+    const core::uint64 max_dist = std::min(static_cast<core::uint64>(win_size), max_retain);
+    if (out_max_dist) *out_max_dist = max_dist;
+    size_t ws = static_cast<size_t>(max_dist == 0 ? 0x20000 : max_dist);
+    size_t pow2_ws = 0x10000;
+    while (pow2_ws < ws && pow2_ws < static_cast<size_t>(max_retain)) {
+        pow2_ws <<= 1;
+    }
+    return std::max<size_t>(0x10000, pow2_ws);
+}
+} // namespace
 
 void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_size) {
     // Wipe every scalar first. Without this, a Compressor50 that was
@@ -388,30 +447,23 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
     dest_file_ = dest;
     method_ = method < 1 || method > 5 ? 5 : method;
 
-    const core::uint64 sz_cap = sizeof(size_t) < 8 ? (1ULL << 30) : 0x1000000000ULL;
-    // sz_cap mirrors the decompressor's ILP32 ALLOC_LIMIT (1 GiB) so streams
-    // produced on 32-bit targets stay decodable in-family, and the pow2
-    // clamp below can never overflow a 32-bit size_t (a >= 2 GiB window
-    // would wrap pow2_ws to 0 and loop forever, and buf_size_'s +4 MiB
-    // slack would wrap on a 2 GiB win_size_). Identical to the previous
-    // behavior on 64-bit.
-    const core::uint64 max_retain = std::min<core::uint64>(
-        sz_cap, static_cast<core::uint64>(static_cast<size_t>(-1)) - 0x1000000);
-    max_dist_ = std::min(static_cast<core::uint64>(win_size), max_retain);
-    size_t ws = static_cast<size_t>(max_dist_ == 0 ? 0x20000 : max_dist_);
-    size_t pow2_ws = 0x10000;
-    while (pow2_ws < ws && pow2_ws < static_cast<size_t>(max_retain)) {
-        pow2_ws <<= 1;
-    }
-    win_size_ = std::max<size_t>(0x10000, pow2_ws);
+    win_size_ = normalize_window_size(win_size, &max_dist_);
     assert((win_size_ & (win_size_ - 1)) == 0);
+    // 430-entry tables (see make_tables) reach at most slot 63: distance
+    // 1 + (3 << 30) + (2^30 - 1) = 4 GiB. A larger window still helps (the
+    // whole history stays addressable within 4 GiB of every position), but
+    // no match may reach further back.
+    max_dist_ = std::min<core::uint64>(max_dist_, 4ULL * 1024 * 1024 * 1024);
 
     buf_size_ = win_size_ + 0x400000 + READ_CHUNK;
     buf_data_ = buf_.empty() ? nullptr : buf_.data();
 
     if (token_seq_.capacity() < 32768) token_seq_.reserve(32768);
     if (lit_bytes_.capacity() < 32768) lit_bytes_.reserve(32768);
-    if (match_tokens_.capacity() < 16384) match_tokens_.reserve(16384);
+    // M-07: need_flush() fires at token_seq_.size() >= 32768, and every
+    // token can be a match, so match_tokens_ needs the same headroom to
+    // avoid a mid-block reallocation.
+    if (match_tokens_.capacity() < 32768) match_tokens_.reserve(32768);
 
     is_large_window_ = (win_size_ > 4ULL * 1024 * 1024 * 1024);
     if (is_large_window_) {
@@ -442,7 +494,9 @@ bool Compressor50::begin_stream(int method, size_t win_size, bool continue_windo
         // A carried window is only defined directly after a finished stream
         // of the same geometry: buf_/cur_/pos_base_/hash chains/old_dist_
         // must belong to bytes the decoder will carry for this chain.
-        if (!streaming_ || !stream_finished_ || win_size_ != win_size) return false;
+        if (!streaming_ || !stream_finished_ || win_size_ != normalize_window_size(win_size)) {
+            return false;
+        }
     }
     streaming_ = true;
     stream_finished_ = false;
@@ -524,6 +578,13 @@ void Compressor50::start_file(io::FileStream* src, core::uint64 src_file_size,
     src_file_ = src;
     src_size_ = src_file_size;
     src_eof_ = false;
+    external_buf_ = false;
+    mem_src_ptr_ = nullptr;
+    mem_src_size_ = 0;
+    mem_src_pos_ = 0;
+    active_filter_ = FilterType::None;
+    filter_channels_ = 1;
+    filter_pretransformed_ = false;
     // A member's compressed stream must open with its own tables. Our decoder
     // drops them at a non-solid start (decompressor50.cpp:568), but reference
     // unrar rejects the solid-mixed interop track outright if we reuse across a
@@ -610,8 +671,9 @@ void Compressor50::load_data(core::uint64 until) {
 
 core::uint32 Compressor50::calc_hash(core::uint64 pos) {
     const core::byte* d = &buf_data_[static_cast<size_t>(pos - pos_base_)];
-    core::uint32 val;
-    std::memcpy(&val, d, 4);
+    // C-07: little-endian value on every host, so hash_range()'s shifted
+    // extraction below inserts the same hashes and output is host-independent.
+    const core::uint32 val = core::load_le32(d);
     return (val * 0x9e3779b1u) >> (32 - HASH_BITS);
 }
 
@@ -631,8 +693,10 @@ inline void Compressor50::hash_range(core::uint64 from, core::uint64 to) {
     if (!is_large_window_) {
         const size_t win_mask = win_size_ - 1;
         while (from + 4 <= to && from + 8 <= src_loaded_) {
-            core::uint64 q;
-            std::memcpy(&q, &buf_data_[static_cast<size_t>(from - pos_base_)], 8);
+            // C-07: q >> 8k must expose the word at offset +k, which only
+            // holds for a little-endian value.
+            const core::uint64 q =
+                core::load_le64(&buf_data_[static_cast<size_t>(from - pos_base_)]);
             core::uint32 h0 = ((static_cast<core::uint32>(q)) * 0x9e3779b1u) >> (32 - HASH_BITS);
             core::uint32 h1 =
                 ((static_cast<core::uint32>(q >> 8)) * 0x9e3779b1u) >> (32 - HASH_BITS);
@@ -673,7 +737,8 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
     core::int64 cand = -1;
     if constexpr (LargeWindow) {
         core::uint64 hpos = head64_[h];
-        if (hpos != static_cast<core::uint64>(-1) && pos >= hpos && (pos - hpos) <= max_dist_) {
+        // C-04: strict '>' — a candidate at pos itself is a distance-0 self-match.
+        if (hpos != static_cast<core::uint64>(-1) && pos > hpos && (pos - hpos) <= max_dist_) {
             cand = static_cast<core::int64>(hpos);
         }
     } else {
@@ -691,10 +756,31 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
         std::memcpy(&p4, buf_pos, 4);
     }
 
+    // RAT-F (v1.43 M3): classify WHY the walk below stopped. 0=unset, 1=(a)
+    // budget exhausted while a candidate remained, 2=(d) chain ran out of
+    // nodes, 3=(b) nice_len/limit break, 4=(c) candidate left the window. Only
+    // (a) is the population a pre-`p` candidate cache could help: the walk ran
+    // out of BUDGET, not out of candidates. A local int; never read by the
+    // emission path, so it cannot alter an emitted byte.
+    int h1_reason = 0;
+
+    // Per-band longest-match slots, harvested from the SAME walk the
+    // monotone-max finder already performs (v1.44 A-6: SHIPPED; previously
+    // instrument-only). Scope: SIMD-measured candidates only — the cheap
+    // pre-screen continue below skips without recording (exactly what the
+    // probe measured), and nice_len/limit breaks terminate before a record.
+    // The harvest is skipped inside the suppressed h1 counterfactual re-walk.
+    // These slots feed BOTH the shipped back-shift below and the axis-6
+    // probe's residual accounting.
+    size_t band_len[4] = {0, 0, 0, 0};
+    core::int64 band_cand[4] = {-1, -1, -1, -1};
+
     while (cand >= 0 && chain-- > 0) {
         if (static_cast<core::uint64>(cand) < pos_base_ ||
-            (pos - static_cast<core::uint64>(cand)) > max_dist_)
+            (pos - static_cast<core::uint64>(cand)) > max_dist_) {
+            h1_reason = 4;
             break;
+        }
         const core::byte* buf_cand =
             &buf_data_[static_cast<size_t>(static_cast<core::uint64>(cand) - pos_base_)];
 
@@ -709,7 +795,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
                     reinterpret_cast<const char*>(&prev64_[static_cast<size_t>(next64) & win_mask]),
                     _MM_HINT_T0);
 #endif
-                if (pos >= next64 && (pos - next64) <= max_dist_) {
+                if (pos > next64 && (pos - next64) <= max_dist_) { // C-04: no self-match
                     next_cand = static_cast<core::int64>(next64);
                 }
             }
@@ -765,11 +851,282 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
         if (len > best.length) {
             best.length = len;
             best.candidate = cand;
-            if (len >= nice_len || len >= limit) break;
+            if (len >= nice_len || len >= limit) {
+                h1_reason = 3;
+                break;
+            }
+        }
+        if (!arb_probe_suppress_) {
+            const size_t band_d = static_cast<size_t>(static_cast<core::uint64>(pos) -
+                                                      static_cast<core::uint64>(cand));
+            const core::uint32 band = length_increment(band_d);
+            if (len > band_len[band]) {
+                band_len[band] = len;
+                band_cand[band] = cand;
+            }
         }
         cand = next_cand;
     }
     if (best.length < min_match_) best.length = 0;
+
+    // RAT-F accounting. Normal loop exit leaves h1_reason unset: `cand >= 0`
+    // means the budget bound while a candidate was still waiting (a), `cand <
+    // 0` means the chain ran out of nodes first (d). The (a) case then runs a
+    // counterfactual unbudgeted re-walk of the SAME chain to ask the only
+    // question that matters for a cache: would truncation have hidden a
+    // strictly longer match? That re-walk is a suppressed re-entry (probe off)
+    // so it cannot recurse or double-count, and its result is DISCARDED — no
+    // emitted byte depends on it.
+    // v1.44 ordering note: this block runs BEFORE the back-shift eval below so
+    // the counterfactual compares against the PRISTINE monotone-max, not a
+    // post-swap candidate.
+    if (h1_probe_on_) {
+        if (h1_reason == 0) h1_reason = (cand >= 0) ? 1 : 2;
+        ++h1_probe_.calls;
+        switch (h1_reason) {
+        case 1:
+            ++h1_probe_.budget_exhausted;
+            break;
+        case 2:
+            ++h1_probe_.supply_exhausted;
+            break;
+        case 3:
+            ++h1_probe_.nice_len_break;
+            break;
+        default:
+            ++h1_probe_.max_dist_break;
+            break;
+        }
+        if (h1_reason == 1) {
+            h1_probe_on_ = false;
+            // Suppress arbiter/axis-6 accounting in the re-walk too: these
+            // positions were already counted once in the outer walk, and the
+            // counterfactual's own result is discarded. Scoped guard, not a
+            // manual flip pair: a leaked true would silently disable the
+            // shipped v1.44 back-shift for the rest of the file.
+            struct SuppressArbOnce {
+                bool& f_;
+                explicit SuppressArbOnce(bool& f) : f_(f) { f_ = true; }
+                ~SuppressArbOnce() { f_ = false; }
+            };
+            SuppressArbOnce arb_guard(arb_probe_suppress_);
+            MatchInfo ext = find_match_impl<LargeWindow>(pos, h1_probe_extra_chain_, nice_len);
+            h1_probe_on_ = true;
+            if (ext.length > best.length) {
+                ++h1_probe_.recoverable;
+                core::uint64 delta = ext.length - best.length;
+                h1_probe_.recoverable_bytes += delta;
+                if (delta > h1_probe_.max_delta) h1_probe_.max_delta = delta;
+            }
+        }
+    }
+
+    // v1.44 A-6 back-shift — the per-band slots harvested by the walk above
+    // now SUBSIDIZE the selection (previously instrument-only). Design
+    // ratified by the design review (2026-10-17) against the axis-6
+    // measurements; the anchored contract:
+    //   1. ORDER IS LOAD-BEARING: harvest -> min_match_ floor -> h1 accounting
+    //      -> THIS EVAL -> axis-6 accounting -> return. The h1 counterfactual
+    //      sees the PRISTINE monotone-max; axis-6 reads the POST-SWAP token
+    //      (its counts are then the residual beyond shipped behavior: delta
+    //      in (0,8) plus discipline-blocked positives).
+    //   2. FIELD DISCIPLINE: a swap mutates ONLY (best.length,
+    //      best.candidate). Every increment/price is a FUNCTION recomputed
+    //      from (pos, candidate) at its own read site — the arbiter
+    //      recomputes inc_f/dist_f after this returns — never cached across
+    //      the swap (a cached increment plus fresh price could push a rep
+    //      through a contest over a cheaper fresh candidate its own band
+    //      would never concede).
+    //   3. LEGALITY: the slot loop floors each candidate by its OWN band
+    //      increment (`band_len[b] < inc_s + 2` skip, plus min_match_); the
+    //      coverage bound is a discipline bound, never an admissibility test;
+    //      the emitter re-filter and add_match's floor filter stay in place.
+    //   4. 257/REP STATE UNTOUCHED: no old_dist_ rotation, no last_length_
+    //      write; the arbiter's rep gate re-verifies its own preconditions.
+    //   5. THRESHOLD: realized boundary-shift cost measured at ~7 bits/byte,
+    //      so admissible swaps with static delta in (0,8) are net-negative by
+    //      construction — both branches require delta >= 8 static bits.
+    //      The STRICT ladder-parity bound supersedes the probe's
+    //      inc_b-only form: `alt_len + inc_d - alt_inc >= best.length`, i.e.
+    //      a swap may concede only what the displaced token's own band
+    //      increment covers beyond the incoming candidate's. The probe's
+    //      110K/145K site counts measured the LOOSER form and stand only as
+    //      an upper bound on the eligible population.
+    //   6. The literal-fix branch (no fresh candidate survived the admission
+    //      floor) is the principled completion of the same rule; its measured
+    //      class was empty on every instrumented corpus, so it must remain a
+    //      no-op there — the zeros/rand/farrepeat digests are the executable
+    //      canaries (REFCAP).
+    if (!arb_probe_suppress_) {
+        constexpr core::uint32 kBackShiftMinBits = 8;
+        // v1.44 review hardening: most branches below only ever prove the
+        // floor for candidates WE placed (slot candidates carry their own
+        // band floor); a pristine monotone-max can legitimately carry a
+        // floor-tightening it kept (len 4 at distance > 0x40000 is legal
+        // input to the walk and gets emitted-as-literals downstream), so the
+        // full-floor pin is scoped to mutated placements only.
+        bool mutated = false;
+        // H-11: two hardware bit scans instead of two serial shift loops.
+        auto price_fresh = [](size_t len, core::uint32 inc, size_t dist) -> core::uint32 {
+            const core::uint32 m = floor_log2(len - inc);
+            const core::uint32 d = floor_log2(dist);
+            return m + 9 + (d > 3 ? d - 3 : 0);
+        };
+        const bool slot_valid = best.length > 0 && best.candidate >= 0;
+        core::uint32 shipped_price = 0;
+        if (slot_valid) {
+            const size_t dist_d = static_cast<size_t>(static_cast<core::uint64>(pos) -
+                                                      static_cast<core::uint64>(best.candidate));
+            const core::uint32 inc_d = length_increment(dist_d);
+            shipped_price = (best.length >= inc_d + 2) ? price_fresh(best.length, inc_d, dist_d)
+                                                       : 7 * static_cast<core::uint32>(best.length);
+        }
+        // Cheapest admissible slot across bands (floor = the candidate's own).
+        core::uint32 alt_price = 0;
+        core::int64 alt_cand = -1;
+        size_t alt_len = 0;
+        core::uint32 alt_inc = 0;
+        for (core::uint32 b = 0; b < 4; b++) {
+            if (band_len[b] == 0 || band_cand[b] < 0) continue;
+            const size_t dist_s = static_cast<size_t>(static_cast<core::uint64>(pos) -
+                                                      static_cast<core::uint64>(band_cand[b]));
+            const core::uint32 inc_s = length_increment(dist_s);
+            if (band_len[b] < min_match_ || band_len[b] < inc_s + 2) continue;
+            const core::uint32 p = price_fresh(band_len[b], inc_s, dist_s);
+            if (alt_cand < 0 || p < alt_price) {
+                alt_price = p;
+                alt_cand = band_cand[b];
+                alt_len = band_len[b];
+                alt_inc = inc_s;
+            }
+        }
+        if (alt_cand >= 0) {
+            if (!slot_valid) {
+                // Literal-fix: the span would pay as literals downstream; a
+                // slot candidate wins when it clears the same realized-shift
+                // margin. Measured class: empty on every corpus with a
+                // pinned digest.
+                if (back_shift_enable_ &&
+                    static_cast<core::int64>(7 * alt_len) - static_cast<core::int64>(alt_price) >=
+                        static_cast<core::int64>(kBackShiftMinBits)) {
+                    best.length = alt_len;
+                    best.candidate = alt_cand;
+                    mutated = true;
+                }
+            } else {
+                const size_t dist_d = static_cast<size_t>(
+                    static_cast<core::uint64>(pos) - static_cast<core::uint64>(best.candidate));
+                const core::uint32 inc_d = length_increment(dist_d);
+                const core::int64 delta =
+                    static_cast<core::int64>(shipped_price) - static_cast<core::int64>(alt_price);
+                if (back_shift_enable_ && delta >= static_cast<core::int64>(kBackShiftMinBits) &&
+                    alt_len + inc_d >= best.length + alt_inc) {
+                    assert(alt_price < shipped_price);
+                    best.length = alt_len;
+                    best.candidate = alt_cand;
+                    mutated = true;
+                }
+            }
+        }
+        // Pin A (always, pure coherence): the resolver invariant contract.
+        assert(best.length == 0 || best.candidate >= 0);
+        assert(best.length == 0 || best.length >= 4); // 4-byte-keyed chain walk
+        // Pin B (full floor, only where the eval provably placed it): an
+        // emitted/swapped candidate satisfies its own band floor. add_match's
+        // filter remains in place for pristine bests that must downgrade.
+        assert(!mutated || best.length >= length_increment(static_cast<size_t>(
+                                              static_cast<core::uint64>(pos) -
+                                              static_cast<core::uint64>(best.candidate))) +
+                                              2);
+    }
+
+    // RAT-A axis-6 accounting (log-only): compare the SHIPPED token against
+    // the cheapest admissible per-band fresh candidate the walk itself saw.
+    // Shipped comparison: fresh (calibrated price, msb proxy) when admissible,
+    // else the literal fallback (7 bits/byte over the span the slot covers).
+    // Static estimate — the arbiter work's decision-grade caveat applies: this
+    // sizes RECOVERY OPPORTUNITY, not promised output bytes. `best.length`
+    // below has already been zeroed when < min_match_, so a "shipped literal"
+    // position is one whose only fresh option in the finder's view was
+    // filtered-class. v1.44: this block runs AFTER the shipped back-shift,
+    // so an eligible site self-cancels (delta 0 < threshold) and the counts
+    // are the residual the shipped rule leaves on the table.
+    if (arb_probe_on_ && !arb_probe_suppress_) {
+        // H-11: two hardware bit scans instead of two serial shift loops.
+        auto price_fresh = [](size_t len, core::uint32 inc, size_t dist) -> core::uint32 {
+            const core::uint32 m = floor_log2(len - inc);
+            const core::uint32 d = floor_log2(dist);
+            return m + 9 + (d > 3 ? d - 3 : 0);
+        };
+        const bool best_valid = best.length > 0 && best.candidate >= 0;
+        core::uint32 shipped_price = 0;
+        bool shipped_is_fresh = false;
+        if (best_valid) {
+            ++arb_probe_.fresh_positions;
+            const size_t dist_b = static_cast<size_t>(static_cast<core::uint64>(pos) -
+                                                      static_cast<core::uint64>(best.candidate));
+            const core::uint32 inc_b = length_increment(dist_b);
+            if (best.length >= inc_b + 2) {
+                shipped_is_fresh = true;
+                shipped_price = price_fresh(best.length, inc_b, dist_b);
+            } else {
+                shipped_price = 7 * static_cast<core::uint32>(best.length);
+            }
+        } else {
+            ++arb_probe_.lit_positions;
+        }
+
+        // Cheapest admissible band slot (band slots never influenced `best`).
+        core::uint32 alt_price = 0;
+        int alt_band = -1;
+        size_t alt_len = 0;
+        for (core::uint32 b = 0; b < 4; b++) {
+            if (band_len[b] == 0 || band_cand[b] < 0) continue;
+            const size_t dist_s = static_cast<size_t>(static_cast<core::uint64>(pos) -
+                                                      static_cast<core::uint64>(band_cand[b]));
+            const core::uint32 inc_s = length_increment(dist_s);
+            if (band_len[b] < min_match_ || band_len[b] < inc_s + 2) continue;
+            const core::uint32 p = price_fresh(band_len[b], inc_s, dist_s);
+            if (alt_band < 0 || p < alt_price) {
+                alt_price = p;
+                alt_band = static_cast<int>(b);
+                alt_len = band_len[b];
+            }
+        }
+        if (alt_band >= 0) {
+            if (!best_valid) {
+                const core::int64 saved =
+                    static_cast<core::int64>(7 * alt_len) - static_cast<core::int64>(alt_price);
+                if (saved > 0) {
+                    ++arb_probe_.band_fixable;
+                    arb_probe_.band_fix_bits += static_cast<core::uint64>(saved);
+                    ++arb_probe_.fix_band[alt_band];
+                }
+            } else {
+                // Coverage-disciplined swap: an alternative band slot may only
+                // substitute when it concedes no more than the shipped
+                // candidate's own band increment (the same concession rule
+                // the arbiter applies), so the tokens downstream are bounded
+                // by <= inc_b extra token starts. Without this bound a
+                // shorter-but-nearer match always "looks cheaper per token"
+                // while extending the stream — the defect this probe must not
+                // itself commit.
+                const size_t dist_b = static_cast<size_t>(
+                    static_cast<core::uint64>(pos) - static_cast<core::uint64>(best.candidate));
+                const core::uint32 inc_b = length_increment(dist_b);
+                if (alt_len + inc_b >= best.length && alt_price < shipped_price) {
+                    ++arb_probe_.band_swap;
+                    const core::uint64 delta = static_cast<core::uint64>(shipped_price) - alt_price;
+                    arb_probe_.band_swap_bits += delta;
+                    if (delta >= 8) {
+                        ++arb_probe_.swap_profit;
+                        arb_probe_.swap_profit_bits += delta;
+                    }
+                    ++arb_probe_.swap_band[alt_band];
+                }
+            }
+        }
+    }
     return best;
 }
 
@@ -975,8 +1332,15 @@ void Compressor50::make_tables() {
     // writes every element of its output unconditionally, including
     // zero-length symbols (v1.41.1).
 
-    // Select table size: RAR7 ExtraDist (win > 4 GiB) uses DCX=80 → 446, else 430
-    cur_table_size_ = (win_size_ > (4ULL * 1024 * 1024 * 1024)) ? TABLE_SIZEX : TABLE_SIZE;
+    // Table flavor: always the RAR5 algorithm's 430 entries (DCB = 64). The
+    // flavor is selected by the header's algorithm field, not the window:
+    // our headers mark unp_ver 1 with FCI_RAR5_COMPAT, which reference
+    // decoders (and ours) read as 430-entry tables at ANY window size. The
+    // 446-entry RAR7 ExtraDist flavor is never emitted; begin_archive()
+    // caps max_dist_ at 4 GiB, the largest distance DCB slots can encode.
+    // (Choosing 446 for windows > 4 GiB produced archives RAR rejects with
+    // a checksum error, found by the large-dictionary interop track.)
+    cur_table_size_ = TABLE_SIZE;
     core::uint32 cur_dc = (cur_table_size_ == TABLE_SIZEX) ? DCX : DCB;
 
     HuffmanBuilder::build_lengths(freq_ld_, NC, 15, len_ld_);
@@ -1458,49 +1822,46 @@ int Compressor50::process_available(bool final) {
 
         if (active_filter_ != FilterType::None && filter_emitted_until_ <= cur_ &&
             filter_emitted_until_ < src_size_) {
-            size_t max_chunk = filter_max_chunk(win_size_);
-            core::uint32 chunk_len = static_cast<core::uint32>(
-                std::min<core::uint64>(src_size_ - filter_emitted_until_, max_chunk));
+            const size_t max_chunk = filter_max_chunk(win_size_);
+            const core::uint64 remaining = src_size_ - filter_emitted_until_;
+            const size_t chunk_len =
+                (streaming_ && !final)
+                    ? max_chunk
+                    : static_cast<size_t>(std::min<core::uint64>(remaining, max_chunk));
             if (chunk_len > 0) {
-                // Transform the chunk in place just before the matcher can
-                // reach it — but never when the caller supplied data that is
-                // already transformed for this exact chunking
-                // (filter_pretransformed_, the compress_buffer() path).
-                // Streaming/memory sources always have the whole chunk
-                // loaded here (chunk_len <= src_size_ - filter_emitted_until_
-                // == src_loaded_ - filter_emitted_until_), so the transform
-                // below always covers the full token region.
-                if (!external_buf_ && !filter_pretransformed_ &&
-                    filter_emitted_until_ >= pos_base_) {
-                    size_t buf_off = static_cast<size_t>(filter_emitted_until_ - pos_base_);
-                    size_t avail_in_buf =
-                        (src_loaded_ > filter_emitted_until_)
-                            ? static_cast<size_t>(src_loaded_ - filter_emitted_until_)
-                            : 0;
-                    size_t trans_len = std::min<size_t>(chunk_len, avail_in_buf);
-                    if (trans_len > 0) {
-                        advance_crc(filter_emitted_until_ + trans_len);
-                        core::uint64 file_rel_offset = filter_emitted_until_ - file_start_pos_;
-                        if (active_filter_ == FilterType::E8) {
-                            Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset,
-                                                 false);
-                        } else if (active_filter_ == FilterType::E8E9) {
-                            Filters50::encode_e8(buf_.data() + buf_off, trans_len, file_rel_offset,
-                                                 true);
-                        } else if (active_filter_ == FilterType::Arm) {
-                            Filters50::encode_arm(buf_.data() + buf_off, trans_len,
-                                                  file_rel_offset);
-                        } else if (active_filter_ == FilterType::Delta) {
-                            std::vector<core::byte> tmp(trans_len);
-                            Filters50::encode_delta(buf_.data() + buf_off, tmp.data(), trans_len,
-                                                    filter_channels_);
-                            std::memcpy(buf_.data() + buf_off, tmp.data(), trans_len);
-                        }
+                if (filter_emitted_until_ > static_cast<core::uint64>(SIZE_MAX) - chunk_len) {
+                    return -1;
+                }
+                const bool needs_transform = !external_buf_ && !filter_pretransformed_;
+                if (needs_transform) {
+                    if (filter_emitted_until_ < pos_base_) return -1;
+                    const core::uint64 required = filter_emitted_until_ + chunk_len;
+                    load_data(required);
+                    if (src_loaded_ < required) {
+                        if (src_eof_ || !streaming_ || final) return -1;
+                        return 0;
+                    }
+                    const size_t buf_off = static_cast<size_t>(filter_emitted_until_ - pos_base_);
+                    advance_crc(required);
+                    const core::uint64 file_rel_offset = filter_emitted_until_ - file_start_pos_;
+                    if (active_filter_ == FilterType::E8) {
+                        Filters50::encode_e8(buf_.data() + buf_off, chunk_len, file_rel_offset,
+                                             false);
+                    } else if (active_filter_ == FilterType::E8E9) {
+                        Filters50::encode_e8(buf_.data() + buf_off, chunk_len, file_rel_offset,
+                                             true);
+                    } else if (active_filter_ == FilterType::Arm) {
+                        Filters50::encode_arm(buf_.data() + buf_off, chunk_len, file_rel_offset);
+                    } else if (active_filter_ == FilterType::Delta) {
+                        // H-08: in place; encode_delta reuses a per-thread
+                        // scratch instead of a fresh 1 MiB vector per chunk.
+                        Filters50::encode_delta(buf_.data() + buf_off, buf_.data() + buf_off,
+                                                chunk_len, filter_channels_);
                     }
                 }
                 FilterToken ft;
                 ft.block_start = 0;
-                ft.block_length = chunk_len;
+                ft.block_length = static_cast<core::uint32>(chunk_len);
                 ft.type = static_cast<core::uint8>(active_filter_);
                 ft.channels = filter_channels_;
                 add_filter(ft);
@@ -1589,7 +1950,68 @@ int Compressor50::process_available(bool final) {
         size_t len = 0;
         size_t dist = 0;
 
-        if (rep_best_len >= min_match_ && rep_best_len + 1 > best.length) {
+        // v1.43 M2+ arbiter (cost-aware concession). The rep
+        // thread reuses a stored distance, so it pays no distance code — its
+        // residual is one LD rep symbol + one RD slot; a fresh match pays an
+        // LD slot + a DD slot + distance extras. A rep that concedes exactly
+        // the FRESH candidate's own distance-band increment leaves the two
+        // length ladders equal (base_f = L_f - inc_f = L_r) and wins purely
+        // on the skipped distance code; conceding one byte more would put the
+        // rep's length field strictly below the fresh one's, so the fresh
+        // match's extra coverage starts paying for itself. The cap is what
+        // keeps the concession from eating coverage:
+        //   shipped rule:  rep_best_len + inc_f >= best.length  (ties -> rep)
+        //   legacy rule:   rep_best_len + 1 > best.length       (flat 1-byte
+        //                  concession regardless of the fresh match's band)
+        // Contracts held untouched (landmine checklist): the fresh floor
+        // (len >= inc+2) below, the 257 gates verbatim, the lazy pass's
+        // base-field steal test, and add_match/add_rep/add_last_len as the
+        // only state mutators.
+        size_t dist_f = 0;
+        core::uint32 inc_f = 0;
+        if (best.length > 0 && best.candidate >= 0) {
+            dist_f = static_cast<size_t>(cur_ - static_cast<core::uint64>(best.candidate));
+            inc_f = length_increment(dist_f);
+        }
+        const bool rep_ok = rep_best_len >= min_match_;
+        const bool rep_wins = rep_ok && (best.length == 0 || rep_best_len + inc_f >= best.length);
+
+        // RAT-A axis-5 probe (log-only). Coherence note: `current` it compares
+        // against is now the SHIPPED rule, so "differs" flags positions where
+        // pure static price and the concession cap disagree (near-misses), not
+        // corpus economics — with the cap in place the price comparison is
+        // nearly tautological (the v1.43 review's caveat). Price model (calibrated):
+        //   fresh = msb(L_f - inc_f) + 9 + distance extras;  rep = msb(L_r) + 5 + idx;
+        //   a 257-eligible rep prices flat 5 (no length field on the wire).
+        if (arb_probe_on_) {
+            const bool fresh_ok = best.length >= min_match_ && best.length >= inc_f + 2;
+            ++arb_probe_.decisions;
+            if (fresh_ok && rep_ok) {
+                ++arb_probe_.contested;
+                auto msb = [](size_t v) -> uint32_t {
+                    return floor_log2(v);
+                }; // H-11
+                const uint32_t fresh_cost =
+                    msb(best.length - inc_f) + 9 + (msb(dist_f) > 3 ? msb(dist_f) - 3 : 0);
+                const bool is_257_eligible =
+                    rep_idx == 0 && last_length_ != 0 && rep_best_len == last_length_;
+                const uint32_t rep_cost =
+                    is_257_eligible
+                        ? 5
+                        : msb(rep_best_len) + 5 + static_cast<uint32_t>(rep_idx > 0 ? rep_idx : 0);
+                const uint32_t cur_cost = rep_wins ? rep_cost : fresh_cost;
+                const uint32_t alt_cost = rep_wins ? fresh_cost : rep_cost;
+                if (alt_cost < cur_cost) {
+                    ++arb_probe_.differs;
+                    (rep_wins ? arb_probe_.prefer_fresh : arb_probe_.prefer_rep)++;
+                    const uint32_t saved = cur_cost - alt_cost;
+                    arb_probe_.bits_saved += saved;
+                    if (saved > 8) ++arb_probe_.big_disagreements;
+                }
+            }
+        }
+
+        if (rep_wins) {
             have_match = true;
             is_rep = true;
             len = rep_best_len;
@@ -1597,8 +2019,9 @@ int Compressor50::process_available(bool final) {
             // thread the existing rule already won — one LD Huffman symbol,
             // no extra bits, no OldDist rotation. Fires only on an EXACT
             // continuation of the (old_dist_[0], last_length_) pair:
-            //   (a) last_length_ != 0 — a 257 before any match is illegal
-            //       (the decoder fails the stream on the unset rep sentinel);
+            //   (a) last_length_ != 0 — a 257 before any match is meaningless:
+            //       decoders (ours and unrar's Unpack5) skip it as a no-op,
+            //       so emitting one would desync the encoder's model (M-04);
             //   (b) rep_best_len == last_length_ — the rep scan verified by
             //       byte comparison that old_dist_[0] repeats for exactly
             //       the shadow length. Strict equality, not ">=": a 257
@@ -1622,8 +2045,7 @@ int Compressor50::process_available(bool final) {
         } else if (best.length >= min_match_) {
             have_match = true;
             len = best.length;
-            dist = static_cast<size_t>(
-                best.candidate >= 0 ? cur_ - static_cast<core::uint64>(best.candidate) : 0);
+            dist = dist_f;
             // Filter inadmissible pairs here. add_match owns the encode and
             // reports the covered span, so `len` always equals what the wire
             // carries - it may be shorter than the length the finder returned.
@@ -1648,7 +2070,16 @@ int Compressor50::process_available(bool final) {
                 (active_filter_ == FilterType::None || cur_ + 1 < filter_emitted_until_)) {
                 MatchInfo next = {0, -1};
                 if (search_chain > 0) next = find_match(cur_ + 1, search_chain, cur_nice_len);
-                if (next.length > cur_max_lz) next.length = cur_max_lz;
+                // M-06: a match at cur_+1 has one byte less of the current
+                // filter region left than a match at cur_. Clamping it to
+                // cur_max_lz (the region remainder at cur_) let the lazy test
+                // favour a literal for a gain that could never be emitted.
+                size_t next_max_lz = cur_max_lz;
+                if (active_filter_ != FilterType::None && filter_emitted_until_ > cur_ + 1) {
+                    next_max_lz = std::min<size_t>(
+                        next_max_lz, static_cast<size_t>(filter_emitted_until_ - (cur_ + 1)));
+                }
+                if (next.length > next_max_lz) next.length = next_max_lz;
 
                 size_t next_dist = static_cast<size_t>(
                     next.candidate >= 0 ? cur_ + 1 - static_cast<core::uint64>(next.candidate) : 0);
@@ -1786,10 +2217,9 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
         } else if (detected_filter == FilterType::Arm) {
             Filters50::encode_arm(filtered.data() + chunk_start, chunk_len, chunk_start);
         } else if (detected_filter == FilterType::Delta) {
-            std::vector<core::byte> tmp(chunk_len);
-            Filters50::encode_delta(filtered.data() + chunk_start, tmp.data(), chunk_len,
-                                    detected_channels);
-            std::memcpy(filtered.data() + chunk_start, tmp.data(), chunk_len);
+            // H-08: in place (per-thread scratch inside encode_delta).
+            Filters50::encode_delta(filtered.data() + chunk_start, filtered.data() + chunk_start,
+                                    chunk_len, detected_channels);
         }
         chunk_start += chunk_len;
     }

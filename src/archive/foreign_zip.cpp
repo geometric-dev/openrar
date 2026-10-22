@@ -118,7 +118,7 @@ ForeignStatus ZipReader::locate_eocd(const ExtractionLimits& limits, std::string
                 return ForeignStatus::Unparseable;
             }
             const core::uint64 eocd64_off = rd64(loc + 8);
-            if (eocd64_off + EOCD64_FIXED > fsize) {
+            if (fsize < EOCD64_FIXED || eocd64_off > fsize - EOCD64_FIXED) { // C-05: no wrap
                 detail = "EOCD64 out of range";
                 return ForeignStatus::Unparseable;
             }
@@ -148,11 +148,15 @@ ForeignStatus ZipReader::locate_eocd(const ExtractionLimits& limits, std::string
     return ForeignStatus::Unparseable;
 }
 
-bool ZipReader::parse_zip64_extra(const core::byte* p, size_t n, bool need_sizes, bool need_offset,
-                                  core::uint64& unp, core::uint64& pack,
+bool ZipReader::parse_zip64_extra(const core::byte* p, size_t n, bool need_unp, bool need_pack,
+                                  bool need_offset, core::uint64& unp, core::uint64& pack,
                                   core::uint64& offset) const {
-    // Header id 0x0001; fields appear in order for each 0xFFFFFFFF field in
-    // the CDH: uncompressed size, compressed size, LFH offset, disk start.
+    // Header id 0x0001 (APPNOTE 4.5.3). Each 8-byte field is present only if
+    // its 32-bit counterpart is 0xFFFFFFFF, in fixed order: uncompressed
+    // size, compressed size, LFH offset, disk start. C-05: the presence of
+    // the two sizes is independent - conflating them misreads lfh_offset as
+    // packed_size for a > 4 GiB file that compressed below 4 GiB. Succeeds
+    // only when every requested field was actually read.
     while (n >= 4) {
         const core::uint16 id = rd16(p);
         const core::uint16 sz = rd16(p + 2);
@@ -160,21 +164,18 @@ bool ZipReader::parse_zip64_extra(const core::byte* p, size_t n, bool need_sizes
         if (id == 0x0001) {
             const core::byte* q = p + 4;
             size_t left = sz;
-            if (need_sizes && left >= 16) {
-                unp = rd64(q);
-                pack = rd64(q + 8);
-                q += 16;
-                left -= 16;
-                need_sizes = false;
-            }
-            if (need_offset && left >= 8) {
-                offset = rd64(q);
+            auto take = [&](bool& need, core::uint64& out) {
+                if (!need || left < 8) return;
+                out = rd64(q);
                 q += 8;
                 left -= 8;
-                need_offset = false;
-            }
-            (void)q;
-            return true;
+                need = false;
+            };
+            take(need_unp, unp);
+            // A missing earlier field means the later ones cannot be located.
+            if (!need_unp) take(need_pack, pack);
+            if (!need_unp && !need_pack) take(need_offset, offset);
+            return !need_unp && !need_pack && !need_offset;
         }
         p += 4 + sz;
         n -= 4 + sz;
@@ -235,8 +236,8 @@ ForeignStatus ZipReader::walk_central_directory(const ExtractionLimits& limits, 
         const core::uint64 off32 = e.lfh_offset;
         if ((unp32 == 0xFFFFFFFFu || pack32 == 0xFFFFFFFFu || off32 == 0xFFFFFFFFu) &&
             !parse_zip64_extra(rest.data() + name_len, extra_len, unp32 == 0xFFFFFFFFu,
-                               off32 == 0xFFFFFFFFu, e.unpacked_size, e.packed_size,
-                               e.lfh_offset)) {
+                               pack32 == 0xFFFFFFFFu, off32 == 0xFFFFFFFFu, e.unpacked_size,
+                               e.packed_size, e.lfh_offset)) {
             detail = "ZIP64 fields missing for placeholder values";
             return ForeignStatus::Unparseable;
         }
@@ -277,16 +278,28 @@ ForeignStatus ZipReader::walk_central_directory(const ExtractionLimits& limits, 
                         mtime_sec = static_cast<int64_t>(rd32(t));
                         mtime_nsec = 0;
                     }
-                } else if (id == 0x000A && sz >= 24) {
-                    // Reserved(4) then tag(2)/size(2) pairs; tag 1 = times.
+                } else if (id == 0x000A && sz >= 32) {
+                    // Reserved(4) then tag(2)/size(2) pairs; tag 1 = times
+                    // (mtime, atime, ctime). q points at the reserved word, so
+                    // the tag/size pair sits at q+4 and mtime at q+8.
                     const core::byte* q = p + 4;
-                    const core::uint16 tag = rd16(q);
-                    const core::uint16 tsz = rd16(q + 2);
+                    const core::uint16 tag = rd16(q + 4);
+                    const core::uint16 tsz = rd16(q + 6);
                     if (tag == 1 && tsz >= 24) {
                         const core::uint64 ft = rd64(q + 8); // mtime is first
-                        const int64_t epoch_100ns = static_cast<int64_t>(ft) - 116444736000000000LL;
-                        mtime_sec = epoch_100ns / 10000000;
-                        mtime_nsec = static_cast<int32_t>((epoch_100ns % 10000000) * 100);
+                        // C-08: untrusted FILETIME; stay unsigned. The old
+                        // int64(ft) - offset overflowed (UB) for bit-63 values.
+                        // Pre-1970 values keep the previous behaviour (a
+                        // negative mtime falls back to the DOS timestamp below).
+                        constexpr core::uint64 FT_UNIX_EPOCH = 116444736000000000ULL;
+                        if (ft >= FT_UNIX_EPOCH) {
+                            const core::uint64 d = ft - FT_UNIX_EPOCH;
+                            mtime_sec = static_cast<int64_t>(d / 10000000ULL); // <= 1.8e12
+                            mtime_nsec = static_cast<int32_t>((d % 10000000ULL) * 100);
+                        } else {
+                            mtime_sec = -1;
+                            mtime_nsec = 0;
+                        }
                     }
                 }
                 p += 4 + sz;
@@ -405,11 +418,18 @@ ForeignStatus ZipReader::preflight_cd_vs_lfh(std::string& detail) {
                     detail = "cannot read local header extra: " + e.meta.name_raw;
                     return ForeignStatus::IoError;
                 }
+                // APPNOTE 4.5.3: the LOCAL ZIP64 record carries BOTH sizes.
+                // Adopt them only when the record parses completely; otherwise
+                // the placeholder fields stay unverified (the CDH, validated
+                // above, remains authoritative for extraction).
                 core::uint64 z_unp = lfh_unp, z_pack = lfh_pack, z_off = 0;
-                parse_zip64_extra(lfh_extra.data(), lfh_extra.size(), lfh_unp_placeholder, false,
-                                  z_unp, z_pack, z_off);
-                lfh_unp = z_unp;
-                lfh_pack = z_pack;
+                if (parse_zip64_extra(lfh_extra.data(), lfh_extra.size(), true, true, false, z_unp,
+                                      z_pack, z_off)) {
+                    lfh_unp = z_unp;
+                    lfh_pack = z_pack;
+                    lfh_unp_placeholder = false;
+                    lfh_pack_placeholder = false;
+                }
             }
             if (!lfh_unp_placeholder && lfh_unp != e.unpacked_size) {
                 detail = "local header size mismatch: " + e.meta.name_raw;
@@ -427,7 +447,10 @@ ForeignStatus ZipReader::preflight_cd_vs_lfh(std::string& detail) {
         // Data starts after the LFH (name + extra are variable — recompute
         // from the fields we just validated).
         e.data_offset = e.lfh_offset + LFH_FIXED + lfh_name_len + lfh_extra_len;
-        if (e.data_offset + e.packed_size > file_.size()) {
+        // C-05: subtraction form - packed_size is an untrusted 64-bit ZIP64
+        // value and the additive form wraps past UINT64_MAX.
+        const core::uint64 fsz = static_cast<core::uint64>(file_.size());
+        if (e.data_offset > fsz || e.packed_size > fsz - e.data_offset) {
             detail = "member data out of range: " + e.meta.name_raw;
             return ForeignStatus::StructuralMismatch;
         }

@@ -1,6 +1,7 @@
 #include "file_stream.hpp"
 #include <algorithm>
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <vector>
 
@@ -472,13 +473,15 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
                                 OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (parent != INVALID_HANDLE_VALUE) {
         const std::wstring leaf = dest.filename().wstring();
-        std::vector<BYTE> buf(sizeof(OpenrarRenameInfo) + leaf.size() * sizeof(WCHAR));
-        auto* ri = reinterpret_cast<OpenrarRenameInfo*>(buf.data());
-        ri->Flags = NT_FILE_RENAME_FLAG_POSIX_SEMANTICS |
-                    (replace ? NT_FILE_RENAME_FLAG_REPLACE_IF_EXISTS : 0);
-        ri->RootDirectory = parent;
-        ri->FileNameLength = static_cast<DWORD>(leaf.size() * sizeof(WCHAR));
-        std::memcpy(ri->FileName, leaf.c_str(), (leaf.size() + 1) * sizeof(WCHAR));
+        OpenrarRenameInfo ri{};
+        ri.Flags = NT_FILE_RENAME_FLAG_POSIX_SEMANTICS |
+                   (replace ? NT_FILE_RENAME_FLAG_REPLACE_IF_EXISTS : 0);
+        ri.RootDirectory = parent;
+        ri.FileNameLength = static_cast<DWORD>(leaf.size() * sizeof(WCHAR));
+        const size_t name_off = offsetof(OpenrarRenameInfo, FileName);
+        std::vector<BYTE> buf(name_off + (leaf.size() + 1) * sizeof(WCHAR));
+        std::memcpy(buf.data(), &ri, name_off);
+        std::memcpy(buf.data() + name_off, leaf.c_str(), (leaf.size() + 1) * sizeof(WCHAR));
 
         // v1.39.0 (D5): NT-first. SetFileInformationByHandle(FileRenameInfoEx,
         // class 13) fails with GLE=87 unconditionally on this host (NTFS,
@@ -501,7 +504,7 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
                 ULONG_PTR Information;
             } iosb{0, 0};
             constexpr ULONG NT_FILE_RENAME_INFORMATION_EX = 65;
-            const LONG st = set_info(static_cast<HANDLE>(handle_), &iosb, ri,
+            const LONG st = set_info(static_cast<HANDLE>(handle_), &iosb, buf.data(),
                                      static_cast<ULONG>(buf.size()), NT_FILE_RENAME_INFORMATION_EX);
             if (st == 0) {
                 last_error_ = 0;
@@ -529,7 +532,7 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
 
         const BOOL ok = SetFileInformationByHandle(
             static_cast<HANDLE>(handle_),
-            static_cast<FILE_INFO_BY_HANDLE_CLASS>(NT_FILE_RENAME_INFO_EX_CLASS), ri,
+            static_cast<FILE_INFO_BY_HANDLE_CLASS>(NT_FILE_RENAME_INFO_EX_CLASS), buf.data(),
             static_cast<DWORD>(buf.size()));
         const DWORD rename_err = ok ? 0 : GetLastError();
         CloseHandle(parent);
@@ -587,15 +590,17 @@ bool FileStream::commit_rename_in(void* parent_dir_handle, const std::string& ut
         return w;
     };
     const std::wstring leaf = to_wide(utf8_leaf);
-    std::vector<BYTE> buf(sizeof(OpenrarRenameInfo) + leaf.size() * sizeof(WCHAR));
-    auto* ri = reinterpret_cast<OpenrarRenameInfo*>(buf.data());
-    ri->Flags = NT_FILE_RENAME_FLAG_POSIX_SEMANTICS |
-                (mode == CommitMode::ReplaceExisting ? NT_FILE_RENAME_FLAG_REPLACE_IF_EXISTS : 0);
+    OpenrarRenameInfo ri{};
+    ri.Flags = NT_FILE_RENAME_FLAG_POSIX_SEMANTICS |
+               (mode == CommitMode::ReplaceExisting ? NT_FILE_RENAME_FLAG_REPLACE_IF_EXISTS : 0);
     // The parent handle comes from the verified containment walk — no path
     // resolution of any archive-controlled component happens after it.
-    ri->RootDirectory = static_cast<HANDLE>(parent_dir_handle);
-    ri->FileNameLength = static_cast<DWORD>(leaf.size() * sizeof(WCHAR));
-    std::memcpy(ri->FileName, leaf.c_str(), (leaf.size() + 1) * sizeof(WCHAR));
+    ri.RootDirectory = static_cast<HANDLE>(parent_dir_handle);
+    ri.FileNameLength = static_cast<DWORD>(leaf.size() * sizeof(WCHAR));
+    const size_t name_off = offsetof(OpenrarRenameInfo, FileName);
+    std::vector<BYTE> buf(name_off + (leaf.size() + 1) * sizeof(WCHAR));
+    std::memcpy(buf.data(), &ri, name_off);
+    std::memcpy(buf.data() + name_off, leaf.c_str(), (leaf.size() + 1) * sizeof(WCHAR));
     // NtSetInformationFile directly: SetFileInformationByHandle rejects
     // handles it did not create itself (ERROR_INVALID_PARAMETER for
     // NtCreateFile-produced handles — found by the gate-1 suite), and the
@@ -620,7 +625,7 @@ bool FileStream::commit_rename_in(void* parent_dir_handle, const std::string& ut
     // side (13 there is FileDispositionInformation — passing it deletes the
     // file! — found by the gate-1 suite).
     constexpr ULONG NT_FILE_RENAME_INFORMATION_EX = 65;
-    const LONG st = set_info(static_cast<HANDLE>(handle_), &iosb, ri,
+    const LONG st = set_info(static_cast<HANDLE>(handle_), &iosb, buf.data(),
                              static_cast<ULONG>(buf.size()), NT_FILE_RENAME_INFORMATION_EX);
     if (st == 0) {
         last_error_ = 0;

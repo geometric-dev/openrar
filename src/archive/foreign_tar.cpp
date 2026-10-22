@@ -74,6 +74,20 @@ bool parse_pax_records(const core::byte* p, size_t n,
     return true;
 }
 
+// pax decimal id (uid/gid): non-empty, digits only, no uint64 overflow (M-13).
+bool parse_pax_decimal(const std::string& s, core::uint64& out) {
+    if (s.empty()) return false;
+    core::uint64 v = 0;
+    for (const char c : s) {
+        if (c < '0' || c > '9') return false;
+        const core::uint64 d = static_cast<core::uint64>(c - '0');
+        if (v > (~core::uint64(0) - d) / 10) return false;
+        v = v * 10 + d;
+    }
+    out = v;
+    return true;
+}
+
 // pax mtime: seconds (float accepted). Truncates to ns.
 bool parse_pax_time(const std::string& v, int64_t& sec, int32_t& nsec) {
     sec = 0;
@@ -289,6 +303,7 @@ ForeignStatus TarReader::open(const std::filesystem::path& path, const Extractio
         std::string link_override;
         core::uint64 pax_uid = 0, pax_gid = 0;
         bool have_pax_uid = false, have_pax_gid = false;
+        bool have_pax_size = false;
         bool sparse = false;
 
         for (const auto& kv : pending_pax) {
@@ -314,25 +329,19 @@ ForeignStatus TarReader::open(const std::filesystem::path& path, const Extractio
                 }
                 if (ok) {
                     m.size = v;
-                    if (data_offset + v > fsize) {
+                    have_pax_size = true; // an explicit "size=0" is honoured too
+                    // C-06: subtraction form (the additive one can wrap).
+                    if (v > fsize - data_offset) {
                         detail = "tar member extends past end of file";
                         return ForeignStatus::Truncated;
                     }
                 }
             } else if (kv.first == "uid") {
-                pax_uid = 0;
-                for (const char c : kv.second) {
-                    if (c < '0' || c > '9') break;
-                    pax_uid = pax_uid * 10 + static_cast<core::uint64>(c - '0');
-                }
-                have_pax_uid = true;
+                // M-13: all-digit, overflow-checked; anything else is ignored
+                // (falls back to the header field) instead of half-parsed.
+                have_pax_uid = parse_pax_decimal(kv.second, pax_uid);
             } else if (kv.first == "gid") {
-                pax_gid = 0;
-                for (const char c : kv.second) {
-                    if (c < '0' || c > '9') break;
-                    pax_gid = pax_gid * 10 + static_cast<core::uint64>(c - '0');
-                }
-                have_pax_gid = true;
+                have_pax_gid = parse_pax_decimal(kv.second, pax_gid);
             } else if (kv.first == "uname")
                 raw_uname = kv.second;
             else if (kv.first == "gname")
@@ -345,8 +354,14 @@ ForeignStatus TarReader::open(const std::filesystem::path& path, const Extractio
             // hdrcharset: BINARY handling rides the Raw decode below.
         }
 
-        m.size = m.size ? m.size : size;
+        if (!have_pax_size) m.size = size;
         m.data_offset = data_offset;
+        // C-06: the payload advance must follow the EFFECTIVE size. A pax
+        // "size" record (members > 8 GiB, or writers that zero the ustar
+        // field) overrides the header value, and advancing by the stale
+        // ustar padding read the member's payload as the next header.
+        // m.size <= fsize - data_offset (validated above), so no wrap.
+        const core::uint64 member_padded = (m.size + BLOCK - 1) / BLOCK * BLOCK;
 
         // Name resolution order: pax path > GNU 'L' > ustar prefix+name.
         std::string effective = !path_override.empty()
@@ -436,7 +451,7 @@ ForeignStatus TarReader::open(const std::filesystem::path& path, const Extractio
             detail = "entry-count cap exceeded";
             return ForeignStatus::LimitExceeded;
         }
-        offset = data_offset + padded;
+        offset = data_offset + member_padded;
     }
 
     // EOF before the two zero blocks is accepted (streamed tapes).

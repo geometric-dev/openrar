@@ -8,11 +8,32 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace openrar {
 
 namespace detail {
+template <typename F> class ScopeExit {
+public:
+    explicit ScopeExit(F fn) noexcept : fn_(std::move(fn)) {}
+    ~ScopeExit() {
+        if (active_) fn_();
+    }
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+    ScopeExit(ScopeExit&& other) noexcept : fn_(std::move(other.fn_)), active_(other.active_) {
+        other.active_ = false;
+    }
+
+private:
+    F fn_;
+    bool active_{true};
+};
+template <typename F> ScopeExit<F> make_scope_exit(F fn) {
+    return ScopeExit<F>(std::move(fn));
+}
+
 // path::u8string() returns std::u8string (char8_t) in C++20 but std::string in
 // C++17, and only the latter converts to std::string. The C ABI takes UTF-8 in
 // char* buffers, so bridge both standards here.
@@ -67,12 +88,12 @@ inline std::vector<uint8_t> compress_block(const uint8_t* data, size_t size, int
     uint8_t* out = nullptr;
     size_t out_len = 0;
     int rc = openrar_compress2(data, size, &out, &out_len, method, win_size);
+    auto cleanup = detail::make_scope_exit([&] {
+        if (out) openrar_free(out);
+    });
     if (rc != 1) throw std::runtime_error("compress failed");
     std::vector<uint8_t> ret;
-    if (out && out_len) {
-        ret.assign(out, out + out_len);
-        openrar_free(out);
-    }
+    if (out && out_len) ret.assign(out, out + out_len);
     return ret;
 }
 inline std::vector<uint8_t> compress_block(const std::vector<uint8_t>& src, int method = 3,
@@ -87,12 +108,12 @@ inline std::vector<uint8_t> decompress_block(const uint8_t* data, size_t size,
     uint8_t* out = nullptr;
     size_t out_len = 0;
     int rc = openrar_decompress2(data, size, &out, &out_len, win_size);
+    auto cleanup = detail::make_scope_exit([&] {
+        if (out) openrar_free(out);
+    });
     if (rc != 1) throw std::runtime_error("decompress failed");
     std::vector<uint8_t> ret;
-    if (out && out_len) {
-        ret.assign(out, out + out_len);
-        openrar_free(out);
-    }
+    if (out && out_len) ret.assign(out, out + out_len);
     return ret;
 }
 inline std::vector<uint8_t> decompress_block(const std::vector<uint8_t>& src,
@@ -130,9 +151,10 @@ inline std::vector<Entry> list_archive(const uint8_t* data, size_t size) {
     void* paths = nullptr;
     size_t paths_sz = 0;
     int rc = openrar_archive_list(data, size, &count, &entries, &paths, &paths_sz);
+    auto cleanup =
+        detail::make_scope_exit([&] { openrar_archive_list_free(entries, paths, paths_sz); });
     check(rc);
     std::vector<Entry> out = unpack_entries(count, entries, paths);
-    openrar_archive_list_free(entries, paths, paths_sz);
     return out;
 }
 inline std::vector<Entry> list_archive(const std::vector<uint8_t>& rar) {
@@ -146,9 +168,10 @@ inline std::vector<Entry> list_archive_file(const std::filesystem::path& arc) {
     size_t paths_sz = 0;
     std::string u8 = detail::u8_str(arc);
     int rc = openrar_archive_list_file(u8.c_str(), &count, &entries, &paths, &paths_sz);
+    auto cleanup =
+        detail::make_scope_exit([&] { openrar_archive_list_free(entries, paths, paths_sz); });
     check(rc);
     std::vector<Entry> out = unpack_entries(count, entries, paths);
-    openrar_archive_list_free(entries, paths, paths_sz);
     return out;
 }
 
@@ -167,9 +190,10 @@ inline std::vector<Entry> list_archive(const uint8_t* data, size_t size,
     size_t paths_sz = 0;
     int rc = openrar_archive_list_ex(data, size, &count, &entries, &paths, &paths_sz, progress,
                                      cancel, user);
+    auto cleanup =
+        detail::make_scope_exit([&] { openrar_archive_list_free(entries, paths, paths_sz); });
     check(rc);
     std::vector<Entry> out = unpack_entries(count, entries, paths);
-    openrar_archive_list_free(entries, paths, paths_sz);
     return out;
 }
 inline std::vector<Entry> list_archive(const std::vector<uint8_t>& rar,
@@ -188,9 +212,10 @@ inline std::vector<Entry> list_archive_file(const std::filesystem::path& arc,
     std::string u8 = detail::u8_str(arc);
     int rc = openrar_archive_list_file_ex(u8.c_str(), &count, &entries, &paths, &paths_sz, progress,
                                           cancel, user);
+    auto cleanup =
+        detail::make_scope_exit([&] { openrar_archive_list_free(entries, paths, paths_sz); });
     check(rc);
     std::vector<Entry> out = unpack_entries(count, entries, paths);
-    openrar_archive_list_free(entries, paths, paths_sz);
     return out;
 }
 
@@ -213,9 +238,10 @@ inline std::vector<Entry> list_archive_file(const std::filesystem::path& arc, co
     std::string u8 = detail::u8_str(arc);
     int rc = openrar_archive_list_file_pw(u8.c_str(), password, &count, &entries, &paths, &paths_sz,
                                           progress, cancel, user);
+    auto cleanup =
+        detail::make_scope_exit([&] { openrar_archive_list_free(entries, paths, paths_sz); });
     check(rc);
     std::vector<Entry> out = unpack_entries(count, entries, paths);
-    openrar_archive_list_free(entries, paths, paths_sz);
     return out;
 }
 
@@ -223,10 +249,12 @@ inline std::vector<uint8_t> extract_file(const uint8_t* data, size_t size, uint3
     uint8_t* out = nullptr;
     size_t len = 0;
     int rc = openrar_archive_extract(data, size, index, &out, &len);
+    auto cleanup = detail::make_scope_exit([&] {
+        if (out) openrar_free(out);
+    });
     check(rc);
     std::vector<uint8_t> ret;
     if (out && len) ret.assign(out, out + len);
-    if (out) openrar_free(out);
     return ret;
 }
 inline std::vector<uint8_t> extract_file(const std::vector<uint8_t>& rar, uint32_t index) {
@@ -239,6 +267,10 @@ inline std::map<std::string, std::vector<uint8_t>> extract_all(const uint8_t* da
     uint64_t* offs = nullptr;
     uint32_t cnt = 0;
     int rc = openrar_archive_extract_all(data, size, &buf, &buf_sz, &offs, &cnt);
+    auto cleanup = detail::make_scope_exit([&] {
+        if (buf) openrar_free(buf);
+        if (offs) openrar_free(offs);
+    });
     check(rc);
     auto entries = list_archive(data, size);
     std::map<std::string, std::vector<uint8_t>> out;
@@ -248,8 +280,6 @@ inline std::map<std::string, std::vector<uint8_t>> extract_all(const uint8_t* da
         if (sz && off + sz <= buf_sz) v.assign(buf + off, buf + off + sz);
         out[entries[i].path] = std::move(v);
     }
-    if (buf) openrar_free(buf);
-    if (offs) openrar_free(offs);
     return out;
 }
 inline std::map<std::string, std::vector<uint8_t>> extract_all(const std::vector<uint8_t>& rar) {
@@ -277,10 +307,12 @@ inline std::vector<uint8_t> create_archive(const std::vector<InputFile>& files,
     int rc = openrar_archive_create(path_ptrs.data(), data_ptrs.data(), sizes.data(),
                                     static_cast<uint32_t>(files.size()), opts.method,
                                     opts.window_log2, &out, &out_len);
+    auto cleanup = detail::make_scope_exit([&] {
+        if (out) openrar_free(out);
+    });
     check(rc);
     std::vector<uint8_t> ret;
     if (out && out_len) ret.assign(out, out + out_len);
-    if (out) openrar_free(out);
     return ret;
 }
 
@@ -417,19 +449,21 @@ public:
         void* p = nullptr;
         size_t ps = 0;
         int rc = openrar_archive_handle_list(h_, &count, &e, &p, &ps);
+        auto cleanup = detail::make_scope_exit([&] { openrar_archive_list_free(e, p, ps); });
         check(rc);
         std::vector<Entry> out = unpack_entries(count, e, p);
-        openrar_archive_list_free(e, p, ps);
         return out;
     }
     std::vector<uint8_t> extract(uint32_t idx) const {
         uint8_t* out = nullptr;
         size_t len = 0;
         int rc = openrar_archive_handle_extract(h_, idx, &out, &len);
+        auto cleanup = detail::make_scope_exit([&] {
+            if (out) openrar_free(out);
+        });
         check(rc);
         std::vector<uint8_t> ret;
         if (out && len) ret.assign(out, out + len);
-        if (out) openrar_free(out);
         return ret;
     }
     // Direct-to-disk extraction with the DLL-owned durability contract (temp
@@ -458,6 +492,7 @@ public:
         void* extra = nullptr;
         size_t extra_sz = 0;
         int rc = openrar_archive_handle_entry_ex(h_, idx, &raw, &extra, &extra_sz);
+        auto cleanup = detail::make_scope_exit([&] { openrar_archive_entry_ex_free(extra); });
         check(rc);
         EntryEx e;
         e.attrs = raw.attrs;
@@ -470,7 +505,6 @@ public:
         e.ctime_ft = raw.ctime_ft;
         e.atime_ft = raw.atime_ft;
         if (extra && extra_sz) e.redir_target.assign(static_cast<const char*>(extra), extra_sz);
-        openrar_archive_entry_ex_free(extra);
         return e;
     }
     // Archive-level properties (file handles only; buffer handles throw).
@@ -479,6 +513,7 @@ public:
         void* cmt = nullptr;
         size_t cmt_sz = 0;
         int rc = openrar_archive_handle_info(h_, &raw, &cmt, &cmt_sz);
+        auto cleanup = detail::make_scope_exit([&] { openrar_free(cmt); });
         check(rc);
         ArchiveInfo ai;
         ai.flags = raw.flags;
@@ -486,7 +521,6 @@ public:
         ai.volume_count = raw.volume_count;
         ai.recovery_size = raw.recovery_size;
         if (cmt && cmt_sz) ai.comment.assign(static_cast<const char*>(cmt), cmt_sz);
-        openrar_free(cmt);
         return ai;
     }
     uint32_t native_handle() const { return h_; }
@@ -572,10 +606,12 @@ public:
         uint8_t* out = nullptr;
         size_t len = 0;
         int rc = openrar_stream_finish(h_, &out, &len);
+        auto cleanup = detail::make_scope_exit([&] {
+            if (out) openrar_free(out);
+        });
         check(rc);
         std::vector<uint8_t> ret;
         if (out && len) ret.assign(out, out + len);
-        if (out) openrar_free(out);
         return ret;
     }
 

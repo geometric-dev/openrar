@@ -102,24 +102,23 @@ inline bool pack_entries(const std::vector<openrar::archive::BufferArchiveEntry>
     entries.resize(src.size() * sizeof(ArchiveEntryOut));
     paths.clear();
     paths.reserve(src.size() * 32);
-    auto* out = reinterpret_cast<ArchiveEntryOut*>(entries.data());
     for (size_t i = 0; i < src.size(); ++i) {
         const auto& e = src[i];
         // 64-bit intermediate: on ILP32 a size_t sum would wrap BEFORE the
         // check, making the u32-width guard tautologically false (found by
         // -Werror=type-limits on the armv7 leg).
         if (static_cast<uint64_t>(paths.size()) + e.path.size() > 0xFFFFFFFFull) return false;
-        out[i].path_offset = static_cast<uint32_t>(paths.size());
-        out[i].path_len = static_cast<uint32_t>(e.path.size());
-        out[i].is_dir = e.is_dir ? 1u : 0u;
-        out[i].method = static_cast<uint32_t>(e.method);
-        out[i].is_encrypted = e.is_encrypted ? 1u : 0u;
-        out[i].crc32 = e.crc32;
-        out[i].size = e.size;
-        out[i].packed_size = e.packed_size;
-        out[i].mtime = e.mtime;
-        out[i]._pad[0] = 0;
-        out[i]._pad[1] = 0;
+        ArchiveEntryOut out{};
+        out.path_offset = static_cast<uint32_t>(paths.size());
+        out.path_len = static_cast<uint32_t>(e.path.size());
+        out.is_dir = e.is_dir ? 1u : 0u;
+        out.method = static_cast<uint32_t>(e.method);
+        out.is_encrypted = e.is_encrypted ? 1u : 0u;
+        out.crc32 = e.crc32;
+        out.size = e.size;
+        out.packed_size = e.packed_size;
+        out.mtime = e.mtime;
+        std::memcpy(entries.data() + i * sizeof(out), &out, sizeof(out));
         paths.insert(paths.end(), e.path.begin(), e.path.end());
     }
     return true;
