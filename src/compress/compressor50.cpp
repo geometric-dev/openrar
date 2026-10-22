@@ -958,7 +958,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
     //      no-op there — the zeros/rand/farrepeat digests are the executable
     //      canaries (REFCAP).
     if (!arb_probe_suppress_) {
-        constexpr core::uint32 kBackShiftMinBits = 8;
+        constexpr core::uint32 BACKSHIFT_MIN_BITS = 8;
         // v1.44 review hardening: most branches below only ever prove the
         // floor for candidates WE placed (slot candidates carry their own
         // band floor); a pristine monotone-max can legitimately carry a
@@ -1008,7 +1008,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
                 // pinned digest.
                 if (back_shift_enable_ &&
                     static_cast<core::int64>(7 * alt_len) - static_cast<core::int64>(alt_price) >=
-                        static_cast<core::int64>(kBackShiftMinBits)) {
+                        static_cast<core::int64>(BACKSHIFT_MIN_BITS)) {
                     best.length = alt_len;
                     best.candidate = alt_cand;
                     mutated = true;
@@ -1019,7 +1019,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
                 const core::uint32 inc_d = length_increment(dist_d);
                 const core::int64 delta =
                     static_cast<core::int64>(shipped_price) - static_cast<core::int64>(alt_price);
-                if (back_shift_enable_ && delta >= static_cast<core::int64>(kBackShiftMinBits) &&
+                if (back_shift_enable_ && delta >= static_cast<core::int64>(BACKSHIFT_MIN_BITS) &&
                     alt_len + inc_d >= best.length + alt_inc) {
                     assert(alt_price < shipped_price);
                     best.length = alt_len;
