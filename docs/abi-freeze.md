@@ -255,14 +255,36 @@ per `docs/versioning.md`; the freeze covers it by reference to the C rules.
 ## 10. Version plumbing status (verified v1.30.0)
 
 - `openrar/version.h` — GENERATED at build time via `configure_file`
-  (`CMakeLists.txt:103–105` from `include/openrar/version.h.in`); installed
+  (`cmake/openrar_sources.cmake:115–119` from `include/openrar/version.h.in`
+  — the v1.45 M2 modularization moved it out of `CMakeLists.txt`); installed
   with the package. (`docs/versioning.md` "Planned" list is stale on this
   point — sync lands in the M7 docs pass.)
 - `openrar_package_version_string` — SHIPPED (bit 6), backed by the project
   version.
 - `openrar --version` — SHIPPED (`src/cli/main.cpp:3081`).
-- Version-consistency gate: `project(VERSION)` == `wasm/js/package.json` is
-  a CI gate-leg step; the 1.30.0 release commit bumps BOTH (post-rebase).
+- Version-consistency gate: `project(VERSION)` == `wasm/js/package.json` ==
+  the two python copies == the C# csproj is a CI gate-leg step; the release
+  commit bumps all five.
+
+### 10.1 Post-freeze ABI decisions (explicit, per §0 freeze rule)
+
+The v1.45.0 release changes the public C++ wrapper header
+(`include/openrar/openrar.hpp`) and `src/api/abi_contract.hpp` after the
+v1.30.0 freeze. Both changes are **additive and source-compatible**, and the
+frozen **C ABI is untouched** (`tools/abi_exports_canonical.txt` unchanged; no
+export added, removed, or re-signatured; the packed struct layouts are
+unmoved — the `abi_contract` change replaces `reinterpret_cast` type-punning
+with `memcpy`, which alters no layout):
+
+- `include/openrar/openrar.hpp`: added `detail::ScopeExit` (an RAII guard)
+  and removed a C-ABI buffer leak (the `openrar.hpp` C-buffer handles are now
+  released on the throwing path). Additive; the MAJOR trigger does not fire.
+- `src/api/abi_contract.hpp`: strict-aliasing/alignment fix (memcpy-based
+  load/store). No layout or signature change.
+
+**Decision: MINOR** (additive, backward-compatible; no C ABI break, no CLI
+switch removal, no platform drop). The C ABI version stays `1`
+(`OPENRAR_DLL_API_VERSION`).
 
 ## 11. Solid-parameter cleanup (freeze prereq 1, third clause) — VERIFIED
 
