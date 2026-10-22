@@ -31,6 +31,7 @@ int openrar_decompress2(const uint8_t*, size_t, uint8_t**, size_t*, size_t);
 }
 
 static int fails = 0;
+#undef CHECK // the vendored doctest header defines CHECK; this suite uses its own
 #define CHECK(cond)                                                                                \
     do {                                                                                           \
         if (!(cond)) {                                                                             \

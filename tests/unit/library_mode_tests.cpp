@@ -86,6 +86,7 @@ static_assert(openrar::compress::Decompressor50::MAX_STREAM_OUTPUT == 64ULL * 10
               "MAX_STREAM_OUTPUT (64-bit native floor) drifted — docs/abi-freeze.md §8");
 
 static int fails = 0;
+#undef CHECK // the vendored doctest header defines CHECK; this suite uses its own
 #define CHECK(cond)                                                                                \
     do {                                                                                           \
         if (!(cond)) {                                                                             \
