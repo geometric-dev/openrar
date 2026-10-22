@@ -43,6 +43,7 @@ using namespace openrar::sandbox;
 namespace fs = std::filesystem;
 
 static int fails = 0;
+#undef CHECK // the vendored doctest header defines CHECK; this suite uses its own
 #define CHECK(cond)                                                                                \
     do {                                                                                           \
         if (!(cond)) {                                                                             \

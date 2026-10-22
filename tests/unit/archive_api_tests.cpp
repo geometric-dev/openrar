@@ -47,6 +47,7 @@ int openrar_archive_extract_all2(const uint8_t*, size_t, const openrar::wasm::Ar
 }
 
 static int fails = 0;
+#undef CHECK // the vendored doctest header defines CHECK; this suite uses its own
 #define CHECK(cond)                                                                                \
     do {                                                                                           \
         if (!(cond)) {                                                                             \

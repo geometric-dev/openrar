@@ -1034,10 +1034,15 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
         // Pin B (full floor, only where the eval provably placed it): an
         // emitted/swapped candidate satisfies its own band floor. add_match's
         // filter remains in place for pristine bests that must downgrade.
-        assert(!mutated || best.length >= length_increment(static_cast<size_t>(
-                                              static_cast<core::uint64>(pos) -
-                                              static_cast<core::uint64>(best.candidate))) +
-                                              2);
+        // The read is inside the `if` so the flag stays consumed in release
+        // builds too (the assert itself compiles out under NDEBUG, and gcc/
+        // clang would otherwise report the flag as set-but-unused).
+        if (mutated) {
+            assert(best.length >= length_increment(static_cast<size_t>(
+                                      static_cast<core::uint64>(pos) -
+                                      static_cast<core::uint64>(best.candidate))) +
+                                      2);
+        }
     }
 
     // RAT-A axis-6 accounting (log-only): compare the SHIPPED token against
@@ -1060,14 +1065,12 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
         };
         const bool best_valid = best.length > 0 && best.candidate >= 0;
         core::uint32 shipped_price = 0;
-        bool shipped_is_fresh = false;
         if (best_valid) {
             ++arb_probe_.fresh_positions;
             const size_t dist_b = static_cast<size_t>(static_cast<core::uint64>(pos) -
                                                       static_cast<core::uint64>(best.candidate));
             const core::uint32 inc_b = length_increment(dist_b);
             if (best.length >= inc_b + 2) {
-                shipped_is_fresh = true;
                 shipped_price = price_fresh(best.length, inc_b, dist_b);
             } else {
                 shipped_price = 7 * static_cast<core::uint32>(best.length);

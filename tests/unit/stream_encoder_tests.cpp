@@ -22,6 +22,7 @@
 #endif
 
 static int fails = 0;
+#undef CHECK // the vendored doctest header defines CHECK; this suite uses its own
 #define CHECK(cond)                                                                                \
     do {                                                                                           \
         if (!(cond)) {                                                                             \
@@ -30,6 +31,7 @@ static int fails = 0;
         }                                                                                          \
     } while (0)
 // Unconditional failure report; CHECK(false && ...) would trip C4127.
+#undef FAIL // the vendored doctest header defines FAIL; this suite uses its own
 #define FAIL(msg)                                                                                  \
     do {                                                                                           \
         std::fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, msg);                          \
