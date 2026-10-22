@@ -16,9 +16,18 @@ that keeps the history coherent.
    (`src/crypto/`, `src/recovery/`). If you need a dependency to solve a
    problem, stop and discuss in an issue first. The WASM build has a hard
    500 KiB size budget (`docs/wasm-limitations.md` §5.3) — dependencies put
-   that at risk.
-3. **No new test frameworks.** Unit tests are assert()-based executables wired
-   through `openrar_add_test()` in CMakeLists.txt.
+   that at risk. *One standing exception:* the vendored **doctest v2.4.12**
+   header (`third_party/doctest/doctest.h`, MIT) is a **test-only** dependency
+   of the unit-test runner (`tests/support/test_runner.{hpp,cpp}`). It is
+   never linked into `openrar`, `openrar.dll`, the SFX modules, or any WASM
+   artifact, so the shipped size budget is untouched; it is pinned by
+   SHA-256 in `THIRD_PARTY_NOTICES.md` and inventoried in `docs/SBOM.md`.
+3. **No new test frameworks** beyond that single vendored doctest header.
+   Unit tests are executables wired through `add_openrar_test()`
+   (`cmake/openrar_tests.cmake`) and express their expectations with the
+   in-repo runner's assertion macros (`REQUIRE`/`CHECK`; the pre-v1.44
+   `assert()` form was migrated wholesale in v1.44 — see
+   `docs/v1.44-verification-ledger.md` for the per-suite counts).
 4. **License.** By contributing you agree your work is released under the
    project license (MIT, see `LICENSE`). Ported algorithms must be
    attributed in `THIRD_PARTY_NOTICES.md`.

@@ -1,7 +1,11 @@
 # PERFORMANCE.md — OpenRAR vs WinRAR benchmark summary
 
-**Current tree: v1.42.1.** The "v1.42.x measurement" section is the source
-of truth; the v1.40.0 and v1.31.0 sections below are the historical record.
+**Current tree: v1.45.0 (not yet re-measured).** The "v1.42.x measurement"
+section is the most recent measured record — the v1.45.0 tree carries the
+Phase 2 audit remediation and the A-6 encoder back-shift (which is measured
+at -0.11% to -0.55% packed size on the canonical corpora, see
+`CHANGELOG.md`), but the full benchmark sweep has not been re-run on it. The
+v1.40.0 and v1.31.0 sections below are the historical record.
 
 Machine-collected numbers. Every config ran on deterministic corpora, was
 verified by cross-extraction (both engines' extractions must hash-identically
@@ -54,16 +58,17 @@ loosely comparable.
 
 ---
 
-## v1.42.x measurement (current tree)
+## v1.42.x measurement (most recent measured record)
 
-Source of truth for the current tree (`v1.42.1`). Host disclosed; the v1.40.0
+Measured on `v1.42.1` — the most recent full sweep on this host; the v1.45.0
+tree has not been re-measured in full. Host disclosed; the v1.40.0
 and v1.31.0 sections below are historical and are not restated.
 
 | | |
 |---|---|
 | CPU | Intel Core i7-7500U (2 cores / 4 threads) |
 | RAM / OS | 15.9 GB / Windows 11 |
-| OpenRAR | 1.42.1 (this tree) |
+| OpenRAR | 1.42.1 (measured tree) |
 | WinRAR / UnRAR | 7.20 x64 / 7.20 x64 freeware |
 | Run | 2026-10-15, harness `tools/perf_vs_winrar.py` (full) |
 | Protocol | 1 warm-up + 3 timed runs; MEDIAN; every pack cross-verified by hash |

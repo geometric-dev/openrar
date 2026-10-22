@@ -21,16 +21,18 @@ advisory, say so in its row.
 | ─ gate-leg steps (ubuntu gcc only) | `OPENRAR_WARNINGS_AS_ERRORS=ON` | The only leg that fails on compiler warnings. |
 | | `clang-format-18 --dry-run --Werror` over `src include tests` | Pinned to 18; version drift is a real failure mode. |
 | | `python3 tools/layer_check.py` | Downward-only includes (ARCHITECTURE.md §2). Ratchet: new violations fail; accepted ones live in `tools/layer_baseline.json`, updated manually only (`--update-baseline`). |
-| | version consistency | `project(VERSION)` in CMakeLists.txt must equal `wasm/js/package.json` (`docs/versioning.md`). |
+| | version consistency | `project(VERSION)` in CMakeLists.txt must equal `wasm/js/package.json`, `bindings/python/pyproject.toml`, `bindings/python/openrar/__init__.py` and `bindings/csharp/OpenRAR/OpenRAR.NET.csproj` (five copies; `docs/versioning.md`). |
 | ─ interop gate | `python tools/interop_gate.py --quick` | Authoritative in CI: no `|| weaker-check` fallback. No `rar.exe` in CI, so oracle asserts degrade to self-roundtrip + probes by design. |
 | ─ CLI smoke | create → test → extract → diff roundtrip | Exercises the real binary per platform. |
+| ─ JUnit aggregation | `python tools/ctest_to_junit.py --log build/Testing/Temporary/LastTest.log --out build/junit-report.xml --min-tests N` (per job) | Fail-closed: parse failure, missing tests, or a `--min-tests` shortfall all exit non-zero. The CMake floor (3.16) has no `ctest --output-junit`, so the aggregator produces the JUnit report that gets uploaded as an artifact. |
+| **roadmap-lint** (v1.44 M3) | `python tools/anchor_lint.py --release v1.44` | Three fail-closed checks: every `file:line` anchor in `roadmap-v143.merged.md` resolves; the verification ledger recomputes exactly (`docs/v1.44-verification-ledger.md`); `docs/FMM.md` release ranges are disjoint. Advisory for artifact publication (not in `release-assets.needs`) but required green on the release branch. |
 | **linux-arm64-qemu** | aarch64 cross build `-Werror`, CTest under QEMU, NEON RS16 activation assert, CLI smoke under QEMU | The NEON assert fails loudly if the scalar fallback ran (R1 silent-degradation guard). |
 | **writer-conformance** | `node tools/run-tests.cjs` (full run) | Blocking. Suites self-gate: oracle asserts skip without WinRAR/UnRAR, privilege/OS-dependent suites self-skip. |
 | **simd-validation** | native kernel gates, then Intel SDE (pinned) GFNI RS16 + AVX-512 activation asserts, e2e `.rev` generate/destroy/repair under SDE | Activation greps make the gate loud; SDE bench ratios are non-normative (emulated timings). |
 | **wasm** | emsdk 3.1.50 (pinned), both wasm presets, `check-exports.mjs` contract, `node --test` JS suites, size budgets | Budgets: block codec ≤ 500 KiB, archive module ≤ 1.5 MiB (`docs/wasm-limitations.md` §5.3). Then the SIMD128 variant rebuilds and re-checks. |
-| **sanitizers** (v1.30 M5) | ASan+UBSan over the unit suite on ubuntu/clang (`halt_on_error`); excludes transcode/archive (long suites) and the SFX spawn suites (the SFX containment sets RLIMIT_AS for the child, incompatible with the child ASan shadow — spawn-under-sanitizer limitation, not a finding) | PRIMARY leg; release-assets waits for it. |
-| **tsan** (v1.30 M5) | ThreadSanitizer over the threaded suites (parallel pipeline, slot readers) | PRIMARY leg. |
-| **msan** (v1.30 M5) | MemorySanitizer over compress tests, instrumented libc++ | BEST-EFFORT per §7.2 revised: `continue-on-error`, reported, never gates. |
+| **sanitizers** (v1.30 M5) | ASan+UBSan over the unit suite on ubuntu/clang (`halt_on_error`); configures through `cmake/sanitizers.cmake` (`-DOPENRAR_SANITIZE=address,undefined`); excludes transcode/archive (long suites) and the SFX spawn suites (the SFX containment sets RLIMIT_AS for the child, incompatible with the child ASan shadow — spawn-under-sanitizer limitation, not a finding) | PRIMARY leg; release-assets waits for it. |
+| **tsan** (v1.30 M5) | ThreadSanitizer over the threaded suites (parallel pipeline, slot readers); configures through `cmake/sanitizers.cmake` (`-DOPENRAR_SANITIZE=thread`) | PRIMARY leg. |
+| **msan** (v1.30 M5) | MemorySanitizer over compress tests, instrumented libc++; configures through `cmake/sanitizers.cmake` (`-DOPENRAR_SANITIZE=memory`, which adds `-fsanitize-memory-track-origins` and `-stdlib=libc++`) | BEST-EFFORT per §7.2 revised: `continue-on-error`, reported, never gates. |
 | **release-assets** (tags `v*` only) | zips all uploaded artifacts onto the GitHub release, then SHA256SUMS + CycloneDX SBOM (syft) + Sigstore keyless build-provenance attestations (v1.30 M6) | `permissions: contents: write`, needs all jobs above (incl. sanitizers/tsan). |
 
 ## Nightly — `.github/workflows/fuzz.yml`
@@ -38,6 +40,7 @@ advisory, say so in its row.
 | Leg | What it runs | Notes |
 |---|---|---|
 | **fuzz** | libFuzzer over `tests/fuzz` targets with ASan/UBSan (`halt_on_error`, `detect_leaks`), 1800 s per harness default (dispatch input overrides); corpus cached across runs (`fuzz-corpus-` cache key) | A crash there becomes the author's bug: fix it and add a deterministic regression test. |
+| **audit harness** (v1.44) | `tests/fuzz/fuzz_target.cpp` standalone/audit-driven lanes: hostile decode (bounded output), compress→decompress round-trip with truncation-prefix and bit-flip oracles, sequential-vs-two-phase differential, `BitReader` model check | Not a libFuzzer harness: a deterministic, bounded audit target. It found the `flush_cadence` defect that became the `test_small_window_long_match_roundtrip` regression test. |
 | **crash dedup** (v1.30 M5) | `tools/dedup_crashes.py` buckets crash artifacts by signature (`tests/fuzz/crash-buckets.json`); known buckets drop, new buckets survive as artifacts | Runs `if: always()` after the fuzz steps. |
 
 ## Local (mirrors; not authoritative — CI is)
