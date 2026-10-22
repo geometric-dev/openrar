@@ -19,6 +19,9 @@
 #include "../../src/core/types.hpp"
 
 #include "test_support.hpp"
+#include <doctest.h>
+#include "../support/test_runner.hpp"
+#include <stdexcept>
 
 #include <cassert>
 #include <cstdio>
@@ -77,16 +80,27 @@ void* open_read_handle_for(const fs::path& p) {
 
 static void run_all();
 
-int main() {
-    OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
+static void run_wrapped() {
     try {
         run_all();
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "EXCEPTION: %s\n", e.what());
-        return 2;
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr, "EXCEPTION: %s\n", ex.what());
+        throw;
     }
-    if (fails == 0) std::printf("[seam] reader handle seam: OK\n");
-    return fails == 0 ? 0 : 1;
+    if (fails != 0) throw std::logic_error(std::to_string(fails) + " failed checks");
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_seam_all", run_wrapped, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::printf("[seam] reader handle seam: OK\n");
+    return rc;
 }
 
 static void run_all() {
@@ -101,10 +115,10 @@ static void run_all() {
             std::ofstream f(blob, std::ios::binary | std::ios::trunc);
             for (int i = 0; i < 4096; ++i) f << "sample-" << i << "\n";
         }
-        assert(archive::ArchiveMutator::add_file_to_archive(arc, blob, "a/stored.txt", 0));
+        REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, blob, "a/stored.txt", 0));
         std::ofstream f2(blob, std::ios::binary | std::ios::trunc);
         for (int i = 0; i < 4096; ++i) f2 << "content-" << i << "\n";
-        assert(archive::ArchiveMutator::add_file_to_archive(arc, blob, "b/deflated.txt", 3));
+        REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, blob, "b/deflated.txt", 3));
         std::error_code rm_ec;
         fs::remove(blob, rm_ec); // AV/indexer can hold the blob briefly — best-effort
     }
@@ -171,7 +185,7 @@ static void run_all() {
             for (int i = 0; i < 200000; ++i) f << "volume-data-" << i << "\n";
         }
         // 16 KiB volumes force a multi-volume set.
-        assert(
+        REQUIRE(
             archive::ArchiveMutator::add_file_to_archive_vol(vol1, blob, "big.bin", 0, 16 * 1024));
         fs::remove(blob);
 

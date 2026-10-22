@@ -24,6 +24,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _MSC_VER
 #include <crtdbg.h>
@@ -50,7 +52,7 @@ static fs::path make_scratch_dir(const char* name) {
 
 static void write_bytes(const fs::path& p, const std::vector<uint8_t>& data) {
     std::ofstream f(p, std::ios::binary);
-    assert(f);
+    REQUIRE(f);
     if (!data.empty())
         f.write(reinterpret_cast<const char*>(data.data()),
                 static_cast<std::streamsize>(data.size()));
@@ -87,10 +89,10 @@ static fs::path make_solid_archive(const fs::path& dir, const char* name) {
         ArchiveMutator::PreparedAdd p;
         p.entry_name = entry;
         p.src_path = src;
-        assert(ArchiveMutator::prepare_add_file(src, entry, 3, "", p));
+        REQUIRE(ArchiveMutator::prepare_add_file(src, entry, 3, "", p));
         prepared.push_back(std::move(p));
     }
-    assert(ArchiveMutator::write_batch_add(arc, prepared, {}, "", false, {}, /*solid=*/true));
+    REQUIRE(ArchiveMutator::write_batch_add(arc, prepared, {}, "", false, {}, /*solid=*/true));
     return arc;
 }
 
@@ -100,7 +102,7 @@ static fs::path make_solid_archive(const fs::path& dir, const char* name) {
 static fs::path create_redir_archive(const fs::path& dir, const char* name) {
     fs::path arc = dir / name;
     openrar::io::FileStream out;
-    assert(out.open(arc, openrar::io::FileMode::CreateAlways));
+    REQUIRE(out.open(arc, openrar::io::FileMode::CreateAlways));
     openrar::format::HeaderWriter::write_signature(out);
     openrar::format::MainBlock mb;
     openrar::format::HeaderWriter::write_main_block(out, mb);
@@ -116,7 +118,7 @@ static fs::path create_redir_archive(const fs::path& dir, const char* name) {
     link.host_os = 1; // Unix
     link.method = 0;
     link.win_size = 0;
-    assert(openrar::format::HeaderWriter::write_file_block(out, link, 0));
+    REQUIRE(openrar::format::HeaderWriter::write_file_block(out, link, 0));
 
     // 2) plain file whose only timestamp is a FILETIME-format mtime.
     const std::vector<uint8_t> data = {'w', 'i', 'n', 't'};
@@ -132,8 +134,8 @@ static fs::path create_redir_archive(const fs::path& dir, const char* name) {
     fb.method = 0;
     fb.win_size = 0;
     fb.mtime_win = 0x01D9B4C6D5A3E800ULL; // arbitrary known FILETIME
-    assert(openrar::format::HeaderWriter::write_file_block(out, fb, 0));
-    assert(out.write(data.data(), data.size()) == data.size());
+    REQUIRE(openrar::format::HeaderWriter::write_file_block(out, fb, 0));
+    REQUIRE(out.write(data.data(), data.size()) == data.size());
 
     openrar::format::EndArcBlock eb;
     openrar::format::HeaderWriter::write_end_block(out, eb);
@@ -144,7 +146,7 @@ static fs::path create_redir_archive(const fs::path& dir, const char* name) {
 static openrar_entry_ex_t query_entry_ex(uint32_t h, uint32_t idx, void** extra,
                                          size_t* extra_len) {
     openrar_entry_ex_t ex{};
-    assert(openrar_archive_handle_entry_ex(h, idx, &ex, extra, extra_len) == RAR_OK);
+    REQUIRE(openrar_archive_handle_entry_ex(h, idx, &ex, extra, extra_len) == RAR_OK);
     return ex;
 }
 
@@ -159,32 +161,32 @@ static void test_entry_ex_basics() {
     ArchiveMutator::PreparedAdd p;
     p.entry_name = "a.bin";
     p.src_path = src;
-    assert(ArchiveMutator::prepare_add_file(src, "a.bin", 3, "", p, engine::time_flags::MTIME,
-                                            /*window_log2=*/2));
+    REQUIRE(ArchiveMutator::prepare_add_file(src, "a.bin", 3, "", p, engine::time_flags::MTIME,
+                                             /*window_log2=*/2));
     prepared.push_back(std::move(p));
-    assert(ArchiveMutator::write_batch_add(arc, prepared));
+    REQUIRE(ArchiveMutator::write_batch_add(arc, prepared));
 
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     void* extra = nullptr;
     size_t extra_len = 0;
     const openrar_entry_ex_t ex = query_entry_ex(h, 0, &extra, &extra_len);
-    assert(extra == nullptr && extra_len == 0); // no redirection
-    assert(ex.attrs == 0x20);
-    assert(ex.host_os == 0); // Windows host
-    assert((ex.flags & OPENRAR_ENTRY_FLAG_HAS_MTIME) != 0);
-    assert((ex.flags & (OPENRAR_ENTRY_FLAG_HAS_CTIME | OPENRAR_ENTRY_FLAG_HAS_ATIME)) == 0);
-    assert(ex.win_size == (256u * 1024)); // window_log2 2 (create parity)
-    assert(ex.version_needed == 0);       // RAR5
-    assert((ex.flags & OPENRAR_ENTRY_FLAG_DIRECTORY) == 0);
+    REQUIRE((extra == nullptr && extra_len == 0)); // no redirection
+    REQUIRE(ex.attrs == 0x20);
+    REQUIRE(ex.host_os == 0); // Windows host
+    REQUIRE((ex.flags & OPENRAR_ENTRY_FLAG_HAS_MTIME) != 0);
+    REQUIRE((ex.flags & (OPENRAR_ENTRY_FLAG_HAS_CTIME | OPENRAR_ENTRY_FLAG_HAS_ATIME)) == 0);
+    REQUIRE(ex.win_size == (256u * 1024)); // window_log2 2 (create parity)
+    REQUIRE(ex.version_needed == 0);       // RAR5
+    REQUIRE((ex.flags & OPENRAR_ENTRY_FLAG_DIRECTORY) == 0);
     // FILETIME conversion from the stored unix mtime: within a few seconds of
     // "now" (epoch-independent check for the seconds-since-1601 conversion).
     const uint64_t unix_from_ft = ex.mtime_ft / 10000000ULL - 11644473600ULL;
     const uint64_t now_unix = static_cast<uint64_t>(time(nullptr));
-    assert(unix_from_ft + 5 >= now_unix && unix_from_ft <= now_unix + 5);
+    REQUIRE((unix_from_ft + 5 >= now_unix && unix_from_ft <= now_unix + 5));
 #ifndef _WIN32
-    assert(ex.mtime_ft % 10000000ULL == 0); // whole seconds, no ns record
+    REQUIRE(ex.mtime_ft % 10000000ULL == 0); // whole seconds, no ns record
 #endif
     openrar_archive_close(h);
     std::cout << "[PASS] entry_ex_basics\n";
@@ -199,24 +201,24 @@ static void test_entry_ex_flags() {
     const fs::path solid = make_solid_archive(dir, "solid.rar");
     uint32_t h =
         openrar_archive_open_file(solid.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     void* extra = nullptr;
     size_t extra_len = 0;
-    assert((query_entry_ex(h, 0, &extra, &extra_len).flags & OPENRAR_ENTRY_FLAG_SOLID) == 0);
-    assert((query_entry_ex(h, 1, &extra, &extra_len).flags & OPENRAR_ENTRY_FLAG_SOLID) != 0);
-    assert((query_entry_ex(h, 2, &extra, &extra_len).flags & OPENRAR_ENTRY_FLAG_SOLID) != 0);
+    REQUIRE((query_entry_ex(h, 0, &extra, &extra_len).flags & OPENRAR_ENTRY_FLAG_SOLID) == 0);
+    REQUIRE((query_entry_ex(h, 1, &extra, &extra_len).flags & OPENRAR_ENTRY_FLAG_SOLID) != 0);
+    REQUIRE((query_entry_ex(h, 2, &extra, &extra_len).flags & OPENRAR_ENTRY_FLAG_SOLID) != 0);
     openrar_archive_close(h);
 
     // Encrypted payload (-p).
     const fs::path enc_src = dir / "enc.bin";
     write_bytes(enc_src, make_pattern(2048, 3));
     const fs::path enc = dir / "enc.rar";
-    assert(ArchiveMutator::add_file_to_archive(enc, enc_src, "secret.bin", 3, {}, 0, "pw"));
+    REQUIRE(ArchiveMutator::add_file_to_archive(enc, enc_src, "secret.bin", 3, {}, 0, "pw"));
     h = openrar_archive_open_file(enc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     {
         const openrar_entry_ex_t ex = query_entry_ex(h, 0, &extra, &extra_len);
-        assert((ex.flags & OPENRAR_ENTRY_FLAG_ENCRYPTED) != 0);
+        REQUIRE((ex.flags & OPENRAR_ENTRY_FLAG_ENCRYPTED) != 0);
     }
     openrar_archive_close(h);
 
@@ -229,16 +231,16 @@ static void test_entry_ex_flags() {
         ArchiveMutator::PreparedAdd p;
         p.entry_name = "subdir/";
         p.src_path = sub;
-        assert(ArchiveMutator::prepare_add_dir(sub, "subdir/", p));
+        REQUIRE(ArchiveMutator::prepare_add_dir(sub, "subdir/", p));
         prepared.push_back(std::move(p));
-        assert(ArchiveMutator::write_batch_add(dir_arc, prepared));
+        REQUIRE(ArchiveMutator::write_batch_add(dir_arc, prepared));
     }
     h = openrar_archive_open_file(dir_arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     {
         const openrar_entry_ex_t ex = query_entry_ex(h, 0, &extra, &extra_len);
-        assert((ex.flags & OPENRAR_ENTRY_FLAG_DIRECTORY) != 0);
-        assert(ex.win_size == 0);
+        REQUIRE((ex.flags & OPENRAR_ENTRY_FLAG_DIRECTORY) != 0);
+        REQUIRE(ex.win_size == 0);
     }
     openrar_archive_close(h);
     std::cout << "[PASS] entry_ex_flags\n";
@@ -251,34 +253,35 @@ static void test_entry_ex_redir_and_filetime() {
     const fs::path arc = create_redir_archive(dir, "redir.rar");
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
 
     // Entry 0: unix symlink — REDIR flag, type, and the target extra.
     void* extra = nullptr;
     size_t extra_len = 0;
     const openrar_entry_ex_t link = query_entry_ex(h, 0, &extra, &extra_len);
-    assert((link.flags & OPENRAR_ENTRY_FLAG_REDIR) != 0);
-    assert(link.redir_type == 1);
-    assert(link.host_os == 1);
-    assert(extra != nullptr);
-    assert(std::string(static_cast<const char*>(extra), extra_len) == "target/file.txt");
-    assert(strlen(static_cast<const char*>(extra)) == extra_len); // NUL-terminated
+    REQUIRE((link.flags & OPENRAR_ENTRY_FLAG_REDIR) != 0);
+    REQUIRE(link.redir_type == 1);
+    REQUIRE(link.host_os == 1);
+    REQUIRE(extra != nullptr);
+    REQUIRE(std::string(static_cast<const char*>(extra), extra_len) == "target/file.txt");
+    REQUIRE(strlen(static_cast<const char*>(extra)) == extra_len); // NUL-terminated
     openrar_archive_entry_ex_free(extra);
 
     // Entry 1: FILETIME-format htime passes through unchanged.
     const openrar_entry_ex_t wt = query_entry_ex(h, 1, &extra, &extra_len);
-    assert(extra == nullptr);
-    assert((wt.flags & OPENRAR_ENTRY_FLAG_HAS_MTIME) != 0);
-    assert(wt.mtime_ft == 0x01D9B4C6D5A3E800ULL);
+    REQUIRE(extra == nullptr);
+    REQUIRE((wt.flags & OPENRAR_ENTRY_FLAG_HAS_MTIME) != 0);
+    REQUIRE(wt.mtime_ft == 0x01D9B4C6D5A3E800ULL);
 
     // Invalid index and null args (handle still open here).
-    assert(openrar_archive_handle_entry_ex(h, 9, nullptr, nullptr, nullptr) == RAR_ERR_INVALID_ARG);
+    REQUIRE(openrar_archive_handle_entry_ex(h, 9, nullptr, nullptr, nullptr) ==
+            RAR_ERR_INVALID_ARG);
     openrar_entry_ex_t ex{};
     void* e2 = nullptr;
     size_t l2 = 0;
     const int oor_rc = openrar_archive_handle_entry_ex(h, 42, &ex, &e2, &l2);
-    assert(oor_rc == RAR_ERR_INVALID_ARG);
-    assert(last_error().find("entry_index OOR") != std::string::npos);
+    REQUIRE(oor_rc == RAR_ERR_INVALID_ARG);
+    REQUIRE(last_error().find("entry_index OOR") != std::string::npos);
     openrar_archive_close(h);
     std::cout << "[PASS] entry_ex_redir_and_filetime\n";
 }
@@ -298,15 +301,15 @@ static void test_info_comment_and_volumes() {
         ArchiveMutator::PreparedAdd p;
         p.entry_name = "f.bin";
         p.src_path = src;
-        assert(ArchiveMutator::prepare_add_file(src, "f.bin", 3, "", p));
+        REQUIRE(ArchiveMutator::prepare_add_file(src, "f.bin", 3, "", p));
         prepared.push_back(std::move(p));
         const std::vector<openrar::core::byte> comment(comment_text.begin(), comment_text.end());
-        assert(
+        REQUIRE(
             ArchiveMutator::write_batch_add(cmt_arc, prepared, {}, "", false, {}, false, comment));
     }
     uint32_t h =
         openrar_archive_open_file(cmt_arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     openrar_archive_info_t info{};
     void* cmt = nullptr;
     size_t cmt_len = 0;
@@ -315,13 +318,13 @@ static void test_info_comment_and_volumes() {
               << " cmt_len=" << cmt_len << " cmt_null=" << (cmt == nullptr)
               << " rr=" << info.recovery_size << " err=" << last_error() << "\n"
               << std::flush;
-    assert(info_rc == RAR_OK);
-    assert(info.comment_len == comment_text.size());
-    assert(cmt != nullptr && cmt_len == comment_text.size());
-    assert(std::string(static_cast<const char*>(cmt), cmt_len) == comment_text);
-    assert(info.volume_count == 1 && info.volume_index == 0);
-    assert(info.recovery_size == 0);
-    assert((info.flags & 0x1u) == 0); // not MHFL_VOLUME
+    REQUIRE(info_rc == RAR_OK);
+    REQUIRE(info.comment_len == comment_text.size());
+    REQUIRE((cmt != nullptr && cmt_len == comment_text.size()));
+    REQUIRE(std::string(static_cast<const char*>(cmt), cmt_len) == comment_text);
+    REQUIRE((info.volume_count == 1 && info.volume_index == 0));
+    REQUIRE(info.recovery_size == 0);
+    REQUIRE((info.flags & 0x1u) == 0); // not MHFL_VOLUME
     openrar_free(cmt);
     openrar_archive_close(h);
 
@@ -330,12 +333,12 @@ static void test_info_comment_and_volumes() {
     {
         const fs::path src = dir / "p_src.bin";
         write_bytes(src, {'x'});
-        assert(ArchiveMutator::add_file_to_archive(plain, src, "x.bin", 0));
+        REQUIRE(ArchiveMutator::add_file_to_archive(plain, src, "x.bin", 0));
     }
     h = openrar_archive_open_file(plain.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
-    assert(openrar_archive_handle_info(h, &info, &cmt, &cmt_len) == RAR_OK);
-    assert(info.comment_len == 0 && cmt == nullptr && cmt_len == 0);
+    REQUIRE(h != 0);
+    REQUIRE(openrar_archive_handle_info(h, &info, &cmt, &cmt_len) == RAR_OK);
+    REQUIRE((info.comment_len == 0 && cmt == nullptr && cmt_len == 0));
     openrar_archive_close(h);
 
     // Recovery record → recovery_size > 0.
@@ -343,28 +346,28 @@ static void test_info_comment_and_volumes() {
     {
         const fs::path src = dir / "rr_src.bin";
         write_bytes(src, make_pattern(16u * 1024, 21));
-        assert(ArchiveMutator::add_file_to_archive(rr, src, "rr.bin", 0));
-        assert(openrar::recovery::RecoveryWriter::add_recovery_record(rr, 5));
+        REQUIRE(ArchiveMutator::add_file_to_archive(rr, src, "rr.bin", 0));
+        REQUIRE(openrar::recovery::RecoveryWriter::add_recovery_record(rr, 5));
     }
     h = openrar_archive_open_file(rr.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
-    assert(openrar_archive_handle_info(h, &info, &cmt, &cmt_len) == RAR_OK);
-    assert(info.recovery_size > 0);
+    REQUIRE(h != 0);
+    REQUIRE(openrar_archive_handle_info(h, &info, &cmt, &cmt_len) == RAR_OK);
+    REQUIRE(info.recovery_size > 0);
     openrar_archive_close(h);
 
     // Multi-volume set: volume_count matches the set size, index 0.
     const fs::path vol_src = dir / "vol_src.bin";
     write_bytes(vol_src, make_pattern(10u * 1024, 77));
     const fs::path base = dir / "set.rar";
-    assert(ArchiveMutator::add_file_to_archive_vol(base, vol_src, "vol.bin", 3, 4096));
+    REQUIRE(ArchiveMutator::add_file_to_archive_vol(base, vol_src, "vol.bin", 3, 4096));
     const fs::path vol1 = dir / "set.part01.rar";
-    assert(fs::exists(vol1));
+    REQUIRE(fs::exists(vol1));
     h = openrar_archive_open_file(vol1.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
-    assert(openrar_archive_handle_info(h, &info, &cmt, &cmt_len) == RAR_OK);
-    assert((info.flags & 0x1u) != 0); // MHFL_VOLUME
-    assert(info.volume_index == 0);
-    assert(info.volume_count >= 2);
+    REQUIRE(h != 0);
+    REQUIRE(openrar_archive_handle_info(h, &info, &cmt, &cmt_len) == RAR_OK);
+    REQUIRE((info.flags & 0x1u) != 0); // MHFL_VOLUME
+    REQUIRE(info.volume_index == 0);
+    REQUIRE(info.volume_count >= 2);
     openrar_archive_close(h);
     std::cout << "[PASS] info_comment_and_volumes\n";
 }
@@ -379,20 +382,20 @@ static void test_buffer_refusal_and_validation() {
     const size_t sizes[] = {a.size()};
     uint8_t* rar = nullptr;
     size_t rar_len = 0;
-    assert(openrar_archive_create(paths, datas, sizes, 1, 3, 2, &rar, &rar_len) == RAR_OK);
+    REQUIRE(openrar_archive_create(paths, datas, sizes, 1, 3, 2, &rar, &rar_len) == RAR_OK);
     uint32_t h = openrar_archive_open(rar, rar_len);
-    assert(h != 0);
+    REQUIRE(h != 0);
     openrar_entry_ex_t ex{};
     void* extra = nullptr;
     size_t extra_len = 0;
-    assert(openrar_archive_handle_entry_ex(h, 0, &ex, &extra, &extra_len) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
-    assert(extra == nullptr && extra_len == 0);
+    REQUIRE(openrar_archive_handle_entry_ex(h, 0, &ex, &extra, &extra_len) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE((extra == nullptr && extra_len == 0));
     openrar_archive_info_t info{};
     void* cmt = nullptr;
     size_t cmt_len = 0;
-    assert(openrar_archive_handle_info(h, &info, &cmt, &cmt_len) == RAR_ERR_UNSUPPORTED_FEATURE);
-    assert(cmt == nullptr && cmt_len == 0);
+    REQUIRE(openrar_archive_handle_info(h, &info, &cmt, &cmt_len) == RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE((cmt == nullptr && cmt_len == 0));
     openrar_archive_close(h);
     openrar_free(rar);
 
@@ -401,13 +404,13 @@ static void test_buffer_refusal_and_validation() {
     const fs::path src = dir / "s.bin";
     write_bytes(src, {'s'});
     const fs::path arc = dir / "s.rar";
-    assert(ArchiveMutator::add_file_to_archive(arc, src, "s.bin", 0));
+    REQUIRE(ArchiveMutator::add_file_to_archive(arc, src, "s.bin", 0));
     const uint32_t fh =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(fh != 0);
-    assert(openrar_archive_handle_entry_ex(fh, 0, nullptr, &extra, &extra_len) ==
-           RAR_ERR_INVALID_ARG);
-    assert(openrar_archive_handle_info(fh, nullptr, &cmt, &cmt_len) == RAR_ERR_INVALID_ARG);
+    REQUIRE(fh != 0);
+    REQUIRE(openrar_archive_handle_entry_ex(fh, 0, nullptr, &extra, &extra_len) ==
+            RAR_ERR_INVALID_ARG);
+    REQUIRE(openrar_archive_handle_info(fh, nullptr, &cmt, &cmt_len) == RAR_ERR_INVALID_ARG);
     openrar_archive_close(fh);
     std::cout << "[PASS] buffer_refusal_and_validation\n";
 }
@@ -419,10 +422,10 @@ static void test_cpp_wrapper() {
     const fs::path arc = create_redir_archive(dir, "wrap.rar");
     openrar::ArchiveHandle h(arc);
     const openrar::EntryEx ex = h.entry_ex(0);
-    assert((ex.flags & OPENRAR_ENTRY_FLAG_REDIR) != 0);
-    assert(ex.redir_type == 1 && ex.redir_target == "target/file.txt");
+    REQUIRE((ex.flags & OPENRAR_ENTRY_FLAG_REDIR) != 0);
+    REQUIRE((ex.redir_type == 1 && ex.redir_target == "target/file.txt"));
     const openrar::ArchiveInfo ai = h.info();
-    assert(ai.comment.empty() && ai.volume_count == 1);
+    REQUIRE((ai.comment.empty() && ai.volume_count == 1));
     // Buffer handle throws.
     bool threw = false;
     try {
@@ -432,7 +435,7 @@ static void test_cpp_wrapper() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    REQUIRE(threw);
     std::cout << "[PASS] cpp_wrapper\n";
 }
 
@@ -453,24 +456,24 @@ static void test_rar7_header_serialization() {
         fs::path tmp = fs::temp_directory_path() / "test_rar7_hdr.bin";
         {
             openrar::io::FileStream f;
-            assert(f.open(tmp, openrar::io::FileMode::CreateAlways));
-            assert(openrar::format::HeaderWriter::write_file_block(f, block));
+            REQUIRE(f.open(tmp, openrar::io::FileMode::CreateAlways));
+            REQUIRE(openrar::format::HeaderWriter::write_file_block(f, block));
             f.close();
         }
 
         {
             openrar::io::FileStream f;
-            assert(f.open(tmp, openrar::io::FileMode::ReadOnly));
+            REQUIRE(f.open(tmp, openrar::io::FileMode::ReadOnly));
             openrar::core::uint64 block_type = 0, block_flags = 0, data_size = 0;
             std::vector<openrar::core::byte> body;
             auto res = openrar::format::HeaderReader::read_block_raw(f, block_type, block_flags,
                                                                      body, data_size);
-            assert(res == openrar::format::HeaderResult::Ok);
+            REQUIRE(res == openrar::format::HeaderResult::Ok);
             openrar::format::FileBlock read_block;
-            assert(openrar::format::HeaderReader::parse_file_header(body.data(), body.size(),
-                                                                    read_block));
-            assert(read_block.unp_ver == 1);
-            assert(read_block.win_size == win);
+            REQUIRE(openrar::format::HeaderReader::parse_file_header(body.data(), body.size(),
+                                                                     read_block));
+            REQUIRE(read_block.unp_ver == 1);
+            REQUIRE(read_block.win_size == win);
             f.close();
         }
         std::error_code ec;
@@ -493,56 +496,98 @@ static void test_mutator_exact_dict_serialization() {
         ArchiveMutator::PreparedAdd p;
         p.entry_name = "data.bin";
         p.src_path = src;
-        assert(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", p,
-                                                engine::time_flags::MTIME, target_dict));
-        assert(p.fb.win_size == target_dict);
-        assert(p.fb.unp_ver == 1);
+        REQUIRE(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", p,
+                                                 engine::time_flags::MTIME, target_dict));
+        REQUIRE(p.fb.win_size == target_dict);
+        REQUIRE(p.fb.unp_ver == 1);
         prepared.push_back(std::move(p));
-        assert(ArchiveMutator::write_batch_add(arc, prepared));
+        REQUIRE(ArchiveMutator::write_batch_add(arc, prepared));
 
         // Verify exact 64-bit dictionary size in ArchiveReader header
         engine::ArchiveReader ar;
-        assert(ar.open(arc));
-        assert(ar.entries().size() == 1);
-        assert(ar.entries()[0].header.win_size == target_dict);
-        assert(ar.entries()[0].header.unp_ver == 1);
+        REQUIRE(ar.open(arc));
+        REQUIRE(ar.entries().size() == 1);
+        REQUIRE(ar.entries()[0].header.win_size == target_dict);
+        REQUIRE(ar.entries()[0].header.unp_ver == 1);
 
         // Verify C DLL entry_ex ABI reporting (32-bit saturation above 4 GiB)
         uint32_t h =
             openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-        assert(h != 0);
+        REQUIRE(h != 0);
         void* extra = nullptr;
         size_t extra_len = 0;
         const openrar_entry_ex_t ex = query_entry_ex(h, 0, &extra, &extra_len);
         if (target_dict > 0xFFFFFFFFULL) {
-            assert(ex.win_size == 0xFFFFFFFFu);
+            REQUIRE(ex.win_size == 0xFFFFFFFFu);
         } else {
-            assert(ex.win_size == target_dict);
+            REQUIRE(ex.win_size == target_dict);
         }
-        assert(ex.version_needed == 1);
+        REQUIRE(ex.version_needed == 1);
         openrar_archive_close(h);
     }
     std::cout << "[PASS] mutator_exact_dict_serialization (-mdx48m and -md4g)\n";
 }
 
-int main() {
-#ifdef _MSC_VER
-    // Route assert failures to stderr under ctest (piped stdio).
-    _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-#endif
-    test_entry_ex_basics();
-    test_entry_ex_flags();
-    test_entry_ex_redir_and_filetime();
-    test_info_comment_and_volumes();
-    test_buffer_refusal_and_validation();
-    test_cpp_wrapper();
-    test_rar7_header_serialization();
-    test_mutator_exact_dict_serialization();
-    std::cout << "ALL METADATA TESTS PASSED\n";
-    return 0;
+// Regression: an explicit non-power-of-two dictionary BELOW 128 KiB makes the
+// mutator pick unp_ver 1, but the header writer used to emit FCI_RAR5_COMPAT
+// only inside its `win_size >= 0x20000` branch. The reader derives the table
+// flavor from "unp_ver 1 without the compat flag", so such a member decoded
+// with 446-entry tables against the 430-entry encoder and was undecodable.
+// This drives the full path (prepare -> write -> read -> decode + CRC).
+static void test_subminimum_dictionary_member_decodes() {
+    std::cout << "Starting test_subminimum_dictionary_member_decodes...\n" << std::flush;
+    const fs::path dir = make_scratch_dir("subminimum_dict");
+    const fs::path src = dir / "data.bin";
+    // Compressible but not trivial: forces real matches and distance slots.
+    std::vector<uint8_t> data(300000);
+    for (size_t i = 0; i < data.size(); ++i)
+        data[i] = static_cast<uint8_t>((i * 7 + (i >> 9) + (i % 1021 < 40 ? i * 13 : 0)) & 0xFF);
+    write_bytes(src, data);
+
+    // 100000 and 70000: non-pow2, < 0x20000. 0x1FFFF: the largest sub-minimum.
+    const openrar::core::uint64 dicts[] = {70000, 100000, 0x1FFFF};
+    for (openrar::core::uint64 d : dicts) {
+        const fs::path arc = dir / (std::to_string(d) + ".rar");
+        std::vector<ArchiveMutator::PreparedAdd> prepared;
+        ArchiveMutator::PreparedAdd p;
+        p.entry_name = "data.bin";
+        p.src_path = src;
+        REQUIRE(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", p,
+                                                 engine::time_flags::MTIME, d));
+        REQUIRE(p.fb.unp_ver == 1); // the precondition that exposed the bug
+        REQUIRE(p.fb.method == 3);
+        REQUIRE(!p.fb.extra_dist);
+        prepared.push_back(std::move(p));
+        REQUIRE(ArchiveMutator::write_batch_add(arc, prepared));
+
+        engine::ArchiveReader ar;
+        REQUIRE(ar.open(arc));
+        REQUIRE(ar.entries().size() == 1);
+        const auto& h = ar.entries()[0].header;
+        REQUIRE(h.unp_ver == 1);
+        REQUIRE(!h.extra_dist); // 430-entry tables, matching the encoder
+        REQUIRE(h.method == 3);
+        REQUIRE(ar.test_entry(ar.entries()[0])); // decodes AND passes the CRC
+    }
+    std::cout << "[PASS] sub-128 KiB non-pow2 dictionary members decode (compat flag always set)\n";
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"test_subminimum_dictionary_member_decodes", test_subminimum_dictionary_member_decodes, false},
+    {"test_entry_ex_basics", test_entry_ex_basics, false},
+    {"test_entry_ex_flags", test_entry_ex_flags, false},
+    {"test_entry_ex_redir_and_filetime", test_entry_ex_redir_and_filetime, false},
+    {"test_info_comment_and_volumes", test_info_comment_and_volumes, false},
+    {"test_buffer_refusal_and_validation", test_buffer_refusal_and_validation, false},
+    {"test_cpp_wrapper", test_cpp_wrapper, false},
+    {"test_rar7_header_serialization", test_rar7_header_serialization, false},
+    {"test_mutator_exact_dict_serialization", test_mutator_exact_dict_serialization, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "ALL METADATA TESTS PASSED\n";
+    return rc;
 }

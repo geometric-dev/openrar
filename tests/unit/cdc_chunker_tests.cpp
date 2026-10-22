@@ -13,6 +13,8 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _MSC_VER
 #include <crtdbg.h>
@@ -40,7 +42,7 @@ bool same_chunks(const std::vector<compress::CdcChunk>& a,
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
@@ -55,14 +57,15 @@ int main() {
         std::vector<compress::CdcChunk> a, b;
         chunker.chunk(reinterpret_cast<const core::byte*>(data.data()), data.size(), a);
         chunker.chunk(reinterpret_cast<const core::byte*>(data.data()), data.size(), b);
-        assert(same_chunks(a, b));
+        REQUIRE(same_chunks(a, b));
         // Hashes are content-derived: identical chunks → identical hashes.
         for (const auto& c : a) {
-            assert(c.hash ==
-                   chunker.hash_range(reinterpret_cast<const core::byte*>(data.data()) + c.offset,
-                                      c.length));
+            REQUIRE(c.hash ==
+                    chunker.hash_range(reinterpret_cast<const core::byte*>(data.data()) + c.offset,
+                                       c.length));
         }
-        std::cout << "[PASS] chunker determinism + content hashes\n";
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] chunker determinism + content hashes\n";
     }
 
     // Clamps: every chunk within [min, max] except the tail; offsets tile.
@@ -72,30 +75,31 @@ int main() {
         chunker.chunk(reinterpret_cast<const core::byte*>(data.data()), data.size(), chunks);
         size_t expected_off = 0;
         for (const auto& c : chunks) {
-            assert(c.offset == expected_off);
-            assert(c.length >= compress::CdcChunker::MIN_CHUNK ||
-                   c.offset + c.length == data.size()); // tail may be short
-            assert(c.length <= compress::CdcChunker::MAX_CHUNK);
+            REQUIRE(c.offset == expected_off);
+            REQUIRE((c.length >= compress::CdcChunker::CDC_MIN_CHUNK ||
+                     c.offset + c.length == data.size())); // tail may be short
+            REQUIRE(c.length <= compress::CdcChunker::CDC_MAX_CHUNK);
             expected_off += c.length;
         }
-        assert(expected_off == data.size());
-        std::cout << "[PASS] chunk clamps + tiling\n";
+        REQUIRE(expected_off == data.size());
+        if (!openrar::test::last_run_was_filtered()) std::cout << "[PASS] chunk clamps + tiling\n";
     }
 
     // Degenerate inputs (plan directive 7): empty, tiny, exact-min.
     {
         std::vector<compress::CdcChunk> chunks;
         chunker.chunk(nullptr, 0, chunks);
-        assert(chunks.empty());
+        REQUIRE(chunks.empty());
 
         const std::string tiny = "abc";
         chunker.chunk(reinterpret_cast<const core::byte*>(tiny.data()), tiny.size(), chunks);
-        assert(chunks.size() == 1 && chunks[0].length == 3);
+        REQUIRE((chunks.size() == 1 && chunks[0].length == 3));
 
-        const std::string exact(compress::CdcChunker::MIN_CHUNK, 'z');
+        const std::string exact(compress::CdcChunker::CDC_MIN_CHUNK, 'z');
         chunker.chunk(reinterpret_cast<const core::byte*>(exact.data()), exact.size(), chunks);
-        assert(chunks.size() == 1 && chunks[0].length == compress::CdcChunker::MIN_CHUNK);
-        std::cout << "[PASS] degenerate inputs (empty/tiny/exact-min)\n";
+        REQUIRE((chunks.size() == 1 && chunks[0].length == compress::CdcChunker::CDC_MIN_CHUNK));
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] degenerate inputs (empty/tiny/exact-min)\n";
     }
 
     // Named gate: cdc_chunk_boundary_fuzz — a bit flip shifts boundaries by
@@ -140,13 +144,14 @@ int main() {
             // must be exactly equal — verified by re-walking the tails.
             size_t tail_b = bi, tail_m = mi;
             while (tail_b < base_cuts.size() && tail_m < mut_cuts.size()) {
-                assert(base_cuts[tail_b] == mut_cuts[tail_m]);
+                REQUIRE(base_cuts[tail_b] == mut_cuts[tail_m]);
                 ++tail_b;
                 ++tail_m;
             }
-            assert(base_cuts.size() - tail_b == mut_cuts.size() - tail_m);
+            REQUIRE(base_cuts.size() - tail_b == mut_cuts.size() - tail_m);
         }
-        std::cout << "[PASS] cdc_chunk_boundary_fuzz: locality holds (16 flips)\n";
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] cdc_chunk_boundary_fuzz: locality holds (16 flips)\n";
     }
 
     // Streaming equivalence (v1.26 M2b): the fingerprint pass feeds files
@@ -161,14 +166,14 @@ int main() {
             chunker.chunk(reinterpret_cast<const core::byte*>(data.data()), data.size(), whole);
 
             for (size_t block : {size_t(1), size_t(7), size_t(1000), size_t(1) << 10,
-                                 size_t(1) << 16, size_t(compress::CdcChunker::MIN_CHUNK),
-                                 size_t(compress::CdcChunker::MIN_CHUNK) + 1,
-                                 size_t(compress::CdcChunker::AVG_CHUNK) - 1,
-                                 size_t(compress::CdcChunker::AVG_CHUNK),
-                                 size_t(compress::CdcChunker::AVG_CHUNK) + 1,
-                                 size_t(compress::CdcChunker::MAX_CHUNK) - 1,
-                                 size_t(compress::CdcChunker::MAX_CHUNK),
-                                 size_t(compress::CdcChunker::MAX_CHUNK) + 123}) {
+                                 size_t(1) << 16, size_t(compress::CdcChunker::CDC_MIN_CHUNK),
+                                 size_t(compress::CdcChunker::CDC_MIN_CHUNK) + 1,
+                                 size_t(compress::CdcChunker::CDC_AVG_CHUNK) - 1,
+                                 size_t(compress::CdcChunker::CDC_AVG_CHUNK),
+                                 size_t(compress::CdcChunker::CDC_AVG_CHUNK) + 1,
+                                 size_t(compress::CdcChunker::CDC_MAX_CHUNK) - 1,
+                                 size_t(compress::CdcChunker::CDC_MAX_CHUNK),
+                                 size_t(compress::CdcChunker::CDC_MAX_CHUNK) + 123}) {
                 compress::CdcStreamChunker stream(chunker);
                 std::vector<compress::CdcChunk> streamed;
                 for (size_t off = 0; off < data.size(); off += block) {
@@ -177,24 +182,36 @@ int main() {
                                 streamed);
                 }
                 stream.finish(streamed);
-                assert(streamed.size() == whole.size());
+                REQUIRE(streamed.size() == whole.size());
                 for (size_t i = 0; i < whole.size(); ++i) {
-                    assert(streamed[i].offset == whole[i].offset);
-                    assert(streamed[i].length == whole[i].length);
-                    assert(streamed[i].hash == whole[i].hash);
+                    REQUIRE(streamed[i].offset == whole[i].offset);
+                    REQUIRE(streamed[i].length == whole[i].length);
+                    REQUIRE(streamed[i].hash == whole[i].hash);
                 }
             }
         }
-        std::cout << "[PASS] streaming equivalence (feed partitions x3 seeds)\n";
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] streaming equivalence (feed partitions x3 seeds)\n";
     }
 
     // 7. OPT-24: Dead 256 KiB pending_ buffer removed and 64-bit fed_ offset verified.
     {
         static_assert(sizeof(openrar::compress::CdcStreamChunker) <= 64,
                       "CdcStreamChunker must not embed a 256 KiB pending_ buffer");
-        std::cout << "[PASS] CdcStreamChunker footprint <= 64B & 64-bit offset (OPT-24)\n";
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] CdcStreamChunker footprint <= 64B & 64-bit offset (OPT-24)\n";
     }
 
-    std::cout << "All cdc_chunker_tests passed.\n";
-    return 0;
+    if (!openrar::test::last_run_was_filtered()) std::cout << "All cdc_chunker_tests passed.\n";
+    return;
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }

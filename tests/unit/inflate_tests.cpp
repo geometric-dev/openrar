@@ -17,6 +17,8 @@ using namespace openrar;
 using namespace openrar::compress;
 
 #include "deflate_kats.inc"
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 namespace {
 
@@ -103,18 +105,18 @@ static void test_inflate_kats() {
                       << " want=" << k.plain_len << " tin=" << tin << "/" << k.stream->size()
                       << std::endl;
         }
-        assert(err == InflateError::Ok && "KAT decode must succeed");
+        REQUIRE((err == InflateError::Ok && "KAT decode must succeed"));
         (void)k.name;
-        assert(out.size() == k.plain_len && "KAT output length mismatch");
+        REQUIRE((out.size() == k.plain_len && "KAT output length mismatch"));
         crypto::Crc32 crc;
         crc.update(out.data(), out.size());
-        assert(crc.get() == k.plain_crc && "KAT output CRC mismatch");
+        REQUIRE((crc.get() == k.plain_crc && "KAT output CRC mismatch"));
     }
 
     // Byte-exact check for the smallest vector.
     std::vector<core::byte> out;
-    assert(decode_vec(kat_text_stream, out) == InflateError::Ok);
-    assert(out == kat_text_plain && "kat_text byte-exact mismatch");
+    REQUIRE(decode_vec(kat_text_stream, out) == InflateError::Ok);
+    REQUIRE((out == kat_text_plain && "kat_text byte-exact mismatch"));
 
     std::cout << "    - 7 KATs decoded (stored/fixed/dynamic, long-distance, "
                  "multi-block, RLE-overlap)"
@@ -141,9 +143,9 @@ static void test_inflate_fixed_match() {
               << "/" << w.bytes().size() << " bytes=[";
     for (size_t i = 0; i < out.size() && i < 8; ++i) std::cout << static_cast<char>(out[i]);
     std::cout << "]" << std::endl;
-    assert(err == InflateError::Ok);
-    assert(out.size() == 6);
-    assert(out[3] == 'a' && out[4] == 'b' && out[5] == 'c');
+    REQUIRE(err == InflateError::Ok);
+    REQUIRE(out.size() == 6);
+    REQUIRE((out[3] == 'a' && out[4] == 'b' && out[5] == 'c'));
 }
 
 static void test_inflate_corrupt_stream_refused() {
@@ -155,7 +157,7 @@ static void test_inflate_corrupt_stream_refused() {
         w.put_bits(1, 1); // BFINAL
         w.put_bits(3, 2); // BTYPE = 3
         std::vector<core::byte> out;
-        assert(decode_vec(w.bytes(), out) == InflateError::BadBlockType);
+        REQUIRE(decode_vec(w.bytes(), out) == InflateError::BadBlockType);
     }
 
     // Stored block with NLEN != ~LEN.
@@ -168,7 +170,7 @@ static void test_inflate_corrupt_stream_refused() {
         w.put_bits(0xABCD, 16); // NLEN (wrong)
         for (int i = 0; i < 5; ++i) w.put_bits(0x41, 8);
         std::vector<core::byte> out;
-        assert(decode_vec(w.bytes(), out) == InflateError::BadStoredLen);
+        REQUIRE(decode_vec(w.bytes(), out) == InflateError::BadStoredLen);
     }
 
     // Dynamic header whose code-length alphabet has zero codes.
@@ -181,7 +183,7 @@ static void test_inflate_corrupt_stream_refused() {
         w.put_bits(0, 4);                             // HCLEN -> 4
         for (int i = 0; i < 4; ++i) w.put_bits(0, 3); // all lengths zero
         std::vector<core::byte> out;
-        assert(decode_vec(w.bytes(), out) == InflateError::BadCodeLengths);
+        REQUIRE(decode_vec(w.bytes(), out) == InflateError::BadCodeLengths);
     }
 
     // Fixed block: match against an empty window (distance too far).
@@ -192,7 +194,7 @@ static void test_inflate_corrupt_stream_refused() {
         w.put_code(0x01, 7); // literal/length symbol 257 (len 3)
         w.put_code(0x00, 5); // distance symbol 0 (dist 1) — window empty
         std::vector<core::byte> out;
-        assert(decode_vec(w.bytes(), out) == InflateError::DistanceTooFar);
+        REQUIRE(decode_vec(w.bytes(), out) == InflateError::DistanceTooFar);
     }
 
     // Truncation: drop the tail of a valid stream; must never decode Ok.
@@ -200,7 +202,7 @@ static void test_inflate_corrupt_stream_refused() {
         std::vector<core::byte> cut(kat_rle_stream.begin(), kat_rle_stream.end() - 4);
         std::vector<core::byte> out;
         const InflateError err = decode_vec(cut, out);
-        assert(err != InflateError::Ok && "truncated stream must not decode");
+        REQUIRE((err != InflateError::Ok && "truncated stream must not decode"));
     }
 
     // Bit-flip in a dynamic block payload must not decode Ok (either a hard
@@ -211,8 +213,8 @@ static void test_inflate_corrupt_stream_refused() {
         flipped[flipped.size() - 1] ^= 0x10;
         std::vector<core::byte> out;
         const InflateError err = decode_vec(flipped, out);
-        assert(err != InflateError::Ok || out.size() != kat_text_plain_len ||
-               out != kat_text_plain);
+        REQUIRE(
+            (err != InflateError::Ok || out.size() != kat_text_plain_len || out != kat_text_plain));
     }
 
     std::cout << "    - reserved block type, NLEN mismatch, empty clen "
@@ -233,14 +235,14 @@ static void test_inflate_inflight_cap_bomb() {
         return true;
     };
     const InflateError err = capped.decode(vin, sink);
-    assert(err == InflateError::OutputCapExceeded && "cap must fire");
-    assert(out.size() == 1000 && "cap must bound actual output");
-    assert(capped.total_out() == 1000 && "cap accounting");
+    REQUIRE((err == InflateError::OutputCapExceeded && "cap must fire"));
+    REQUIRE((out.size() == 1000 && "cap must bound actual output"));
+    REQUIRE((capped.total_out() == 1000 && "cap accounting"));
 
     // Unlimited decode of the same stream succeeds.
     std::vector<core::byte> full;
-    assert(decode_vec(kat_rle_stream, full) == InflateError::Ok);
-    assert(full.size() == kat_rle_plain_len);
+    REQUIRE(decode_vec(kat_rle_stream, full) == InflateError::Ok);
+    REQUIRE(full.size() == kat_rle_plain_len);
 
     std::cout << "    - declared sizes never bound; in-flight cap fires at "
                  "exactly 1000 bytes"
@@ -257,24 +259,24 @@ static void test_inflate_sink_cancel() {
         return ++calls < 2; // cancel at the second flush
     };
     const InflateError err = inf.decode(vin, sink);
-    assert(err == InflateError::SinkFailed && "sink abort must surface");
-    assert(calls == 2 && "abort surfaces at the cancelling call");
+    REQUIRE((err == InflateError::SinkFailed && "sink abort must surface"));
+    REQUIRE((calls == 2 && "abort surfaces at the cancelling call"));
     std::cout << "    - sink abort surfaces as SinkFailed after " << calls << " flushes"
               << std::endl;
 }
 
-int main() {
-    OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
-    test_inflate_kats();
-    std::cout << std::flush;
-    test_inflate_fixed_match();
-    std::cout << std::flush;
-    test_inflate_corrupt_stream_refused();
-    std::cout << std::flush;
-    test_inflate_inflight_cap_bomb();
-    std::cout << std::flush;
-    test_inflate_sink_cancel();
-    std::cout << std::flush;
-    std::cout << "All Inflate (v1.29 M1) tests PASSED!" << std::endl;
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_inflate_kats", test_inflate_kats, false},
+    {"test_inflate_fixed_match", test_inflate_fixed_match, false},
+    {"test_inflate_corrupt_stream_refused", test_inflate_corrupt_stream_refused, false},
+    {"test_inflate_inflight_cap_bomb", test_inflate_inflight_cap_bomb, false},
+    {"test_inflate_sink_cancel", test_inflate_sink_cancel, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All Inflate (v1.29 M1) tests PASSED!";
+    return rc;
 }

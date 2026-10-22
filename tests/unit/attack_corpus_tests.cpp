@@ -37,6 +37,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -69,7 +71,7 @@ fs::path make_dir(const char* name) {
 void write_bytes(const fs::path& p, const std::string& data) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     f.write(data.data(), static_cast<std::streamsize>(data.size()));
-    assert(f.good());
+    REQUIRE(f.good());
 }
 
 std::string read_file(const fs::path& p) {
@@ -82,31 +84,31 @@ std::string read_file(const fs::path& p) {
 void craft_stored(const fs::path& arc, const std::string& entry_name, size_t unp_declared,
                   const std::string& payload) {
     io::FileStream out;
-    assert(out.open(arc, io::FileMode::CreateAlways));
-    assert(format::HeaderWriter::write_signature(out));
+    REQUIRE(out.open(arc, io::FileMode::CreateAlways));
+    REQUIRE(format::HeaderWriter::write_signature(out));
     format::MainBlock mb;
-    assert(format::HeaderWriter::write_main_block(out, mb));
+    REQUIRE(format::HeaderWriter::write_main_block(out, mb));
     format::FileBlock fb;
     fb.file_name = entry_name;
     fb.unp_size = unp_declared;
     fb.pack_size = payload.size();
     fb.method = 0;
     fb.host_os = 1;
-    assert(format::HeaderWriter::write_file_block(out, fb, 0));
+    REQUIRE(format::HeaderWriter::write_file_block(out, fb, 0));
     if (!payload.empty())
         out.write(reinterpret_cast<const core::byte*>(payload.data()), payload.size());
     format::EndArcBlock eb;
-    assert(format::HeaderWriter::write_end_block(out, eb));
+    REQUIRE(format::HeaderWriter::write_end_block(out, eb));
 }
 
 
 // Hostile vint: the header SIZE field carries an overlong encoding.
 void craft_hostile_vint(const fs::path& arc) {
     io::FileStream out;
-    assert(out.open(arc, io::FileMode::CreateAlways));
-    assert(format::HeaderWriter::write_signature(out));
+    REQUIRE(out.open(arc, io::FileMode::CreateAlways));
+    REQUIRE(format::HeaderWriter::write_signature(out));
     format::MainBlock mb;
-    assert(format::HeaderWriter::write_main_block(out, mb));
+    REQUIRE(format::HeaderWriter::write_main_block(out, mb));
     // A header whose size vint uses the full 8-byte continuation form with a
     // value far beyond the remaining bytes.
     const core::byte hostile[] = {
@@ -115,14 +117,15 @@ void craft_hostile_vint(const fs::path& arc) {
     };
     out.write(hostile, sizeof(hostile));
     format::EndArcBlock eb;
-    assert(format::HeaderWriter::write_end_block(out, eb));
+    REQUIRE(format::HeaderWriter::write_end_block(out, eb));
 }
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
     // ── 1. CVE-2025-8088 class: traversal names are contained ─────────────
-    std::cout << "[+] attack_corpus_traversal_contained\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[+] attack_corpus_traversal_contained\n";
     {
         const fs::path root = make_dir("trav");
         const fs::path arc = root / "trav.rar";
@@ -143,7 +146,8 @@ int main() {
     }
 
     // ── 2. CVE-2023-38831 class: spoofed names extract under exact names ──
-    std::cout << "[+] attack_corpus_spoofing_flagged\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[+] attack_corpus_spoofing_flagged\n";
     {
         const fs::path dir = make_dir("spoof");
         // Two entries: the decoy image name and the hostile .cmd twin —
@@ -152,9 +156,9 @@ int main() {
         const fs::path arc = dir / "spoof.rar";
         const fs::path blob = dir / "blob.bin";
         write_bytes(blob, "decoy");
-        assert(ArchiveMutator::add_file_to_archive(arc, blob, "invoice.jpg", 0));
+        REQUIRE(ArchiveMutator::add_file_to_archive(arc, blob, "invoice.jpg", 0));
         write_bytes(blob, "hostile");
-        assert(ArchiveMutator::add_file_to_archive(arc, blob, "invoice.jpg.cmd", 0));
+        REQUIRE(ArchiveMutator::add_file_to_archive(arc, blob, "invoice.jpg.cmd", 0));
         fs::remove(blob);
         archive::ArchiveReader r;
         CHECK(r.open(arc));
@@ -175,17 +179,18 @@ int main() {
     }
 
     // ── 3. CVE-2023-40477 class: hostile RR geometry refuses fail-closed ──
-    std::cout << "[+] attack_corpus_rr_overflow_capped\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[+] attack_corpus_rr_overflow_capped\n";
     {
         const fs::path dir = make_dir("rr");
         const fs::path arc = dir / "rr.rar";
         // A service header claiming 1 GiB of recovery geometry: the parity
         // bounds / caps must refuse before any allocation (fail-closed).
         io::FileStream out;
-        assert(out.open(arc, io::FileMode::CreateAlways));
-        assert(format::HeaderWriter::write_signature(out));
+        REQUIRE(out.open(arc, io::FileMode::CreateAlways));
+        REQUIRE(format::HeaderWriter::write_signature(out));
         format::MainBlock mb;
-        assert(format::HeaderWriter::write_main_block(out, mb));
+        REQUIRE(format::HeaderWriter::write_main_block(out, mb));
         format::FileBlock fb;
         fb.file_name = "RR";
         fb.is_service = true;
@@ -193,11 +198,11 @@ int main() {
         fb.pack_size = 0x40000000ull;
         fb.method = 0;
         fb.host_os = 1;
-        assert(format::HeaderWriter::write_file_block(out, fb, 0));
+        REQUIRE(format::HeaderWriter::write_file_block(out, fb, 0));
         const std::string payload(16, 'R');
         out.write(reinterpret_cast<const core::byte*>(payload.data()), payload.size());
         format::EndArcBlock eb;
-        assert(format::HeaderWriter::write_end_block(out, eb));
+        REQUIRE(format::HeaderWriter::write_end_block(out, eb));
 
         archive::ArchiveReader r;
         const bool opened = r.open(arc);
@@ -214,7 +219,8 @@ int main() {
     }
 
     // ── 4. Bomb: caps fire mid-flight ─────────────────────────────────────
-    std::cout << "[+] attack_corpus_bomb_limits_fire\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[+] attack_corpus_bomb_limits_fire\n";
     {
         const fs::path dir = make_dir("bomb");
         const fs::path arc = dir / "bomb.rar";
@@ -226,7 +232,7 @@ int main() {
             const std::string chunk(1 << 20, '\0');
             for (int i = 0; i < 64; ++i) f.write(chunk.data(), chunk.size());
         }
-        assert(ArchiveMutator::add_file_to_archive(arc, blob, "bomb.bin", 3));
+        REQUIRE(ArchiveMutator::add_file_to_archive(arc, blob, "bomb.bin", 3));
         fs::remove(blob);
         archive::ArchiveReader r;
         CHECK(r.open(arc));
@@ -243,7 +249,8 @@ int main() {
     }
 
     // ── 5. Hostile vint: refused, no crash, no hang ───────────────────────
-    std::cout << "[+] attack_corpus_hostile_vint_refused\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[+] attack_corpus_hostile_vint_refused\n";
     {
         const fs::path dir = make_dir("vint");
         const fs::path arc = dir / "vint.rar";
@@ -259,5 +266,15 @@ int main() {
     }
 
     if (fails == 0) std::printf("[attack-corpus] CVE-class corpus: OK\n");
-    return fails == 0 ? 0 : 1;
+    if (fails != 0) throw std::logic_error(std::to_string(fails) + " failed checks");
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }

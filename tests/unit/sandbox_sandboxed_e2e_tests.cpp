@@ -29,6 +29,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifndef OPENRAR_WORKER_EXE
 #define OPENRAR_WORKER_EXE ""
@@ -62,7 +64,7 @@ fs::path build_archive(const fs::path& dir) {
         std::ofstream f(blob, std::ios::binary | std::ios::trunc);
         for (int i = 0; i < 2048; ++i) f << "sandboxed-" << i << "\n";
     }
-    assert(archive::ArchiveMutator::add_file_to_archive(arc, blob, "a/inner.txt", 3));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, blob, "a/inner.txt", 3));
     std::error_code ec;
     fs::remove(blob, ec);
     return arc;
@@ -74,11 +76,11 @@ bool worker_available() {
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
     OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
     if (!worker_available()) {
         std::printf("[SKIP] sandbox_sandboxed_e2e: openrar_worker not built\n");
-        return 0;
+        return;
     }
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
     // The e2e spawns CHILD processes; under an instrumented parent the
@@ -87,15 +89,15 @@ int main() {
     // and the engine guarantees are covered by the non-spawning suites;
     // this suite runs on the non-instrumented legs.
     std::puts("[SKIP] sandbox_sandboxed_e2e: child-process suite under sanitizer runtime");
-    return 0;
+    return;
 #endif
     if (!platform_sandbox_available()) {
         std::printf("[SKIP] sandbox_sandboxed_e2e: no sandbox model on this platform\n");
-        return 0;
+        return;
     }
 #if !defined(_WIN32) && !defined(__linux__)
     std::printf("[SKIP] sandbox_sandboxed_e2e: model not shipped on this platform\n");
-    return 0;
+    return;
 #endif
 
     const fs::path dir = make_dir("probes");
@@ -108,7 +110,8 @@ int main() {
     }
 
     // ── 1. Denial matrix: sandboxed worker ────────────────────────────────
-    std::cout << "[+] sandboxed selftest (denial matrix)\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[+] sandboxed selftest (denial matrix)\n";
     WireSelftest st{};
     std::string detail;
     CHECK(WorkerBroker::run_selftest(OPENRAR_WORKER_EXE, probe_dir, volume,
@@ -135,7 +138,7 @@ int main() {
     CHECK(fs::is_empty(probe_dir, dec));
 
     // ── 2. Control: the same selftest unsandboxed must NOT deny ───────────
-    std::cout << "[+] unsandboxed control selftest\n";
+    if (!openrar::test::last_run_was_filtered()) std::cout << "[+] unsandboxed control selftest\n";
     WireSelftest ctl{};
     CHECK(WorkerBroker::run_selftest(OPENRAR_WORKER_EXE, probe_dir, volume,
                                      SpawnProfile::Unsandboxed, ctl, detail));
@@ -145,7 +148,8 @@ int main() {
     // reasons — the control asserts only the write.)
 
     // ── 3. Extraction parity THROUGH the sandboxed worker ─────────────────
-    std::cout << "[+] extract parity through the sandboxed worker\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[+] extract parity through the sandboxed worker\n";
     const fs::path arc = build_archive(dir);
     WorkerBroker broker;
     CHECK(broker.start(OPENRAR_WORKER_EXE, arc, WorkerBroker::Limits{}, detail,
@@ -181,5 +185,15 @@ int main() {
     if (fails == 0)
         std::printf("[sandbox-e2e] %s denial matrix + parity: OK\n",
                     platform_sandbox_available() ? "sandboxed" : "unsandboxed");
-    return fails == 0 ? 0 : 1;
+    if (fails != 0) throw std::logic_error(std::to_string(fails) + " failed checks");
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }

@@ -20,6 +20,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _MSC_VER
 #include <crtdbg.h>
@@ -108,7 +110,7 @@ std::vector<core::byte> build_xattr_record_raw(const std::vector<core::byte>& pa
 // re-emits it verbatim; the READER decides whether the type is known).
 void write_archive_with_xattr_record(const fs::path& arc, const std::vector<core::byte>& raw) {
     io::FileStream out;
-    assert(out.open(arc, io::FileMode::CreateAlways));
+    REQUIRE(out.open(arc, io::FileMode::CreateAlways));
     format::HeaderWriter::write_signature(out);
     format::MainBlock mb;
     format::HeaderWriter::write_main_block(out, mb);
@@ -123,7 +125,7 @@ void write_archive_with_xattr_record(const fs::path& arc, const std::vector<core
     fb.win_size = 0;
     fb.unknown_extras.push_back({format::FHEXTRA_XATTR, raw});
 
-    assert(format::HeaderWriter::write_file_block(out, fb));
+    REQUIRE(format::HeaderWriter::write_file_block(out, fb));
     out.write("plan6!", 6);
     format::EndArcBlock eb;
     format::HeaderWriter::write_end_block(out, eb);
@@ -157,19 +159,19 @@ void test_xattr_roundtrip_record() {
     format::FileBlock parsed;
     {
         archive::ArchiveReader reader;
-        assert(reader.open(arc));
-        assert(reader.entries().size() == 1);
+        REQUIRE(reader.open(arc));
+        REQUIRE(reader.entries().size() == 1);
         parsed = reader.entries()[0].header;
     }
-    assert(parsed.xattrs.size() == 3);
-    assert(parsed.xattrs[0].name == "user.note");
-    assert(parsed.xattrs[0].value.size() == 5);
-    assert(std::memcmp(parsed.xattrs[0].value.data(), "hello", 5) == 0);
-    assert(parsed.xattrs[1].name == "user.empty");
-    assert(parsed.xattrs[1].value.empty());
-    assert(parsed.xattrs[2].name == "com.apple.metadata:_kMDItemUserTags");
-    assert(parsed.xattrs[2].value.size() == 8);
-    assert(parsed.unknown_extras.empty());
+    REQUIRE(parsed.xattrs.size() == 3);
+    REQUIRE(parsed.xattrs[0].name == "user.note");
+    REQUIRE(parsed.xattrs[0].value.size() == 5);
+    REQUIRE(std::memcmp(parsed.xattrs[0].value.data(), "hello", 5) == 0);
+    REQUIRE(parsed.xattrs[1].name == "user.empty");
+    REQUIRE(parsed.xattrs[1].value.empty());
+    REQUIRE(parsed.xattrs[2].name == "com.apple.metadata:_kMDItemUserTags");
+    REQUIRE(parsed.xattrs[2].value.size() == 8);
+    REQUIRE(parsed.unknown_extras.empty());
 
     // Canonical re-serialization: re-write the parsed block (the crafted
     // vehicle is dropped — the emitted record is the canonical one),
@@ -177,11 +179,11 @@ void test_xattr_roundtrip_record() {
     const fs::path arc2 = dir / "xattr_reser.rar";
     {
         io::FileStream out;
-        assert(out.open(arc2, io::FileMode::CreateAlways));
+        REQUIRE(out.open(arc2, io::FileMode::CreateAlways));
         format::HeaderWriter::write_signature(out);
         format::MainBlock mb;
         format::HeaderWriter::write_main_block(out, mb);
-        assert(format::HeaderWriter::write_file_block(out, parsed));
+        REQUIRE(format::HeaderWriter::write_file_block(out, parsed));
         out.write("plan6!", 6);
         format::EndArcBlock eb;
         format::HeaderWriter::write_end_block(out, eb);
@@ -189,12 +191,12 @@ void test_xattr_roundtrip_record() {
     format::FileBlock reparsed;
     {
         archive::ArchiveReader reader;
-        assert(reader.open(arc2));
-        assert(reader.entries().size() == 1);
+        REQUIRE(reader.open(arc2));
+        REQUIRE(reader.entries().size() == 1);
         reparsed = reader.entries()[0].header;
     }
-    assert(reparsed.unknown_extras.empty());
-    assert(xattr_equal(parsed.xattrs, reparsed.xattrs));
+    REQUIRE(reparsed.unknown_extras.empty());
+    REQUIRE(xattr_equal(parsed.xattrs, reparsed.xattrs));
     // Byte-identical record: rebuild the canonical record from the parsed
     // attributes and compare against the crafted original.
     const auto recanonical =
@@ -202,7 +204,7 @@ void test_xattr_roundtrip_record() {
                             {"user.empty", ""},
                             {"com.apple.metadata:_kMDItemUserTags",
                              std::string("\x62\x70\x6c\x69\x73\x74\x30\x30", 8)}});
-    assert(recanonical == raw);
+    REQUIRE(recanonical == raw);
 
     // Mutation roundtrip: append a second file — the carrier's xattrs
     // survive byte-identically.
@@ -215,25 +217,25 @@ void test_xattr_roundtrip_record() {
         archive::ArchiveMutator::PreparedAdd p;
         p.entry_name = "added.bin";
         p.src_path = src;
-        assert(archive::ArchiveMutator::prepare_add_file(src, "added.bin", 0, "", p));
+        REQUIRE(archive::ArchiveMutator::prepare_add_file(src, "added.bin", 0, "", p));
         std::vector<archive::ArchiveMutator::PreparedAdd> batch;
         batch.push_back(std::move(p));
         std::string detail;
         const int wrc = archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {},
                                                                     false, {}, detail);
-        assert(wrc == 0);
+        REQUIRE(wrc == 0);
     }
     fs::remove(src);
     archive::ArchiveReader reader2;
-    assert(reader2.open(arc));
+    REQUIRE(reader2.open(arc));
     const archive::ArchiveEntry* carrier = nullptr;
     for (const auto& e : reader2.entries()) {
         if (e.header.is_service) continue;
         if (e.header.file_name == "carrier.txt") carrier = &e;
     }
-    assert(carrier != nullptr);
-    assert(carrier->header.unknown_extras.empty());
-    assert(xattr_equal(parsed.xattrs, carrier->header.xattrs));
+    REQUIRE(carrier != nullptr);
+    REQUIRE(carrier->header.unknown_extras.empty());
+    REQUIRE(xattr_equal(parsed.xattrs, carrier->header.xattrs));
 
     std::cout
         << "[PASS] xattr_roundtrip_record: parse + canonical re-emission + mutation survival\n";
@@ -329,14 +331,14 @@ void test_xattr_malformed_captured_verbatim() {
         format::FileBlock parsed;
         {
             archive::ArchiveReader reader;
-            assert(reader.open(arc));
-            assert(reader.entries().size() == 1);
+            REQUIRE(reader.open(arc));
+            REQUIRE(reader.entries().size() == 1);
             parsed = reader.entries()[0].header;
         }
-        assert(parsed.xattrs.empty());
-        assert(parsed.unknown_extras.size() == 1);
-        assert(parsed.unknown_extras[0].type == format::FHEXTRA_XATTR);
-        assert(parsed.unknown_extras[0].raw == raw);
+        REQUIRE(parsed.xattrs.empty());
+        REQUIRE(parsed.unknown_extras.size() == 1);
+        REQUIRE(parsed.unknown_extras[0].type == format::FHEXTRA_XATTR);
+        REQUIRE(parsed.unknown_extras[0].raw == raw);
 
         // The verbatim record survives a mutation byte-identically.
         const fs::path src = dir / "added.bin";
@@ -347,25 +349,25 @@ void test_xattr_malformed_captured_verbatim() {
         archive::ArchiveMutator::PreparedAdd p;
         p.entry_name = "added.bin";
         p.src_path = src;
-        assert(archive::ArchiveMutator::prepare_add_file(src, "added.bin", 0, "", p));
+        REQUIRE(archive::ArchiveMutator::prepare_add_file(src, "added.bin", 0, "", p));
         std::vector<archive::ArchiveMutator::PreparedAdd> batch;
         batch.push_back(std::move(p));
         std::string detail;
         const int wrc = archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {},
                                                                     false, {}, detail);
-        assert(wrc == 0);
+        REQUIRE(wrc == 0);
         fs::remove(src);
         archive::ArchiveReader reader2;
-        assert(reader2.open(arc));
+        REQUIRE(reader2.open(arc));
         const archive::ArchiveEntry* carrier = nullptr;
         for (const auto& e : reader2.entries()) {
             if (e.header.is_service) continue;
             if (e.header.file_name == "carrier.txt") carrier = &e;
         }
-        assert(carrier != nullptr);
-        assert(carrier->header.xattrs.empty());
-        assert(carrier->header.unknown_extras.size() == 1);
-        assert(carrier->header.unknown_extras[0].raw == raw);
+        REQUIRE(carrier != nullptr);
+        REQUIRE(carrier->header.xattrs.empty());
+        REQUIRE(carrier->header.unknown_extras.size() == 1);
+        REQUIRE(carrier->header.unknown_extras[0].raw == raw);
         rm(dir);
     }
     std::cout << "[PASS] xattr_malformed_captured_verbatim: " << case_idx
@@ -402,21 +404,21 @@ void test_xattr_hostile_record_both_engines() {
             const fs::path arc_big = dir / "xattr_big.rar";
             write_archive_with_xattr_record(arc_big, big_raw);
             archive::ArchiveReader reader;
-            assert(reader.open(arc_big));
-            assert(reader.entries().size() == 1);
-            assert(reader.entries()[0].header.xattrs.size() == 1);
-            assert(reader.entries()[0].header.xattrs[0].value.size() == 65536);
-            assert(reader.entries()[0].header.unknown_extras.empty());
+            REQUIRE(reader.open(arc_big));
+            REQUIRE(reader.entries().size() == 1);
+            REQUIRE(reader.entries()[0].header.xattrs.size() == 1);
+            REQUIRE(reader.entries()[0].header.xattrs[0].value.size() == 65536);
+            REQUIRE(reader.entries()[0].header.unknown_extras.empty());
         }
         {
             const fs::path arc_hostile = dir / "xattr_hostile.rar";
             write_archive_with_xattr_record(arc_hostile, hostile_raw);
             archive::ArchiveReader reader;
-            assert(reader.open(arc_hostile));
-            assert(reader.entries().size() == 1);
-            assert(reader.entries()[0].header.xattrs.empty());
-            assert(reader.entries()[0].header.unknown_extras.size() == 1);
-            assert(reader.entries()[0].header.unknown_extras[0].raw == hostile_raw);
+            REQUIRE(reader.open(arc_hostile));
+            REQUIRE(reader.entries().size() == 1);
+            REQUIRE(reader.entries()[0].header.xattrs.empty());
+            REQUIRE(reader.entries()[0].header.unknown_extras.size() == 1);
+            REQUIRE(reader.entries()[0].header.unknown_extras[0].raw == hostile_raw);
         }
     }
     unset_env("OPENRAR_NO_MMAP");
@@ -428,7 +430,7 @@ void test_xattr_hostile_record_both_engines() {
 // records (types 0x42 and 0x7F — unimplemented by this build).
 void write_archive_with_unknown_extras(const fs::path& arc) {
     io::FileStream out;
-    assert(out.open(arc, io::FileMode::CreateAlways));
+    REQUIRE(out.open(arc, io::FileMode::CreateAlways));
     format::HeaderWriter::write_signature(out);
     format::MainBlock mb;
     format::HeaderWriter::write_main_block(out, mb);
@@ -460,7 +462,7 @@ void write_archive_with_unknown_extras(const fs::path& arc) {
     fb.unknown_extras.push_back({type1, raw1});
     fb.unknown_extras.push_back({type2, raw2});
 
-    assert(format::HeaderWriter::write_file_block(out, fb));
+    REQUIRE(format::HeaderWriter::write_file_block(out, fb));
     out.write("plan6!", 6);
     format::EndArcBlock eb;
     format::HeaderWriter::write_end_block(out, eb);
@@ -468,7 +470,7 @@ void write_archive_with_unknown_extras(const fs::path& arc) {
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
@@ -484,21 +486,21 @@ int main() {
     std::vector<format::FileBlock::UnknownExtra> unknowns;
     {
         archive::ArchiveReader reader;
-        assert(reader.open(arc));
-        assert(reader.entries().size() == 1);
+        REQUIRE(reader.open(arc));
+        REQUIRE(reader.entries().size() == 1);
         unknowns = reader.entries()[0].header.unknown_extras;
     }
-    assert(unknowns.size() == 2);
-    assert(unknowns[0].type == 0x42);
-    assert(unknowns[0].raw.size() == 6); // size vint + type + 4 payload bytes
-    assert(unknowns[0].raw.size() >= 4);
+    REQUIRE(unknowns.size() == 2);
+    REQUIRE(unknowns[0].type == 0x42);
+    REQUIRE(unknowns[0].raw.size() == 6); // size vint + type + 4 payload bytes
+    REQUIRE(unknowns[0].raw.size() >= 4);
     static const core::byte payload1[] = {0xDE, 0xAD, 0xBE, 0xEF};
     const core::byte* tail = unknowns[0].raw.data() + unknowns[0].raw.size() - 4;
-    assert(std::equal(payload1, payload1 + 4, tail));
-    assert(unknowns[1].type == 0x7F);
-    assert(unknowns[1].raw.size() >= 18);
-    assert(std::string(unknowns[1].raw.data() + unknowns[1].raw.size() - 18,
-                       unknowns[1].raw.data() + unknowns[1].raw.size()) == "future-record-data");
+    REQUIRE(std::equal(payload1, payload1 + 4, tail));
+    REQUIRE(unknowns[1].type == 0x7F);
+    REQUIRE(unknowns[1].raw.size() >= 18);
+    REQUIRE(std::string(unknowns[1].raw.data() + unknowns[1].raw.size() - 18,
+                        unknowns[1].raw.data() + unknowns[1].raw.size()) == "future-record-data");
 
     // Roundtrip: append a second file through the mutator — the carrier's
     // unknown records must survive byte-identically.
@@ -512,7 +514,7 @@ int main() {
         archive::ArchiveMutator::PreparedAdd p;
         p.entry_name = "added.bin";
         p.src_path = src;
-        assert(archive::ArchiveMutator::prepare_add_file(src, "added.bin", 0, "", p));
+        REQUIRE(archive::ArchiveMutator::prepare_add_file(src, "added.bin", 0, "", p));
         std::vector<archive::ArchiveMutator::PreparedAdd> batch;
         batch.push_back(std::move(p));
         std::string detail;
@@ -521,12 +523,12 @@ int main() {
         if (wrc != 0) {
             std::cerr << "  write_batch_add_ex rc=" << wrc << " detail=" << detail << "\n";
         }
-        assert(wrc == 0);
+        REQUIRE(wrc == 0);
     }
     fs::remove(src);
 
     archive::ArchiveReader reader2;
-    assert(reader2.open(arc));
+    REQUIRE(reader2.open(arc));
     const archive::ArchiveEntry* carrier = nullptr;
     size_t added = 0;
     for (const auto& e : reader2.entries()) {
@@ -536,18 +538,29 @@ int main() {
         else
             ++added;
     }
-    assert(carrier != nullptr && added == 1);
-    assert(carrier->header.unknown_extras.size() == 2);
-    assert(carrier->header.unknown_extras[0].type == 0x42);
-    assert(carrier->header.unknown_extras[0].raw == unknowns[0].raw);
-    assert(carrier->header.unknown_extras[1].type == 0x7F);
-    assert(carrier->header.unknown_extras[1].raw == unknowns[1].raw);
-    std::cout << "[PASS] unknown_extras_roundtrip: verbatim capture + mutation survival\n";
+    REQUIRE((carrier != nullptr && added == 1));
+    REQUIRE(carrier->header.unknown_extras.size() == 2);
+    REQUIRE(carrier->header.unknown_extras[0].type == 0x42);
+    REQUIRE(carrier->header.unknown_extras[0].raw == unknowns[0].raw);
+    REQUIRE(carrier->header.unknown_extras[1].type == 0x7F);
+    REQUIRE(carrier->header.unknown_extras[1].raw == unknowns[1].raw);
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[PASS] unknown_extras_roundtrip: verbatim capture + mutation survival\n";
 
     test_xattr_roundtrip_record();
     test_xattr_malformed_captured_verbatim();
     test_xattr_hostile_record_both_engines();
 
     rm(dir);
-    return 0;
+    return;
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }

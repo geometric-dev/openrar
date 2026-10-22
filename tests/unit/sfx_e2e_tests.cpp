@@ -14,6 +14,8 @@
 
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/archive/archive_reader.hpp"
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 #include "../../src/core/types.hpp"
 
 #include <cassert>
@@ -95,10 +97,10 @@ static StubRun run_stub(const fs::path& sfx, const std::string& args,
     set_env("OPENRAR_SFX_FORCE_INTERACTIVE", "1");
     // cmd /c strips the first AND last quote when a line carries more than
     // two: everything here must be space-free and unquoted.
-    assert(sfx.string().find(' ') == std::string::npos);
-    assert(args.find('"') == std::string::npos); // quotes get cmd-stripped
-    assert(in_file.string().find(' ') == std::string::npos);
-    assert(out_file.string().find(' ') == std::string::npos);
+    REQUIRE(sfx.string().find(' ') == std::string::npos);
+    REQUIRE(args.find('"') == std::string::npos); // quotes get cmd-stripped
+    REQUIRE(in_file.string().find(' ') == std::string::npos);
+    REQUIRE(out_file.string().find(' ') == std::string::npos);
     std::string cmd =
         stub_cmd(sfx, args) + " < " + in_file.string() + " > " + out_file.string() + " 2>&1";
     int rc = std::system(cmd.c_str());
@@ -120,16 +122,16 @@ static fs::path make_sfx(const std::string& directives, const std::string& name)
     ArchiveMutator::PreparedAdd p;
     p.entry_name = name + ".txt";
     p.src_path = payload;
-    assert(ArchiveMutator::prepare_add_file(payload, p.entry_name, 0, "", p));
+    REQUIRE(ArchiveMutator::prepare_add_file(payload, p.entry_name, 0, "", p));
     files.push_back(std::move(p));
-    assert(ArchiveMutator::write_batch_add(arc, files, /*sfx_stub=*/{}, /*password=*/"",
-                                           /*encrypt_headers=*/false, {}, /*solid=*/false,
-                                           bytes(directives)));
+    REQUIRE(ArchiveMutator::write_batch_add(arc, files, /*sfx_stub=*/{}, /*password=*/"",
+                                            /*encrypt_headers=*/false, {}, /*solid=*/false,
+                                            bytes(directives)));
     std::string err;
-    assert(ArchiveMutator::convert_to_sfx(arc, g_stub_exe, err));
+    REQUIRE(ArchiveMutator::convert_to_sfx(arc, g_stub_exe, err));
     fs::path sfx = arc;
     sfx.replace_extension(".exe"); // convert_to_sfx derives the output path
-    assert(fs::exists(sfx));
+    REQUIRE(fs::exists(sfx));
     fs::remove(arc);
     fs::remove(payload);
     return sfx;
@@ -150,16 +152,16 @@ static void test_e2e_consent_run_and_deny() {
         std::fprintf(stderr, "[e2e-diag] exit=%d output:\n%s\n", r.exit_code, r.output.c_str());
         std::fflush(stderr);
     }
-    assert(r.exit_code == 0);
-    assert(fs::exists(sentinel));
-    assert(contains(r.output, "executed"));
+    REQUIRE(r.exit_code == 0);
+    REQUIRE(fs::exists(sentinel));
+    REQUIRE(contains(r.output, "executed"));
     fs::remove(sentinel);
 
     // Default focus: empty line denies (Don't Run) — sentinel absent, exit 0.
     r = run_stub(sfx, "-ddest_deny", "\n");
-    assert(r.exit_code == 0);
-    assert(!fs::exists(sentinel));
-    assert(contains(r.output, "skipped-consent"));
+    REQUIRE(r.exit_code == 0);
+    REQUIRE(!fs::exists(sentinel));
+    REQUIRE(contains(r.output, "skipped-consent"));
     std::cout << "[PASS] e2e: consent run + Don't-Run default focus" << std::endl;
 }
 
@@ -170,9 +172,9 @@ static void test_e2e_noexec_suppresses() {
     const fs::path sfx = make_sfx("Setup=" + probe_cmd_for(sentinel) + "\n", "e2e_noexec");
 
     StubRun r = run_stub(sfx, "-sfxnoexec -ddest_noexec", "R\n");
-    assert(r.exit_code == 0);
-    assert(!fs::exists(sentinel));            // suppressed even with scripted consent
-    assert(contains(r.output, "suppressed")); // observable, never silent
+    REQUIRE(r.exit_code == 0);
+    REQUIRE(!fs::exists(sentinel));            // suppressed even with scripted consent
+    REQUIRE(contains(r.output, "suppressed")); // observable, never silent
     std::cout << "[PASS] e2e: -sfxnoexec suppresses directives and reports" << std::endl;
 }
 
@@ -185,7 +187,7 @@ static void test_e2e_prompt_cap_aborts() {
     std::string stdin_data;
     for (int i = 0; i < 9; ++i) stdin_data += "R\n";
     StubRun r = run_stub(sfx, "-ddest_cap", stdin_data);
-    assert(r.exit_code == 2); // hostile-archive abort per §8
+    REQUIRE(r.exit_code == 2); // hostile-archive abort per §8
     std::cout << "[PASS] e2e: prompt cap aborts the run (exit 2)" << std::endl;
 }
 
@@ -196,35 +198,22 @@ static void test_e2e_no_directives_plain_extraction() {
     // which is the test binary's directory, not g_work.
     const fs::path dest = g_work / "dest_plain";
     StubRun r = run_stub(sfx, "-d" + dest.string(), "");
-    assert(r.exit_code == 0);
-    assert(fs::exists(dest / "e2e_plain.txt"));
-    assert(!contains(r.output, "[sfx]")); // no directive machinery output
+    REQUIRE(r.exit_code == 0);
+    REQUIRE(fs::exists(dest / "e2e_plain.txt"));
+    REQUIRE(!contains(r.output, "[sfx]")); // no directive machinery output
     // done() must stamp a real extraction time: without prog.init() the
     // start_time_ default (steady_clock epoch) made the summary print
     // system uptime as seconds ("unpacked in 77867.4s").
     {
         const size_t pos = r.output.find("unpacked in ");
-        assert(pos != std::string::npos);
+        REQUIRE(pos != std::string::npos);
         const double secs = std::atof(r.output.c_str() + pos + 12);
-        assert(secs >= 0.0 && secs < 60.0);
+        REQUIRE((secs >= 0.0 && secs < 60.0));
     }
     std::cout << "[PASS] e2e: directive-free archive extracts untouched" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
-#ifdef _MSC_VER
-    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
-    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
-    // test process forever while ctest moves on, leaving file locks behind.
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
-    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
-    // process still hangs after printing the assert.
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
     if (argc >= 3 && std::strcmp(argv[1], "--sfx-probe-touch") == 0) {
         std::ofstream ofs(argv[2], std::ios::binary);
         ofs << "touched";
@@ -249,8 +238,10 @@ int main(int argc, char* argv[]) {
 #endif
     }
     if (!fs::exists(stub)) {
-        std::cout << "[SKIP] sfx e2e: Default.SFX stub not found at " << stub.string()
-                  << " (build it first)\n";
+        if (!openrar::test::is_list_only(argc, argv)) {
+            std::cout << "[SKIP] sfx e2e: Default.SFX stub not found at " << stub.string()
+                      << " (build it first)\n";
+        }
         return 0;
     }
     g_stub_exe = stub;
@@ -258,12 +249,19 @@ int main(int argc, char* argv[]) {
     fs::remove_all(g_work);
     fs::create_directories(g_work);
 
-    std::cout << "Running v1.23.0 SFX sandbox e2e suite...\n";
-    test_e2e_consent_run_and_deny();
-    test_e2e_noexec_suppresses();
-    test_e2e_prompt_cap_aborts();
-    test_e2e_no_directives_plain_extraction();
+    static const openrar::test::Case k_cases[] = {
+        {"test_e2e_consent_run_and_deny", test_e2e_consent_run_and_deny, false},
+        {"test_e2e_noexec_suppresses", test_e2e_noexec_suppresses, false},
+        {"test_e2e_prompt_cap_aborts", test_e2e_prompt_cap_aborts, false},
+        {"test_e2e_no_directives_plain_extraction", test_e2e_no_directives_plain_extraction, false},
+    };
+    openrar::test::route_crt_asserts_to_stderr();
+    if (!openrar::test::is_list_only(argc, argv) && !openrar::test::last_run_was_filtered())
+        std::cout << "Running v1.23.0 SFX sandbox e2e suite...\n";
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
     fs::remove_all(g_work);
-    std::cout << "All SFX sandbox e2e tests PASSED!\n";
-    return 0;
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All SFX sandbox e2e tests PASSED!\n";
+    return rc;
 }

@@ -34,6 +34,8 @@ using namespace openrar::archive::foreign;
 #include "deflate_kats.inc"
 #include "foreign_fixtures.inc"
 
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 #ifdef OPENRAR_CLI_EXE
 #include <cstdlib>
 #ifdef _WIN32
@@ -81,9 +83,9 @@ struct VecInput {
 
 void write_bytes(const std::filesystem::path& p, const std::vector<core::byte>& data) {
     std::ofstream f(p, std::ios::binary);
-    assert(f);
+    REQUIRE(f);
     f.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-    assert(f);
+    REQUIRE(f);
 }
 
 std::vector<core::byte> read_bytes(const std::filesystem::path& p) {
@@ -106,19 +108,19 @@ foreign::TranscodeOptions base_opts() {
 void verify_output(const std::filesystem::path& arc,
                    const std::vector<std::vector<core::byte>>& want_payloads) {
     ArchiveReader r;
-    assert(r.open(arc));
+    REQUIRE(r.open(arc));
     std::vector<size_t> payload_idx;
     for (size_t i = 0; i < r.entries().size(); ++i) {
         if (r.entries()[i].header.is_service) continue;
         if (r.entries()[i].header.pack_size < 0) continue;
         payload_idx.push_back(i);
     }
-    assert(payload_idx.size() == want_payloads.size());
+    REQUIRE(payload_idx.size() == want_payloads.size());
     for (size_t i = 0; i < payload_idx.size(); ++i) {
         std::vector<core::byte> out;
-        assert(r.extract_entry_to_memory(payload_idx[i], out, ~core::uint64(0), ReaderHooks{}) ==
-               0);
-        assert(out == want_payloads[i]);
+        REQUIRE(r.extract_entry_to_memory(payload_idx[i], out, ~core::uint64(0), ReaderHooks{}) ==
+                0);
+        REQUIRE(out == want_payloads[i]);
     }
 }
 
@@ -133,8 +135,8 @@ std::vector<core::byte> decode_kat_rle() {
         plain.insert(plain.end(), d, d + n);
         return true;
     };
-    assert(inf.decode(vin, sink) == compress::InflateError::Ok);
-    assert(plain.size() == kat_rle_plain_len);
+    REQUIRE(inf.decode(vin, sink) == compress::InflateError::Ok);
+    REQUIRE(plain.size() == kat_rle_plain_len);
     return plain;
 }
 
@@ -186,12 +188,12 @@ static void test_transcode_zip_identity() {
     ExtractionReport report;
     ReaderHooks hooks;
     const ForeignStatus st = transcode(src, dir / "out.rar", opts, result, report, hooks);
-    assert(st == ForeignStatus::Ok && result.detail.c_str());
-    assert(result.verified);
-    assert(result.format == "zip");
-    assert(result.migrated_files == 3 && result.migrated_dirs == 1);
-    assert(result.archive_comment_migrated);
-    assert(result.skipped == 0);
+    REQUIRE((st == ForeignStatus::Ok && result.detail.c_str()));
+    REQUIRE(result.verified);
+    REQUIRE(result.format == "zip");
+    REQUIRE((result.migrated_files == 3 && result.migrated_dirs == 1));
+    REQUIRE(result.archive_comment_migrated);
+    REQUIRE(result.skipped == 0);
 
     // Bit-for-bit extraction equivalence (store + deflate + dir + comment).
     verify_output(dir / "out.rar", {txt, bin, decode_kat_rle()});
@@ -221,8 +223,8 @@ static void test_transcode_tar_gzip_identity() {
     ExtractionReport report;
     const ForeignStatus st =
         transcode(tar_src, dir / "tar_out.rar", opts, result, report, ReaderHooks{});
-    assert(st == ForeignStatus::Ok && result.detail.c_str());
-    assert(result.verified && result.format == "tar");
+    REQUIRE((st == ForeignStatus::Ok && result.detail.c_str()));
+    REQUIRE((result.verified && result.format == "tar"));
     verify_output(dir / "tar_out.rar", {t.data});
 
     // GZIP: one logical entry, concatenated members.
@@ -235,8 +237,8 @@ static void test_transcode_tar_gzip_identity() {
     ExtractionReport gz_report;
     const ForeignStatus gst =
         transcode(gz_src, dir / "gz_out.rar", opts, gz_result, gz_report, ReaderHooks{});
-    assert(gst == ForeignStatus::Ok && gz_result.detail.c_str());
-    assert(gz_result.verified && gz_result.format == "gzip");
+    REQUIRE((gst == ForeignStatus::Ok && gz_result.detail.c_str()));
+    REQUIRE((gz_result.verified && gz_result.format == "gzip"));
     std::vector<core::byte> want(kat_text_plain.begin(), kat_text_plain.end());
     const std::vector<core::byte> rle_plain = decode_kat_rle();
     want.insert(want.end(), rle_plain.begin(), rle_plain.end()); // member concatenation
@@ -256,7 +258,7 @@ static void test_transcode_refusals_and_collisions() {
         TranscodeResult result;
         ExtractionReport report;
         const ForeignStatus st = transcode(src, dir / "o.rar", opts, result, report, ReaderHooks{});
-        assert(st == ForeignStatus::Unparseable && result.usage_refused);
+        REQUIRE((st == ForeignStatus::Unparseable && result.usage_refused));
     }
     // Legacy RAR: explicit refusal (never "not an archive").
     {
@@ -266,8 +268,8 @@ static void test_transcode_refusals_and_collisions() {
         TranscodeResult result;
         ExtractionReport report;
         const ForeignStatus st = transcode(src, dir / "o.rar", opts, result, report, ReaderHooks{});
-        assert(st == ForeignStatus::Unparseable && result.usage_refused);
-        assert(result.detail.find("legacy RAR") != std::string::npos);
+        REQUIRE((st == ForeignStatus::Unparseable && result.usage_refused));
+        REQUIRE(result.detail.find("legacy RAR") != std::string::npos);
     }
     // Archive-internal collision over TRANSLATED names: abort pre-output.
     {
@@ -291,8 +293,8 @@ static void test_transcode_refusals_and_collisions() {
         ExtractionReport report;
         const ForeignStatus st =
             transcode(src, dir / "coll.rar", opts, result, report, ReaderHooks{});
-        assert(st == ForeignStatus::StructuralMismatch);
-        assert(!std::filesystem::exists(dir / "coll.rar")); // nothing written
+        REQUIRE(st == ForeignStatus::StructuralMismatch);
+        REQUIRE(!std::filesystem::exists(dir / "coll.rar")); // nothing written
     }
     std::cout << "    - RAR5/legacy refusals + collision abort pre-output" << std::endl;
 }
@@ -322,9 +324,9 @@ static void test_df_and_staging() {
         ExtractionReport report;
         const ForeignStatus st =
             transcode(src, dir / "df1.rar", opts, result, report, ReaderHooks{});
-        assert(st == ForeignStatus::Ok && result.verified);
-        assert(result.source_deleted);
-        assert(!std::filesystem::exists(src));
+        REQUIRE((st == ForeignStatus::Ok && result.verified));
+        REQUIRE(result.source_deleted);
+        REQUIRE(!std::filesystem::exists(src));
     }
     // -df with a skipped entry (encrypted): source KEPT.
     {
@@ -346,10 +348,10 @@ static void test_df_and_staging() {
         ExtractionReport report;
         const ForeignStatus st =
             transcode(src, dir / "df2.rar", opts, result, report, ReaderHooks{});
-        assert(st == ForeignStatus::Ok);
-        assert(!result.source_deleted);
-        assert(std::filesystem::exists(src));
-        assert(result.encrypted_refused_present);
+        REQUIRE(st == ForeignStatus::Ok);
+        REQUIRE(!result.source_deleted);
+        REQUIRE(std::filesystem::exists(src));
+        REQUIRE(result.encrypted_refused_present);
     }
     // Staging sweep on abort: a cancel hook mid-decode leaves no staging.
     {
@@ -368,13 +370,13 @@ static void test_df_and_staging() {
         };
         hooks.cancel_user = &cs;
         const ForeignStatus st = transcode(src, dir / "cancel.rar", opts, result, report, hooks);
-        assert(st == ForeignStatus::Aborted);
-        assert(!std::filesystem::exists(dir / "cancel.rar"));
+        REQUIRE(st == ForeignStatus::Aborted);
+        REQUIRE(!std::filesystem::exists(dir / "cancel.rar"));
         // No openrar-cv-* staging dirs remain in the temp root.
         for (const auto& it :
              std::filesystem::directory_iterator(std::filesystem::temp_directory_path())) {
             const std::string n = it.path().filename().string();
-            assert(n.rfind("openrar-cv-", 0) != 0 || !std::filesystem::is_directory(it.path()));
+            REQUIRE((n.rfind("openrar-cv-", 0) != 0 || !std::filesystem::is_directory(it.path())));
         }
     }
     std::cout << "    - df deletes only on verified full migration; staging swept" << std::endl;
@@ -408,49 +410,49 @@ static void test_cv_cli_contracts() {
     rc = run_cli("cv " + src.string() + " " + (dir / "cli_out.rar").string() +
                      " --json-summary=" + json_path.string(),
                  nul);
-    assert(rc == 0);
+    REQUIRE(rc == 0);
     const std::string json = read_bytes(json_path).size() ? [&] {
         std::ifstream f(json_path);
         return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     }()
                                                           : "";
-    assert(json.find("\"schema_version\":2") != std::string::npos);
-    assert(json.find("\"format\":\"zip\"") != std::string::npos);
-    assert(json.find("\"verified\":true") != std::string::npos);
-    assert(json.find("\"source_deleted\":false") != std::string::npos);
+    REQUIRE(json.find("\"schema_version\":2") != std::string::npos);
+    REQUIRE(json.find("\"format\":\"zip\"") != std::string::npos);
+    REQUIRE(json.find("\"verified\":true") != std::string::npos);
+    REQUIRE(json.find("\"source_deleted\":false") != std::string::npos);
     // v1 key order preserved (schema_version first, archive second).
-    assert(json.find("\"schema_version\":2,\"archive\":\"") != std::string::npos);
+    REQUIRE(json.find("\"schema_version\":2,\"archive\":\"") != std::string::npos);
 
     // dest == source → 7.
     rc = run_cli("cv " + src.string() + " " + src.string(), nul);
-    assert(rc == 7);
+    REQUIRE(rc == 7);
 
     // Non-TTY: zero ESC bytes on stdout (hostile-name control included via
     // the already-pinned v1.28 corpus; here the plain payload path).
     const auto cap = dir / "cap.txt";
     rc = run_cli("cv " + src.string() + " " + (dir / "nt.rar").string(),
                  ">" + cap.string() + " 2>&1");
-    assert(rc == 0);
+    REQUIRE(rc == 0);
     const auto out_bytes = read_bytes(cap);
-    for (const core::byte b : out_bytes) assert(b != core::byte(0x1B));
+    for (const core::byte b : out_bytes) REQUIRE(b != core::byte(0x1B));
 
     // -v refused → 7; unknown-but-inert switch warns and exits 0.
     rc = run_cli("cv -v " + src.string(), nul);
-    assert(rc == 7);
+    REQUIRE(rc == 7);
     rc = run_cli("cv " + src.string() + " " + (dir / "inert.rar").string() + " -ams", nul);
-    assert(rc == 7); // -ams is on the explicit refuse list
+    REQUIRE(rc == 7); // -ams is on the explicit refuse list
 
     // RAR5 source → usage 7 with the named message.
     const auto r5 = dir / "r5.rar";
     write_bytes(r5, std::vector<core::byte>{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00});
     rc = run_cli("cv " + r5.string(), nul);
-    assert(rc == 7);
+    REQUIRE(rc == 7);
 
     // Garbage source → 13.
     const auto junk = dir / "junk.bin";
     write_bytes(junk, std::vector<core::byte>(64, core::byte('z')));
     rc = run_cli("cv " + junk.string(), nul);
-    assert(rc == 13);
+    REQUIRE(rc == 13);
 
     // Nothing migrated → 10, no output archive.
     const auto enc_src = dir / "enc.zip";
@@ -466,16 +468,16 @@ static void test_cv_cli_contracts() {
     enc_members.push_back(enc);
     write_bytes(enc_src, build_zip(enc_members));
     rc = run_cli("cv " + enc_src.string() + " " + (dir / "never.rar").string(), nul);
-    assert(rc == 11); // encrypted-refused class per D1
-    assert(!std::filesystem::exists(dir / "never.rar"));
+    REQUIRE(rc == 11); // encrypted-refused class per D1
+    REQUIRE(!std::filesystem::exists(dir / "never.rar"));
 
     // -df e2e: verified migration deletes the source.
     const auto df_src = dir / "df.zip";
     write_bytes(df_src, build_zip(members));
     rc = run_cli("cv -df " + df_src.string() + " " + (dir / "df_out.rar").string(), nul);
-    assert(rc == 0);
-    assert(!std::filesystem::exists(df_src));
-    assert(std::filesystem::exists(dir / "df_out.rar"));
+    REQUIRE(rc == 0);
+    REQUIRE(!std::filesystem::exists(df_src));
+    REQUIRE(std::filesystem::exists(dir / "df_out.rar"));
 
     std::cout << "    - exit taxonomy, JSON v2, zero-ESC, refusals, -df: pinned" << std::endl;
 }
@@ -518,53 +520,54 @@ static void test_transcode_tar_links_migrate() {
     ExtractionReport report;
     const ForeignStatus st =
         transcode(tar_src, dir / "links_out.rar", opts, result, report, ReaderHooks{});
-    assert(st == ForeignStatus::Ok && result.detail.c_str());
-    assert(result.migrated_files == 1);
-    assert(result.migrated_links == 2); // symlink + resolvable hardlink
-    assert(result.skipped == 1);        // the dangling hardlink, reported
+    REQUIRE((st == ForeignStatus::Ok && result.detail.c_str()));
+    REQUIRE(result.migrated_files == 1);
+    REQUIRE(result.migrated_links == 2); // symlink + resolvable hardlink
+    REQUIRE(result.skipped == 1);        // the dangling hardlink, reported
 
     // REDIR records on the wire: the symlink (redir_type 1 on POSIX / 2 on
     // Windows, matching the `a` path) and the hardlink (redir_type 4), each
     // carrying the verbatim target; the dangling entry is absent.
     ArchiveReader reader;
-    assert(reader.open(dir / "links_out.rar"));
+    REQUIRE(reader.open(dir / "links_out.rar"));
     bool saw_sym = false, saw_hard = false;
     for (const auto& e : reader.entries()) {
         if (e.header.file_name == "link.txt") {
-            assert(e.header.redir_target == "real.txt");
+            REQUIRE(e.header.redir_target == "real.txt");
 #ifdef _WIN32
-            assert(e.header.redir_type == 2);
+            REQUIRE(e.header.redir_type == 2);
 #else
-            assert(e.header.redir_type == 1);
+            REQUIRE(e.header.redir_type == 1);
 #endif
             saw_sym = true;
         }
         if (e.header.file_name == "alias.txt") {
-            assert(e.header.redir_type == 4);
-            assert(e.header.redir_target == "real.txt");
+            REQUIRE(e.header.redir_type == 4);
+            REQUIRE(e.header.redir_target == "real.txt");
             saw_hard = true;
         }
-        assert(e.header.file_name != "dangling.txt");
+        REQUIRE(e.header.file_name != "dangling.txt");
     }
-    assert(saw_sym && saw_hard);
+    REQUIRE((saw_sym && saw_hard));
     std::cout << "    - tar links -> REDIR records: 2 migrated, dangling skipped" << std::endl;
 }
 
-int main() {
-    OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
-    test_transcode_zip_identity();
-    std::cout << std::flush;
-    test_transcode_tar_gzip_identity();
-    test_transcode_tar_links_migrate();
-    std::cout << std::flush;
-    test_transcode_refusals_and_collisions();
-    std::cout << std::flush;
-    test_df_and_staging();
-    std::cout << std::flush;
+static const openrar::test::Case k_cases[] = {
+    {"test_transcode_zip_identity", test_transcode_zip_identity, false},
+    {"test_transcode_tar_gzip_identity", test_transcode_tar_gzip_identity, false},
+    {"test_transcode_tar_links_migrate", test_transcode_tar_links_migrate, false},
+    {"test_transcode_refusals_and_collisions", test_transcode_refusals_and_collisions, false},
+    {"test_df_and_staging", test_df_and_staging, false},
 #ifdef OPENRAR_CLI_EXE
-    test_cv_cli_contracts();
-    std::cout << std::flush;
+    {"test_cv_cli_contracts", test_cv_cli_contracts, false},
 #endif
-    std::cout << "All Transcode (v1.29 M5) tests PASSED!" << std::endl;
-    return 0;
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All Transcode (v1.29 M5) tests PASSED!" << std::endl;
+    return rc;
 }
