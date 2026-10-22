@@ -52,6 +52,23 @@ using namespace openrar::compress;
 // ---------------------------------------------------------------------------
 // Allocation accounting (replaceable global operator new/delete)
 // ---------------------------------------------------------------------------
+//
+// The sanitizer runtimes (ASan/TSan/MSan) define the global operator
+// new/delete themselves, so a replacement in this translation unit is a
+// duplicate definition at link time. Under a sanitizer the accounting is
+// compiled out and the scope reports zero allocations - the legs that read
+// the counter are not sanitizer legs.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || defined(__SANITIZE_MEMORY__)
+#define OPENRAR_BENCH_NO_ALLOC_SHIM 1
+#endif
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                         \
+    __has_feature(memory_sanitizer)
+#define OPENRAR_BENCH_NO_ALLOC_SHIM 1
+#endif
+#endif
+
+#if !defined(OPENRAR_BENCH_NO_ALLOC_SHIM)
 
 namespace {
 std::atomic<bool> g_count_allocs{false};
@@ -124,6 +141,18 @@ void operator delete[](void* p, const std::nothrow_t&) noexcept {
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
+
+#else // OPENRAR_BENCH_NO_ALLOC_SHIM
+
+// Under a sanitizer the global operators belong to the sanitizer runtime;
+// the accounting scope stays available and reports zero.
+namespace {
+struct AllocScope {
+    std::uint64_t count() const { return 0; }
+};
+} // namespace
+
+#endif // OPENRAR_BENCH_NO_ALLOC_SHIM
 
 #if defined(OPENRAR_BENCH_SHIM)
 // ---------------------------------------------------------------------------

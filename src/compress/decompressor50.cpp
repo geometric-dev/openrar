@@ -356,18 +356,18 @@ void Decompressor50::ApplyEngine::init(size_t win_size) {
 // ── WindowBuffer ───────────────────────────────────────────────────────
 namespace {
 #if SIZE_MAX > 0xFFFFFFFFu && !defined(__EMSCRIPTEN__) && !defined(__wasm__)
-constexpr bool kWindowVm = true;
+constexpr bool WINDOW_VM = true;
 #else
-constexpr bool kWindowVm = false;
+constexpr bool WINDOW_VM = false;
 #endif
 // Below this, a vector (and its occasional copy) is cheaper than a mapping.
-constexpr size_t kWindowVmThreshold = 64u << 20;
-constexpr size_t kWindowCommitGranule = 1u << 20;
+constexpr size_t WINDOW_VM_THRESHOLD = 64u << 20;
+constexpr size_t WINDOW_COMMIT_GRANULE = 1u << 20;
 } // namespace
 
 bool WindowBuffer::init(size_t max_bytes) {
     release();
-    if (kWindowVm && max_bytes > kWindowVmThreshold) {
+    if (WINDOW_VM && max_bytes > WINDOW_VM_THRESHOLD) {
 #if defined(_WIN32)
         void* p = VirtualAlloc(nullptr, max_bytes, MEM_RESERVE, PAGE_NOACCESS);
         if (p == nullptr) return false;
@@ -402,7 +402,7 @@ bool WindowBuffer::grow_to(size_t n) {
     if (n > committed_) {
         // Commit whole granules; committed pages read as zero.
         size_t target =
-            (n + kWindowCommitGranule - 1) / kWindowCommitGranule * kWindowCommitGranule;
+            (n + WINDOW_COMMIT_GRANULE - 1) / WINDOW_COMMIT_GRANULE * WINDOW_COMMIT_GRANULE;
         if (target > reserved_) target = reserved_;
         const size_t delta = target - committed_;
 #if defined(_WIN32)
