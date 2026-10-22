@@ -71,6 +71,16 @@ struct AllocScope {
 };
 } // namespace
 
+// This shim deliberately backs the global operator new/delete with
+// malloc/free so the allocation counter can see every allocation. gcc's
+// -Wmismatched-new-delete assumes the default library pairing and flags the
+// free() inside the replacement deletes; the pairing here is intentional, so
+// the diagnostic is suppressed for this block only (gcc only - clang has no
+// such warning group, and an unknown group would itself be a warning).
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
 void* operator new(std::size_t n) {
     note_alloc();
     if (void* p = std::malloc(n ? n : 1)) return p;
@@ -95,18 +105,25 @@ void operator delete(void* p) noexcept {
 void operator delete[](void* p) noexcept {
     std::free(p);
 }
+// The sized and nothrow overloads delegate to their unsized counterpart
+// instead of calling free() directly: the C++14 sized delete releases a
+// pointer that came from the unsized operator new, and gcc's
+// -Wmismatched-new-delete rejects a direct free() on that pairing.
 void operator delete(void* p, std::size_t) noexcept {
-    std::free(p);
+    operator delete(p);
 }
 void operator delete[](void* p, std::size_t) noexcept {
-    std::free(p);
+    operator delete[](p);
 }
 void operator delete(void* p, const std::nothrow_t&) noexcept {
-    std::free(p);
+    operator delete(p);
 }
 void operator delete[](void* p, const std::nothrow_t&) noexcept {
-    std::free(p);
+    operator delete[](p);
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #if defined(OPENRAR_BENCH_SHIM)
 // ---------------------------------------------------------------------------

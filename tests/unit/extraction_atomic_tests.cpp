@@ -38,9 +38,10 @@
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #include <cstdlib>
+#endif
+
 #include <doctest.h>
 #include "../support/test_runner.hpp"
-#endif
 
 using namespace openrar;
 

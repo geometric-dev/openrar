@@ -193,7 +193,6 @@ struct BridgeState {
     const Case* current = nullptr;     // set at test_case_start
     JUnitWriter* junit = nullptr;      // fail-closed writer (may be inactive)
     unsigned pass = 0, fail = 0, expected_fail = 0, unexpected_pass = 0;
-    double sum_times = 0.0;
 
     const Case* lookup(const char* name) const {
         for (const Case* c : selected)
@@ -206,7 +205,6 @@ BridgeState* g_bridge = nullptr;
 
 void bridge_complete_case(const Case* c, double secs, bool failed) {
     BridgeState& bs = *g_bridge;
-    bs.sum_times += secs;
     std::string result;
     if (!failed) {
         result = c->expect_fail ? "unexpected_pass" : "pass";
@@ -415,7 +413,6 @@ int run(const Case* cases, std::size_t count, int argc, char** argv) {
 
     unsigned pass = 0, fail = 0, expected_fail = 0, unexpected_pass = 0;
     auto t_start_run = std::chrono::steady_clock::now();
-    double sum_times = 0.0;
     bool runner_disaster = false;
 
     if (g_depth == 1) {
@@ -443,7 +440,6 @@ int run(const Case* cases, std::size_t count, int argc, char** argv) {
         fail = bridge.fail;
         expected_fail = bridge.expected_fail;
         unexpected_pass = bridge.unexpected_pass;
-        sum_times = bridge.sum_times;
     } else {
         for (const Case* c : selected) {
             emit(std::string("[RUN] ") + c->name, nested);
@@ -456,7 +452,6 @@ int run(const Case* cases, std::size_t count, int argc, char** argv) {
             }
             auto t1 = std::chrono::steady_clock::now();
             double secs = std::chrono::duration<double>(t1 - t0).count();
-            sum_times += secs;
 
             const bool failed = threw;
             std::string result;
