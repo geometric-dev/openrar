@@ -97,29 +97,28 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
         core::byte iv[16];
         if (src.read(iv, sizeof(iv)) != sizeof(iv)) return HeaderResult::Eof;
 
-        std::vector<core::byte> plain_first(16);
-        if (src.read(plain_first.data(), 16) != 16) return HeaderResult::Error;
+        // M-09: fixed-size scratch on the stack and a single heap buffer
+        // (out_body) for the rest - this path used to allocate four vectors
+        // per header.
+        core::byte plain_first[16];
+        if (src.read(plain_first, 16) != 16) return HeaderResult::Error;
         crypto::Aes256 aes(crypt->keys.aes_key);
-        if (!aes.decrypt_cbc(plain_first.data(), plain_first.size(), iv))
-            return HeaderResult::Error;
+        if (!aes.decrypt_cbc(plain_first, sizeof(plain_first), iv)) return HeaderResult::Error;
 
-        core::uint32 expected_crc = core::read_le32(plain_first.data());
+        core::uint32 expected_crc = core::read_le32(plain_first);
 
         // Recover the body-size vint from the decrypted first block. It
         // starts at plaintext offset 4.
         // 10 = maximum length of a 64-bit VINT; always fits in first 16-byte AES block (bytes 4..15 = 12 bytes).
-        std::vector<core::byte> size_vint_bytes;
+        const core::byte* size_vint_bytes = plain_first + 4;
         size_t sv_len = 0;
         core::uint64 body_size = 0;
         size_t read_bytes = 0;
-        while (sv_len < (plain_first.size() - 4) && sv_len < 10) {
-            core::byte b = plain_first[4 + sv_len];
-            size_vint_bytes.push_back(b);
-            sv_len++;
+        while (sv_len < (sizeof(plain_first) - 4) && sv_len < 10) {
+            const core::byte b = size_vint_bytes[sv_len++];
             if ((b & 0x80) == 0) break;
         }
-        if (!core::read_vint(size_vint_bytes.data(), size_vint_bytes.size(), body_size,
-                             read_bytes)) {
+        if (!core::read_vint(size_vint_bytes, sv_len, body_size, read_bytes)) {
             crypt->bad_password = true; // Unterminated or garbage VINT indicates bad password
             return HeaderResult::Error;
         }
@@ -139,27 +138,29 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
             return HeaderResult::Error;
         }
         size_t rest = cipher_total - 16;
-        std::vector<core::byte> plain(std::max(total_plain, size_t(16)));
-        std::memcpy(plain.data(), plain_first.data(), 16);
+        // Decrypt the remainder in place inside out_body (laid out as the
+        // padded plaintext [CRC | vint | body | pad]), then slide the body down.
+        out_body.resize(cipher_total);
+        std::memcpy(out_body.data(), plain_first, 16);
         if (rest > 0) {
-            std::vector<core::byte> cipher_rest(rest);
-            if (src.read(cipher_rest.data(), rest) != rest) return HeaderResult::Error;
+            if (src.read(out_body.data() + 16, rest) != rest) return HeaderResult::Error;
             // `iv` now holds the previous cipher block written back by
             // decrypt_cbc, which is exactly the chaining value needed here.
-            if (!aes.decrypt_cbc(cipher_rest.data(), rest, iv)) return HeaderResult::Error;
-            std::memcpy(plain.data() + 16, cipher_rest.data(), total_plain - 16);
+            if (!aes.decrypt_cbc(out_body.data() + 16, rest, iv)) return HeaderResult::Error;
         }
 
         // CRC32 covers the size vint and body of the plaintext header.
         crypto::Crc32 crc;
-        crc.update(size_vint_bytes.data(), size_vint_bytes.size());
-        crc.update(plain.data() + 4 + sv_len, static_cast<size_t>(body_size));
+        crc.update(out_body.data() + 4, sv_len + static_cast<size_t>(body_size));
         if (crc.get() != expected_crc) {
             crypt->bad_password = true;
+            out_body.clear();
             return HeaderResult::Error;
         }
 
-        out_body.assign(plain.begin() + 4 + sv_len, plain.begin() + total_plain);
+        const size_t body_off = 4 + sv_len;
+        std::memmove(out_body.data(), out_body.data() + body_off, static_cast<size_t>(body_size));
+        out_body.resize(static_cast<size_t>(body_size));
         return parse_block_fields(out_body, out_type, out_flags, out_data_size)
                    ? HeaderResult::Ok
                    : HeaderResult::Error;
@@ -176,16 +177,15 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
     // syscall per byte: every header previously cost up to 10 token reads
     // through the unbuffered FileStream. Over-consumption beyond the vint is
     // undone with a seek so nested/header scanning positions stay exact.
-    std::vector<core::byte> size_vint_bytes;
+    // M-09: the vint lives in a stack prefix (max 10 bytes), not a vector.
+    core::byte size_vint_bytes[10];
+    size_t vint_len = 0;
     core::uint64 body_size = 0;
     {
-        core::byte prefix[10];
-        size_t got = src.read(prefix, sizeof(prefix));
+        size_t got = src.read(size_vint_bytes, sizeof(size_vint_bytes));
         if (got == 0) return HeaderResult::Eof;
-        size_t vint_len = 0;
         for (size_t i = 0; i < got; ++i) {
-            size_vint_bytes.push_back(prefix[i]);
-            if ((prefix[i] & 0x80) == 0) {
+            if ((size_vint_bytes[i] & 0x80) == 0) {
                 vint_len = i + 1;
                 break;
             }
@@ -196,11 +196,10 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
                       io::SeekOrigin::Current)) {
             return HeaderResult::Error;
         }
-        size_vint_bytes.resize(vint_len);
     }
 
     size_t read_bytes = 0;
-    if (!core::read_vint(size_vint_bytes.data(), size_vint_bytes.size(), body_size, read_bytes)) {
+    if (!core::read_vint(size_vint_bytes, vint_len, body_size, read_bytes)) {
         return HeaderResult::Error;
     }
     // Spec 00-overview: Header size max 2 MiB (3-byte vint) — reject larger to avoid OOM / DoS
@@ -216,7 +215,7 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
 
     // Verify CRC32
     crypto::Crc32 crc;
-    crc.update(size_vint_bytes.data(), size_vint_bytes.size());
+    crc.update(size_vint_bytes, vint_len);
     crc.update(out_body.data(), out_body.size());
     if (crc.get() != expected_crc) {
         return HeaderResult::HeaderCrcMismatch;
@@ -322,13 +321,12 @@ bool HeaderReader::parse_main_header(const core::byte* body, size_t body_size,
     // Parse extra area if present. The extra area ends where the header ends,
     // so locate it from the end rather than assuming it follows the last
     // fixed field (future fields must be skipped, not misparsed).
-    if (flags & HFL_EXTRA && extra_size > 0 && offset < body_size) {
-        size_t extra_start = offset;
-        if (extra_size <= body_size) {
-            size_t from_end = body_size - static_cast<size_t>(extra_size);
-            if (from_end > offset) extra_start = from_end;
-        }
-        offset = extra_start;
+    if (flags & HFL_EXTRA && extra_size > 0) {
+        // M-11: the extra area is end-anchored and must fit after the fixed
+        // fields. A declared size that overlaps them (or exceeds the body) is
+        // a malformed header - reject it instead of silently re-anchoring.
+        if (offset > body_size || extra_size > body_size - offset) return false;
+        offset = body_size - static_cast<size_t>(extra_size);
         size_t extra_end = body_size;
         while (offset < extra_end) {
             size_t old_offset = offset;
@@ -497,6 +495,8 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
     out_block.unp_ver = static_cast<core::uint32>(comp_info & 0x3F);
     out_block.is_solid = (comp_info & 0x40) != 0;
     out_block.method = static_cast<core::uint32>((comp_info >> 7) & 7);
+    // Table flavor (see FileBlock::extra_dist): RAR7 algorithm only.
+    out_block.extra_dist = out_block.unp_ver == 1 && (comp_info & FCI_RAR5_COMPAT) == 0;
 
     if (out_block.unp_ver > 1 || (out_block.method == 0 && (comp_info & 0x7C00) == 0)) {
         out_block.win_size = 0;
@@ -562,13 +562,12 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
     }
 
     // Parse extra records. Same end-anchored layout as the main header.
-    if (flags & HFL_EXTRA && extra_size > 0 && offset < body_size) {
-        size_t extra_start = offset;
-        if (extra_size <= body_size) {
-            size_t from_end = body_size - static_cast<size_t>(extra_size);
-            if (from_end > offset) extra_start = from_end;
-        }
-        offset = extra_start;
+    if (flags & HFL_EXTRA && extra_size > 0) {
+        // M-11: the extra area is end-anchored and must fit after the fixed
+        // fields. A declared size that overlaps them (or exceeds the body) is
+        // a malformed header - reject it instead of silently re-anchoring.
+        if (offset > body_size || extra_size > body_size - offset) return false;
+        offset = body_size - static_cast<size_t>(extra_size);
         size_t extra_end = body_size;
         while (offset < extra_end) {
             size_t old_offset = offset;
@@ -598,33 +597,34 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                     }
                 }
             } else if (rec_type == FHEXTRA_CRYPT) {
+                // H-15: every field is mandatory. A truncated record used to
+                // leave salt/IV zero-filled and could silently disable the
+                // password check; fail the header instead.
                 out_block.is_encrypted = true;
                 core::uint64 cver = 0, cflags = 0;
-                core::read_vint(body + offset, rec_end - offset, cver, read_bytes);
+                if (offset >= rec_end ||
+                    !core::read_vint(body + offset, rec_end - offset, cver, read_bytes))
+                    return false;
                 offset += read_bytes;
-                core::read_vint(body + offset, rec_end - offset, cflags, read_bytes);
+                if (offset >= rec_end ||
+                    !core::read_vint(body + offset, rec_end - offset, cflags, read_bytes))
+                    return false;
                 offset += read_bytes;
                 out_block.crypt_version = static_cast<core::uint32>(cver);
                 out_block.crypt_flags = static_cast<core::uint32>(cflags);
-                if (offset < rec_end) out_block.lg2_count = body[offset++];
-                if (offset + 16 <= rec_end) {
-                    std::memcpy(out_block.salt.data(), body + offset, 16);
-                    offset += 16;
-                }
-                if (offset + 16 <= rec_end) {
-                    std::memcpy(out_block.init_v.data(), body + offset, 16);
-                    offset += 16;
-                }
+                const size_t need = 1 + 16 + 16 + ((cflags & 0x01) ? 8 + 4 : 0);
+                if (rec_end - offset < need) return false;
+                out_block.lg2_count = body[offset++];
+                std::memcpy(out_block.salt.data(), body + offset, 16);
+                offset += 16;
+                std::memcpy(out_block.init_v.data(), body + offset, 16);
+                offset += 16;
                 if (cflags & 0x01) { // FHEXTRA_CRYPT_PSWCHECK
                     out_block.has_psw_check = true;
-                    if (offset + 8 <= rec_end) {
-                        std::memcpy(out_block.psw_check.data(), body + offset, 8);
-                        offset += 8;
-                    }
-                    if (offset + 4 <= rec_end) {
-                        std::memcpy(out_block.psw_check_csum.data(), body + offset, 4);
-                        offset += 4;
-                    }
+                    std::memcpy(out_block.psw_check.data(), body + offset, 8);
+                    offset += 8;
+                    std::memcpy(out_block.psw_check_csum.data(), body + offset, 4);
+                    offset += 4;
                     // An all-zero check field means no explicit password check was
                     // stored; leave verification to the data checksum instead of
                     // rejecting the correct password here.

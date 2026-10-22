@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 
 namespace openrar::io {
@@ -59,7 +60,7 @@ public:
 
 private:
     struct Impl;
-    Impl* impl_ = nullptr;
+    std::unique_ptr<Impl> impl_;
     std::filesystem::path path_;
     core::uint64 size_ = 0; // pinned at open
     core::uint64 cursor_ = 0;

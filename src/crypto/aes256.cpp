@@ -302,27 +302,25 @@ aesni_decrypt_cbc(core::byte* data, size_t size, core::byte* iv,
 #ifdef OPENRAR_AES_NEON
 
 static inline uint8x16_t neon_enc_block(uint8x16_t pt, const core::byte* enc_buf) noexcept {
-    const auto* rk = reinterpret_cast<const uint8x16_t*>(enc_buf);
-    uint8x16_t m = veorq_u8(pt, rk[0]);
+    uint8x16_t m = veorq_u8(pt, vld1q_u8(enc_buf));
     for (int r = 1; r <= 13; ++r) {
         m = vaeseq_u8(m, vdupq_n_u8(0));
         m = vaesmcq_u8(m);
-        m = veorq_u8(m, rk[r]);
+        m = veorq_u8(m, vld1q_u8(enc_buf + r * 16));
     }
     m = vaeseq_u8(m, vdupq_n_u8(0));
-    return veorq_u8(m, rk[14]);
+    return veorq_u8(m, vld1q_u8(enc_buf + 14 * 16));
 }
 
 static inline uint8x16_t neon_dec_block(uint8x16_t ct, const core::byte* dec_buf) noexcept {
-    const auto* rk = reinterpret_cast<const uint8x16_t*>(dec_buf);
-    uint8x16_t m = veorq_u8(ct, rk[0]);
+    uint8x16_t m = veorq_u8(ct, vld1q_u8(dec_buf));
     for (int r = 1; r <= 13; ++r) {
         m = vaesdq_u8(m, vdupq_n_u8(0));
         m = vaesimcq_u8(m);
-        m = veorq_u8(m, rk[r]);
+        m = veorq_u8(m, vld1q_u8(dec_buf + r * 16));
     }
     m = vaesdq_u8(m, vdupq_n_u8(0));
-    return veorq_u8(m, rk[14]);
+    return veorq_u8(m, vld1q_u8(dec_buf + 14 * 16));
 }
 
 #endif // OPENRAR_AES_NEON
