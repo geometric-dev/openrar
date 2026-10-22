@@ -43,6 +43,8 @@
 #include <iterator>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 using namespace openrar;
 
@@ -59,7 +61,7 @@ constexpr size_t DATA_BIN_SIZE = 100 * 1024;
 
 std::vector<core::byte> read_file(const std::filesystem::path& p) {
     std::ifstream f(p, std::ios::binary);
-    assert(f);
+    REQUIRE(f);
     return std::vector<core::byte>(std::istreambuf_iterator<char>(f),
                                    std::istreambuf_iterator<char>());
 }
@@ -100,11 +102,11 @@ Expected expect_files(archive::ArchiveReader& reader, size_t expected_services) 
         if (en.header.file_name == "data.bin") e.data = &en;
         ++files;
     }
-    assert(files == 2 && e.hello && e.data);
-    assert(services == expected_services);
-    if (expected_services > 0) assert(saw_qo);
-    assert(e.hello->header.unp_size == HELLO.size());
-    assert(e.data->header.unp_size == DATA_BIN_SIZE);
+    REQUIRE((files == 2 && e.hello && e.data));
+    REQUIRE(services == expected_services);
+    if (expected_services > 0) REQUIRE(saw_qo);
+    REQUIRE(e.hello->header.unp_size == HELLO.size());
+    REQUIRE(e.data->header.unp_size == DATA_BIN_SIZE);
     return e;
 }
 
@@ -113,33 +115,33 @@ Expected expect_files(archive::ArchiveReader& reader, size_t expected_services) 
 // the reference plaintext for the encrypted goldens.
 std::vector<core::byte> reference_data_bin() {
     archive::ArchiveReader reader;
-    assert(reader.open(FIXTURES_DIR / "hello5.rar"));
+    REQUIRE(reader.open(FIXTURES_DIR / "hello5.rar"));
     const archive::ArchiveEntry* data = find_entry(reader, "data.bin");
-    assert(data);
-    assert(reader.test_entry(*data)); // header CRC32 verified (unencrypted)
+    REQUIRE(data);
+    REQUIRE(reader.test_entry(*data)); // header CRC32 verified (unencrypted)
 
     std::filesystem::path out = out_dir() / "data_ref.bin";
-    assert(reader.extract_entry(*data, out));
+    REQUIRE(reader.extract_entry(*data, out));
     std::vector<core::byte> ref = read_file(out);
-    assert(ref.size() == DATA_BIN_SIZE);
-    assert(crypto::crc32(ref.data(), ref.size()) == data->header.data_crc32);
+    REQUIRE(ref.size() == DATA_BIN_SIZE);
+    REQUIRE(crypto::crc32(ref.data(), ref.size()) == data->header.data_crc32);
     return ref;
 }
 
 void extract_and_verify_hello(archive::ArchiveReader& reader, const std::string& password) {
     std::filesystem::path out = out_dir() / "hello.txt";
-    assert(reader.extract_entry(*find_entry(reader, "hello.txt"), out, password));
+    REQUIRE(reader.extract_entry(*find_entry(reader, "hello.txt"), out, password));
     std::vector<core::byte> hello = read_file(out);
-    assert(std::string(hello.begin(), hello.end()) == HELLO);
+    REQUIRE(std::string(hello.begin(), hello.end()) == HELLO);
 }
 
 void extract_and_verify_data(archive::ArchiveReader& reader, const std::string& password,
                              const std::vector<core::byte>& reference) {
     std::filesystem::path out = out_dir() / "data.bin";
-    assert(reader.extract_entry(*find_entry(reader, "data.bin"), out, password));
+    REQUIRE(reader.extract_entry(*find_entry(reader, "data.bin"), out, password));
     std::vector<core::byte> data = read_file(out);
-    assert(data.size() == DATA_BIN_SIZE);
-    assert(data == reference);
+    REQUIRE(data.size() == DATA_BIN_SIZE);
+    REQUIRE(data == reference);
 }
 
 #ifdef OPENRAR_INMEM_ARCHIVE
@@ -147,16 +149,16 @@ void buffer_archive_checks(const std::filesystem::path& fixture) {
     std::vector<core::byte> bytes = read_file(fixture);
     archive::BufferArchive ba;
     std::vector<archive::BufferArchiveEntry> entries;
-    assert(ba.list(bytes.data(), bytes.size(), entries) == archive::RAR_OK);
-    assert(entries.size() == 2);
-    assert(entries[0].path == "hello.txt");
-    assert(entries[1].path == "data.bin");
-    assert(entries[0].size == HELLO.size());
-    assert(entries[1].size == DATA_BIN_SIZE);
+    REQUIRE(ba.list(bytes.data(), bytes.size(), entries) == archive::RAR_OK);
+    REQUIRE(entries.size() == 2);
+    REQUIRE(entries[0].path == "hello.txt");
+    REQUIRE(entries[1].path == "data.bin");
+    REQUIRE(entries[0].size == HELLO.size());
+    REQUIRE(entries[1].size == DATA_BIN_SIZE);
 
     std::vector<core::byte> hello;
-    assert(ba.extract(bytes.data(), bytes.size(), 0, hello) == archive::RAR_OK);
-    assert(std::string(hello.begin(), hello.end()) == HELLO);
+    REQUIRE(ba.extract(bytes.data(), bytes.size(), 0, hello) == archive::RAR_OK);
+    REQUIRE(std::string(hello.begin(), hello.end()) == HELLO);
 }
 #endif
 
@@ -165,10 +167,10 @@ void buffer_archive_checks(const std::filesystem::path& fixture) {
 void test_golden_hello5() {
     std::filesystem::path arc = FIXTURES_DIR / "hello5.rar";
     archive::ArchiveReader reader;
-    assert(reader.open(arc));
+    REQUIRE(reader.open(arc));
     Expected e = expect_files(reader, /*expected_services=*/0);
-    assert(reader.test_entry(*e.hello));
-    assert(reader.test_entry(*e.data));
+    REQUIRE(reader.test_entry(*e.hello));
+    REQUIRE(reader.test_entry(*e.data));
     extract_and_verify_hello(reader, /*password=*/"");
     extract_and_verify_data(reader, "", reference_data_bin());
 
@@ -187,21 +189,21 @@ void test_golden_hello5_p() {
     // golden carries a QO service header.
     {
         archive::ArchiveReader reader;
-        assert(reader.open(arc));
+        REQUIRE(reader.open(arc));
         expect_files(reader, /*expected_services=*/1);
         // Data stays locked: extraction without a password must fail and
         // flag the bad password on the reader.
         const archive::ArchiveEntry* hello = find_entry(reader, "hello.txt");
-        assert(hello);
+        REQUIRE(hello);
         std::filesystem::path out = out_dir() / "p_nopwd.bin";
-        assert(!reader.extract_entry(*hello, out));
-        assert(reader.has_bad_password());
+        REQUIRE(!reader.extract_entry(*hello, out));
+        REQUIRE(reader.has_bad_password());
     }
 
     // Correct password: decrypted content must match the reference copy.
     {
         archive::ArchiveReader reader;
-        assert(reader.open(arc, PASSWORD));
+        REQUIRE(reader.open(arc, PASSWORD));
         expect_files(reader, 1);
         extract_and_verify_hello(reader, PASSWORD);
         extract_and_verify_data(reader, PASSWORD, reference_data_bin());
@@ -216,13 +218,13 @@ void test_golden_hello5_hp() {
     // headers — open must fail cleanly (BADPSW), never misparse.
     {
         archive::ArchiveReader reader;
-        assert(!reader.open(arc));
+        REQUIRE(!reader.open(arc));
     }
 
     // With the password: headers decrypt, content must match the reference.
     {
         archive::ArchiveReader reader;
-        assert(reader.open(arc, PASSWORD));
+        REQUIRE(reader.open(arc, PASSWORD));
         expect_files(reader, 1);
         extract_and_verify_hello(reader, PASSWORD);
         extract_and_verify_data(reader, PASSWORD, reference_data_bin());
@@ -239,14 +241,14 @@ void test_golden_hello5_p_streaming_verify() {
     // exception it must accept the entry — the PswCheck authenticated the key.
     std::filesystem::path arc = FIXTURES_DIR / "hello5_p.rar";
     archive::ArchiveReader reader;
-    assert(reader.open(arc, PASSWORD));
+    REQUIRE(reader.open(arc, PASSWORD));
     const archive::ArchiveEntry* hello = find_entry(reader, "hello.txt");
-    assert(hello);
-    assert(hello->header.is_encrypted);
-    assert((hello->header.crypt_flags & 0x0002) != 0); // fixture really is tweaked
+    REQUIRE(hello);
+    REQUIRE(hello->header.is_encrypted);
+    REQUIRE((hello->header.crypt_flags & 0x0002) != 0); // fixture really is tweaked
     const size_t hello_index = static_cast<size_t>(hello - reader.entries().data());
     archive::ReaderHooks hooks{};
-    assert(reader.test_entry_stream(hello_index, hooks) == archive::RAR_OK);
+    REQUIRE(reader.test_entry_stream(hello_index, hooks) == archive::RAR_OK);
 
     // Negative control on the SAME path: an archive whose writer stored the
     // plaintext CRC for an encrypted entry (our writer, crypt_flags 0x01)
@@ -263,13 +265,14 @@ void test_golden_hello5_p_streaming_verify() {
         std::ofstream f(src, std::ios::binary);
         f << std::string(2048, 'K') << "ENCRYPTED-CRC-CONTROL";
     }
-    assert(archive::ArchiveMutator::add_file_to_archive(plain, src, "ctl.bin", 0, {}, 0, PASSWORD));
+    REQUIRE(
+        archive::ArchiveMutator::add_file_to_archive(plain, src, "ctl.bin", 0, {}, 0, PASSWORD));
     {
         archive::ArchiveReader probe;
-        assert(probe.open(plain, PASSWORD));
+        REQUIRE(probe.open(plain, PASSWORD));
         const archive::ArchiveEntry* e = find_entry(probe, "ctl.bin");
-        assert(e && e->header.is_encrypted);
-        assert((e->header.crypt_flags & 0x0002) == 0); // our writer: plaintext CRC
+        REQUIRE((e && e->header.is_encrypted));
+        REQUIRE((e->header.crypt_flags & 0x0002) == 0); // our writer: plaintext CRC
         std::ifstream in(plain, std::ios::binary);
         std::vector<core::byte> bytes((std::istreambuf_iterator<char>(in)),
                                       std::istreambuf_iterator<char>());
@@ -282,12 +285,12 @@ void test_golden_hello5_p_streaming_verify() {
     }
     {
         archive::ArchiveReader broken;
-        assert(broken.open(corrupt, PASSWORD));
+        REQUIRE(broken.open(corrupt, PASSWORD));
         const archive::ArchiveEntry* e = find_entry(broken, "ctl.bin");
-        assert(e);
+        REQUIRE(e);
         const size_t idx = static_cast<size_t>(e - broken.entries().data());
         archive::ReaderHooks broken_hooks{};
-        assert(broken.test_entry_stream(idx, broken_hooks) == archive::RAR_ERR_CRC_MISMATCH);
+        REQUIRE(broken.test_entry_stream(idx, broken_hooks) == archive::RAR_ERR_CRC_MISMATCH);
     }
     fs::remove(src, ec);
     fs::remove(plain, ec);
@@ -301,14 +304,14 @@ void test_golden_hello4_rejected() {
     archive::ArchiveReader reader;
     // RAR4 (7-byte signature) is not supported; the contract is a clean
     // rejection, not a crash or a misparse into garbage entries.
-    assert(!reader.open(arc));
-    assert(reader.entries().empty());
+    REQUIRE(!reader.open(arc));
+    REQUIRE(reader.entries().empty());
 
 #ifdef OPENRAR_INMEM_ARCHIVE
     std::vector<core::byte> bytes = read_file(arc);
     archive::BufferArchive ba;
     std::vector<archive::BufferArchiveEntry> entries;
-    assert(ba.list(bytes.data(), bytes.size(), entries) != archive::RAR_OK);
+    REQUIRE(ba.list(bytes.data(), bytes.size(), entries) != archive::RAR_OK);
 #endif
     std::cout << "[PASS] golden hello4.rar gracefully rejected (RAR4 non-goal)\n";
 }
@@ -333,10 +336,10 @@ void test_golden_writer_and_mutator_fixtures() {
         fs::path p = fixtures_root / "writer" / "writer_stored=comp=m0.rar";
         if (fs::exists(p)) {
             archive::ArchiveReader r;
-            assert(r.open(p));
+            REQUIRE(r.open(p));
             auto files = non_service_files(r);
-            assert(files.size() == 2);
-            for (const auto* e : files) assert(r.test_entry(*e));
+            REQUIRE(files.size() == 2);
+            for (const auto* e : files) REQUIRE(r.test_entry(*e));
         }
     }
     // 2. Writer compressed
@@ -344,10 +347,10 @@ void test_golden_writer_and_mutator_fixtures() {
         fs::path p = fixtures_root / "writer" / "writer_compressed=comp=m3.rar";
         if (fs::exists(p)) {
             archive::ArchiveReader r;
-            assert(r.open(p));
+            REQUIRE(r.open(p));
             auto files = non_service_files(r);
-            assert(files.size() == 2);
-            for (const auto* e : files) assert(r.test_entry(*e));
+            REQUIRE(files.size() == 2);
+            for (const auto* e : files) REQUIRE(r.test_entry(*e));
         }
     }
     // 3. Writer solid
@@ -355,10 +358,10 @@ void test_golden_writer_and_mutator_fixtures() {
         fs::path p = fixtures_root / "writer" / "writer_solid=solid=1=comp=m3.rar";
         if (fs::exists(p)) {
             archive::ArchiveReader r;
-            assert(r.open(p));
+            REQUIRE(r.open(p));
             auto files = non_service_files(r);
-            assert(files.size() == 2);
-            for (const auto* e : files) assert(r.test_entry(*e));
+            REQUIRE(files.size() == 2);
+            for (const auto* e : files) REQUIRE(r.test_entry(*e));
         }
     }
     // 4. Mutator add file
@@ -366,10 +369,10 @@ void test_golden_writer_and_mutator_fixtures() {
         fs::path p = fixtures_root / "mutator" / "mutator_add_file=action=add.rar";
         if (fs::exists(p)) {
             archive::ArchiveReader r;
-            assert(r.open(p));
+            REQUIRE(r.open(p));
             auto files = non_service_files(r);
-            assert(files.size() == 3);
-            for (const auto* e : files) assert(r.test_entry(*e));
+            REQUIRE(files.size() == 3);
+            for (const auto* e : files) REQUIRE(r.test_entry(*e));
         }
     }
     // 5. Mutator delete file
@@ -377,11 +380,11 @@ void test_golden_writer_and_mutator_fixtures() {
         fs::path p = fixtures_root / "mutator" / "mutator_delete_file=action=del.rar";
         if (fs::exists(p)) {
             archive::ArchiveReader r;
-            assert(r.open(p));
+            REQUIRE(r.open(p));
             auto files = non_service_files(r);
-            assert(files.size() == 1);
-            assert(files[0]->header.file_name == "hello.txt");
-            assert(r.test_entry(*files[0]));
+            REQUIRE(files.size() == 1);
+            REQUIRE(files[0]->header.file_name == "hello.txt");
+            REQUIRE(r.test_entry(*files[0]));
         }
     }
     // 6. Mutator lock
@@ -389,37 +392,29 @@ void test_golden_writer_and_mutator_fixtures() {
         fs::path p = fixtures_root / "mutator" / "mutator_lock=action=lock.rar";
         if (fs::exists(p)) {
             archive::ArchiveReader r;
-            assert(r.open(p));
-            assert((r.main_block().arc_flags & format::MHFL_LOCK) != 0);
+            REQUIRE(r.open(p));
+            REQUIRE((r.main_block().arc_flags & format::MHFL_LOCK) != 0);
             auto files = non_service_files(r);
-            assert(files.size() == 2);
-            for (const auto* e : files) assert(r.test_entry(*e));
+            REQUIRE(files.size() == 2);
+            for (const auto* e : files) REQUIRE(r.test_entry(*e));
         }
     }
     std::cout << "[PASS] golden writer and mutator fixtures verified\n";
 }
 
-int main() {
-#ifdef _MSC_VER
-    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
-    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
-    // test process forever while ctest moves on, leaving file locks behind.
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
-    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
-    // process still hangs after printing the assert.
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    std::cout << "Running golden-fixture tests...\n";
-    test_golden_hello5();
-    test_golden_hello5_p();
-    test_golden_hello5_hp();
-    test_golden_hello5_p_streaming_verify();
-    test_golden_hello4_rejected();
-    test_golden_writer_and_mutator_fixtures();
-    std::cout << "All golden-fixture tests PASSED!\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_golden_hello5", test_golden_hello5, false},
+    {"test_golden_hello5_p", test_golden_hello5_p, false},
+    {"test_golden_hello5_hp", test_golden_hello5_hp, false},
+    {"test_golden_hello5_p_streaming_verify", test_golden_hello5_p_streaming_verify, false},
+    {"test_golden_hello4_rejected", test_golden_hello4_rejected, false},
+    {"test_golden_writer_and_mutator_fixtures", test_golden_writer_and_mutator_fixtures, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All golden-fixture tests PASSED!\n";
+    return rc;
 }

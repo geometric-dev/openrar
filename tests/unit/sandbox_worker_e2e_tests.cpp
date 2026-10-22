@@ -32,6 +32,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -74,12 +76,12 @@ fs::path build_two_entry_archive(const fs::path& dir) {
         std::ofstream f(blob, std::ios::binary | std::ios::trunc);
         for (int i = 0; i < 2048; ++i) f << "stored-" << i << "\n";
     }
-    assert(archive::ArchiveMutator::add_file_to_archive(arc, blob, "a/stored.bin", 0));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, blob, "a/stored.bin", 0));
     {
         std::ofstream f(blob, std::ios::binary | std::ios::trunc);
         for (int i = 0; i < 4096; ++i) f << "content-" << i << "\n";
     }
-    assert(archive::ArchiveMutator::add_file_to_archive(arc, blob, "b/deflated.bin", 3));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, blob, "b/deflated.bin", 3));
     std::error_code ec;
     fs::remove(blob, ec);
     return arc;
@@ -91,16 +93,17 @@ bool worker_available() {
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
     OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
     if (!worker_available()) {
         std::printf("[SKIP] sandbox_worker_e2e: openrar_worker not built\n");
-        return 0;
+        return;
     }
     const std::string worker_exe = OPENRAR_WORKER_EXE;
 
     // ── Lifecycle + list + extract parity ─────────────────────────────────
-    std::cout << "[+] worker_lifecycle_list_extract_parity\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[+] worker_lifecycle_list_extract_parity\n";
     const fs::path dir = make_dir("parity");
     const fs::path arc = build_two_entry_archive(dir);
     {
@@ -150,7 +153,7 @@ int main() {
     }
 
     // ── Broker cap enforcement ────────────────────────────────────────────
-    std::cout << "[+] worker_broker_enforces_caps\n";
+    if (!openrar::test::last_run_was_filtered()) std::cout << "[+] worker_broker_enforces_caps\n";
     {
         WorkerBroker broker;
         std::string detail;
@@ -171,7 +174,8 @@ int main() {
     }
 
     // ── Crash isolation ───────────────────────────────────────────────────
-    std::cout << "[+] sandbox_worker_crash_isolation\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[+] sandbox_worker_crash_isolation\n";
     {
         // A 4 MiB stored entry streams ~16 DataChunks: the killer fires
         // mid-stream deterministically (a small entry would finish before
@@ -184,7 +188,7 @@ int main() {
             for (size_t i = 0; i < chunk.size(); ++i) chunk[i] = static_cast<char>(i * 7 + 1);
             for (int i = 0; i < 64; ++i) f.write(chunk.data(), chunk.size());
         }
-        assert(archive::ArchiveMutator::add_file_to_archive(big, blob, "big.bin", 0));
+        REQUIRE(archive::ArchiveMutator::add_file_to_archive(big, blob, "big.bin", 0));
         std::error_code rmec;
         fs::remove(blob, rmec);
 
@@ -218,7 +222,8 @@ int main() {
     // sees EOF when the broker dies, and the worker outlives the broker
     // forever - blocked in recv() and still holding the volume handle. Drives
     // the raw spawn so the broker's own ends can be closed on demand.
-    std::cout << "[+] worker_exits_when_broker_command_end_closes\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[+] worker_exits_when_broker_command_end_closes\n";
     {
         ChannelPair pair;
         CHECK(create_channel_pair(pair));
@@ -299,5 +304,15 @@ int main() {
     std::error_code ec;
     fs::remove_all(dir, ec);
     if (fails == 0) std::printf("[worker-e2e] broker/worker harness: OK\n");
-    return fails == 0 ? 0 : 1;
+    if (fails != 0) throw std::logic_error(std::to_string(fails) + " failed checks");
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }

@@ -1,0 +1,8 @@
+# Anchor allowlist for tools/anchor_lint.py (v1.44 M3).
+# One entry per line: `<file>` allowlists all of that file's roadmap anchors;
+# `<file>:<line>` allowlists a single anchor. A `#` starts the reason comment
+# (required practice: state why the anchor may not resolve today).
+# Entries are OPT-IN: unchecked anchors are the lint's whole point, so every
+# entry below must carry a defensible reason.
+
+cdc_chunker.cpp  # S-15 audit line spans (:31-120 etc.) predate the A-6 chunker consolidation; the current file is 114 lines

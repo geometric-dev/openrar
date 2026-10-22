@@ -18,6 +18,8 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -60,7 +62,7 @@ void write_unix_archive(
     const fs::path& arc,
     const std::vector<std::tuple<std::string, std::string, core::uint32, core::uint32>>& entries) {
     io::FileStream out;
-    assert(out.open(arc, io::FileMode::CreateAlways));
+    REQUIRE(out.open(arc, io::FileMode::CreateAlways));
     format::HeaderWriter::write_signature(out);
     format::MainBlock mb;
     format::HeaderWriter::write_main_block(out, mb);
@@ -75,7 +77,7 @@ void write_unix_archive(
         fb.win_size = 0;
         fb.htime_is_unix = true;
         fb.htime_mtime_unix = mtime;
-        assert(format::HeaderWriter::write_file_block(out, fb));
+        REQUIRE(format::HeaderWriter::write_file_block(out, fb));
         out.write(content.data(), content.size());
     }
     format::EndArcBlock eb;
@@ -102,9 +104,9 @@ void test_suid_sgid_stripped() {
 
     archive::ArchiveReader reader;
     reader.set_extraction_root(dir);
-    assert(reader.open(arc));
+    REQUIRE(reader.open(arc));
     const fs::path dest = dir / "prog.bin";
-    assert(reader.extract_entry(reader.entries()[0], dest));
+    REQUIRE(reader.extract_entry(reader.entries()[0], dest));
 
     // SUID/SGID/sticky (07000) stripped; rwxr-xr-x preserved, umask-bounded.
     const mode_t umask_bits = [] {
@@ -114,26 +116,26 @@ void test_suid_sgid_stripped() {
     }();
     const mode_t want = static_cast<mode_t>(
         archive::ArchiveReader::sanitize_extract_mode(0107755u, false, umask_bits));
-    assert(file_mode(dest) == want);
-    assert((file_mode(dest) & 07000u) == 0); // never restored by default
+    REQUIRE(file_mode(dest) == want);
+    REQUIRE((file_mode(dest) & 07000u) == 0); // never restored by default
 
     // --preserve-suid opt-in: the 07000 bits survive (mode 04755 & ~umask).
     archive::ArchiveReader reader2;
     reader2.set_extraction_root(dir);
     reader2.set_preserve_suid(true);
-    assert(reader2.open(arc));
+    REQUIRE(reader2.open(arc));
     const fs::path dest2 = dir / "prog_suid.bin";
-    assert(reader2.extract_entry(reader2.entries()[0], dest2));
+    REQUIRE(reader2.extract_entry(reader2.entries()[0], dest2));
     const mode_t want2 = static_cast<mode_t>(
         archive::ArchiveReader::sanitize_extract_mode(0107755u, true, umask_bits));
-    assert(file_mode(dest2) == want2);
-    assert((file_mode(dest2) & 07000u) == 07000u);
+    REQUIRE(file_mode(dest2) == want2);
+    REQUIRE((file_mode(dest2) & 07000u) == 07000u);
 #else
     // POSIX-mode semantics do not apply on Windows: the policy helper itself
     // is pinned instead (octal literals throughout).
-    assert(archive::ArchiveReader::sanitize_extract_mode(04755u, false, 0) == 0755u);
-    assert(archive::ArchiveReader::sanitize_extract_mode(04755u, true, 0) == 04755u);
-    assert(archive::ArchiveReader::sanitize_extract_mode(0644u, false, 0022u) == 0644u);
+    REQUIRE(archive::ArchiveReader::sanitize_extract_mode(04755u, false, 0) == 0755u);
+    REQUIRE(archive::ArchiveReader::sanitize_extract_mode(04755u, true, 0) == 04755u);
+    REQUIRE(archive::ArchiveReader::sanitize_extract_mode(0644u, false, 0022u) == 0644u);
 #endif
     std::cout << "[PASS] suid_sgid_stripped: 07000 masked without --preserve-suid\n";
     rm(dir);
@@ -157,7 +159,7 @@ void test_hardlink_session_and_cap() {
     // whose redir target is "source.txt".
     {
         io::FileStream out_stream;
-        assert(out_stream.open(dir / "g5.rar", io::FileMode::CreateAlways));
+        REQUIRE(out_stream.open(dir / "g5.rar", io::FileMode::CreateAlways));
         format::HeaderWriter::write_signature(out_stream);
         format::MainBlock mb;
         format::HeaderWriter::write_main_block(out_stream, mb);
@@ -167,7 +169,7 @@ void test_hardlink_session_and_cap() {
         fb.unp_size = 4;
         fb.pack_size = 4;
         fb.method = 0;
-        assert(format::HeaderWriter::write_file_block(out_stream, fb));
+        REQUIRE(format::HeaderWriter::write_file_block(out_stream, fb));
         out_stream.write("data", 4);
         format::FileBlock hl;
         hl.file_name = "h.txt";
@@ -177,7 +179,7 @@ void test_hardlink_session_and_cap() {
         hl.method = 0;
         hl.redir_type = 4; // HARDLINK
         hl.redir_target = "source.txt";
-        assert(format::HeaderWriter::write_file_block(out_stream, hl));
+        REQUIRE(format::HeaderWriter::write_file_block(out_stream, hl));
         format::EndArcBlock eb;
         format::HeaderWriter::write_end_block(out_stream, eb);
     }
@@ -188,16 +190,16 @@ void test_hardlink_session_and_cap() {
         archive::ArchiveReader reader;
         reader.set_extraction_root(out);
         reader.set_extract_symlinks(true); // opt in
-        assert(reader.open(dir / "g5.rar"));
+        REQUIRE(reader.open(dir / "g5.rar"));
         // entries: [source.txt, h.txt] — extract only the hardlink.
-        assert(reader.entries().size() == 2);
-        assert(reader.extract_entry(reader.entries()[1], out / "h_victim.txt"));
+        REQUIRE(reader.entries().size() == 2);
+        REQUIRE(reader.extract_entry(reader.entries()[1], out / "h_victim.txt"));
         std::error_code ec;
-        assert(!fs::exists(out / "h_victim.txt", ec)); // skipped, not linked
+        REQUIRE(!fs::exists(out / "h_victim.txt", ec)); // skipped, not linked
 #ifndef _WIN32
         struct stat st;
-        assert(::stat(victim.c_str(), &st) == 0);
-        assert(st.st_nlink == 1); // link-count oracle: untouched
+        REQUIRE(::stat(victim.c_str(), &st) == 0);
+        REQUIRE(st.st_nlink == 1); // link-count oracle: untouched
 #endif
     }
 
@@ -208,15 +210,15 @@ void test_hardlink_session_and_cap() {
         archive::ArchiveReader reader;
         reader.set_extraction_root(out);
         reader.set_extract_symlinks(true);
-        assert(reader.open(dir / "g5.rar"));
-        assert(reader.extract_entry(reader.entries()[0], out / "source.txt"));
-        assert(reader.extract_entry(reader.entries()[1], out / "h2.txt"));
+        REQUIRE(reader.open(dir / "g5.rar"));
+        REQUIRE(reader.extract_entry(reader.entries()[0], out / "source.txt"));
+        REQUIRE(reader.extract_entry(reader.entries()[1], out / "h2.txt"));
 #ifndef _WIN32
         struct stat sa, sb;
-        assert(::stat((out / "source.txt").c_str(), &sa) == 0);
-        assert(::stat((out / "h2.txt").c_str(), &sb) == 0);
-        assert(sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino); // same inode
-        assert(sa.st_nlink == 2);
+        REQUIRE(::stat((out / "source.txt").c_str(), &sa) == 0);
+        REQUIRE(::stat((out / "h2.txt").c_str(), &sb) == 0);
+        REQUIRE((sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino)); // same inode
+        REQUIRE(sa.st_nlink == 2);
 #endif
     }
     std::cout << "[PASS] hardlink session scoping (pre-existing targets skipped)\n";
@@ -246,10 +248,10 @@ void test_byte_cap_debit() {
     }
     // Debit 1 byte: 3+1 == cap → allowed.
     state.total_out += 1;
-    assert(state.total_out <= limits.max_total_output_bytes);
+    REQUIRE(state.total_out <= limits.max_total_output_bytes);
     // Debit 1 more: over cap.
     state.total_out += 1;
-    assert(state.total_out > limits.max_total_output_bytes);
+    REQUIRE(state.total_out > limits.max_total_output_bytes);
     // The reader aborts entries whose streaming state exceeds the cap
     // (stream_payload pins this); the fallback copy debits through the same
     // LimitState, so the excess-abort contract holds transitively.
@@ -275,7 +277,7 @@ void test_dir_metadata_deferred() {
     // writes file blocks; a directory needs the flag. Rebuild by hand:
     {
         io::FileStream out_stream;
-        assert(out_stream.open(dir / "g5.rar", io::FileMode::CreateAlways));
+        REQUIRE(out_stream.open(dir / "g5.rar", io::FileMode::CreateAlways));
         format::HeaderWriter::write_signature(out_stream);
         format::MainBlock mb;
         format::HeaderWriter::write_main_block(out_stream, mb);
@@ -289,7 +291,7 @@ void test_dir_metadata_deferred() {
         d.method = 0;
         d.htime_is_unix = true;
         d.htime_mtime_unix = dir_mtime;
-        assert(format::HeaderWriter::write_file_block(out_stream, d));
+        REQUIRE(format::HeaderWriter::write_file_block(out_stream, d));
         format::FileBlock f;
         f.file_name = "d/f.txt";
         f.host_os = 1;
@@ -299,7 +301,7 @@ void test_dir_metadata_deferred() {
         f.method = 0;
         f.htime_is_unix = true;
         f.htime_mtime_unix = 1700000000;
-        assert(format::HeaderWriter::write_file_block(out_stream, f));
+        REQUIRE(format::HeaderWriter::write_file_block(out_stream, f));
         out_stream.write("child", 5);
         format::EndArcBlock eb;
         format::HeaderWriter::write_end_block(out_stream, eb);
@@ -307,19 +309,19 @@ void test_dir_metadata_deferred() {
 
     archive::ArchiveReader reader;
     reader.set_extraction_root(out);
-    assert(reader.open(dir / "g5.rar"));
-    assert(reader.entries().size() == 2);
+    REQUIRE(reader.open(dir / "g5.rar"));
+    REQUIRE(reader.entries().size() == 2);
     // Extract child FIRST (reverse archive order) so the deferred stack is
     // what preserves the directory's mtime over the child write.
-    assert(reader.extract_entry(reader.entries()[1], out / "d" / "f.txt"));
-    assert(reader.extract_entry(reader.entries()[0], out / "d"));
+    REQUIRE(reader.extract_entry(reader.entries()[1], out / "d" / "f.txt"));
+    REQUIRE(reader.extract_entry(reader.entries()[0], out / "d"));
     reader.apply_deferred_dir_metadata();
 
     // mtime preserved despite the child write; mode restored (umask-bounded);
     // the read-only directory received its child during the permissive phase.
     struct stat st;
-    assert(::stat((out / "d").c_str(), &st) == 0);
-    assert(static_cast<core::uint64>(st.st_mtime) == dir_mtime);
+    REQUIRE(::stat((out / "d").c_str(), &st) == 0);
+    REQUIRE(static_cast<core::uint64>(st.st_mtime) == dir_mtime);
     const mode_t umask_bits = [] {
         const mode_t old = ::umask(0);
         ::umask(old);
@@ -327,10 +329,10 @@ void test_dir_metadata_deferred() {
     }();
     const mode_t want = static_cast<mode_t>(
         archive::ArchiveReader::sanitize_extract_mode(040555u, false, umask_bits));
-    assert((st.st_mode & 07777u) == want);
+    REQUIRE((st.st_mode & 07777u) == want);
     std::ifstream f(out / "d" / "f.txt", std::ios::binary);
     std::string got((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    assert(got == "child");
+    REQUIRE(got == "child");
     // Cleanup hygiene (v1.27): the deferred metadata legitimately left "d"
     // read-only (that is the feature under test). Re-open it before the
     // sweep — unlink inside a write-protected directory fails for the
@@ -361,31 +363,31 @@ void test_filecopy_debits_caps() {
     const fs::path dup = dir / "dup.bin";
     for (const fs::path& p : {master, dup}) {
         std::ofstream f(p, std::ios::binary);
-        assert(f);
+        REQUIRE(f);
         f.write(body.data(), static_cast<std::streamsize>(body.size()));
     }
 
     fs::path arc = dir / "fc.rar";
     {
         archive::ArchiveMutator::PreparedAdd pm;
-        assert(archive::ArchiveMutator::prepare_add_file(master, "master.bin", 0, "", pm));
+        REQUIRE(archive::ArchiveMutator::prepare_add_file(master, "master.bin", 0, "", pm));
         archive::ArchiveMutator::PreparedAdd pr;
-        assert(archive::ArchiveMutator::prepare_add_filecopy(dup, "dup.bin", "master.bin", pr));
+        REQUIRE(archive::ArchiveMutator::prepare_add_filecopy(dup, "dup.bin", "master.bin", pr));
         std::vector<archive::ArchiveMutator::PreparedAdd> batch;
         batch.push_back(std::move(pm));
         batch.push_back(std::move(pr));
         std::string detail;
-        assert(archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {}, false, {},
-                                                           detail) == 0);
+        REQUIRE(archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {}, false,
+                                                            {}, detail) == 0);
     }
 
     archive::ArchiveReader reader;
     reader.set_extract_symlinks(true); // FILECOPY refs follow the -ol opt-in
     reader.set_extraction_root(out);
-    assert(reader.open(arc));
-    assert(reader.entries().size() == 2u);
-    assert(reader.entries()[0].header.redir_type == 0);
-    assert(reader.entries()[1].header.redir_type == 5);
+    REQUIRE(reader.open(arc));
+    REQUIRE(reader.entries().size() == 2u);
+    REQUIRE(reader.entries()[0].header.redir_type == 0);
+    REQUIRE(reader.entries()[1].header.redir_type == 5);
 
     // The ref runs with a zero cap: any debited byte must refuse the
     // materialization instead of silently copying outside the accounting.
@@ -395,26 +397,26 @@ void test_filecopy_debits_caps() {
         archive::LimitState state;
         // Master first with a generous cap — its bytes must land.
         archive::ExtractionLimits wide;
-        assert(reader.extract_entry(reader.entries()[0], out / "master.bin", "", &wide, &state));
-        assert(std::filesystem::exists(out / "master.bin"));
+        REQUIRE(reader.extract_entry(reader.entries()[0], out / "master.bin", "", &wide, &state));
+        REQUIRE(std::filesystem::exists(out / "master.bin"));
         // REF with the zero cap: materialization must refuse (debit fires)
         // instead of silently copying outside the accounting.
-        assert(!reader.extract_entry(reader.entries()[1], out / "dup.bin", "", &limits, &state));
-        assert(!std::filesystem::exists(out / "dup.bin"));
+        REQUIRE(!reader.extract_entry(reader.entries()[1], out / "dup.bin", "", &limits, &state));
+        REQUIRE(!std::filesystem::exists(out / "dup.bin"));
     }
     // Generous cap: the reference materializes byte-identically.
     {
         archive::ArchiveReader reader2;
         reader2.set_extract_symlinks(true);
         reader2.set_extraction_root(out);
-        assert(reader2.open(arc));
+        REQUIRE(reader2.open(arc));
         archive::ExtractionLimits wide;
         archive::LimitState state;
-        assert(reader2.extract_entry(reader2.entries()[0], out / "m2.bin", "", &wide, &state));
-        assert(reader2.extract_entry(reader2.entries()[1], out / "dup.bin", "", &wide, &state));
+        REQUIRE(reader2.extract_entry(reader2.entries()[0], out / "m2.bin", "", &wide, &state));
+        REQUIRE(reader2.extract_entry(reader2.entries()[1], out / "dup.bin", "", &wide, &state));
         std::ifstream f(out / "dup.bin", std::ios::binary);
         std::string got((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        assert(got == body);
+        REQUIRE(got == body);
     }
     std::cout << "[PASS] filecopy_debits_caps: materialization honors LimitState\n";
     rm(dir);
@@ -429,7 +431,7 @@ void test_links_default_deny() {
     fs::create_directories(out);
     // symlink entry "lnk" → "target.txt" (the target does NOT exist)
     io::FileStream out_stream;
-    assert(out_stream.open(dir / "g5.rar", io::FileMode::CreateAlways));
+    REQUIRE(out_stream.open(dir / "g5.rar", io::FileMode::CreateAlways));
     format::HeaderWriter::write_signature(out_stream);
     format::MainBlock mb;
     format::HeaderWriter::write_main_block(out_stream, mb);
@@ -441,7 +443,7 @@ void test_links_default_deny() {
     fb.method = 0;
     fb.redir_type = 1; // UNIXSYMLINK
     fb.redir_target = "target.txt";
-    assert(format::HeaderWriter::write_file_block(out_stream, fb));
+    REQUIRE(format::HeaderWriter::write_file_block(out_stream, fb));
     format::EndArcBlock eb;
     format::HeaderWriter::write_end_block(out_stream, eb);
     out_stream.close();
@@ -451,24 +453,24 @@ void test_links_default_deny() {
         // DEFAULT: denied — nothing on disk.
         archive::ArchiveReader reader;
         reader.set_extraction_root(out);
-        assert(reader.open(dir / "g5.rar"));
-        assert(reader.extract_entry(reader.entries()[0], out / "lnk"));
-        assert(!fs::exists(out / "lnk", ec)); // never created
+        REQUIRE(reader.open(dir / "g5.rar"));
+        REQUIRE(reader.extract_entry(reader.entries()[0], out / "lnk"));
+        REQUIRE(!fs::exists(out / "lnk", ec)); // never created
     }
     {
         // Opt-in: created.
         archive::ArchiveReader reader;
         reader.set_extraction_root(out);
         reader.set_extract_symlinks(true);
-        assert(reader.open(dir / "g5.rar"));
-        assert(reader.extract_entry(reader.entries()[0], out / "lnk"));
-        assert(fs::is_symlink(fs::symlink_status(out / "lnk", ec)));
+        REQUIRE(reader.open(dir / "g5.rar"));
+        REQUIRE(reader.extract_entry(reader.entries()[0], out / "lnk"));
+        REQUIRE(fs::is_symlink(fs::symlink_status(out / "lnk", ec)));
     }
 #else
     // Windows symlinks need privilege: the default-deny contract is pinned by
     // the reader member default (extract_symlinks_ == false) on all legs.
     archive::ArchiveReader reader;
-    assert(!reader.extract_symlinks());
+    REQUIRE(!reader.extract_symlinks());
 #endif
     std::cout << "[PASS] §6.1 default-deny: links extract only with -ol\n";
     rm(dir);
@@ -481,39 +483,39 @@ void test_links_default_deny() {
 void test_xattr_restore_policy() {
     using archive::ArchiveReader;
     // Default-restore namespaces.
-    assert(ArchiveReader::xattr_restorable("user.greeting", false));
-    assert(ArchiveReader::xattr_restorable("com.apple.metadata:_kMDItemUserTags", false));
-    assert(ArchiveReader::xattr_restorable("com.apple.metadata.tag", false));
+    REQUIRE(ArchiveReader::xattr_restorable("user.greeting", false));
+    REQUIRE(ArchiveReader::xattr_restorable("com.apple.metadata:_kMDItemUserTags", false));
+    REQUIRE(ArchiveReader::xattr_restorable("com.apple.metadata.tag", false));
     // v1.35.0: Apple content-class names restore by default — but only on
     // Apple hosts (D10: on Linux the predicate must not admit com.apple.*
     // content names, or setxattr would create alien namespaces).
 #if defined(__APPLE__)
-    assert(ArchiveReader::xattr_restorable("com.apple.ResourceFork", false));
-    assert(ArchiveReader::xattr_restorable("com.apple.FinderInfo", false));
+    REQUIRE(ArchiveReader::xattr_restorable("com.apple.ResourceFork", false));
+    REQUIRE(ArchiveReader::xattr_restorable("com.apple.FinderInfo", false));
 #else
-    assert(!ArchiveReader::xattr_restorable("com.apple.ResourceFork", false));
-    assert(!ArchiveReader::xattr_restorable("com.apple.FinderInfo", false));
+    REQUIRE(!ArchiveReader::xattr_restorable("com.apple.ResourceFork", false));
+    REQUIRE(!ArchiveReader::xattr_restorable("com.apple.FinderInfo", false));
 #endif
     // Privileged namespaces: default-deny, opt-in restores.
-    assert(!ArchiveReader::xattr_restorable("security.selinux", false));
-    assert(!ArchiveReader::xattr_restorable("trusted.backup", false));
-    assert(ArchiveReader::xattr_restorable("security.selinux", true));
-    assert(ArchiveReader::xattr_restorable("trusted.backup", true));
+    REQUIRE(!ArchiveReader::xattr_restorable("security.selinux", false));
+    REQUIRE(!ArchiveReader::xattr_restorable("trusted.backup", false));
+    REQUIRE(ArchiveReader::xattr_restorable("security.selinux", true));
+    REQUIRE(ArchiveReader::xattr_restorable("trusted.backup", true));
     // Never restored from archive content.
-    assert(!ArchiveReader::xattr_restorable("system.posix_acl_access", false));
-    assert(!ArchiveReader::xattr_restorable("system.posix_acl_access", true));
-    assert(!ArchiveReader::xattr_restorable("com.apple.quarantine", true));
-    assert(!ArchiveReader::xattr_restorable("com.apple.provenance", true));
+    REQUIRE(!ArchiveReader::xattr_restorable("system.posix_acl_access", false));
+    REQUIRE(!ArchiveReader::xattr_restorable("system.posix_acl_access", true));
+    REQUIRE(!ArchiveReader::xattr_restorable("com.apple.quarantine", true));
+    REQUIRE(!ArchiveReader::xattr_restorable("com.apple.provenance", true));
     // com.apple.ResourceFork is Apple content-class metadata, not transport
     // metadata (D10), so on Apple it restores by default and the opt-in flag
     // does not withdraw it - the predicate is true either way. Off Apple it
     // is never restored.
 #if defined(__APPLE__)
-    assert(ArchiveReader::xattr_restorable("com.apple.ResourceFork", true));
+    REQUIRE(ArchiveReader::xattr_restorable("com.apple.ResourceFork", true));
 #else
-    assert(!ArchiveReader::xattr_restorable("com.apple.ResourceFork", true));
+    REQUIRE(!ArchiveReader::xattr_restorable("com.apple.ResourceFork", true));
 #endif
-    assert(!ArchiveReader::xattr_restorable("btrfs.compression", true));
+    REQUIRE(!ArchiveReader::xattr_restorable("btrfs.compression", true));
     std::cout << "[PASS] xattr_restore_policy: user.*/metadata.* default, security.* opt-in\n";
 }
 
@@ -542,7 +544,7 @@ void test_xattr_restore_roundtrip() {
     const fs::path arc = dir / "g5.rar";
     {
         io::FileStream s;
-        assert(s.open(arc, io::FileMode::CreateAlways));
+        REQUIRE(s.open(arc, io::FileMode::CreateAlways));
         format::HeaderWriter::write_signature(s);
         format::MainBlock mb;
         format::HeaderWriter::write_main_block(s, mb);
@@ -554,7 +556,7 @@ void test_xattr_restore_roundtrip() {
         d.pack_size = -1;
         d.method = 0;
         d.xattrs.push_back({"user.dirattr", {'d', 'v', 'a', 'l'}});
-        assert(format::HeaderWriter::write_file_block(s, d));
+        REQUIRE(format::HeaderWriter::write_file_block(s, d));
         format::FileBlock f;
         f.file_name = "d/f.txt";
         f.host_os = 1;
@@ -566,27 +568,27 @@ void test_xattr_restore_roundtrip() {
         f.xattrs.push_back({"user.empty", {}});
         // Crafted hostile-ish record: security.* may never restore by default.
         f.xattrs.push_back({"security.selinux", {'e', 'v', 'i', 'l'}});
-        assert(format::HeaderWriter::write_file_block(s, f));
+        REQUIRE(format::HeaderWriter::write_file_block(s, f));
         s.write("child", 5);
         format::EndArcBlock eb;
         format::HeaderWriter::write_end_block(s, eb);
     }
     archive::ArchiveReader reader;
     reader.set_extraction_root(out);
-    assert(reader.open(arc));
-    assert(reader.entries().size() == 2);
-    assert(reader.extract_entry(reader.entries()[1], out / "d" / "f.txt"));
-    assert(reader.extract_entry(reader.entries()[0], out / "d"));
+    REQUIRE(reader.open(arc));
+    REQUIRE(reader.entries().size() == 2);
+    REQUIRE(reader.extract_entry(reader.entries()[1], out / "d" / "f.txt"));
+    REQUIRE(reader.extract_entry(reader.entries()[0], out / "d"));
     reader.apply_deferred_dir_metadata();
 
     // File: allow-listed attributes restored (incl. the empty value).
     std::string got;
-    assert(get_xattr_posix(out / "d" / "f.txt", "user.greeting", got) && got == "hello");
-    assert(get_xattr_posix(out / "d" / "f.txt", "user.empty", got) && got.empty());
+    REQUIRE((get_xattr_posix(out / "d" / "f.txt", "user.greeting", got) && got == "hello"));
+    REQUIRE((get_xattr_posix(out / "d" / "f.txt", "user.empty", got) && got.empty()));
     // security.* never restored by default.
-    assert(!get_xattr_posix(out / "d" / "f.txt", "security.selinux", got));
+    REQUIRE(!get_xattr_posix(out / "d" / "f.txt", "security.selinux", got));
     // Dir: deferred-path restore.
-    assert(get_xattr_posix(out / "d", "user.dirattr", got) && got == "dval");
+    REQUIRE((get_xattr_posix(out / "d", "user.dirattr", got) && got == "dval"));
 
     // Opt-in: extraction still succeeds; the privileged setxattr fails
     // EPERM while unprivileged and is skipped fail-soft (attribute absent).
@@ -594,12 +596,12 @@ void test_xattr_restore_roundtrip() {
     archive::ArchiveReader reader2;
     reader2.set_extraction_root(out2);
     reader2.set_restore_xattr_security(true);
-    assert(reader2.open(arc));
-    assert(reader2.extract_entry(reader2.entries()[1], out2 / "d" / "f.txt"));
-    assert(reader2.extract_entry(reader2.entries()[0], out2 / "d"));
+    REQUIRE(reader2.open(arc));
+    REQUIRE(reader2.extract_entry(reader2.entries()[1], out2 / "d" / "f.txt"));
+    REQUIRE(reader2.extract_entry(reader2.entries()[0], out2 / "d"));
     reader2.apply_deferred_dir_metadata();
-    assert(get_xattr_posix(out2 / "d" / "f.txt", "user.greeting", got) && got == "hello");
-    assert(get_xattr_posix(out2 / "d" / "f.txt", "user.empty", got) && got.empty());
+    REQUIRE((get_xattr_posix(out2 / "d" / "f.txt", "user.greeting", got) && got == "hello"));
+    REQUIRE((get_xattr_posix(out2 / "d" / "f.txt", "user.empty", got) && got.empty()));
 #else
     // Windows: restore is platform-gated; the policy predicate is pinned
     // by test_xattr_restore_policy on every leg.
@@ -623,22 +625,22 @@ void test_filecopy_materializes_by_default() {
     const fs::path dup = dir / "dup.bin";
     for (const fs::path& p : {master, dup}) {
         std::ofstream f(p, std::ios::binary);
-        assert(f);
+        REQUIRE(f);
         f.write(body.data(), static_cast<std::streamsize>(body.size()));
     }
 
     fs::path arc = dir / "fc.rar";
     {
         archive::ArchiveMutator::PreparedAdd pm;
-        assert(archive::ArchiveMutator::prepare_add_file(master, "master.bin", 0, "", pm));
+        REQUIRE(archive::ArchiveMutator::prepare_add_file(master, "master.bin", 0, "", pm));
         archive::ArchiveMutator::PreparedAdd pr;
-        assert(archive::ArchiveMutator::prepare_add_filecopy(dup, "dup.bin", "master.bin", pr));
+        REQUIRE(archive::ArchiveMutator::prepare_add_filecopy(dup, "dup.bin", "master.bin", pr));
         std::vector<archive::ArchiveMutator::PreparedAdd> batch;
         batch.push_back(std::move(pm));
         batch.push_back(std::move(pr));
         std::string detail;
-        assert(archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {}, false, {},
-                                                           detail) == 0);
+        REQUIRE(archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {}, false,
+                                                            {}, detail) == 0);
     }
 
     // NO -ol opt-in: the FILECOPY reference must still materialize (the
@@ -646,16 +648,17 @@ void test_filecopy_materializes_by_default() {
     // outcome reported as Materialized.
     archive::ArchiveReader reader;
     reader.set_extraction_root(out);
-    assert(reader.open(arc));
-    assert(reader.entries().size() == 2u);
+    REQUIRE(reader.open(arc));
+    REQUIRE(reader.entries().size() == 2u);
     archive::ExtractionLimits wide;
     archive::LimitState state;
-    assert(reader.extract_entry(reader.entries()[0], out / "master.bin", "", &wide, &state));
-    assert(reader.extract_entry(reader.entries()[1], out / "dup.bin", "", &wide, &state));
-    assert(reader.last_filecopy_outcome() == archive::ArchiveReader::FilecopyOutcome::Materialized);
+    REQUIRE(reader.extract_entry(reader.entries()[0], out / "master.bin", "", &wide, &state));
+    REQUIRE(reader.extract_entry(reader.entries()[1], out / "dup.bin", "", &wide, &state));
+    REQUIRE(reader.last_filecopy_outcome() ==
+            archive::ArchiveReader::FilecopyOutcome::Materialized);
     std::ifstream f(out / "dup.bin", std::ios::binary);
     std::string got((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    assert(got == body);
+    REQUIRE(got == body);
     std::cout << "[PASS] filecopy_materializes_by_default: no -ol needed" << std::endl;
     rm(dir);
 }
@@ -669,34 +672,34 @@ void test_filecopy_target_missing_reported_and_links_deny() {
     const fs::path src = dir / "src.bin";
     {
         std::ofstream f(src, std::ios::binary);
-        assert(f);
+        REQUIRE(f);
         f.write("payload", 7);
     }
     fs::path arc = dir / "fc_miss.rar";
     {
         archive::ArchiveMutator::PreparedAdd pm;
-        assert(archive::ArchiveMutator::prepare_add_file(src, "real.bin", 0, "", pm));
+        REQUIRE(archive::ArchiveMutator::prepare_add_file(src, "real.bin", 0, "", pm));
         archive::ArchiveMutator::PreparedAdd pr;
-        assert(archive::ArchiveMutator::prepare_add_filecopy(src, "ref.bin", "ghost.bin", pr));
+        REQUIRE(archive::ArchiveMutator::prepare_add_filecopy(src, "ref.bin", "ghost.bin", pr));
         std::vector<archive::ArchiveMutator::PreparedAdd> batch;
         batch.push_back(std::move(pm));
         batch.push_back(std::move(pr));
         std::string detail;
-        assert(archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {}, false, {},
-                                                           detail) == 0);
+        REQUIRE(archive::ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {}, false,
+                                                            {}, detail) == 0);
     }
 
     archive::ArchiveReader reader;
     reader.set_extraction_root(out);
-    assert(reader.open(arc));
+    REQUIRE(reader.open(arc));
     archive::ExtractionLimits wide;
     archive::LimitState state;
     // Missing target: the call still "succeeds" (the entry itself is not a
     // failure) but the outcome is TargetMissing — the CLI reports skipped.
-    assert(reader.extract_entry(reader.entries()[1], out / "ref.bin", "", &wide, &state));
-    assert(reader.last_filecopy_outcome() ==
-           archive::ArchiveReader::FilecopyOutcome::TargetMissing);
-    assert(!std::filesystem::exists(out / "ref.bin"));
+    REQUIRE(reader.extract_entry(reader.entries()[1], out / "ref.bin", "", &wide, &state));
+    REQUIRE(reader.last_filecopy_outcome() ==
+            archive::ArchiveReader::FilecopyOutcome::TargetMissing);
+    REQUIRE(!std::filesystem::exists(out / "ref.bin"));
 
     // Links (symlink record) remain default-deny without -ol: extract with
     // the -ol archive from the -ol test region — here assert the shipped
@@ -707,24 +710,24 @@ void test_filecopy_target_missing_reported_and_links_deny() {
     rm(dir);
 }
 
-int main() {
-#ifdef _MSC_VER
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    test_suid_sgid_stripped();
-    test_hardlink_session_and_cap();
-    test_byte_cap_debit();
-    test_dir_metadata_deferred();
-    test_links_default_deny();
-    test_xattr_restore_policy();
-    test_xattr_restore_roundtrip();
-    test_filecopy_debits_caps();
-    test_filecopy_materializes_by_default();
-    test_filecopy_target_missing_reported_and_links_deny();
-    std::cout << "All extraction_fidelity_tests passed.\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_suid_sgid_stripped", test_suid_sgid_stripped, false},
+    {"test_hardlink_session_and_cap", test_hardlink_session_and_cap, false},
+    {"test_byte_cap_debit", test_byte_cap_debit, false},
+    {"test_dir_metadata_deferred", test_dir_metadata_deferred, false},
+    {"test_links_default_deny", test_links_default_deny, false},
+    {"test_xattr_restore_policy", test_xattr_restore_policy, false},
+    {"test_xattr_restore_roundtrip", test_xattr_restore_roundtrip, false},
+    {"test_filecopy_debits_caps", test_filecopy_debits_caps, false},
+    {"test_filecopy_materializes_by_default", test_filecopy_materializes_by_default, false},
+    {"test_filecopy_target_missing_reported_and_links_deny",
+     test_filecopy_target_missing_reported_and_links_deny, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All extraction_fidelity_tests passed.\n";
+    return rc;
 }

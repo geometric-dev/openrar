@@ -9,6 +9,8 @@
 #include <filesystem>
 #include <iostream>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #include <cstdlib>
@@ -31,11 +33,11 @@ void test_archive_roundtrip() {
     {
         io::FileStream out;
         bool ok = out.open(test_arc, io::FileMode::CreateAlways);
-        assert(ok);
+        REQUIRE(ok);
 
         // Signature
         ok = HeaderWriter::write_signature(out);
-        assert(ok);
+        REQUIRE(ok);
 
         // Main block with locator
         MainBlock mb;
@@ -44,7 +46,7 @@ void test_archive_roundtrip() {
         mb.locator_qo_offset = 12345;
         mb.locator_rr_offset = 67890;
         ok = HeaderWriter::write_main_block(out, mb);
-        assert(ok);
+        REQUIRE(ok);
 
         // File block
         FileBlock fb;
@@ -61,7 +63,7 @@ void test_archive_roundtrip() {
         fb.win_size = 0; // store (no dict)
         fb.host_os = 0;  // Windows
         ok = HeaderWriter::write_file_block(out, fb);
-        assert(ok);
+        REQUIRE(ok);
 
         // Write 100 bytes payload
         core::byte payload[100];
@@ -72,62 +74,62 @@ void test_archive_roundtrip() {
         EndArcBlock eb;
         eb.end_flags = 0;
         ok = HeaderWriter::write_end_block(out, eb);
-        assert(ok);
+        REQUIRE(ok);
     }
 
     // 2. Read archive back and verify
     {
         io::FileStream in;
         bool ok = in.open(test_arc, io::FileMode::ReadOnly);
-        assert(ok);
+        REQUIRE(ok);
 
         // Verify signature
-        assert(HeaderReader::read_signature(in));
+        REQUIRE(HeaderReader::read_signature(in));
 
         // Read Main block
         core::uint64 type = 0, flags = 0, data_size = 0;
         std::vector<core::byte> body;
-        assert(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
-        assert(type == HEAD_MAIN);
-        assert(data_size == 0);
+        REQUIRE(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
+        REQUIRE(type == HEAD_MAIN);
+        REQUIRE(data_size == 0);
 
         MainBlock read_mb;
-        assert(HeaderReader::parse_main_header(body.data(), body.size(), read_mb));
-        assert(read_mb.arc_flags == MHFL_SOLID);
-        assert(read_mb.has_locator);
-        assert(read_mb.locator_qo_offset == 12345);
-        assert(read_mb.locator_rr_offset == 67890);
+        REQUIRE(HeaderReader::parse_main_header(body.data(), body.size(), read_mb));
+        REQUIRE(read_mb.arc_flags == MHFL_SOLID);
+        REQUIRE(read_mb.has_locator);
+        REQUIRE(read_mb.locator_qo_offset == 12345);
+        REQUIRE(read_mb.locator_rr_offset == 67890);
 
         // Read File block
-        assert(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
-        assert(type == HEAD_FILE);
-        assert(data_size == 100);
+        REQUIRE(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
+        REQUIRE(type == HEAD_FILE);
+        REQUIRE(data_size == 100);
 
         FileBlock read_fb;
-        assert(HeaderReader::HeaderReader::parse_file_header(body.data(), body.size(), read_fb));
-        assert(read_fb.file_name == "docs/readme.txt");
-        assert(read_fb.unp_size == 100);
-        assert(read_fb.pack_size == 100);
-        assert(read_fb.has_crc32 && read_fb.data_crc32 == 0x12345678);
-        assert(read_fb.has_blake2sp);
+        REQUIRE(HeaderReader::HeaderReader::parse_file_header(body.data(), body.size(), read_fb));
+        REQUIRE(read_fb.file_name == "docs/readme.txt");
+        REQUIRE(read_fb.unp_size == 100);
+        REQUIRE(read_fb.pack_size == 100);
+        REQUIRE((read_fb.has_crc32 && read_fb.data_crc32 == 0x12345678));
+        REQUIRE(read_fb.has_blake2sp);
         for (size_t i = 0; i < 32; ++i) {
-            assert(read_fb.blake2sp[i] == static_cast<core::byte>(i));
+            REQUIRE(read_fb.blake2sp[i] == static_cast<core::byte>(i));
         }
-        assert(read_fb.mtime_win == 133000000000000000ULL);
-        assert(read_fb.method == 0);
-        assert(read_fb.win_size == 0);
+        REQUIRE(read_fb.mtime_win == 133000000000000000ULL);
+        REQUIRE(read_fb.method == 0);
+        REQUIRE(read_fb.win_size == 0);
 
         // Skip payload
         in.seek(data_size, io::SeekOrigin::Current);
 
         // Read End block
-        assert(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
-        assert(type == HEAD_ENDARC);
-        assert(data_size == 0);
+        REQUIRE(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
+        REQUIRE(type == HEAD_ENDARC);
+        REQUIRE(data_size == 0);
 
         EndArcBlock read_eb;
-        assert(HeaderReader::parse_end_header(body.data(), body.size(), read_eb));
-        assert(read_eb.end_flags == 0);
+        REQUIRE(HeaderReader::parse_end_header(body.data(), body.size(), read_eb));
+        REQUIRE(read_eb.end_flags == 0);
     }
 
     std::filesystem::remove(test_arc);
@@ -171,9 +173,9 @@ void test_malformed_headers_safe() {
         for (int i = 0; i < 32; ++i) extra.push_back(static_cast<core::byte>(i));
         std::vector<core::byte> body = craft_file_body(HFL_EXTRA, extra, {core::byte('a')});
         FileBlock fb;
-        assert(HeaderReader::parse_file_header(body.data(), body.size(), fb));
-        assert(fb.has_blake2sp);
-        for (int i = 0; i < 32; ++i) assert(fb.blake2sp[i] == static_cast<core::byte>(i));
+        REQUIRE(HeaderReader::parse_file_header(body.data(), body.size(), fb));
+        REQUIRE(fb.has_blake2sp);
+        for (int i = 0; i < 32; ++i) REQUIRE(fb.blake2sp[i] == static_cast<core::byte>(i));
     }
 
     // 2. Oversized rec_size truncates the actual record: must not read past
@@ -183,17 +185,38 @@ void test_malformed_headers_safe() {
         extra.push_back(FHEXTRA_HASH);
         std::vector<core::byte> body = craft_file_body(HFL_EXTRA, extra, {core::byte('a')});
         FileBlock fb;
-        assert(HeaderReader::parse_file_header(body.data(), body.size(), fb));
-        assert(!fb.has_blake2sp);
+        REQUIRE(HeaderReader::parse_file_header(body.data(), body.size(), fb));
+        REQUIRE(!fb.has_blake2sp);
     }
 
     // 3. 2^64-1 record size must terminate (overflow-safe clamp), not wrap.
+    //    0x7F is a genuinely unknown file-extra type (0x01 is FHEXTRA_CRYPT).
     {
         std::vector<core::byte> extra = vintbytes(~core::uint64(0));
-        extra.push_back(0x01); // unknown record type
+        extra.push_back(0x7F); // unknown record type
         std::vector<core::byte> body = craft_file_body(HFL_EXTRA, extra, {core::byte('a')});
         FileBlock fb;
-        assert(HeaderReader::parse_file_header(body.data(), body.size(), fb));
+        REQUIRE(HeaderReader::parse_file_header(body.data(), body.size(), fb));
+    }
+    // 3b. H-15: a truncated FHEXTRA_CRYPT record (no salt/IV/check) must
+    //     fail the header instead of yielding zero-filled key material.
+    {
+        std::vector<core::byte> extra = vintbytes(~core::uint64(0));
+        extra.push_back(FHEXTRA_CRYPT);
+        std::vector<core::byte> body = craft_file_body(HFL_EXTRA, extra, {core::byte('a')});
+        FileBlock fb;
+        REQUIRE(!HeaderReader::parse_file_header(body.data(), body.size(), fb));
+    }
+    // 3c. M-11: a declared extra area larger than the room after the fixed
+    //     fields is malformed, not silently re-anchored.
+    {
+        std::vector<core::byte> extra = vintbytes(1);
+        extra.push_back(0x7F);
+        std::vector<core::byte> body = craft_file_body(HFL_EXTRA, extra, {core::byte('a')});
+        // Re-encode the extra_size vint (3rd field) as 100: overlaps the body.
+        body[2] = 100;
+        FileBlock fb;
+        REQUIRE(!HeaderReader::parse_file_header(body.data(), body.size(), fb));
     }
 
     // 4. Near-2^64 name length must be rejected, not terminate the process.
@@ -208,7 +231,7 @@ void test_malformed_headers_safe() {
         core::push_vint(body, 0);                     // host_os
         core::push_vint(body, core::uint64(1) << 60); // name_len huge
         FileBlock fb;
-        assert(!HeaderReader::parse_file_header(body.data(), body.size(), fb));
+        REQUIRE(!HeaderReader::parse_file_header(body.data(), body.size(), fb));
     }
 
     // 5. Main header: 2^64-1 record size in the locator loop must terminate too.
@@ -222,12 +245,59 @@ void test_malformed_headers_safe() {
         core::push_vint(body, 0); // arc_flags
         body.insert(body.end(), extra.begin(), extra.end());
         MainBlock mb;
-        assert(HeaderReader::parse_main_header(body.data(), body.size(), mb));
+        REQUIRE(HeaderReader::parse_main_header(body.data(), body.size(), mb));
     }
 
     std::cout << "[PASS] Malformed header bodies are bounded and safe\n";
 }
 
+
+// Table flavor round-trip: unp_ver 1 + FCI_RAR5_COMPAT is RAR7 dictionary
+// sizing over the RAR5 algorithm (430 tables); only unp_ver 1 WITHOUT the
+// compat flag is the RAR7 algorithm (446 tables). Mirrors unrar arcread.cpp.
+void test_extra_dist_flavor_from_comp_info() {
+    struct Case {
+        core::uint32 unp_ver;
+        bool extra_dist;
+        core::uint64 win;
+        bool win_roundtrips; // false: below the 128 KiB header minimum
+    } cases[] = {
+        {0, false, 0x400000, true},
+        {1, false, 8ULL << 30, true}, // what our encoder writes for > 4 GiB
+        {1, true, 8ULL << 30, true},  // RAR7-algorithm member (RAR 7 -md8g)
+        {1, true, 0x400000, true},    // flavor is independent of the window size
+        {1, false, 0x5000000, true},  // non-pow2 (fractional) RAR7 sizing, RAR5 algo
+        // The compat flag must not depend on the window reaching 128 KiB: a
+        // library caller can pair unp_ver 1 with a tiny explicit dictionary.
+        {1, false, 100000, false},
+        {1, false, 0x1FFFF, false},
+        {1, false, 0, false},
+        {1, true, 100000, false}, // RAR7-algorithm member keeps the flag clear
+    };
+    for (const Case& c : cases) {
+        FileBlock fb;
+        fb.file_name = "f";
+        fb.method = 3;
+        fb.unp_size = 1;
+        fb.pack_size = 1;
+        fb.unp_ver = c.unp_ver;
+        fb.win_size = c.win;
+        fb.extra_dist = c.extra_dist;
+        std::vector<core::byte> blk = HeaderWriter::serialize_file_block(fb);
+        // Skip CRC32 + size vint to reach the body.
+        size_t off = 4, n = 0;
+        core::uint64 body_size = 0;
+        REQUIRE(core::read_vint(blk.data() + off, blk.size() - off, body_size, n));
+        off += n;
+        FileBlock back;
+        REQUIRE(HeaderReader::parse_file_header(blk.data() + off, static_cast<size_t>(body_size),
+                                                back));
+        REQUIRE(back.unp_ver == c.unp_ver);
+        REQUIRE(back.extra_dist == (c.unp_ver == 1 && c.extra_dist));
+        if (c.win_roundtrips) REQUIRE(back.win_size == c.win);
+    }
+    std::cout << "[PASS] ExtraDist table flavor follows FCI_RAR5_COMPAT, not the window\n";
+}
 
 // Regression (report M11): FHEXTRA_VERSION (0x04) collided with the
 // 0x04-compat redirect branch, so version records the writer emits were
@@ -242,10 +312,10 @@ void test_version_redir_type_collision() {
     std::filesystem::remove(test_arc, fs_ec);
     {
         io::FileStream out;
-        assert(out.open(test_arc, io::FileMode::CreateAlways));
-        assert(HeaderWriter::write_signature(out));
+        REQUIRE(out.open(test_arc, io::FileMode::CreateAlways));
+        REQUIRE(HeaderWriter::write_signature(out));
         MainBlock mb;
-        assert(HeaderWriter::write_main_block(out, mb));
+        REQUIRE(HeaderWriter::write_main_block(out, mb));
 
         FileBlock fb;
         fb.file_name = "versioned.bin";
@@ -255,9 +325,9 @@ void test_version_redir_type_collision() {
         fb.win_size = 0;
         fb.has_file_version = true;
         fb.file_version = 7;
-        assert(HeaderWriter::write_file_block(out, fb));
+        REQUIRE(HeaderWriter::write_file_block(out, fb));
         const core::byte payload[1] = {'x'};
-        assert(out.write(payload, 1) == 1);
+        REQUIRE(out.write(payload, 1) == 1);
 
         FileBlock redir;
         redir.file_name = "legacy.link";
@@ -267,37 +337,37 @@ void test_version_redir_type_collision() {
         redir.win_size = 0;
         redir.redir_type = 1; // UNIXSYMLINK-shape legacy record
         redir.redir_target = "versioned.bin";
-        assert(HeaderWriter::write_file_block(out, redir));
+        REQUIRE(HeaderWriter::write_file_block(out, redir));
 
         EndArcBlock eb;
-        assert(HeaderWriter::write_end_block(out, eb));
+        REQUIRE(HeaderWriter::write_end_block(out, eb));
     }
     {
         io::FileStream in;
-        assert(in.open(test_arc, io::FileMode::ReadOnly));
-        assert(HeaderReader::read_signature(in));
+        REQUIRE(in.open(test_arc, io::FileMode::ReadOnly));
+        REQUIRE(HeaderReader::read_signature(in));
         core::uint64 type = 0, flags = 0, data_size = 0;
         std::vector<core::byte> body;
-        assert(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
-        assert(type == HEAD_MAIN);
+        REQUIRE(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
+        REQUIRE(type == HEAD_MAIN);
 
-        assert(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
-        assert(type == HEAD_FILE);
-        assert(data_size == 1);
+        REQUIRE(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
+        REQUIRE(type == HEAD_FILE);
+        REQUIRE(data_size == 1);
         FileBlock fb;
-        assert(HeaderReader::parse_file_header(body.data(), body.size(), fb));
-        assert(fb.has_file_version && fb.file_version == 7);
+        REQUIRE(HeaderReader::parse_file_header(body.data(), body.size(), fb));
+        REQUIRE((fb.has_file_version && fb.file_version == 7));
         {
             core::byte skip[1];
-            assert(in.read(skip, 1) == 1);
+            REQUIRE(in.read(skip, 1) == 1);
         } // consume payload
 
-        assert(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
-        assert(type == HEAD_FILE);
+        REQUIRE(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
+        REQUIRE(type == HEAD_FILE);
         FileBlock redir;
-        assert(HeaderReader::parse_file_header(body.data(), body.size(), redir));
-        assert(redir.redir_type == 1 && redir.redir_target == "versioned.bin");
-        assert(!redir.has_file_version);
+        REQUIRE(HeaderReader::parse_file_header(body.data(), body.size(), redir));
+        REQUIRE((redir.redir_type == 1 && redir.redir_target == "versioned.bin"));
+        REQUIRE(!redir.has_file_version);
     }
     std::error_code rm_ec;
     std::filesystem::remove(test_arc, rm_ec);
@@ -319,54 +389,47 @@ void test_locator_record_size_excludes_size_vint() {
     std::filesystem::remove(test_arc, fs_ec);
     {
         io::FileStream out;
-        assert(out.open(test_arc, io::FileMode::CreateAlways));
+        REQUIRE(out.open(test_arc, io::FileMode::CreateAlways));
         MainBlock mb;
         mb.arc_flags = 0;
         mb.has_locator = true;
         mb.locator_qo_offset = 12345;
         mb.locator_rr_offset = 67890;
-        assert(HeaderWriter::write_main_block(out, mb));
+        REQUIRE(HeaderWriter::write_main_block(out, mb));
     }
     io::FileStream in;
-    assert(in.open(test_arc, io::FileMode::ReadOnly));
+    REQUIRE(in.open(test_arc, io::FileMode::ReadOnly));
     core::uint64 type = 0, flags = 0, data_size = 0;
     std::vector<core::byte> body;
-    assert(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
-    assert(type == HEAD_MAIN);
-    assert(body.size() >= 23);
+    REQUIRE(HeaderReader::read_block_raw(in, type, flags, body, data_size) == HeaderResult::Ok);
+    REQUIRE(type == HEAD_MAIN);
+    REQUIRE(body.size() >= 23);
     const size_t extra_start = body.size() - 23;
-    assert(body[extra_start] == static_cast<core::byte>(22));
+    REQUIRE(body[extra_start] == static_cast<core::byte>(22));
 
     // The corrected record still parses back with both offsets.
     MainBlock read_mb;
-    assert(HeaderReader::parse_main_header(body.data(), body.size(), read_mb));
-    assert(read_mb.has_locator);
-    assert(read_mb.locator_qo_offset == 12345);
-    assert(read_mb.locator_rr_offset == 67890);
+    REQUIRE(HeaderReader::parse_main_header(body.data(), body.size(), read_mb));
+    REQUIRE(read_mb.has_locator);
+    REQUIRE(read_mb.locator_qo_offset == 12345);
+    REQUIRE(read_mb.locator_rr_offset == 67890);
     std::filesystem::remove(test_arc, fs_ec);
     std::cout << "[PASS] locator record size excludes the size vint (22, not 23)\n";
 }
 
-int main() {
-#ifdef _MSC_VER
-    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
-    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
-    // test process forever while ctest moves on, leaving file locks behind.
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
-    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
-    // process still hangs after printing the assert.
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    setvbuf(stdout, NULL, _IONBF, 0);
-    std::cout << "Running Clean-Room Milestone 3 Format Verification...\n";
-    test_archive_roundtrip();
-    test_version_redir_type_collision();
-    test_locator_record_size_excludes_size_vint();
-    test_malformed_headers_safe();
-    std::cout << "All Milestone 3 Header Serialization & Parsing Primitives PASSED!\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_archive_roundtrip", test_archive_roundtrip, false},
+    {"test_version_redir_type_collision", test_version_redir_type_collision, false},
+    {"test_locator_record_size_excludes_size_vint", test_locator_record_size_excludes_size_vint,
+     false},
+    {"test_malformed_headers_safe", test_malformed_headers_safe, false},
+    {"test_extra_dist_flavor_from_comp_info", test_extra_dist_flavor_from_comp_info, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All Milestone 3 Header Serialization & Parsing Primitives PASSED!\n";
+    return rc;
 }
