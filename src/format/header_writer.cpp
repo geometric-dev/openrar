@@ -481,10 +481,16 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
                 if (fraction > 31) fraction = 31;
                 comp_info |= ((static_cast<core::uint32>(fraction) & 0x1F) << 15);
             }
-            // RAR7 dictionary sizing with RAR5 compression algorithm
-            comp_info |= FCI_RAR5_COMPAT;
         }
     }
+    // RAR7 dictionary sizing over the RAR5 compression algorithm, unless the
+    // payload really is RAR7-algorithm (446 tables). Deliberately OUTSIDE the
+    // `win_size >= 0x20000` branch above: the reader derives the table flavor
+    // from unp_ver 1 WITHOUT this flag, and callers (non-pow2 explicit
+    // dictionaries, the DLL/library path) can pair unp_ver 1 with a window
+    // below 128 KiB. Writing the flag only for large windows made such a
+    // member decode with 446-entry tables against a 430-entry encoder.
+    if (block.unp_ver == 1 && !block.extra_dist) comp_info |= FCI_RAR5_COMPAT;
     core::push_vint(body, comp_info);
 
     core::uint64 host_os = block.host_os;

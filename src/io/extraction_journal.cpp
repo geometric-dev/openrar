@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -416,14 +417,12 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
         if (name.empty()) return false; // no strong entropy: fail closed
         const std::filesystem::path jpath = key / name;
 
-        LockedFile* lf = new LockedFile();
+        auto lf = std::make_unique<LockedFile>();
         if (!lf->open_create(jpath)) {
-            delete lf;
             return false; // locked by someone else should not happen (fresh name)
         }
         if (!lf->append(JOURNAL_HEADER)) {
             lf->close();
-            delete lf;
             std::error_code rm_ec;
             std::filesystem::remove(jpath, rm_ec);
             return false;
@@ -432,19 +431,18 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
         // sync a new journal sees — the fail-closed path must cover it.
         if (should_fail_next_sync()) {
             lf->close();
-            delete lf;
             std::error_code rm_ec;
             std::filesystem::remove(jpath, rm_ec);
             return false;
         }
         if (!lf->sync()) {
             lf->close();
-            delete lf;
             std::error_code rm_ec;
             std::filesystem::remove(jpath, rm_ec);
             return false;
         }
-        it = journals_.emplace(key, DirJournal{lf, 0, 0, lru_.end()}).first;
+        it = journals_.emplace(key, DirJournal{lf.get(), 0, 0, lru_.end()}).first;
+        lf.release();
         journal_paths_[key] = jpath;
         if (granularity_ == DurabilityGranularity::Batch) {
             lru_.push_back(key);
@@ -501,16 +499,14 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
 
         void* jh = nullptr;
         if (!containment_.anchored_create_journal(dir_anchor, u8_str(name), jh)) return false;
-        LockedFile* lf = new LockedFile();
+        auto lf = std::make_unique<LockedFile>();
         if (!lf->adopt(jh)) {
-            delete lf;
             std::error_code ec;
             std::filesystem::remove(journal_dir_key / name, ec);
             return false;
         }
         if (!lf->append(JOURNAL_HEADER)) {
             lf->close();
-            delete lf;
             std::error_code ec;
             std::filesystem::remove(journal_dir_key / name, ec);
             return false;
@@ -519,19 +515,18 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
         // sync a new journal sees — the fail-closed path must cover it.
         if (should_fail_next_sync()) {
             lf->close();
-            delete lf;
             std::error_code ec;
             std::filesystem::remove(journal_dir_key / name, ec);
             return false;
         }
         if (!lf->sync()) {
             lf->close();
-            delete lf;
             std::error_code ec;
             std::filesystem::remove(journal_dir_key / name, ec);
             return false;
         }
-        it = journals_.emplace(journal_dir_key, DirJournal{lf, 0, 0, lru_.end()}).first;
+        it = journals_.emplace(journal_dir_key, DirJournal{lf.get(), 0, 0, lru_.end()}).first;
+        lf.release();
         journal_paths_[journal_dir_key] = journal_dir_key / name;
         if (granularity_ == DurabilityGranularity::Batch) {
             lru_.push_back(journal_dir_key);

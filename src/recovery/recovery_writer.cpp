@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <cctype>
@@ -389,7 +390,7 @@ RrLocation find_rr(io::FileStream& stream, core::uint64 sfx_offset) {
         }
     }
 
-    // Fallback 2: Search backwards for SHARD_MAGIC ("RAR_RR\0\0")
+    // Fallback 2: Search backwards for SHARD_MAGIC ("{RB}", 7B 52 42 7D)
     if (!info.found && file_size > SHARD_MAGIC_SIZE) {
         const size_t chunk = 65536;
         std::vector<core::byte> buf(chunk + SHARD_MAGIC_SIZE);
@@ -1545,9 +1546,23 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         if (present_corrupt > 0 && present_valid == 0) return false;
     }
 
+    // H-16: count DISTINCT parity slots. Two .rev files carrying the same
+    // rec_num (a backup copy, say) are one erasure-recovery unit, not two;
+    // counting them twice let the sufficiency gate pass for a set that
+    // rs.init() then rejects. Later duplicates are dropped.
     core::uint32 valid_revs = 0;
-    for (auto& r : revs)
-        if (r.valid) valid_revs++;
+    {
+        std::vector<char> seen(static_cast<size_t>(nd) + nr, 0);
+        for (auto& r : revs) {
+            if (!r.valid) continue;
+            if (r.rec_num >= seen.size() || seen[r.rec_num]) {
+                r.valid = false;
+                continue;
+            }
+            seen[r.rec_num] = 1;
+            valid_revs++;
+        }
+    }
     if (missing > valid_revs) return false;
 
     // Resource cap (report M3): reconstruction cost is ~missing²·nd GF ops in
@@ -1557,18 +1572,6 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     // caps d at 200); anything larger is hostile geometry and is refused
     // before the decoder allocates.
     if (missing > 200) return false;
-
-    // Corrupt volumes get renamed out of the way before rewriting so their
-    // original bytes are preserved under a .bad name.
-    for (core::uint32 i = 0; i < nd; ++i) {
-        if (!vols[i].corrupt) continue;
-        fs::path bad = vols[i].path;
-        bad += ".bad";
-        std::error_code ec2;
-        fs::remove(bad, ec2);
-        fs::rename(vols[i].path, bad, ec2);
-        if (ec2) return false;
-    }
 
     // ReedSolomon16 decoder over the combined slot space.
     std::vector<core::byte> valid(nd + nr, 0);
@@ -1592,17 +1595,14 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     // the next valid .rev (ascending slot order, matching the decoder
     // matrix construction in rs16).
     std::vector<io::FileStream*> src(nd, nullptr);
-    std::vector<io::FileStream*> owned;
+    std::vector<std::unique_ptr<io::FileStream>> owned;
     size_t j = nd;
     for (core::uint32 i = 0; i < nd; ++i) {
         if (valid[i]) {
-            io::FileStream* f = new io::FileStream();
-            if (!f->open(vols[i].path, io::FileMode::ReadOnly)) {
-                delete f;
-                continue;
-            }
-            src[i] = f;
-            owned.push_back(f);
+            auto f = std::make_unique<io::FileStream>();
+            if (!f->open(vols[i].path, io::FileMode::ReadOnly)) continue;
+            src[i] = f.get();
+            owned.push_back(std::move(f));
         } else {
             while (j < nd + nr && !valid[j]) j++;
             if (j >= nd + nr) break;
@@ -1610,15 +1610,14 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
             for (auto& r : revs)
                 if (r.rec_num == j && r.valid) ri = &r;
             if (!ri) break;
-            io::FileStream* f = new io::FileStream();
+            auto f = std::make_unique<io::FileStream>();
             if (!f->open(ri->path, io::FileMode::ReadOnly)) {
-                delete f;
                 j++;
                 continue;
             }
             f->seek(static_cast<core::int64>(ri->payload_off), io::SeekOrigin::Begin);
-            src[i] = f;
-            owned.push_back(f);
+            src[i] = f.get();
+            owned.push_back(std::move(f));
             j++;
         }
     }
@@ -1628,39 +1627,55 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     // unconditionally instead of keying on the validity flags (report M1 —
     // a validity flag can only mark a stream available, never conjure one).
     for (core::uint32 i = 0; i < nd; ++i) {
-        if (src[i] == nullptr) {
-            for (auto* f : owned) {
-                f->close();
-                delete f;
-            }
+        if (src[i] == nullptr) return false;
+    }
+
+    // H-16: only NOW - with the decoder initialised and every source stream
+    // open - are the user's corrupt volumes moved aside. Every earlier exit
+    // above leaves the directory exactly as it was found. The original bytes
+    // are preserved under a .bad name, and any later failure rolls back.
+    std::vector<core::uint32> moved_aside; // corrupt originals now at <vol>.bad
+    std::vector<core::uint32> created;     // reconstruction outputs we opened
+    std::vector<std::unique_ptr<io::FileStream>> out(nd);
+    auto rollback = [&]() {
+        out.clear();
+        owned.clear();
+        std::error_code ec_rb;
+        // Remove only files this function created, never an untouched original.
+        for (core::uint32 i : created) fs::remove(vols[i].path, ec_rb);
+        for (core::uint32 i : moved_aside) {
+            fs::path bad = vols[i].path;
+            bad += ".bad";
+            fs::rename(bad, vols[i].path, ec_rb);
+        }
+    };
+    for (core::uint32 i = 0; i < nd; ++i) {
+        if (!vols[i].corrupt) continue;
+        fs::path bad = vols[i].path;
+        bad += ".bad";
+        std::error_code ec2;
+        fs::remove(bad, ec2);
+        fs::rename(vols[i].path, bad, ec2);
+        if (ec2) {
+            rollback();
             return false;
         }
+        moved_aside.push_back(i);
     }
 
     // Output streams for the missing volumes.
-    std::vector<io::FileStream*> out(nd, nullptr);
     for (core::uint32 i = 0; i < nd; ++i) {
         if (valid[i]) continue;
-        io::FileStream* f = new io::FileStream();
+        auto f = std::make_unique<io::FileStream>();
         if (!f->open(vols[i].path, io::FileMode::CreateAlways)) {
-            delete f;
-            // Release every handle this loop opened (plus the sources);
-            // otherwise the freshly truncated volumes stay locked open on
-            // Windows until process exit (v1.21.1 fix).
-            for (core::uint32 k = 0; k < nd; ++k) {
-                if (out[k]) {
-                    out[k]->close();
-                    delete out[k];
-                    out[k] = nullptr;
-                }
-            }
-            for (auto* g : owned) {
-                g->close();
-                delete g;
-            }
+            // Release every handle opened so far (otherwise the freshly
+            // truncated volumes stay locked open on Windows until process
+            // exit, v1.21.1) and restore the moved-aside originals.
+            rollback();
             return false;
         }
-        out[i] = f;
+        created.push_back(i);
+        out[i] = std::move(f);
     }
 
     const size_t chunk_size = 1u << 20; // 1 MiB, even
@@ -1695,31 +1710,34 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         processed += chunk;
     }
 
-    for (auto* f : owned) {
-        f->close();
-        delete f;
+    owned.clear();
+    out.clear();
+    if (!ok) {
+        rollback();
+        return false;
     }
-    for (core::uint32 i = 0; i < nd; ++i) {
-        if (out[i]) {
-            out[i]->close();
-            delete out[i];
-        }
-    }
-    if (!ok) return false;
 
     // Verify the reconstructed volumes against the table CRCs.
     for (core::uint32 i = 0; i < nd; ++i) {
         if (valid[i]) continue;
-        io::FileStream f;
-        if (!f.open(vols[i].path, io::FileMode::ReadOnly)) return false;
-        crypto::Crc32 crc;
-        core::byte buf[65536];
-        for (;;) {
-            size_t got = f.read(buf, sizeof(buf));
-            if (got > 0) crc.update(buf, got);
-            if (got < sizeof(buf)) break;
+        bool match = false;
+        {
+            io::FileStream f;
+            if (f.open(vols[i].path, io::FileMode::ReadOnly)) {
+                crypto::Crc32 crc;
+                std::vector<core::byte> buf(65536);
+                for (;;) {
+                    size_t got = f.read(buf.data(), buf.size());
+                    if (got > 0) crc.update(buf.data(), got);
+                    if (got < buf.size()) break;
+                }
+                match = crc.get() == table_crc[i];
+            }
+        } // close before a rollback deletes the file (Windows sharing)
+        if (!match) {
+            rollback(); // H-16: never leave a wrong reconstruction in place
+            return false;
         }
-        if (crc.get() != table_crc[i]) return false;
     }
     return true;
 }
@@ -1879,6 +1897,13 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                 core::read_le64(rr.raw_data.data() + std::get<0>(pieces[0]) + SHARD_SIZE_U64);
             core::uint32 d0 =
                 core::read_le16(rr.raw_data.data() + std::get<0>(pieces[0]) + SHARD_D_FIELD);
+            // C-01: the writer's geometry invariants (compute_geometry: d <= 200,
+            // nr <= 10*d) are enforced again on the canonical path below, but the
+            // reassembly here derives allocation sizes from d0 first. Enforce
+            // them before any arithmetic so a hostile d0 (up to 65535) cannot
+            // inflate scaled_header to hundreds of MiB per shard.
+            if (d0 == 0 || d0 > 200) return false;
+            if (nr_logical > 10u * d0) return false;
             core::uint32 unscaled_header = d0 * 8 + 0x48;
             core::uint64 scale = (group0 + 0xFFFF) / 0x10000;
             if (scale == 0) scale = 1;
@@ -1960,10 +1985,17 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
             // t0_slices instead. The on-disk record is untouched (splice_repair
             // copies the original RR block verbatim), so the reference's own
             // per-slice semantics survive a data-only repair.
-            core::uint64 scaled_header = unscaled_header * scale;
-            core::uint64 canonical_total = scaled_header + group0;
-            std::vector<core::byte> out_data(
-                static_cast<size_t>(nr_logical) * static_cast<size_t>(canonical_total), 0);
+            // The canonical shard stores total/header as uint32 (SHARD_TOTAL_OFF,
+            // SHARD_HEADER_OFF): both must fit or the rewritten record is lossy.
+            if (scale > UINT32_MAX / unscaled_header) return false;
+            const core::uint64 scaled_header = static_cast<core::uint64>(unscaled_header) * scale;
+            if (group0 > UINT32_MAX - scaled_header) return false;
+            const core::uint64 canonical_total = scaled_header + group0;
+            // Checked nr * total (also bounded by size_t and the parity cap), so
+            // the shard loop below can never index past out_data on 32-bit.
+            const auto out_bytes = calculate_parity_buffer_size(nr_logical, canonical_total);
+            if (!out_bytes) return false;
+            std::vector<core::byte> out_data(static_cast<size_t>(*out_bytes), 0);
             for (core::uint32 j = 0; j < nr_logical; ++j) {
                 core::byte* dst =
                     out_data.data() + static_cast<size_t>(j) * static_cast<size_t>(canonical_total);
@@ -2395,10 +2427,10 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                 core::uint64 file_sz = stream.size();
                 if (sfx_off + 8 <= file_sz) {
                     stream.seek(static_cast<core::int64>(sfx_off + 8), io::SeekOrigin::Begin);
+                    std::vector<core::byte> body; // M-10: reused across headers
                     while (stream.tell() < file_sz) {
                         core::uint64 head_start = stream.tell();
                         core::uint64 type = 0, flags = 0, data_sz = 0;
-                        std::vector<core::byte> body;
                         if (format::HeaderReader::read_block_raw(
                                 stream, type, flags, body, data_sz) != format::HeaderResult::Ok) {
                             core::uint64 bad_shard = head_start / group_count;
@@ -2466,31 +2498,54 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                                 if (!consistent) continue;
 
                                 if (entry.header.method == 0) {
+                                    // M-10: hash the untouched prefix/suffix in
+                                    // bulk and correct only the candidate
+                                    // shard's slice, through a stack chunk.
+                                    // The GF coefficient is per-shard, so it is
+                                    // computed once instead of once per byte.
                                     crypto::Crc32 cand_crc;
-                                    core::uint64 s_byte_start = s * group_count;
-                                    core::uint64 s_byte_end = (s + 1) * group_count;
-                                    for (core::uint64 off = entry.data_offset;
-                                         off < entry.data_offset + entry.data_size; ++off) {
-                                        core::byte b = file_bytes[off];
-                                        if (off >= s_byte_start && off < s_byte_end) {
-                                            size_t w =
-                                                static_cast<size_t>((off - s_byte_start) / 2);
-                                            core::uint16 s0 = static_cast<core::uint16>(
-                                                syndromes[j0][2 * w] |
-                                                (syndromes[j0][2 * w + 1] << 8));
-                                            core::uint16 err_word =
-                                                static_cast<core::uint16>(rs_enc.gf_mul(
-                                                    rs_enc.gf_add(j0 + d,
-                                                                  static_cast<core::uint32>(s)),
-                                                    s0));
-                                            core::byte err_byte =
-                                                ((off - s_byte_start) % 2 == 0)
-                                                    ? static_cast<core::byte>(err_word & 0xFF)
-                                                    : static_cast<core::byte>((err_word >> 8) &
-                                                                              0xFF);
-                                            b ^= err_byte;
+                                    const core::uint64 s_byte_start = s * group_count;
+                                    const core::uint64 s_byte_end = (s + 1) * group_count;
+                                    const core::uint64 a = entry.data_offset;
+                                    const core::uint64 b_end = entry.data_offset + entry.data_size;
+                                    const core::uint64 ov0 = std::max(a, s_byte_start);
+                                    const core::uint64 ov1 = std::min(b_end, s_byte_end);
+                                    auto bulk = [&](core::uint64 from, core::uint64 to) {
+                                        if (to > from)
+                                            cand_crc.update(file_bytes.data() + from,
+                                                            static_cast<size_t>(to - from));
+                                    };
+                                    if (ov0 >= ov1) {
+                                        bulk(a, b_end); // shard does not touch this entry
+                                    } else {
+                                        bulk(a, ov0);
+                                        const core::uint32 coef =
+                                            rs_enc.gf_add(j0 + d, static_cast<core::uint32>(s));
+                                        core::byte chunk[4096];
+                                        for (core::uint64 off = ov0; off < ov1;) {
+                                            const size_t n = static_cast<size_t>(
+                                                std::min<core::uint64>(sizeof(chunk), ov1 - off));
+                                            for (size_t k = 0; k < n; ++k) {
+                                                const core::uint64 rel = off + k - s_byte_start;
+                                                const size_t w = static_cast<size_t>(rel / 2);
+                                                const core::uint16 s0 = static_cast<core::uint16>(
+                                                    syndromes[j0][2 * w] |
+                                                    (syndromes[j0][2 * w + 1] << 8));
+                                                const core::uint16 err_word =
+                                                    static_cast<core::uint16>(
+                                                        rs_enc.gf_mul(coef, s0));
+                                                const core::byte err_byte =
+                                                    (rel % 2 == 0)
+                                                        ? static_cast<core::byte>(err_word & 0xFF)
+                                                        : static_cast<core::byte>(err_word >> 8);
+                                                chunk[k] = static_cast<core::byte>(
+                                                    file_bytes[static_cast<size_t>(off + k)] ^
+                                                    err_byte);
+                                            }
+                                            cand_crc.update(chunk, n);
+                                            off += n;
                                         }
-                                        cand_crc.update(&b, 1);
+                                        bulk(ov1, b_end);
                                     }
                                     if (cand_crc.get() == entry.header.data_crc32) {
                                         match_count++;

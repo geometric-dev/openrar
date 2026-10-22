@@ -3,7 +3,9 @@
 
 #include "../core/types.hpp"
 #include "filters50.hpp"
+#include <array>
 #include <cstddef>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <functional>
@@ -24,11 +26,16 @@ public:
     void align_byte();
 
     size_t bits_remaining() const;
+    // H-07: sticky flag, set once any get/consume had to zero-pad past the
+    // true end of input. Decoders check it before emitting a token so a
+    // truncated stream cannot fabricate symbols from the padding.
+    bool truncated() const { return truncated_; }
     size_t bit_pos() const { return consumed_; }
     size_t byte_pos() const { return consumed_ / 8; }
 
 private:
     void refill();
+    bool fetch_chunk();
 
     InputCallback cb_{nullptr};
     std::vector<core::byte> buf_;
@@ -40,6 +47,7 @@ private:
     size_t consumed_{0};
     size_t size_{0};
     size_t fetched_{0};
+    bool truncated_{false};
 };
 
 class HuffmanDecoder {
@@ -69,10 +77,66 @@ private:
     unsigned int quick_bits_{QUICK_BITS};
 };
 
+// Dictionary storage that grows IN PLACE. On 64-bit native builds a large
+// window reserves address space for the whole declared size up front (no
+// memory committed) and commits pages as decoded output arrives, so growth
+// never copies and the peak footprint is the committed size, not old + new.
+// Small windows and 32-bit/WASM builds use a std::vector (bounded at 1 GiB
+// there, where copying is affordable). Contents are zero-initialised either
+// way. Move-only.
+class WindowBuffer {
+public:
+    WindowBuffer() = default;
+    ~WindowBuffer() { release(); }
+    WindowBuffer(const WindowBuffer&) = delete;
+    WindowBuffer& operator=(const WindowBuffer&) = delete;
+    WindowBuffer(WindowBuffer&& o) noexcept { take(o); }
+    WindowBuffer& operator=(WindowBuffer&& o) noexcept {
+        if (this != &o) {
+            release();
+            take(o);
+        }
+        return *this;
+    }
+
+    // Set the maximum size (the declared window). Reserves address space
+    // when the virtual-memory path applies. False if the reservation fails.
+    bool init(size_t max_bytes);
+    // Ensure size() >= n (n <= max). False on allocation/commit failure,
+    // leaving the buffer unchanged.
+    bool grow_to(size_t n);
+    void release();
+
+    core::byte* data() { return base_; }
+    const core::byte* data() const { return base_; }
+    size_t size() const { return size_; }
+    core::byte& operator[](size_t i) { return base_[i]; }
+    const core::byte& operator[](size_t i) const { return base_[i]; }
+
+private:
+    void take(WindowBuffer& o) noexcept {
+        vec_ = std::move(o.vec_);
+        base_ = o.base_;
+        size_ = o.size_;
+        reserved_ = o.reserved_;
+        committed_ = o.committed_;
+        vm_ = o.vm_;
+        o.base_ = nullptr;
+        o.size_ = o.reserved_ = o.committed_ = 0;
+        o.vm_ = false;
+    }
+    std::vector<core::byte> vec_; // non-VM storage
+    core::byte* base_{nullptr};
+    size_t size_{0};      // usable bytes
+    size_t reserved_{0};  // VM: reserved address space
+    size_t committed_{0}; // VM: committed bytes (page-rounded, >= size_)
+    bool vm_{false};
+};
+
 struct FilterEntry {
     core::uint8 type{0};
     core::uint8 channels{0};
-    size_t block_start{0};       // linear index into this file's output
+    core::uint64 block_start{0}; // absolute output position (see flush_pending)
     core::uint64 file_offset{0}; // linear file position for E8/ARM point fixup
     core::uint32 block_length{0};
 };
@@ -117,8 +181,30 @@ public:
     // region the stream references.
     static constexpr size_t DEFAULT_WIN_SIZE = 0x200000;
 
-    explicit Decompressor50(size_t win_size = DEFAULT_WIN_SIZE);
+    // extra_dist selects the RAR7 algorithm's 446-entry tables (DCX = 80
+    // distance slots). It comes from the file header (FileBlock::extra_dist:
+    // unp_ver 1 without FCI_RAR5_COMPAT), NEVER from the window size: a
+    // RAR5-algorithm member may declare a window above 4 GiB and still use
+    // 430-entry tables (that is what RAR writes and our encoder emits). Raw
+    // block-codec streams carry no header and default to the RAR5 flavor.
+    explicit Decompressor50(size_t win_size = DEFAULT_WIN_SIZE, bool extra_dist = false);
     ~Decompressor50() = default;
+    // Move-only: the window owns a virtual-memory reservation (WindowBuffer).
+    Decompressor50(Decompressor50&&) noexcept = default;
+    Decompressor50& operator=(Decompressor50&&) noexcept = default;
+    Decompressor50(const Decompressor50&) = delete;
+    Decompressor50& operator=(const Decompressor50&) = delete;
+
+    // Re-select the table flavor between solid members (RAR allows a RAR7
+    // member to continue a RAR5 solid stream). Invalidates the current
+    // tables when the flavor changes; the member must carry its own.
+    void set_extra_dist(bool extra_dist);
+    bool extra_dist() const { return use_extra_dist_; }
+
+    // Bytes of dictionary currently allocated. Grows with decoded output up
+    // to win_size(); see ApplyEngine::grow().
+    size_t window_capacity() const { return engine_.cap_; }
+    static constexpr size_t window_initial_bytes() { return ApplyEngine::INITIAL_WINDOW; }
 
     DecompressErrorCode last_error() const { return last_error_; }
     const std::string& last_error_message() const { return last_error_str_; }
@@ -193,9 +279,27 @@ public:
         int block_bit_size{0};
     };
 
+    // H-12: fixed-capacity code-length table. Every RAR5 block carries a
+    // table, so a std::vector here cost one heap allocation per block in
+    // prescan_member(). Keeps the vector-like assign/data/size surface the
+    // decoder and the kernel probes use.
+    struct TableLengths {
+        static constexpr size_t CAPACITY = 446; // TABLE_SIZEX (RAR7 ExtraDist)
+        std::array<core::byte, CAPACITY> v{};
+        size_t n{0};
+        void assign(const core::byte* first, const core::byte* last) {
+            const size_t count = static_cast<size_t>(last - first);
+            n = count < CAPACITY ? count : CAPACITY;
+            std::memcpy(v.data(), first, n);
+        }
+        const core::byte* data() const { return v.data(); }
+        core::byte* data() { return v.data(); }
+        size_t size() const { return n; }
+    };
+
     struct PrescanDescription {
-        std::vector<core::byte> lengths; // cur_table_size_ code lengths
-        bool extra_dist{false};          // 446-entry table (RAR7 >4 GiB dict)
+        TableLengths lengths;   // cur_table_size_ code lengths
+        bool extra_dist{false}; // 446-entry table (RAR7 >4 GiB dict)
     };
 
     // Hostile-stream cap (review R2): minimal 3-byte headers would otherwise
@@ -356,8 +460,27 @@ private:
         size_t win_size_{0};
         size_t win_mask_{0};
         bool win_pow2_{false};
-        // ring window
-        std::vector<core::byte> window_;
+
+        // Plain-byte flush cadence. Unflushed output lives in the circular
+        // window until flushed, and flush_plain_up_to() fails closed once it
+        // exceeds win_size_. The check fires only between tokens, so the
+        // cadence needs headroom for one maximal token (match <= 0x1001 + 3
+        // bytes): half the window for small windows (the 64 KiB floor), else
+        // 64 KiB. The previous min(64 KiB, win) EQUALLED the window at the
+        // floor, so a long match could push the unflushed span past win_size_
+        // and a valid stream failed to decode (found by fuzz_target).
+        size_t flush_cadence() const { return std::min<size_t>(65536, win_size_ / 2); }
+        // ring window. win_size_ is the DECLARED dictionary (the circular
+        // geometry every distance/flush check uses); cap_ is the bytes
+        // actually allocated. Invariant: cap_ < win_size_ implies the ring
+        // has never wrapped (!first_win_done_) and all written data lives in
+        // the linear prefix [0, win_pos_), so growing in place by resize()
+        // is exact. Every write path reserves first (grow()), so no index
+        // ever reaches cap_. Memory therefore tracks decoded output, not the
+        // header's claim: a hostile 64 GiB declaration over a tiny payload
+        // allocates kilobytes.
+        WindowBuffer window_;
+        size_t cap_{0};
         size_t win_pos_{0};
         bool first_win_done_{false};
         bool window_ready_{false};
@@ -383,20 +506,35 @@ private:
             if (win_pow2_) return pos & win_mask_;
             return pos >= win_size_ ? pos - win_size_ : pos;
         }
-        // Allocates the window once; false on bad_alloc (caller maps the
-        // error exactly as before the extraction).
+        // Allocates the initial window (min(win_size_, INITIAL_WINDOW));
+        // false on bad_alloc.
         bool ensure_window_alloc();
-        // Member-start reset: zero-fill + position reset (the !solid branch).
+        // Member-start reset (the !solid branch): position reset only. No
+        // zero-fill is needed: on the first pass every reference past the
+        // written prefix takes copy_match's zero path, so stale bytes from
+        // an earlier member are never observable. Capacity is retained.
         void reset_window();
+        // Make room for n more bytes at win_pos_. No-op once the full ring
+        // is allocated. Grows geometrically (amortized O(1) per byte).
+        // False on allocation failure; the window is left unchanged.
+        inline bool reserve(size_t n) {
+            if (cap_ == win_size_ || n <= cap_ - win_pos_) return true;
+            return grow(n);
+        }
+        bool grow(size_t n);
+        static constexpr size_t INITIAL_WINDOW = 256 * 1024;
         // Resets the call-local flush cursor (per decompress/decompress_block
         // call, like the sequential decoder's call-local last_flushed).
         void begin_call() { last_flushed_ = 0; }
-        inline void write_literal(core::uint32 slot) {
+        inline bool write_literal(core::uint32 slot) {
+            if (win_pos_ >= cap_ && !grow(1)) return false;
             window_[win_pos_] = static_cast<core::byte>(slot);
             win_pos_ = wrap_up(win_pos_ + 1);
             if (win_pos_ == 0) first_win_done_ = true;
+            return true;
         }
-        void copy_match(size_t distance, size_t length, size_t total_written);
+        // False only when the window could not grow (allocation failure).
+        bool copy_match(size_t distance, size_t length, size_t total_written);
         bool flush_plain_up_to(size_t target, size_t total_written, size_t dest_size,
                                OutputCallback cb);
         bool flush_pending(bool flush_all, core::uint64 base_at_entry, size_t total_written,
@@ -404,6 +542,14 @@ private:
     };
 
     ApplyEngine engine_;
+
+    // The window could not grow to hold more output: report it with the
+    // same code the up-front allocation used (archive layer -> RAR_ERR_NOMEM).
+    bool window_alloc_failed() {
+        last_error_ = DecompressErrorCode::AllocationFailed;
+        last_error_str_ = "dictionary window allocation failed";
+        return false;
+    }
 
     bool read_block_header(BitReader& reader, BlockHeader& header);
     bool read_tables(BitReader& reader, BlockHeader& header);

@@ -18,6 +18,10 @@ bool mt_should_use_parallel(const FilterConfig& filter_cfg, const core::byte* sa
 }
 
 ParallelBlockPipeline::ParallelBlockPipeline(const ParallelCompressConfig& cfg) : cfg_(cfg) {
+    // win_size == 0 is the documented "use the default window" convention.
+    // Normalize it here, before any geometry is derived: the seed-length
+    // subtraction below is only underflow-safe for a non-zero window.
+    if (cfg_.win_size == 0) cfg_.win_size = 0x200000;
     eff_threads_ = cfg_.threads == 0 ? core::hardware_thread_hint() : cfg_.threads;
     if (eff_threads_ == 0) eff_threads_ = 1;
     if (eff_threads_ > 16) eff_threads_ = 16; // Clamp to 16 workers to bound memory footprint
@@ -251,8 +255,8 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
             core::uint64 next_off = (next_chunk_to_read + 1) * chunk_size;
             size_t next_len =
                 static_cast<size_t>(std::min<core::uint64>(chunk_size, file_size - next_off));
-            size_t next_seed_len =
-                static_cast<size_t>(std::min<core::uint64>(cfg_.win_size, next_off) - 1);
+            const core::uint64 seed_avail = std::min<core::uint64>(cfg_.win_size, next_off);
+            size_t next_seed_len = seed_avail > 0 ? static_cast<size_t>(seed_avail - 1) : 0;
             next_job = acquire_job();
             next_job->index = next_chunk_to_read + 1;
             next_job->is_last = (next_chunk_to_read + 1 == total_chunks - 1);

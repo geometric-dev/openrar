@@ -40,6 +40,21 @@ inline uint64_t resolve_dict_window_size(uint64_t dict_size, uint32_t method) {
     return dict_size;
 }
 
+// LZ allocation window for an input of known size: the smallest power of two
+// covering the input (128 KiB floor), never above the declared dictionary.
+// The header keeps the DECLARED size - a decoder window larger than every
+// distance the stream uses is always valid - so this only bounds encoder
+// memory (match-finder state is ~5 bytes per window byte: -md8g on a 24 MiB
+// file used to try to allocate ~40 GiB). Safe because the table flavor no
+// longer depends on the window (see Compressor50::make_tables). Solid
+// sessions pass the whole run's input size.
+inline uint64_t lz_window_for_input(uint64_t declared, uint64_t input_bytes) {
+    if (declared <= 0x20000ULL || input_bytes == 0) return declared;
+    uint64_t w = 0x20000ULL;
+    while (w < input_bytes && w < declared) w <<= 1;
+    return w < declared ? w : declared;
+}
+
 // Quantize a requested window to the FCI grid the header can represent
 // (power-of-two base + base/32 fractions, 128 KiB floor). Single copy shared
 // by the mutator's header bookkeeping and the CLI's solid-session
