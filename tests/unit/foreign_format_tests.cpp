@@ -22,6 +22,8 @@
 #include <vector>
 
 #include "test_support.hpp"
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 using namespace openrar;
 using namespace openrar::archive;
@@ -46,7 +48,7 @@ static void test_dispatch_precedence() {
         f.write(reinterpret_cast<const char*>(buf.data()),
                 static_cast<std::streamsize>(buf.size()));
         f.close();
-        assert(detect_foreign_format(p) == SourceFormat::Zip);
+        REQUIRE(detect_foreign_format(p) == SourceFormat::Zip);
     }
     // EOCD-only (empty) archive is still ZIP.
     {
@@ -56,7 +58,7 @@ static void test_dispatch_precedence() {
         f.write(reinterpret_cast<const char*>(buf.data()),
                 static_cast<std::streamsize>(buf.size()));
         f.close();
-        assert(detect_foreign_format(p) == SourceFormat::Zip);
+        REQUIRE(detect_foreign_format(p) == SourceFormat::Zip);
     }
     // RAR5 / legacy RAR / garbage.
     {
@@ -64,21 +66,21 @@ static void test_dispatch_precedence() {
         std::ofstream f(p, std::ios::binary);
         f.write("Rar!\x1a\x07\x01\x00", 8);
         f.close();
-        assert(detect_foreign_format(p) == SourceFormat::Rar5);
+        REQUIRE(detect_foreign_format(p) == SourceFormat::Rar5);
     }
     {
         const auto p = dir / "rar2.rar";
         std::ofstream f(p, std::ios::binary);
         f.write("Rar!\x1a\x07\x00", 7);
         f.close();
-        assert(detect_foreign_format(p) == SourceFormat::LegacyRar);
+        REQUIRE(detect_foreign_format(p) == SourceFormat::LegacyRar);
     }
     {
         const auto p = dir / "junk.bin";
         std::ofstream f(p, std::ios::binary);
         f.write("not an archive at all, just text", 32);
         f.close();
-        assert(detect_foreign_format(p) == SourceFormat::None);
+        REQUIRE(detect_foreign_format(p) == SourceFormat::None);
     }
     std::cout << "    - signatures outrank names; RAR5/legacy/none pinned" << std::endl;
 }
@@ -124,8 +126,8 @@ static void test_zip_roundtrip_store_and_deflate() {
 
     ZipReader r;
     size_t count = 0;
-    assert(open_zip(p, r, &count) == ForeignStatus::Ok);
-    assert(count == 3);
+    REQUIRE(open_zip(p, r, &count) == ForeignStatus::Ok);
+    REQUIRE(count == 3);
 
     // Stored payload decodes byte-exact; mtime = DOS 2024-01-01 12:00:00.
     ExtractionLimits limits;
@@ -135,19 +137,19 @@ static void test_zip_roundtrip_store_and_deflate() {
         out.insert(out.end(), data, data + size);
         return true;
     };
-    assert(r.entry(0).type == ForeignType::File);
-    assert(r.entry(0).mtime_sec == 1704110400);
-    assert(r.decode(0, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
-    assert(out == txt);
-    assert(r.decode(1, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
-    assert(out.size() == txt.size() + bin.size());
+    REQUIRE(r.entry(0).type == ForeignType::File);
+    REQUIRE(r.entry(0).mtime_sec == 1704110400);
+    REQUIRE(r.decode(0, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    REQUIRE(out == txt);
+    REQUIRE(r.decode(1, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    REQUIRE(out.size() == txt.size() + bin.size());
 
     out.clear();
-    assert(r.decode(2, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
-    assert(out.size() == kat_rle_plain_len);
+    REQUIRE(r.decode(2, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    REQUIRE(out.size() == kat_rle_plain_len);
     crypto::Crc32 crc;
     crc.update(out.data(), out.size());
-    assert(crc.get() == kat_rle_plain_crc);
+    REQUIRE(crc.get() == kat_rle_plain_crc);
     std::cout << "    - store + >64KiB store + deflate members decode; DOS time mapped"
               << std::endl;
 }
@@ -170,7 +172,7 @@ static void test_zip_cd_lf_mismatch() {
         std::string detail;
         ExtractionLimits limits;
         const ForeignStatus st = r.open(p, limits, ReaderHooks{}, detail);
-        assert(st == expect && detail.c_str());
+        REQUIRE((st == expect && detail.c_str()));
     };
 
     ZipMember m;
@@ -225,7 +227,7 @@ static void test_zip_bit3_descriptor_tolerance() {
     f.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
     f.close();
     ZipReader r;
-    assert(open_zip(p, r) == ForeignStatus::Ok);
+    REQUIRE(open_zip(p, r) == ForeignStatus::Ok);
     ExtractionLimits limits;
     LimitState state;
     std::vector<core::byte> out;
@@ -233,8 +235,8 @@ static void test_zip_bit3_descriptor_tolerance() {
         out.insert(out.end(), d, d + n);
         return true;
     };
-    assert(r.decode(0, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
-    assert(out == data);
+    REQUIRE(r.decode(0, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    REQUIRE(out == data);
     std::cout << "    - descriptor entries pass the pre-flight; data decodes" << std::endl;
 }
 
@@ -255,8 +257,8 @@ static void test_zip_zip64_roundtrip() {
     f.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
     f.close();
     ZipReader r;
-    assert(open_zip(p, r) == ForeignStatus::Ok);
-    assert(r.entry(0).unpacked_size == data.size());
+    REQUIRE(open_zip(p, r) == ForeignStatus::Ok);
+    REQUIRE(r.entry(0).unpacked_size == data.size());
     ExtractionLimits limits;
     LimitState state;
     std::vector<core::byte> out;
@@ -264,8 +266,8 @@ static void test_zip_zip64_roundtrip() {
         out.insert(out.end(), d, d + n);
         return true;
     };
-    assert(r.decode(0, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
-    assert(out == data);
+    REQUIRE(r.decode(0, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    REQUIRE(out == data);
     std::cout << "    - ZIP64 placeholders resolved from extras; pre-flight compares them"
               << std::endl;
 }
@@ -297,11 +299,11 @@ static void test_zip_names() {
     f.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
     f.close();
     ZipReader r;
-    assert(open_zip(p, r) == ForeignStatus::Ok);
-    assert(r.entry(0).name == "bad%FF_name.txt");
-    assert(r.entry(0).name_escaped);
-    assert(r.entry(1).name == "caf\xc3\xa9.txt");
-    assert(!r.entry(1).name_escaped);
+    REQUIRE(open_zip(p, r) == ForeignStatus::Ok);
+    REQUIRE(r.entry(0).name == "bad%FF_name.txt");
+    REQUIRE(r.entry(0).name_escaped);
+    REQUIRE(r.entry(1).name == "caf\xc3\xa9.txt");
+    REQUIRE(!r.entry(1).name_escaped);
     std::cout << "    - invalid UTF-8 percent-encoded; CP437 decoded losslessly" << std::endl;
 }
 
@@ -327,15 +329,15 @@ static void test_zip_traversal_names() {
     f.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
     f.close();
     ZipReader r;
-    assert(open_zip(p, r) == ForeignStatus::Ok);
-    assert(r.entry(0).name == "evil.txt");      // .. popped
-    assert(r.entry(1).name == "abs/path.txt");  // leading slash stripped
-    assert(r.entry(2).name == "windows/x.txt"); // drive stripped, \ → /
-    assert(r.entry(3).name == "b.txt");         // backslashes normalized, .. popped
+    REQUIRE(open_zip(p, r) == ForeignStatus::Ok);
+    REQUIRE(r.entry(0).name == "evil.txt");      // .. popped
+    REQUIRE(r.entry(1).name == "abs/path.txt");  // leading slash stripped
+    REQUIRE(r.entry(2).name == "windows/x.txt"); // drive stripped, \ → /
+    REQUIRE(r.entry(3).name == "b.txt");         // backslashes normalized, .. popped
     // No traversal shape survives into the emitted-name space.
     for (size_t i = 0; i < r.entry_count(); ++i) {
-        assert(r.entry(i).name.find("..") == std::string::npos);
-        assert(r.entry(i).name.empty() || r.entry(i).name.front() != '/');
+        REQUIRE(r.entry(i).name.find("..") == std::string::npos);
+        REQUIRE((r.entry(i).name.empty() || r.entry(i).name.front() != '/'));
     }
     std::cout << "    - traversal shapes normalized at transcode time; no weapons "
                  "forwarded"
@@ -368,12 +370,12 @@ static void test_zip_encrypted_and_methods() {
     f.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
     f.close();
     ZipReader r;
-    assert(open_zip(p, r) == ForeignStatus::Ok);
-    assert(r.entry(0).encrypted);
+    REQUIRE(open_zip(p, r) == ForeignStatus::Ok);
+    REQUIRE(r.entry(0).encrypted);
     ExtractionLimits limits;
     LimitState state;
-    assert(r.decode(0, {}, limits, state, ReaderHooks{}) == ForeignStatus::EncryptedRefused);
-    assert(r.decode(1, {}, limits, state, ReaderHooks{}) == ForeignStatus::UnsupportedMethod);
+    REQUIRE(r.decode(0, {}, limits, state, ReaderHooks{}) == ForeignStatus::EncryptedRefused);
+    REQUIRE(r.decode(1, {}, limits, state, ReaderHooks{}) == ForeignStatus::UnsupportedMethod);
     std::cout << "    - ZipCrypto refused by policy; bzip2 refused method-named" << std::endl;
 }
 
@@ -395,13 +397,13 @@ static void test_zip_bomb_cap() {
     f.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
     f.close();
     ZipReader r;
-    assert(open_zip(p, r) == ForeignStatus::Ok);
+    REQUIRE(open_zip(p, r) == ForeignStatus::Ok);
     ExtractionLimits limits;
     limits.max_member_output_bytes = 1000;
     LimitState state;
     const ForeignStatus st = r.decode(0, {}, limits, state, ReaderHooks{});
-    assert(st == ForeignStatus::LimitExceeded && "declared size must NOT bound output");
-    assert(state.total_out <= 1000 + 65536 + 1); // capped within a chunk
+    REQUIRE((st == ForeignStatus::LimitExceeded && "declared size must NOT bound output"));
+    REQUIRE(state.total_out <= 1000 + 65536 + 1); // capped within a chunk
     std::cout << "    - lying header + real bomb: in-flight cap fired (D5)" << std::endl;
 }
 
@@ -432,13 +434,72 @@ static void test_zip_comments_and_dirs() {
     out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
     out.close();
     ZipReader r;
-    assert(open_zip(p, r) == ForeignStatus::Ok);
-    assert(r.entry(0).comment == "no RAR5 home for this");
-    assert(r.entry(1).type == ForeignType::Dir);
-    assert(r.entry(1).name == "dir");
-    assert(r.entry(0).has_posix_mode == false);
+    REQUIRE(open_zip(p, r) == ForeignStatus::Ok);
+    REQUIRE(r.entry(0).comment == "no RAR5 home for this");
+    REQUIRE(r.entry(1).type == ForeignType::Dir);
+    REQUIRE(r.entry(1).name == "dir");
+    REQUIRE(r.entry(0).has_posix_mode == false);
     std::cout << "    - per-entry comment captured for reporting; dir record "
                  "recognized"
+              << std::endl;
+}
+
+// C-08 regression (x64-reachable, not 32-bit specific): the NTFS extra
+// (0x000A) FILETIME is attacker-controlled. Bit-63 / max values previously hit
+// signed overflow; they must now clamp, pre-1970 values fall back to the DOS
+// timestamp, and a sane value round-trips exactly.
+static void test_zip_ntfs_filetime_hostile_values() {
+    std::cout << "[+] test_zip_ntfs_filetime_hostile_values" << std::endl;
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+    core::uint32 crc = 0;
+    const auto data = stored_payload("ft", crc);
+
+    const auto probe = [&](core::uint64 ft, int n) {
+        ZipMember m;
+        m.name = "t.txt";
+        m.flags = 0x0800;
+        m.packed = data;
+        m.crc = crc;
+        m.unp_size = data.size();
+        put16(m.cd_extra, 0x000A);
+        put16(m.cd_extra, 32); // reserved(4) + tag(2) + size(2) + 3*8
+        put32(m.cd_extra, 0);
+        put16(m.cd_extra, 1);
+        put16(m.cd_extra, 24);
+        put64(m.cd_extra, ft); // mtime
+        put64(m.cd_extra, 0);  // atime
+        put64(m.cd_extra, 0);  // ctime
+        const auto buf = build_zip({m});
+        const auto p = dir / ("ntfs_ft_" + std::to_string(n) + ".zip");
+        std::ofstream out(p, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(buf.data()),
+                  static_cast<std::streamsize>(buf.size()));
+        out.close();
+        ZipReader r;
+        REQUIRE(open_zip(p, r) == ForeignStatus::Ok);
+        return r.entry(0);
+    };
+
+    const core::uint64 kUnixEpochFt = 116444736000000000ULL;
+    for (core::uint64 ft : {0x8000000000000000ULL, 0xFFFFFFFFFFFFFFFFULL}) {
+        const auto e = probe(ft, static_cast<int>(ft & 0xF));
+        REQUIRE(e.timestamp_clamped);
+        REQUIRE(e.mtime_sec >= 0);
+        REQUIRE(e.mtime_sec <= 32503680000LL);
+    }
+    {
+        const auto e = probe(1, 100); // pre-1970 -> DOS fallback (2024-01-01)
+        REQUIRE(!e.timestamp_clamped);
+        REQUIRE(e.mtime_sec > 1600000000LL);
+        REQUIRE(e.mtime_sec < 1800000000LL);
+    }
+    {
+        const auto e = probe(kUnixEpochFt + 1577836800ULL * 10000000ULL, 101);
+        REQUIRE(!e.timestamp_clamped);
+        REQUIRE(e.mtime_sec == 1577836800LL);
+        REQUIRE(e.mtime_nsec == 0);
+    }
+    std::cout << "    - bit-63 / max FILETIME clamp; pre-1970 falls back; sane value exact"
               << std::endl;
 }
 
@@ -464,7 +525,7 @@ static void test_zip_eocd_bounds() {
         out.close();
     }
     ZipReader r;
-    assert(open_zip(p1, r) == ForeignStatus::Ok);
+    REQUIRE(open_zip(p1, r) == ForeignStatus::Ok);
 
     // Truncated archive → unparseable/truncated, never silent success.
     const auto p2 = dir / "cut.zip";
@@ -480,7 +541,7 @@ static void test_zip_eocd_bounds() {
         std::string detail;
         ExtractionLimits limits;
         const ForeignStatus st = r2.open(p2, limits, ReaderHooks{}, detail);
-        assert(st == ForeignStatus::Unparseable || st == ForeignStatus::Truncated);
+        REQUIRE((st == ForeignStatus::Unparseable || st == ForeignStatus::Truncated));
     }
     std::cout << "    - prepended stub tolerated; truncated archive refused" << std::endl;
 }
@@ -519,20 +580,20 @@ static void test_tar_ustar_roundtrip() {
     members.push_back(d);
 
     const auto p = dir / "ustar.tar";
-    assert(write_file(p, build_tar(members)));
+    REQUIRE(write_file(p, build_tar(members)));
 
     TarReader r;
     std::string detail;
     ExtractionLimits limits;
-    assert(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
-    assert(r.entry_count() == 4);
-    assert(r.entry(0).name == "empty.txt" && r.entry(0).type == ForeignType::File);
-    assert(r.entry(1).unpacked_size == 100);
-    assert(r.entry(2).unpacked_size == 70000);
-    assert(r.entry(2).has_posix_mode && r.entry(2).posix_mode == 0100600);
-    assert(r.entry(3).type == ForeignType::Dir);
-    assert(r.entry(1).owner_name == "tester" && r.entry(1).owner_uid == 1000);
-    assert(r.entry(1).mtime_sec == 1704110400);
+    REQUIRE(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+    REQUIRE(r.entry_count() == 4);
+    REQUIRE((r.entry(0).name == "empty.txt" && r.entry(0).type == ForeignType::File));
+    REQUIRE(r.entry(1).unpacked_size == 100);
+    REQUIRE(r.entry(2).unpacked_size == 70000);
+    REQUIRE((r.entry(2).has_posix_mode && r.entry(2).posix_mode == 0100600));
+    REQUIRE(r.entry(3).type == ForeignType::Dir);
+    REQUIRE((r.entry(1).owner_name == "tester" && r.entry(1).owner_uid == 1000));
+    REQUIRE(r.entry(1).mtime_sec == 1704110400);
 
     LimitState state;
     std::vector<core::byte> out;
@@ -540,11 +601,11 @@ static void test_tar_ustar_roundtrip() {
         out.insert(out.end(), data, data + size);
         return true;
     };
-    assert(r.decode(1, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
-    assert(out.size() == 100);
+    REQUIRE(r.decode(1, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    REQUIRE(out.size() == 100);
     out.clear();
-    assert(r.decode(2, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
-    assert(out.size() == 70000);
+    REQUIRE(r.decode(2, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    REQUIRE(out.size() == 70000);
     std::cout << "    - ustar members, modes, owners, times, multi-block payload" << std::endl;
 }
 
@@ -578,7 +639,7 @@ static void test_tar_longname_and_pax() {
     members.push_back(px);
 
     const auto p = dir / "long.tar";
-    assert(write_file(p, build_tar(members)));
+    REQUIRE(write_file(p, build_tar(members)));
 
     TarReader r;
     std::string detail;
@@ -586,13 +647,13 @@ static void test_tar_longname_and_pax() {
     const ForeignStatus st = r.open(p, limits, ReaderHooks{}, detail);
     if (st != ForeignStatus::Ok)
         std::cout << "    ! open st=" << static_cast<int>(st) << " detail=" << detail << std::endl;
-    assert(st == ForeignStatus::Ok);
-    assert(r.entry_count() == 3);
-    assert(r.entry(0).name == long_name);
-    assert(r.entry(1).name == pref.name); // prefix split reconstructed
-    assert(r.entry(2).name == "pax/renamed.txt");
-    assert(r.entry(2).mtime_sec == 1704110400 && r.entry(2).mtime_nsec == 500000000);
-    assert(r.entry(2).owner_uid == 42 && r.entry(2).owner_name == "paxuser");
+    REQUIRE(st == ForeignStatus::Ok);
+    REQUIRE(r.entry_count() == 3);
+    REQUIRE(r.entry(0).name == long_name);
+    REQUIRE(r.entry(1).name == pref.name); // prefix split reconstructed
+    REQUIRE(r.entry(2).name == "pax/renamed.txt");
+    REQUIRE((r.entry(2).mtime_sec == 1704110400 && r.entry(2).mtime_nsec == 500000000));
+    REQUIRE((r.entry(2).owner_uid == 42 && r.entry(2).owner_name == "paxuser"));
     std::cout << "    - GNU longname, ustar prefix split, pax subset handled" << std::endl;
 }
 
@@ -625,20 +686,147 @@ static void test_tar_sparse_refused_and_specials() {
     members.push_back(sym);
 
     const auto p = dir / "special.tar";
-    assert(write_file(p, build_tar(members)));
+    REQUIRE(write_file(p, build_tar(members)));
 
     TarReader r;
     std::string detail;
     ExtractionLimits limits;
-    assert(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
-    assert(r.entry_count() == 4);
+    REQUIRE(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+    REQUIRE(r.entry_count() == 4);
     LimitState state;
-    assert(r.decode(0, {}, limits, state, ReaderHooks{}) == ForeignStatus::SparseRefused);
-    assert(r.entry(1).type == ForeignType::Other);
-    assert(r.entry(2).type == ForeignType::Hardlink);
-    assert(r.entry(2).link_target == "hello.txt");
-    assert(r.entry(3).type == ForeignType::Symlink);
+    REQUIRE(r.decode(0, {}, limits, state, ReaderHooks{}) == ForeignStatus::SparseRefused);
+    REQUIRE(r.entry(1).type == ForeignType::Other);
+    REQUIRE(r.entry(2).type == ForeignType::Hardlink);
+    REQUIRE(r.entry(2).link_target == "hello.txt");
+    REQUIRE(r.entry(3).type == ForeignType::Symlink);
     std::cout << "    - sparse refused per entry; specials Other; links as records" << std::endl;
+}
+
+// C-06: a pax "size" record overrides the ustar size field (members > 8 GiB,
+// or writers that zero the octal field). The payload advance must follow the
+// effective size; advancing by the stale ustar padding parsed the member's
+// data as the next header.
+static void test_tar_pax_size_override_framing() {
+    std::cout << "[+] test_tar_pax_size_override_framing" << std::endl;
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+    const std::vector<core::byte> payload(700, core::byte('P')); // 2 blocks padded
+
+    std::vector<core::byte> tar;
+    {
+        const std::string rec_body = "size=" + std::to_string(payload.size()) + "\n";
+        std::string rec = std::to_string(rec_body.size() + 3) + " " + rec_body; // "NN size=..."
+        if (rec.size() != rec_body.size() + 3) rec = std::to_string(rec.size()) + " " + rec_body;
+        std::vector<core::byte> recs(rec.begin(), rec.end());
+        recs.resize(512, core::byte(0));
+        auto ph = tar_header("PaxHeaders/big", 'x', rec.size(), 0644, 0, "", "root", "root", 0, 0);
+        tar.insert(tar.end(), ph.begin(), ph.end());
+        tar.insert(tar.end(), recs.begin(), recs.end());
+    }
+    // The real member's ustar size field is ZERO; only pax carries the size.
+    auto mh = tar_header("big.bin", '0', 0, 0644, 1704110400, "", "u", "g", 1, 1);
+    tar.insert(tar.end(), mh.begin(), mh.end());
+    tar.insert(tar.end(), payload.begin(), payload.end());
+    tar.resize(tar.size() + (512 - payload.size() % 512) % 512, core::byte(0));
+    // A second member proves the reader re-synchronised after the payload.
+    const std::vector<core::byte> tail(5, core::byte('T'));
+    auto th = tar_header("after.txt", '0', tail.size(), 0644, 1704110400, "", "u", "g", 1, 1);
+    tar.insert(tar.end(), th.begin(), th.end());
+    tar.insert(tar.end(), tail.begin(), tail.end());
+    tar.resize(tar.size() + 507 + 1024, core::byte(0));
+
+    const auto p = dir / "pax_size.tar";
+    REQUIRE(write_file(p, tar));
+    TarReader r;
+    std::string detail;
+    ExtractionLimits limits;
+    REQUIRE(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+    REQUIRE(r.entry_count() == 2);
+    REQUIRE(r.entry(0).unpacked_size == payload.size());
+    REQUIRE(r.entry(1).name == "after.txt");
+    LimitState state;
+    std::vector<core::byte> out;
+    auto sink = [&](const core::byte* d, size_t n) {
+        out.insert(out.end(), d, d + n);
+        return true;
+    };
+    REQUIRE(r.decode(0, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    REQUIRE(out == payload);
+    std::cout << "    - pax size override frames the next member correctly" << std::endl;
+}
+
+// C-05: the ZIP64 extra carries an 8-byte field only for each 32-bit field
+// that is 0xFFFFFFFF. A CDH with ONLY the uncompressed size as placeholder
+// (a > 4 GiB file that compressed below 4 GiB) has an 8-byte record; the old
+// parser required 16 bytes, left the placeholder in place, and failed the
+// LFH cross-check.
+static void test_zip64_uncompressed_only_placeholder() {
+    std::cout << "[+] test_zip64_uncompressed_only_placeholder" << std::endl;
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+    core::uint32 crc = 0;
+    const auto data = stored_payload("hello", crc);
+    const std::string name = "u64.txt";
+
+    std::vector<core::byte> z;
+    // LFH: both sizes are placeholders; the LOCAL ZIP64 record carries both
+    // (APPNOTE 4.5.3).
+    put32(z, 0x04034b50);
+    put16(z, 45);
+    put16(z, 0);
+    put16(z, 0); // stored
+    put16(z, 0x6000);
+    put16(z, 0x5821);
+    put32(z, crc);
+    put32(z, 0xFFFFFFFFu);
+    put32(z, 0xFFFFFFFFu);
+    put16(z, static_cast<core::uint16>(name.size()));
+    put16(z, 20);
+    put_str(z, name);
+    put16(z, 0x0001);
+    put16(z, 16);
+    put64(z, data.size());
+    put64(z, data.size());
+    z.insert(z.end(), data.begin(), data.end());
+    // CDH: only the uncompressed size is a placeholder -> 8-byte record.
+    const core::uint32 cd_off = static_cast<core::uint32>(z.size());
+    put32(z, 0x02014b50);
+    put16(z, 0x031E);
+    put16(z, 45);
+    put16(z, 0);
+    put16(z, 0);
+    put16(z, 0x6000);
+    put16(z, 0x5821);
+    put32(z, crc);
+    put32(z, static_cast<core::uint32>(data.size())); // compressed: real value
+    put32(z, 0xFFFFFFFFu);                            // uncompressed: placeholder
+    put16(z, static_cast<core::uint16>(name.size()));
+    put16(z, 12); // extra len: 4 header + 8 (unp only)
+    put16(z, 0);
+    put16(z, 0);
+    put16(z, 0);
+    put32(z, 0);
+    put32(z, 0); // LFH offset
+    put_str(z, name);
+    put16(z, 0x0001);
+    put16(z, 8);
+    put64(z, data.size());
+    const core::uint32 cd_size = static_cast<core::uint32>(z.size()) - cd_off;
+    put32(z, 0x06054b50);
+    put16(z, 0);
+    put16(z, 0);
+    put16(z, 1);
+    put16(z, 1);
+    put32(z, cd_size);
+    put32(z, cd_off);
+    put16(z, 0);
+
+    const auto p = dir / "zip64_unp_only.zip";
+    REQUIRE(write_file(p, z));
+    ZipReader r;
+    size_t count = 0;
+    REQUIRE(open_zip(p, r, &count) == ForeignStatus::Ok);
+    REQUIRE(count == 1);
+    REQUIRE(r.entry(0).unpacked_size == data.size());
+    std::cout << "    - unp-only ZIP64 placeholder parsed from an 8-byte record" << std::endl;
 }
 
 static void test_tar_truncated_and_checksum() {
@@ -654,35 +842,35 @@ static void test_tar_truncated_and_checksum() {
 
     const auto p1 = dir / "cut.tar";
     std::vector<core::byte> cut(good.begin(), good.begin() + 512 + 400);
-    assert(write_file(p1, cut));
+    REQUIRE(write_file(p1, cut));
     {
         TarReader r;
         std::string detail;
         ExtractionLimits limits;
-        assert(r.open(p1, limits, ReaderHooks{}, detail) == ForeignStatus::Truncated);
+        REQUIRE(r.open(p1, limits, ReaderHooks{}, detail) == ForeignStatus::Truncated);
     }
 
     const auto p2 = dir / "badck.tar";
     auto bad = good;
     bad[10] ^= 0xFF; // inside the name field -> checksum no longer matches
-    assert(write_file(p2, bad));
+    REQUIRE(write_file(p2, bad));
     {
         TarReader r;
         std::string detail;
         ExtractionLimits limits;
-        assert(r.open(p2, limits, ReaderHooks{}, detail) == ForeignStatus::Unparseable);
+        REQUIRE(r.open(p2, limits, ReaderHooks{}, detail) == ForeignStatus::Unparseable);
     }
 
     // EOF without the two zero blocks is accepted (streamed tapes).
     const auto p3 = dir / "nopad.tar";
     std::vector<core::byte> nopad(good.begin(), good.end() - 1024);
-    assert(write_file(p3, nopad));
+    REQUIRE(write_file(p3, nopad));
     {
         TarReader r;
         std::string detail;
         ExtractionLimits limits;
-        assert(r.open(p3, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
-        assert(r.entry_count() == 1);
+        REQUIRE(r.open(p3, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+        REQUIRE(r.entry_count() == 1);
     }
     std::cout << "    - truncation refused, checksum refused, missing padding tolerated"
               << std::endl;
@@ -693,18 +881,18 @@ static void test_gzip_multimember_and_caps() {
     const auto dir = openrar::test::scratch_dir("foreign_format");
 
     const auto p = dir / "multi.gz";
-    assert(write_file(p, build_gzip({&kat_text_stream, &kat_rle_stream},
-                                    {kat_text_plain_crc, kat_rle_plain_crc},
-                                    {static_cast<core::uint32>(kat_text_plain_len),
-                                     static_cast<core::uint32>(kat_rle_plain_len)},
-                                    "combined.txt")));
+    REQUIRE(write_file(p, build_gzip({&kat_text_stream, &kat_rle_stream},
+                                     {kat_text_plain_crc, kat_rle_plain_crc},
+                                     {static_cast<core::uint32>(kat_text_plain_len),
+                                      static_cast<core::uint32>(kat_rle_plain_len)},
+                                     "combined.txt")));
 
     GzipReader r;
     std::string detail;
     ExtractionLimits limits;
-    assert(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
-    assert(r.entry_count() == 1); // ONE logical entry
-    assert(r.entry(0).name == "combined.txt");
+    REQUIRE(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+    REQUIRE(r.entry_count() == 1); // ONE logical entry
+    REQUIRE(r.entry(0).name == "combined.txt");
 
     LimitState state;
     std::vector<core::byte> out;
@@ -712,32 +900,32 @@ static void test_gzip_multimember_and_caps() {
         out.insert(out.end(), data, data + size);
         return true;
     };
-    assert(r.decode(0, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
-    assert(out.size() == kat_text_plain_len + kat_rle_plain_len);
+    REQUIRE(r.decode(0, sink, limits, state, ReaderHooks{}) == ForeignStatus::Ok);
+    REQUIRE(out.size() == kat_text_plain_len + kat_rle_plain_len);
     crypto::Crc32 c3;
     c3.update(out.data(), kat_text_plain_len);
-    assert(c3.get() == kat_text_plain_crc);
+    REQUIRE(c3.get() == kat_text_plain_crc);
     crypto::Crc32 c4;
     c4.update(out.data() + kat_text_plain_len, kat_rle_plain_len);
-    assert(c4.get() == kat_rle_plain_crc);
+    REQUIRE(c4.get() == kat_rle_plain_crc);
 
     // In-flight cap (D5): the 100005-byte second member cannot hide.
     GzipReader r2;
-    assert(r2.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+    REQUIRE(r2.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
     ExtractionLimits capped;
     capped.max_member_output_bytes = 1000;
     LimitState s2;
-    assert(r2.decode(0, {}, capped, s2, ReaderHooks{}) == ForeignStatus::LimitExceeded);
+    REQUIRE(r2.decode(0, {}, capped, s2, ReaderHooks{}) == ForeignStatus::LimitExceeded);
 
     // Corrupt trailer -> CrcMismatch.
     const auto p3 = dir / "badcrc.gz";
-    assert(write_file(p3, build_gzip({&kat_text_stream}, {kat_text_plain_crc},
-                                     {static_cast<core::uint32>(kat_text_plain_len)}, "", true)));
+    REQUIRE(write_file(p3, build_gzip({&kat_text_stream}, {kat_text_plain_crc},
+                                      {static_cast<core::uint32>(kat_text_plain_len)}, "", true)));
     {
         GzipReader r3;
-        assert(r3.open(p3, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+        REQUIRE(r3.open(p3, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
         LimitState s3;
-        assert(r3.decode(0, {}, limits, s3, ReaderHooks{}) == ForeignStatus::CrcMismatch);
+        REQUIRE(r3.decode(0, {}, limits, s3, ReaderHooks{}) == ForeignStatus::CrcMismatch);
     }
     std::cout << "    - multi-member concatenated, per-member CRC/ISIZE, cap, bad CRC" << std::endl;
 }
@@ -748,67 +936,58 @@ static void test_gzip_name_and_detect() {
 
     // No FNAME -> stem convention (strip .gz).
     const auto p = dir / "archive.tar.gz";
-    assert(write_file(p, build_gzip({&kat_text_stream}, {kat_text_plain_crc},
-                                    {static_cast<core::uint32>(kat_text_plain_len)})));
-    assert(detect_foreign_format(p) == SourceFormat::Gzip);
+    REQUIRE(write_file(p, build_gzip({&kat_text_stream}, {kat_text_plain_crc},
+                                     {static_cast<core::uint32>(kat_text_plain_len)})));
+    REQUIRE(detect_foreign_format(p) == SourceFormat::Gzip);
     {
         GzipReader r;
         std::string detail;
         ExtractionLimits limits;
-        assert(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
-        assert(r.entry(0).name == "archive.tar");
+        REQUIRE(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+        REQUIRE(r.entry(0).name == "archive.tar");
     }
 
     // .tgz -> .tar.
     const auto p2 = dir / "bundle.tgz";
-    assert(write_file(p2, build_gzip({&kat_text_stream}, {kat_text_plain_crc},
-                                     {static_cast<core::uint32>(kat_text_plain_len)})));
+    REQUIRE(write_file(p2, build_gzip({&kat_text_stream}, {kat_text_plain_crc},
+                                      {static_cast<core::uint32>(kat_text_plain_len)})));
     {
         GzipReader r;
         std::string detail;
         ExtractionLimits limits;
-        assert(r.open(p2, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
-        assert(r.entry(0).name == "bundle.tar");
+        REQUIRE(r.open(p2, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+        REQUIRE(r.entry(0).name == "bundle.tar");
     }
     std::cout << "    - stem conventions and gzip dispatch pinned" << std::endl;
 }
 
-int main() {
-    OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
-    test_dispatch_precedence();
-    std::cout << std::flush;
-    test_zip_roundtrip_store_and_deflate();
-    std::cout << std::flush;
-    test_zip_cd_lf_mismatch();
-    std::cout << std::flush;
-    test_zip_bit3_descriptor_tolerance();
-    std::cout << std::flush;
-    test_zip_zip64_roundtrip();
-    std::cout << std::flush;
-    test_zip_names();
-    std::cout << std::flush;
-    test_zip_traversal_names();
-    std::cout << std::flush;
-    test_zip_encrypted_and_methods();
-    std::cout << std::flush;
-    test_zip_bomb_cap();
-    std::cout << std::flush;
-    test_zip_comments_and_dirs();
-    std::cout << std::flush;
-    test_zip_eocd_bounds();
-    std::cout << std::flush;
-    test_tar_ustar_roundtrip();
-    std::cout << std::flush;
-    test_tar_longname_and_pax();
-    std::cout << std::flush;
-    test_tar_sparse_refused_and_specials();
-    std::cout << std::flush;
-    test_tar_truncated_and_checksum();
-    std::cout << std::flush;
-    test_gzip_multimember_and_caps();
-    std::cout << std::flush;
-    test_gzip_name_and_detect();
-    std::cout << std::flush;
-    std::cout << "All Foreign Format (v1.29 M2/M3) tests PASSED!" << std::endl;
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_dispatch_precedence", test_dispatch_precedence, false},
+    {"test_zip_roundtrip_store_and_deflate", test_zip_roundtrip_store_and_deflate, false},
+    {"test_zip_cd_lf_mismatch", test_zip_cd_lf_mismatch, false},
+    {"test_zip_bit3_descriptor_tolerance", test_zip_bit3_descriptor_tolerance, false},
+    {"test_zip_zip64_roundtrip", test_zip_zip64_roundtrip, false},
+    {"test_zip_names", test_zip_names, false},
+    {"test_zip_traversal_names", test_zip_traversal_names, false},
+    {"test_zip_encrypted_and_methods", test_zip_encrypted_and_methods, false},
+    {"test_zip_bomb_cap", test_zip_bomb_cap, false},
+    {"test_zip_comments_and_dirs", test_zip_comments_and_dirs, false},
+    {"test_zip_eocd_bounds", test_zip_eocd_bounds, false},
+    {"test_tar_ustar_roundtrip", test_tar_ustar_roundtrip, false},
+    {"test_tar_longname_and_pax", test_tar_longname_and_pax, false},
+    {"test_tar_sparse_refused_and_specials", test_tar_sparse_refused_and_specials, false},
+    {"test_tar_truncated_and_checksum", test_tar_truncated_and_checksum, false},
+    {"test_tar_pax_size_override_framing", test_tar_pax_size_override_framing, false},
+    {"test_zip64_uncompressed_only_placeholder", test_zip64_uncompressed_only_placeholder, false},
+    {"test_zip_ntfs_filetime_hostile_values", test_zip_ntfs_filetime_hostile_values, false},
+    {"test_gzip_multimember_and_caps", test_gzip_multimember_and_caps, false},
+    {"test_gzip_name_and_detect", test_gzip_name_and_detect, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All Foreign Format (v1.29 M2/M3) tests PASSED!";
+    return rc;
 }

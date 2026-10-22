@@ -9,11 +9,14 @@
 #include "test_support.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <random>
 #include <vector>
 #include <cstdio>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 using namespace openrar;
 using namespace openrar::compress;
@@ -32,12 +35,12 @@ void test_huffman_builder_adversarial() {
         core::uint32 max_L = 0;
         for (core::uint32 i = 0; i < size; ++i) {
             if (lengths[i] > 0) {
-                assert(lengths[i] <= max_bits && "max_bits violated");
+                REQUIRE((lengths[i] <= max_bits && "max_bits violated"));
                 kraft_sum += 1u << (max_bits - lengths[i]);
                 if (lengths[i] > max_L) max_L = lengths[i];
             }
         }
-        assert(kraft_sum <= kraft_target && "Kraft inequality violated");
+        REQUIRE((kraft_sum <= kraft_target && "Kraft inequality violated"));
         if (kraft_sum > 0) {
             std::cout << "    - " << name << ": OK (max_L=" << max_L << " Kraft=" << kraft_sum
                       << "/" << kraft_target << ")" << std::endl;
@@ -86,8 +89,8 @@ void test_delta_filter() {
     }
     core::byte restored[SIZE] = {0};
     bool ok = Filters50::apply_delta(encoded, restored, SIZE, 2);
-    assert(ok);
-    assert(std::memcmp(original, restored, SIZE) == 0);
+    REQUIRE(ok);
+    REQUIRE(std::memcmp(original, restored, SIZE) == 0);
 
     // Edge: size < channels, single channel, in-place non-aliasing
     {
@@ -99,19 +102,19 @@ void test_delta_filter() {
             p = tiny[i];
         }
         core::byte dec[3] = {0};
-        assert(Filters50::apply_delta(enc, dec, 3, 1));
-        assert(std::memcmp(tiny, dec, 3) == 0);
+        REQUIRE(Filters50::apply_delta(enc, dec, 3, 1));
+        REQUIRE(std::memcmp(tiny, dec, 3) == 0);
         // in-place aliasing must work
         core::byte alias[3];
         std::memcpy(alias, enc, 3);
-        assert(Filters50::apply_delta(alias, alias, 3, 1));
-        assert(std::memcmp(tiny, alias, 3) == 0);
+        REQUIRE(Filters50::apply_delta(alias, alias, 3, 1));
+        REQUIRE(std::memcmp(tiny, alias, 3) == 0);
     }
     // invalid channels
     {
         core::byte src[4] = {0}, dst[4] = {0};
-        assert(!Filters50::apply_delta(src, dst, 4, 0));
-        assert(!Filters50::apply_delta(src, dst, 4, 33));
+        REQUIRE(!Filters50::apply_delta(src, dst, 4, 0));
+        REQUIRE(!Filters50::apply_delta(src, dst, 4, 33));
     }
     std::cout << "[PASS] RAR 5.0 Delta Filter (2-channel + edge cases)\n";
 }
@@ -124,7 +127,7 @@ void test_e8_filter() {
     // addr 0x20 -> should become 0x20 -2 = 0x1E if <16MB
     Filters50::apply_e8(code, sizeof(code), 0, true);
     core::uint32 addr_call = core::read_le32(code + 2);
-    assert(addr_call == 0x20 - 2);
+    REQUIRE(addr_call == 0x20 - 2);
 
     // size <5 should not OOB
     {
@@ -132,14 +135,14 @@ void test_e8_filter() {
         Filters50::apply_e8(tiny, 4, 0, false);
         // pos+4 < size condition means last E8 at pos 0 with size 4 is NOT processed (needs 5 bytes)
         // So should be unchanged
-        assert(tiny[0] == 0xE8);
+        REQUIRE(tiny[0] == 0xE8);
     }
     {
         core::byte tiny[5] = {0xE8, 0x10, 0x00, 0x00, 0x90};
         Filters50::apply_e8(tiny, 5, 0, false);
         // now size 5, pos0+4<5 true, so processed
         core::uint32 a = core::read_le32(tiny + 1);
-        assert(a != 0x10);
+        REQUIRE(a != 0x10);
     }
     std::cout << "[PASS] RAR 5.0 x86 E8/E8E9 Filter Translation (off-by-one & bounds)\n";
 }
@@ -147,20 +150,20 @@ void test_e8_filter() {
 void test_arm_filter() {
     core::byte arm_code[8] = {0x10, 0x00, 0x00, 0xEB, 0x20, 0x00, 0x00, 0xEB};
     Filters50::apply_arm(arm_code, sizeof(arm_code), 0);
-    assert(arm_code[3] == 0xEB);
-    assert(arm_code[7] == 0xEB);
+    REQUIRE(arm_code[3] == 0xEB);
+    REQUIRE(arm_code[7] == 0xEB);
     // file_offset truncated to 32 bits: use large offset >4GB
     {
         core::byte code[4] = {0x00, 0x01, 0x00, 0xEB};
         Filters50::apply_arm(code, 4, 0x100000000ULL); // lower 32 bits 0
         core::uint32 off = code[0] | (code[1] << 8) | (code[2] << 16);
         // with offset 0, should be 0x0100 -0 =0x0100
-        assert(off == 0x0100);
+        REQUIRE(off == 0x0100);
         // with offset 0x100000000, truncated still 0, same result
         core::byte code2[4] = {0x00, 0x01, 0x00, 0xEB};
         Filters50::apply_arm(code2, 4, 0x100000004ULL); // low 32 =4, /4 =1
         core::uint32 off2 = code2[0] | (code2[1] << 8) | (code2[2] << 16);
-        assert(off2 == 0xFF); // 0x100 -1
+        REQUIRE(off2 == 0xFF); // 0x100 -1
     }
     std::cout << "[PASS] RAR 5.0 ARM Branch Filter Translation\n";
 }
@@ -187,17 +190,17 @@ void test_forward_filters() {
         Filters50::encode_e8(encoded.data(), encoded.size(), 0x1000, true);
 
         // Prove that the transform actually altered the operands
-        assert(encoded != original);
+        REQUIRE(encoded != original);
 
         // Vector vs scalar parity
         std::vector<core::byte> encoded_scalar = original;
         Filters50::encode_e8_scalar(encoded_scalar.data(), encoded_scalar.size(), 0x1000, true);
-        assert(encoded == encoded_scalar);
+        REQUIRE(encoded == encoded_scalar);
 
         // Decode with apply_e8 and assert 100% byte-identity
         std::vector<core::byte> decoded = encoded;
         Filters50::apply_e8(decoded.data(), decoded.size(), 0x1000, true);
-        assert(decoded == original);
+        REQUIRE(decoded == original);
     }
 
     // 2. ARM BL round-trip test
@@ -214,17 +217,17 @@ void test_forward_filters() {
 
         std::vector<core::byte> encoded = original;
         Filters50::encode_arm(encoded.data(), encoded.size(), 0x2000);
-        assert(encoded != original);
+        REQUIRE(encoded != original);
 
         // Vector vs scalar parity
         std::vector<core::byte> encoded_scalar = original;
         Filters50::encode_arm_scalar(encoded_scalar.data(), encoded_scalar.size(), 0x2000);
-        assert(encoded == encoded_scalar);
+        REQUIRE(encoded == encoded_scalar);
 
         // Decode with apply_arm
         std::vector<core::byte> decoded = encoded;
         Filters50::apply_arm(decoded.data(), decoded.size(), 0x2000);
-        assert(decoded == original);
+        REQUIRE(decoded == original);
     }
 
     // 3. Delta round-trip test across channels 1..32
@@ -237,19 +240,19 @@ void test_forward_filters() {
             std::vector<core::byte> encoded(original.size());
             bool enc_ok =
                 Filters50::encode_delta(original.data(), encoded.data(), original.size(), ch);
-            assert(enc_ok);
+            REQUIRE(enc_ok);
 
             std::vector<core::byte> decoded(original.size());
             bool dec_ok =
                 Filters50::apply_delta(encoded.data(), decoded.data(), original.size(), ch);
-            assert(dec_ok);
-            assert(decoded == original);
+            REQUIRE(dec_ok);
+            REQUIRE(decoded == original);
 
             // In-place encode/decode test
             std::vector<core::byte> in_place = original;
-            assert(Filters50::encode_delta(in_place.data(), in_place.data(), in_place.size(), ch));
-            assert(Filters50::apply_delta(in_place.data(), in_place.data(), in_place.size(), ch));
-            assert(in_place == original);
+            REQUIRE(Filters50::encode_delta(in_place.data(), in_place.data(), in_place.size(), ch));
+            REQUIRE(Filters50::apply_delta(in_place.data(), in_place.data(), in_place.size(), ch));
+            REQUIRE(in_place == original);
         }
     }
 
@@ -270,7 +273,7 @@ void test_forward_filters() {
         Filters50::encode_e8(encoded.data(), encoded.size(), 0x76543210ULL, true);
         std::vector<core::byte> decoded = encoded;
         Filters50::apply_e8(decoded.data(), decoded.size(), 0x76543210ULL, true);
-        assert(decoded == fuzz);
+        REQUIRE(decoded == fuzz);
     }
     std::cout << "[PASS] RAR 5.0 Forward Filter Transforms & Mathematical Roundtrips\n";
 }
@@ -332,15 +335,16 @@ void test_e8_filter_chunk_boundary_symmetry() {
     }
     // Guard against a vacuous identity: interior sites must have been
     // transformed (their operands moved).
-    assert(std::memcmp(data.data() + 1001, orig.data() + 1001, 4) != 0);
-    assert(std::memcmp(data.data() + 65641, orig.data() + 65641, 4) != 0);
+    REQUIRE(std::memcmp(data.data() + 1001, orig.data() + 1001, 4) != 0);
+    REQUIRE(std::memcmp(data.data() + 65641, orig.data() + 65641, 4) != 0);
     // The boundary-crossing site must NOT be transformed by a CHUNK window.
-    assert(std::memcmp(data.data() + 65535, orig.data() + 65535, 4) == 0);
+    REQUIRE(std::memcmp(data.data() + 65535, orig.data() + 65535, 4) == 0);
 
     for (size_t off = 0; off < data.size(); off += CHUNK) {
         Filters50::apply_e8(data.data() + off, CHUNK, off, false);
     }
-    assert(data.size() == orig.size() && std::memcmp(data.data(), orig.data(), data.size()) == 0);
+    REQUIRE(
+        (data.size() == orig.size() && std::memcmp(data.data(), orig.data(), data.size()) == 0));
     std::cout << "[PASS] E8 filter chunk-boundary encode/decode symmetry\n";
 }
 
@@ -357,7 +361,7 @@ void test_filter_chunk_boundary_roundtrip_p1() {
     fill_pattern(data, 0x90);
 
     std::vector<core::byte> compressed;
-    assert(Compressor50::compress_buffer(data.data(), data.size(), compressed));
+    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), compressed));
 
     std::vector<core::byte> out;
     // Raw streams carry no dictionary-size header: the decoder window is
@@ -366,8 +370,8 @@ void test_filter_chunk_boundary_roundtrip_p1() {
     // runs a 1 MiB window and cannot decode default-window streams once
     // match distances or filter regions exceed 1 MiB.
     Decompressor50 dec(0x200000);
-    assert(dec.decompress_to_vector(compressed.data(), compressed.size(), out));
-    assert(out.size() == data.size() && std::memcmp(out.data(), data.data(), data.size()) == 0);
+    REQUIRE(dec.decompress_to_vector(compressed.data(), compressed.size(), out));
+    REQUIRE((out.size() == data.size() && std::memcmp(out.data(), data.data(), data.size()) == 0));
     std::cout << "[PASS] compress_buffer roundtrip with boundary-crossing CALL (P1, fuzz 727)\n";
 }
 
@@ -385,12 +389,13 @@ void test_filter_multi_token_multiblock_roundtrip() {
         fill_pattern(data, 0x90);
 
         std::vector<core::byte> compressed;
-        assert(Compressor50::compress_buffer(data.data(), data.size(), compressed));
+        REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), compressed));
 
         std::vector<core::byte> out;
         Decompressor50 dec(0x200000);
-        assert(dec.decompress_to_vector(compressed.data(), compressed.size(), out));
-        assert(out.size() == data.size() && std::memcmp(out.data(), data.data(), data.size()) == 0);
+        REQUIRE(dec.decompress_to_vector(compressed.data(), compressed.size(), out));
+        REQUIRE(
+            (out.size() == data.size() && std::memcmp(out.data(), data.data(), data.size()) == 0));
     }
     std::cout << "[PASS] filter roundtrip: multi-token, multi-block, mem_src branch\n";
 }
@@ -409,50 +414,50 @@ void test_default_window_pairing_roundtrip() {
     fill_pattern(data, 0x90);
 
     std::vector<core::byte> compressed;
-    assert(Compressor50::compress_buffer(data.data(), data.size(), compressed));
+    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), compressed));
 
     std::vector<core::byte> out;
     Decompressor50 dec; // default window: must decode default-window streams
-    assert(dec.win_size() == Decompressor50::DEFAULT_WIN_SIZE);
-    assert(dec.win_size() == 0x200000);
-    assert(dec.decompress_to_vector(compressed.data(), compressed.size(), out));
-    assert(out.size() == data.size() && std::memcmp(out.data(), data.data(), data.size()) == 0);
+    REQUIRE(dec.win_size() == Decompressor50::DEFAULT_WIN_SIZE);
+    REQUIRE(dec.win_size() == 0x200000);
+    REQUIRE(dec.decompress_to_vector(compressed.data(), compressed.size(), out));
+    REQUIRE((out.size() == data.size() && std::memcmp(out.data(), data.data(), data.size()) == 0));
     std::cout << "[PASS] default compressor window decodable by default decoder window\n";
 }
 
 void test_bit_reader_and_huffman() {
     core::byte data[4] = {0xAB, 0xCD, 0xEF, 0x12};
     BitReader reader(data, 4);
-    assert(reader.get_bits(4) == 0xA);
-    assert(reader.get_bits(4) == 0xB);
-    assert(reader.get_bits(8) == 0xCD);
-    assert(reader.get_bits(0) == 0);
-    assert(reader.peek_bits(0) == 0);
+    REQUIRE(reader.get_bits(4) == 0xA);
+    REQUIRE(reader.get_bits(4) == 0xB);
+    REQUIRE(reader.get_bits(8) == 0xCD);
+    REQUIRE(reader.get_bits(0) == 0);
+    REQUIRE(reader.peek_bits(0) == 0);
 
     // Canonical Huffman with 4 symbols: lengths 1,2,3,3
     core::byte lens[4] = {1, 2, 3, 3};
     HuffmanDecoder dec;
-    assert(dec.build(lens, 4));
+    REQUIRE(dec.build(lens, 4));
     {
         core::byte s0[1] = {0x00}; // code 0 (0b0) -> symbol 0
         BitReader r(s0, 1);
-        assert(dec.decode(r) == 0);
+        REQUIRE(dec.decode(r) == 0);
         core::byte s1[1] = {0x80}; // code 10xxxxxx -> symbol1 (0b10)
         BitReader r1(s1, 1);
-        assert(r1.get_bits(1) == 1); // sanity
+        REQUIRE(r1.get_bits(1) == 1); // sanity
         BitReader r1b(s1, 1);
-        assert(dec.decode(r1b) == 1);
+        REQUIRE(dec.decode(r1b) == 1);
     }
     // Test >10 bits codes: create alphabet where some symbols have length 12-15
     {
         core::byte lens2[8] = {12, 12, 12, 12, 12, 12, 12, 2};
         // 7 symbols with 12 bits, 1 with 2 bits: forces long codes
         HuffmanDecoder d2;
-        assert(d2.build(lens2, 8));
+        REQUIRE(d2.build(lens2, 8));
         // Symbol 7 has short code 00, others have long 12-bit codes
         core::byte stream[2] = {0x00, 0x00}; // 00 -> symbol7
         BitReader br(stream, 2);
-        assert(d2.decode(br) == 7);
+        REQUIRE(d2.decode(br) == 7);
         // Long code path: need to encode symbol0. BuildCodes gives code for lens2
         // Instead just verify decode does not return 0 fallback for long codes
         // Manually craft bits for symbol0: should be distinct from short code, decode should not be 0 fallback
@@ -460,12 +465,12 @@ void test_bit_reader_and_huffman() {
         core::byte lens3[20];
         for (int i = 0; i < 20; i++) lens3[i] = (i % 2 == 0 ? 14 : 15);
         HuffmanDecoder d3;
-        assert(d3.build(lens3, 20));
+        REQUIRE(d3.build(lens3, 20));
         // Should not assert and decode should not crash
         core::byte tmp[4] = {0xFF, 0xFF, 0xFF, 0xFF};
         BitReader b(tmp, 4);
         core::uint32 sym = d3.decode(b);
-        assert(sym < 20);
+        REQUIRE(sym < 20);
     }
     std::cout << "[PASS] BitReader & Canonical Huffman Prefix Decoding (quick+slow)\n";
 }
@@ -481,8 +486,8 @@ void test_decompressor50() {
     Decompressor50 unpacker(128 * 1024);
     std::vector<core::byte> out;
     bool ok = unpacker.decompress_to_vector(nullptr, 0, out);
-    assert(ok);
-    assert(out.empty());
+    REQUIRE(ok);
+    REQUIRE(out.empty());
     std::cout << "[PASS] Decompressor50 Initialization and Boundary Decoding\n";
 }
 
@@ -505,37 +510,37 @@ void test_archive_roundtrip() {
     bool add_ok =
         openrar::archive::ArchiveMutator::add_file_to_archive(arc_file, src_file, "sample.txt");
     std::cout << (add_ok ? "OK\n" : "FAIL\n") << std::flush;
-    assert(add_ok);
+    REQUIRE(add_ok);
 
     std::cout << "Opening archive... " << std::flush;
     openrar::archive::ArchiveReader reader;
     bool open_ok = reader.open(arc_file);
     std::cout << (open_ok ? "OK\n" : "FAIL\n") << std::flush;
-    assert(open_ok);
-    assert(reader.entries().size() == 1);
+    REQUIRE(open_ok);
+    REQUIRE(reader.entries().size() == 1);
 
     const auto& entry = reader.entries()[0];
-    assert(entry.header.file_name == "sample.txt");
-    assert(entry.header.unp_size == test_data.size());
+    REQUIRE(entry.header.file_name == "sample.txt");
+    REQUIRE(entry.header.unp_size == test_data.size());
 
     std::cout << "Testing entry... " << std::flush;
     bool test_ok = reader.test_entry(entry);
     std::cout << (test_ok ? "OK\n" : "FAIL\n") << std::flush;
-    assert(test_ok);
+    REQUIRE(test_ok);
 
     std::cout << "Extracting entry... " << std::flush;
     std::string out_file = test_dir + "/extracted.txt";
     fs::remove(out_file);
     bool extract_ok = reader.extract_entry(entry, out_file);
     std::cout << (extract_ok ? "OK\n" : "FAIL\n") << std::flush;
-    assert(extract_ok);
+    REQUIRE(extract_ok);
 
     reader.close();
     {
         std::ifstream ifs(out_file, std::ios::binary);
         std::string extracted((std::istreambuf_iterator<char>(ifs)),
                               std::istreambuf_iterator<char>());
-        assert(extracted == test_data);
+        REQUIRE(extracted == test_data);
     }
     std::error_code ec;
     fs::remove_all(test_dir, ec);
@@ -561,16 +566,16 @@ void test_compressor50_roundtrip() {
     std::vector<core::byte> compressed;
     bool ok = Compressor50::compress_buffer(reinterpret_cast<const core::byte*>(text.data()),
                                             text.size(), compressed, 3);
-    assert(ok);
-    assert(!compressed.empty());
-    assert(compressed.size() < text.size());
+    REQUIRE(ok);
+    REQUIRE(!compressed.empty());
+    REQUIRE(compressed.size() < text.size());
 
     std::vector<core::byte> decompressed;
     Decompressor50 unpacker;
     bool dec_ok = unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed);
-    assert(dec_ok);
-    assert(decompressed.size() == text.size());
-    assert(std::memcmp(decompressed.data(), text.data(), text.size()) == 0);
+    REQUIRE(dec_ok);
+    REQUIRE(decompressed.size() == text.size());
+    REQUIRE(std::memcmp(decompressed.data(), text.data(), text.size()) == 0);
 
     std::cout << "[PASS] Compressor50 -> Decompressor50 Compression Roundtrip (" << text.size()
               << " -> " << compressed.size() << " bytes)\n";
@@ -593,17 +598,17 @@ void test_compressor50_external_buffer_no_slide() {
     src[RUN_SIZE + 1] = static_cast<core::byte>('C');
 
     std::vector<core::byte> compressed;
-    assert(Compressor50::compress_buffer(src.data(), src.size(), compressed, 3, WIN_SIZE));
+    REQUIRE(Compressor50::compress_buffer(src.data(), src.size(), compressed, 3, WIN_SIZE));
 
     std::vector<core::byte> decompressed;
     Decompressor50 unpacker;
-    assert(unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed));
-    assert(decompressed.size() == src.size());
-    assert(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
+    REQUIRE(unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed));
+    REQUIRE(decompressed.size() == src.size());
+    REQUIRE(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
 
     // Also confirm the tail itself survives verbatim.
-    assert(decompressed[RUN_SIZE] == static_cast<core::byte>('B'));
-    assert(decompressed[RUN_SIZE + 1] == static_cast<core::byte>('C'));
+    REQUIRE(decompressed[RUN_SIZE] == static_cast<core::byte>('B'));
+    REQUIRE(decompressed[RUN_SIZE + 1] == static_cast<core::byte>('C'));
 
     std::cout << "[PASS] Compressor50 external-buffer dict-spanning run roundtrip (" << src.size()
               << " -> " << compressed.size() << " bytes)\n";
@@ -637,22 +642,22 @@ void test_decompressor50_post_wrap_overlap_match() {
     for (size_t i = 0; i + PATTERN_SIZE <= src.size(); ++i) {
         if (std::memcmp(src.data() + i, pat.data(), PATTERN_SIZE) == 0) ++occurrences;
     }
-    assert(occurrences == 2);
+    REQUIRE(occurrences == 2);
 
     std::vector<core::byte> compressed;
-    assert(Compressor50::compress_buffer(src.data(), src.size(), compressed, 5, WIN_SIZE));
+    REQUIRE(Compressor50::compress_buffer(src.data(), src.size(), compressed, 5, WIN_SIZE));
 
     std::vector<core::byte> decompressed;
     Decompressor50 unpacker(WIN_SIZE);
-    assert(unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed));
-    assert(decompressed.size() == src.size());
-    assert(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
+    REQUIRE(unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed));
+    REQUIRE(decompressed.size() == src.size());
+    REQUIRE(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
 
     // The far match must actually be in the stream: the second copy region
     // must survive byte-exactly. On MSVC the old code's dst<src overlap is
     // benign (forward memcpy), so deterministic detection of the old UB needs
     // ASan (memcpy-param-overlap); this test locks in the correct path.
-    assert(std::memcmp(decompressed.data() + WIN_SIZE + 3, pat.data(), PATTERN_SIZE) == 0);
+    REQUIRE(std::memcmp(decompressed.data() + WIN_SIZE + 3, pat.data(), PATTERN_SIZE) == 0);
 
     std::cout << "[PASS] Decompressor50 post-wrap overlap match roundtrip (" << src.size() << " -> "
               << compressed.size() << " bytes)\n";
@@ -685,17 +690,17 @@ void test_decompressor50_slow_path_wildcopy_wrap() {
     std::memmove(&src[WIN_SIZE + LEAD_SIZE], &src[WIN_SIZE + LEAD_SIZE - DISTANCE], COPY_SIZE);
 
     std::vector<core::byte> compressed;
-    assert(Compressor50::compress_buffer(src.data(), src.size(), compressed, 5, WIN_SIZE));
+    REQUIRE(Compressor50::compress_buffer(src.data(), src.size(), compressed, 5, WIN_SIZE));
 
     std::vector<core::byte> decompressed;
     Decompressor50 unpacker(WIN_SIZE);
-    assert(unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed));
-    assert(decompressed.size() == src.size());
-    assert(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
+    REQUIRE(unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed));
+    REQUIRE(decompressed.size() == src.size());
+    REQUIRE(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
 
     // The match region must survive byte-exactly (old code garbled it).
-    assert(std::memcmp(decompressed.data() + WIN_SIZE + LEAD_SIZE,
-                       src.data() + WIN_SIZE + LEAD_SIZE, COPY_SIZE) == 0);
+    REQUIRE(std::memcmp(decompressed.data() + WIN_SIZE + LEAD_SIZE,
+                        src.data() + WIN_SIZE + LEAD_SIZE, COPY_SIZE) == 0);
 
     std::cout << "[PASS] Decompressor50 slow-path wildcopy window-end wrap roundtrip ("
               << src.size() << " -> " << compressed.size() << " bytes)\n";
@@ -737,11 +742,11 @@ void test_compressor50_reset_after_external_buffer() {
     bool ok_a = unpacker.decompress_to_vector(out_a.data(), out_a.size(), dec_a);
     Decompressor50 unpacker_b;
     bool ok_b = unpacker_b.decompress_to_vector(out_b.data(), out_b.size(), dec_b);
-    assert(ok_a && ok_b);
-    assert(dec_a.size() == payload_a.size());
-    assert(dec_b.size() == payload_b.size());
-    assert(std::memcmp(dec_a.data(), payload_a.data(), payload_a.size()) == 0);
-    assert(std::memcmp(dec_b.data(), payload_b.data(), payload_b.size()) == 0);
+    REQUIRE((ok_a && ok_b));
+    REQUIRE(dec_a.size() == payload_a.size());
+    REQUIRE(dec_b.size() == payload_b.size());
+    REQUIRE(std::memcmp(dec_a.data(), payload_a.data(), payload_a.size()) == 0);
+    REQUIRE(std::memcmp(dec_b.data(), payload_b.data(), payload_b.size()) == 0);
 
     std::cout << "[PASS] Compressor50 reuse across sessions after set_external_buffer\n";
 }
@@ -791,16 +796,16 @@ void test_decompressor50_wrapped_src_stale_gap() {
     for (size_t i = 0; i + PATTERN_SIZE <= src.size(); ++i) {
         if (std::memcmp(src.data() + i, big.data(), PATTERN_SIZE) == 0) ++occurrences;
     }
-    assert(occurrences == 2);
+    REQUIRE(occurrences == 2);
 
     std::vector<core::byte> compressed;
-    assert(Compressor50::compress_buffer(src.data(), src.size(), compressed, 5, WIN_SIZE));
+    REQUIRE(Compressor50::compress_buffer(src.data(), src.size(), compressed, 5, WIN_SIZE));
 
     std::vector<core::byte> decompressed;
     Decompressor50 unpacker(WIN_SIZE);
-    assert(unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed));
-    assert(decompressed.size() == src.size());
-    assert(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
+    REQUIRE(unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed));
+    REQUIRE(decompressed.size() == src.size());
+    REQUIRE(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
 
     std::cout << "[PASS] Decompressor50 wrapped-source stale-gap match roundtrip (" << src.size()
               << " -> " << compressed.size() << " bytes)\n";
@@ -848,7 +853,7 @@ void test_huffman_builder_shrink() {
 
     // Verify: every symbol with non-zero freq must get a non-zero length
     for (core::uint32 i = 0; i < LARGE; ++i) {
-        assert(len_large[i] > 0 && len_large[i] <= 15);
+        REQUIRE((len_large[i] > 0 && len_large[i] <= 15));
     }
 
     // Step 2: call repeatedly with a small alphabet (16 symbols, <LARGE/4)
@@ -862,7 +867,7 @@ void test_huffman_builder_shrink() {
         std::memset(len_small.data(), 0, SMALL);
         HuffmanBuilder::build_lengths(freq_small.data(), SMALL, 15, len_small.data());
         for (core::uint32 i = 0; i < SMALL; ++i) {
-            assert(len_small[i] > 0 && len_small[i] <= 15);
+            REQUIRE((len_small[i] > 0 && len_small[i] <= 15));
         }
     }
 
@@ -870,7 +875,7 @@ void test_huffman_builder_shrink() {
     std::memset(len_large.data(), 0, LARGE);
     HuffmanBuilder::build_lengths(freq_large.data(), LARGE, 15, len_large.data());
     for (core::uint32 i = 0; i < LARGE; ++i) {
-        assert(len_large[i] > 0 && len_large[i] <= 15);
+        REQUIRE((len_large[i] > 0 && len_large[i] <= 15));
     }
 
     // Step 4: verify round-trip via build_codes
@@ -883,7 +888,7 @@ void test_huffman_builder_shrink() {
             kraft += 1.0 / (1 << len_large[i]);
         }
     }
-    assert(kraft > 0.99 && kraft <= 1.001);
+    REQUIRE((kraft > 0.99 && kraft <= 1.001));
 
     std::cout << " OK\n";
 }
@@ -911,13 +916,13 @@ void test_forced_scalar_filters() {
 
     Filters50::apply_e8(buf_simd.data(), buf_simd.size(), 0x1234, true);
     Filters50::apply_e8_scalar(buf_scalar.data(), buf_scalar.size(), 0x1234, true);
-    assert(buf_simd == buf_scalar);
+    REQUIRE(buf_simd == buf_scalar);
 
     std::vector<core::byte> buf_arm_simd = buf_simd;
     std::vector<core::byte> buf_arm_scalar = buf_scalar;
     Filters50::apply_arm(buf_arm_simd.data(), buf_arm_simd.size(), 0x1234);
     Filters50::apply_arm_scalar(buf_arm_scalar.data(), buf_arm_scalar.size(), 0x1234);
-    assert(buf_arm_simd == buf_arm_scalar);
+    REQUIRE(buf_arm_simd == buf_arm_scalar);
 
     std::cout << "[PASS] RAR 5.0 Forced-Scalar Filter vs SIMD Bit-for-Bit\n";
 }
@@ -952,14 +957,14 @@ void test_match_length_tail_caps() {
         // Fully equal pair: must return cap exactly.
         std::memset(p, 0x5A, sizeof(p));
         std::memcpy(q, p, sizeof(p));
-        assert(arch::match_length_simd(p, q, cap) == cap);
-        assert(arch::match_length_simd(q, p, cap) == cap);
+        REQUIRE(arch::match_length_simd(p, q, cap) == cap);
+        REQUIRE(arch::match_length_simd(q, p, cap) == cap);
 
         // Mismatch in the final block region: must spot it.
         std::memcpy(q, p, sizeof(p));
         q[cap - 1] = static_cast<core::byte>(p[cap - 1] ^ 1);
-        assert(arch::match_length_simd(p, q, cap) == cap - 1);
-        assert(arch::match_length_simd(q, p, cap) == cap - 1);
+        REQUIRE(arch::match_length_simd(p, q, cap) == cap - 1);
+        REQUIRE(arch::match_length_simd(q, p, cap) == cap - 1);
 
         // The dangerous zone: caps with cap mod 16 in [9..15] had an
         // unverified gap between the SIMD blocks and the old 8-byte tail.
@@ -968,7 +973,7 @@ void test_match_length_tail_caps() {
             std::memcpy(q, p, sizeof(p));
             q[diff_at] = static_cast<core::byte>(p[diff_at] ^ 0xFF);
             size_t got = arch::match_length_simd(p, q, cap);
-            assert(got == diff_at);
+            REQUIRE(got == diff_at);
         }
     }
     std::cout << "[PASS] match_length tail covers every byte of the cap\n";
@@ -982,7 +987,7 @@ void test_decompressor_lazy_alloc() {
 
     size_t new_rss = get_peak_rss();
     if (initial_rss > 0) {
-        assert(new_rss - initial_rss < 500 * 1024 * 1024);
+        REQUIRE(new_rss - initial_rss < 500 * 1024 * 1024);
     }
 
 #if !defined(__EMSCRIPTEN__) && !defined(__wasm__) && !defined(_M_IX86) && !defined(__i386__)
@@ -992,19 +997,19 @@ void test_decompressor_lazy_alloc() {
                                           64ULL * 1024 * 1024 * 1024};
     for (core::uint64 w : large_windows) {
         Decompressor50 dec_large(static_cast<size_t>(w));
-        assert(!dec_large.is_dictionary_too_large());
-        assert(dec_large.last_error() == DecompressErrorCode::Ok);
+        REQUIRE(!dec_large.is_dictionary_too_large());
+        REQUIRE(dec_large.last_error() == DecompressErrorCode::Ok);
     }
 #endif
 
     Decompressor50 dec_huge(Decompressor50::ALLOC_LIMIT + 1);
-    assert(dec_huge.is_dictionary_too_large());
-    assert(dec_huge.last_error() == DecompressErrorCode::DictionaryTooLarge);
+    REQUIRE(dec_huge.is_dictionary_too_large());
+    REQUIRE(dec_huge.last_error() == DecompressErrorCode::DictionaryTooLarge);
 
     core::byte dummy_src[10] = {0};
     bool ok = dec_huge.decompress(dummy_src, 10, 10);
-    assert(!ok);
-    assert(dec_huge.is_dictionary_too_large());
+    REQUIRE(!ok);
+    REQUIRE(dec_huge.is_dictionary_too_large());
 
     std::cout << "[PASS] RAR 5.0 Decompressor Lazy Allocation\n";
 }
@@ -1026,8 +1031,8 @@ void test_bit_reader_get_bits64() {
 
         BitReader r_test(buf.data(), buf.size());
         core::uint64 actual = r_test.get_bits64(bits);
-        assert(actual == expected);
-        assert(r_test.bit_pos() == bits);
+        REQUIRE(actual == expected);
+        REQUIRE(r_test.bit_pos() == bits);
     }
 
     // Test reading unaligned 33..56 bit values (after initial 1..7 offset bits)
@@ -1043,15 +1048,15 @@ void test_bit_reader_get_bits64() {
             BitReader r_test(buf.data(), buf.size());
             r_test.get_bits(pre);
             core::uint64 actual = r_test.get_bits64(bits);
-            assert(actual == expected);
-            assert(r_test.bit_pos() == pre + bits);
+            REQUIRE(actual == expected);
+            REQUIRE(r_test.bit_pos() == pre + bits);
         }
     }
 
     // Explicit 64-bit value check
     core::byte raw64[8] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF};
     BitReader r64(raw64, 8);
-    assert(r64.get_bits64(64) == 0x0123456789ABCDEFULL);
+    REQUIRE(r64.get_bits64(64) == 0x0123456789ABCDEFULL);
 
     std::cout << "[PASS] BitReader get_bits64 across 33-64 bit values\n";
 }
@@ -1072,20 +1077,20 @@ void test_token_holds_every_distance_slot() {
         // they must not bleed into it.
         tok.set_len_slot(static_cast<core::byte>(slot & 0x3F));
         tok.set_dist_slot(static_cast<core::byte>(slot));
-        assert(tok.get_dist_slot() == slot);
-        assert(tok.get_type() == Compressor50Token::TokenType::Match);
-        assert(tok.get_len_slot() == (slot & 0x3F));
+        REQUIRE(tok.get_dist_slot() == slot);
+        REQUIRE(tok.get_type() == Compressor50Token::TokenType::Match);
+        REQUIRE(tok.get_len_slot() == (slot & 0x3F));
 
         // dist_bits is DERIVED from the stored slot at emit time, so a slot
         // that survives storage must also yield the right bit width.
         core::byte expect_bits = slot < 4 ? 0 : static_cast<core::byte>(slot / 2 - 1);
-        assert(tok.get_dist_bits() == expect_bits);
+        REQUIRE(tok.get_dist_bits() == expect_bits);
 
         // Re-writing the slot must not leave residue from the previous value.
         tok.set_dist_slot(0);
-        assert(tok.get_dist_slot() == 0);
+        REQUIRE(tok.get_dist_slot() == 0);
         tok.set_dist_slot(static_cast<core::byte>(slot));
-        assert(tok.get_dist_slot() == slot);
+        REQUIRE(tok.get_dist_slot() == slot);
     }
     std::cout << "[+] test_token_holds_every_distance_slot" << std::endl;
 }
@@ -1098,33 +1103,33 @@ void test_extra_distance_slot_decoding() {
     BitReader reader76(test_stream, sizeof(test_stream));
     core::uint32 dist_slot = 76;
     core::uint32 d_bits = dist_slot / 2 - 1; // 37
-    assert(d_bits == 37);
-    assert(d_bits > 36);
+    REQUIRE(d_bits == 37);
+    REQUIRE(d_bits > 36);
     core::uint32 extra_bits = d_bits - 4; // 33 bits
-    assert(extra_bits == 33);
+    REQUIRE(extra_bits == 33);
 
     core::uint64 extra = reader76.get_bits64(extra_bits);
-    assert((extra >> 32) != 0);
+    REQUIRE((extra >> 32) != 0);
 
     core::uint64 distance = 1;
     distance += static_cast<core::uint64>(2 | (dist_slot & 1)) << d_bits;
     distance += extra << 4;
-    assert(distance > (4ULL * 1024 * 1024 * 1024));
+    REQUIRE(distance > (4ULL * 1024 * 1024 * 1024));
 
     // Simulate slot 78 extra distance read (34 bits)
     BitReader reader78(test_stream, sizeof(test_stream));
     dist_slot = 78;
     d_bits = dist_slot / 2 - 1; // 38
-    assert(d_bits == 38);
+    REQUIRE(d_bits == 38);
     extra_bits = d_bits - 4; // 34 bits
-    assert(extra_bits == 34);
+    REQUIRE(extra_bits == 34);
 
     extra = reader78.get_bits64(extra_bits);
-    assert((extra >> 32) != 0);
+    REQUIRE((extra >> 32) != 0);
     distance = 1;
     distance += static_cast<core::uint64>(2 | (dist_slot & 1)) << d_bits;
     distance += extra << 4;
-    assert(distance > (4ULL * 1024 * 1024 * 1024));
+    REQUIRE(distance > (4ULL * 1024 * 1024 * 1024));
 
     std::cout << "[PASS] Extra-distance slots 68-79 64-bit distance decoding (> 4 GiB)\n";
 }
@@ -1153,6 +1158,14 @@ public:
 
     static core::int64 reconstruct_pos(Compressor50& c, core::uint64 pos, core::uint32 trunc) {
         return c.reconstruct_pos(pos, trunc);
+    }
+
+    // Drives the real finder (large-window path when the mock is installed).
+    // Returns {length, candidate}; candidate == -1 means "no match".
+    static std::pair<size_t, core::int64>
+    find_match(Compressor50& c, core::uint64 pos, core::uint32 max_chain, core::uint32 nice_len) {
+        const auto m = c.find_match(pos, max_chain, nice_len);
+        return {m.length, m.candidate};
     }
 
     static core::uint64 get_head64(const Compressor50& c, size_t idx) { return c.head64_[idx]; }
@@ -1200,17 +1213,17 @@ void test_compressor50_large_window_match_finding() {
     {
         Compressor50 c;
         c.begin_archive(nullptr, 3, 2 * 1024 * 1024);
-        assert(!Compressor50TestAccess::is_large_window(c));
-        assert(Compressor50TestAccess::head_size(c) == 131072);
-        assert(Compressor50TestAccess::prev_size(c) == 2 * 1024 * 1024);
-        assert(Compressor50TestAccess::head64_size(c) == 0);
-        assert(Compressor50TestAccess::prev64_size(c) == 0);
+        REQUIRE(!Compressor50TestAccess::is_large_window(c));
+        REQUIRE(Compressor50TestAccess::head_size(c) == 131072);
+        REQUIRE(Compressor50TestAccess::prev_size(c) == 2 * 1024 * 1024);
+        REQUIRE(Compressor50TestAccess::head64_size(c) == 0);
+        REQUIRE(Compressor50TestAccess::prev64_size(c) == 0);
 
         // 32-bit reconstruct_pos cannot reach candidates > 4 GiB back:
         core::uint64 pos = 6ULL * 1024 * 1024 * 1024 + 500;
         core::uint32 trunc = 500;
         core::int64 cand = Compressor50TestAccess::reconstruct_pos(c, pos, trunc);
-        assert(cand != 500); // Truncation in 32-bit reconstruct_pos prevents reaching 500
+        REQUIRE(cand != 500); // Truncation in 32-bit reconstruct_pos prevents reaching 500
     }
 
     // 2. Verify 64-bit match finding across > 4 GiB horizons and hash chains
@@ -1220,11 +1233,11 @@ void test_compressor50_large_window_match_finding() {
         const core::uint64 MAX_DIST = 16ULL * 1024 * 1024 * 1024; // 16 GiB reach
         Compressor50TestAccess::setup_mock_large_window(c, MAX_DIST, MOCK_WIN_MASK_SIZE);
 
-        assert(Compressor50TestAccess::is_large_window(c));
-        assert(Compressor50TestAccess::head_size(c) == 0);
-        assert(Compressor50TestAccess::prev_size(c) == 0);
-        assert(Compressor50TestAccess::head64_size(c) == 131072);
-        assert(Compressor50TestAccess::prev64_size(c) == MOCK_WIN_MASK_SIZE);
+        REQUIRE(Compressor50TestAccess::is_large_window(c));
+        REQUIRE(Compressor50TestAccess::head_size(c) == 0);
+        REQUIRE(Compressor50TestAccess::prev_size(c) == 0);
+        REQUIRE(Compressor50TestAccess::head64_size(c) == 131072);
+        REQUIRE(Compressor50TestAccess::prev64_size(c) == MOCK_WIN_MASK_SIZE);
 
         core::byte test_buf[64] = {'T', 'E', 'S', 'T', 0};
 
@@ -1233,7 +1246,7 @@ void test_compressor50_large_window_match_finding() {
         Compressor50TestAccess::set_test_buffer(c, test_buf, 64, pos1, pos1 + 10);
         core::uint32 h = Compressor50TestAccess::calc_hash(c, pos1);
         Compressor50TestAccess::insert_pos(c, pos1);
-        assert(Compressor50TestAccess::get_head64(c, h) == pos1);
+        REQUIRE(Compressor50TestAccess::get_head64(c, h) == pos1);
 
         // Second insertion at pos2 = 5 GiB + 200 (distance = 5 GiB > 4 GiB)
         const core::uint64 pos2 = 5ULL * 1024 * 1024 * 1024 + 200;
@@ -1241,25 +1254,25 @@ void test_compressor50_large_window_match_finding() {
         Compressor50TestAccess::insert_pos(c, pos2);
 
         // Head now points to pos2, and prev64_ chain links pos2 to pos1
-        assert(Compressor50TestAccess::get_head64(c, h) == pos2);
-        assert(Compressor50TestAccess::get_prev64(c, pos2 & (MOCK_WIN_MASK_SIZE - 1)) == pos1);
+        REQUIRE(Compressor50TestAccess::get_head64(c, h) == pos2);
+        REQUIRE(Compressor50TestAccess::get_prev64(c, pos2 & (MOCK_WIN_MASK_SIZE - 1)) == pos1);
 
         // Verify distance calculations across the 64-bit chain:
         // Candidate at head (pos2) is distance 6 GiB from pos3 = 11 GiB + 200
         const core::uint64 pos3 = 11ULL * 1024 * 1024 * 1024 + 200;
         core::uint64 cand1 = Compressor50TestAccess::get_head64(c, h);
-        assert(cand1 == pos2);
-        assert(pos3 - cand1 == 6ULL * 1024 * 1024 * 1024);
-        assert(pos3 - cand1 > 4ULL * 1024 * 1024 * 1024);
-        assert(pos3 - cand1 <= MAX_DIST);
+        REQUIRE(cand1 == pos2);
+        REQUIRE(pos3 - cand1 == 6ULL * 1024 * 1024 * 1024);
+        REQUIRE(pos3 - cand1 > 4ULL * 1024 * 1024 * 1024);
+        REQUIRE(pos3 - cand1 <= MAX_DIST);
 
         // Chained candidate in prev64_ (pos1) is distance 11 GiB from pos3
         core::uint64 cand2 =
             Compressor50TestAccess::get_prev64(c, cand1 & (MOCK_WIN_MASK_SIZE - 1));
-        assert(cand2 == pos1);
-        assert(pos3 - cand2 == 11ULL * 1024 * 1024 * 1024);
-        assert(pos3 - cand2 > 4ULL * 1024 * 1024 * 1024);
-        assert(pos3 - cand2 <= MAX_DIST);
+        REQUIRE(cand2 == pos1);
+        REQUIRE(pos3 - cand2 == 11ULL * 1024 * 1024 * 1024);
+        REQUIRE(pos3 - cand2 > 4ULL * 1024 * 1024 * 1024);
+        REQUIRE(pos3 - cand2 <= MAX_DIST);
     }
 
     std::cout << "[PASS] Compressor50 64-bit large window match-finding horizon (> 4 GiB)\n";
@@ -1277,16 +1290,16 @@ void test_compressor50_all_zeros_8mib() {
         std::vector<core::byte> src(DATA_SIZE, 0x00);
         std::vector<core::byte> compressed;
         bool ok = Compressor50::compress_buffer(src.data(), src.size(), compressed, 3, WIN_SIZE);
-        assert(ok);
-        assert(compressed.size() > 4);
+        REQUIRE(ok);
+        REQUIRE(compressed.size() > 4);
 
         std::vector<core::byte> decompressed;
         Decompressor50 unpacker;
         bool dec_ok =
             unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed);
-        assert(dec_ok);
-        assert(decompressed.size() == src.size());
-        assert(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
+        REQUIRE(dec_ok);
+        REQUIRE(decompressed.size() == src.size());
+        REQUIRE(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
     }
 
     // Case B: Embedded 64 KiB 0xAA run in patterned data
@@ -1298,15 +1311,15 @@ void test_compressor50_all_zeros_8mib() {
 
         std::vector<core::byte> compressed;
         bool ok = Compressor50::compress_buffer(src.data(), src.size(), compressed, 3, WIN_SIZE);
-        assert(ok);
-        assert(compressed.size() > 4);
+        REQUIRE(ok);
+        REQUIRE(compressed.size() > 4);
 
         std::vector<core::byte> decompressed;
         Decompressor50 unpacker;
         bool dec_ok =
             unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed);
-        assert(dec_ok);
-        assert(decompressed.size() == src.size());
+        REQUIRE(dec_ok);
+        REQUIRE(decompressed.size() == src.size());
         bool match = true;
         for (size_t i = 0; i < src.size(); i++) {
             if (decompressed[i] != src[i]) {
@@ -1327,7 +1340,7 @@ void test_compressor50_all_zeros_8mib() {
                 break;
             }
         }
-        assert(match);
+        REQUIRE(match);
     }
 
     std::cout << "[PASS] Compressor50 sparse BD table RLE encoding (8 MiB zeros)\n";
@@ -1342,16 +1355,16 @@ void test_compressor50_boundary_sizes() {
         auto src = make_patterned_data(sz);
         std::vector<core::byte> compressed;
         bool ok = Compressor50::compress_buffer(src.data(), src.size(), compressed, 3, WIN_SIZE);
-        assert(ok);
-        assert(compressed.size() > 4);
+        REQUIRE(ok);
+        REQUIRE(compressed.size() > 4);
 
         std::vector<core::byte> decompressed;
         Decompressor50 unpacker;
         bool dec_ok =
             unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed);
-        assert(dec_ok);
-        assert(decompressed.size() == src.size());
-        assert(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
+        REQUIRE(dec_ok);
+        REQUIRE(decompressed.size() == src.size());
+        REQUIRE(std::memcmp(decompressed.data(), src.data(), src.size()) == 0);
     }
     std::cout << "[PASS] Compressor50 Boundary Sizes Coverage\n";
 }
@@ -1365,31 +1378,31 @@ void test_compressor50_filestream_roundtrip() {
         std::filesystem::temp_directory_path() / "rar_test_filestream.bin";
     {
         io::FileStream out;
-        assert(out.open(temp_file, io::FileMode::CreateAlways));
-        assert(out.write(src_data.data(), src_data.size()) == src_data.size());
+        REQUIRE(out.open(temp_file, io::FileMode::CreateAlways));
+        REQUIRE(out.write(src_data.data(), src_data.size()) == src_data.size());
         out.close();
     }
 
     std::vector<core::byte> compressed;
     {
         io::FileStream in;
-        assert(in.open(temp_file, io::FileMode::ReadOnly));
+        REQUIRE(in.open(temp_file, io::FileMode::ReadOnly));
         Compressor50 packer;
         packer.init(&in, nullptr, 3, DATA_SIZE, WIN_SIZE);
         packer.set_memory_dest(&compressed);
         core::int64 packed = packer.compress();
-        assert(packed > 0);
-        assert(packer.source_bytes_loaded() == DATA_SIZE);
+        REQUIRE(packed > 0);
+        REQUIRE(packer.source_bytes_loaded() == DATA_SIZE);
         in.close();
     }
-    assert(compressed.size() > 4);
+    REQUIRE(compressed.size() > 4);
 
     std::vector<core::byte> decompressed;
     Decompressor50 unpacker;
     bool dec_ok = unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed);
-    assert(dec_ok);
-    assert(decompressed.size() == DATA_SIZE);
-    assert(std::memcmp(decompressed.data(), src_data.data(), DATA_SIZE) == 0);
+    REQUIRE(dec_ok);
+    REQUIRE(decompressed.size() == DATA_SIZE);
+    REQUIRE(std::memcmp(decompressed.data(), src_data.data(), DATA_SIZE) == 0);
 
     std::filesystem::remove(temp_file);
     std::cout << "[PASS] Compressor50 FileStream Streaming Roundtrip (8 MiB)\n";
@@ -1403,14 +1416,14 @@ void test_compressor50_truncated_source() {
         std::filesystem::temp_directory_path() / "rar_test_truncated.bin";
     {
         io::FileStream out;
-        assert(out.open(temp_file, io::FileMode::CreateAlways));
-        assert(out.write(src_data.data(), src_data.size()) == src_data.size());
+        REQUIRE(out.open(temp_file, io::FileMode::CreateAlways));
+        REQUIRE(out.write(src_data.data(), src_data.size()) == src_data.size());
         out.close();
     }
 
     // Open for reading
     io::FileStream in;
-    assert(in.open(temp_file, io::FileMode::ReadOnly));
+    REQUIRE(in.open(temp_file, io::FileMode::ReadOnly));
 
     // Truncate the file via a second stream opened with CreateAlways to 100 KiB
     {
@@ -1431,8 +1444,8 @@ void test_compressor50_truncated_source() {
     // Verification (L13): a source shorter than its declared size must fail
     // the compression outright — pre-fix compress() kept emitting literals
     // from the uninitialized tail of buf_ and reported success.
-    assert(result < 0);
-    assert(packer.source_bytes_loaded() < ORIGINAL_SIZE);
+    REQUIRE(result < 0);
+    REQUIRE(packer.source_bytes_loaded() < ORIGINAL_SIZE);
     in.close();
 
     std::filesystem::remove(temp_file);
@@ -1450,21 +1463,21 @@ void test_compressor50_streaming_feed_large_chunks() {
     while (offset < DATA_SIZE) {
         size_t len = std::min(chunk_size, DATA_SIZE - offset);
         bool ok = encoder.feed(src_data.data() + offset, len);
-        assert(ok);
+        REQUIRE(ok);
         offset += len;
     }
 
     std::vector<core::byte> compressed;
     bool fin_ok = encoder.finish(compressed);
-    assert(fin_ok);
-    assert(compressed.size() > 4);
+    REQUIRE(fin_ok);
+    REQUIRE(compressed.size() > 4);
 
     std::vector<core::byte> decompressed;
     Decompressor50 unpacker;
     bool dec_ok = unpacker.decompress_to_vector(compressed.data(), compressed.size(), decompressed);
-    assert(dec_ok);
-    assert(decompressed.size() == DATA_SIZE);
-    assert(std::memcmp(decompressed.data(), src_data.data(), DATA_SIZE) == 0);
+    REQUIRE(dec_ok);
+    REQUIRE(decompressed.size() == DATA_SIZE);
+    REQUIRE(std::memcmp(decompressed.data(), src_data.data(), DATA_SIZE) == 0);
 
     std::cout << "[PASS] Compressor50 Streaming Feed Large Chunks\n";
 }
@@ -1477,7 +1490,7 @@ void test_chunking_invariance() {
     // Baseline compress
     std::vector<core::byte> comp_base;
     bool ok = Compressor50::compress_buffer(src_data.data(), src_data.size(), comp_base);
-    assert(ok);
+    REQUIRE(ok);
 
     // Chunked compress
     std::vector<core::byte> comp_chunked;
@@ -1495,15 +1508,15 @@ void test_chunking_invariance() {
     std::vector<core::byte> dec_base;
     Decompressor50 dec1;
     dec1.decompress_to_vector(comp_base.data(), comp_base.size(), dec_base);
-    assert(dec_base.size() == DATA_SIZE);
-    assert(std::memcmp(dec_base.data(), src_data.data(), DATA_SIZE) == 0);
+    REQUIRE(dec_base.size() == DATA_SIZE);
+    REQUIRE(std::memcmp(dec_base.data(), src_data.data(), DATA_SIZE) == 0);
 
     // Verify chunked encode decompresses perfectly
     std::vector<core::byte> dec_chunked_enc;
     Decompressor50 dec2;
     dec2.decompress_to_vector(comp_chunked.data(), comp_chunked.size(), dec_chunked_enc);
-    assert(dec_chunked_enc.size() == DATA_SIZE);
-    assert(std::memcmp(dec_chunked_enc.data(), src_data.data(), DATA_SIZE) == 0);
+    REQUIRE(dec_chunked_enc.size() == DATA_SIZE);
+    REQUIRE(std::memcmp(dec_chunked_enc.data(), src_data.data(), DATA_SIZE) == 0);
 
     // Chunked decompress of comp_base
     std::vector<core::byte> dec_chunked_dec;
@@ -1524,8 +1537,8 @@ void test_chunking_invariance() {
         return true;
     };
     bool dec3_ok = dec3.decompress(cb, comp_base.size(), DATA_SIZE, false, flush_cb);
-    assert(dec3_ok && dec_chunked_dec.size() == DATA_SIZE);
-    assert(std::memcmp(dec_chunked_dec.data(), src_data.data(), DATA_SIZE) == 0);
+    REQUIRE((dec3_ok && dec_chunked_dec.size() == DATA_SIZE));
+    REQUIRE(std::memcmp(dec_chunked_dec.data(), src_data.data(), DATA_SIZE) == 0);
 
     std::cout << "OK\n" << std::flush;
 }
@@ -1545,8 +1558,8 @@ void test_recompress_stability() {
     std::vector<core::byte> comp2;
     Compressor50::compress_buffer(dec1.data(), dec1.size(), comp2);
 
-    assert(comp1.size() == comp2.size());
-    assert(std::memcmp(comp1.data(), comp2.data(), comp1.size()) == 0);
+    REQUIRE(comp1.size() == comp2.size());
+    REQUIRE(std::memcmp(comp1.data(), comp2.data(), comp1.size()) == 0);
 
     std::cout << "OK\n" << std::flush;
 }
@@ -1581,10 +1594,10 @@ void test_stream_encoder_chunking_invariance() {
     std::vector<core::byte> one_shot;
     {
         StreamEncoder enc(3, WIN_SIZE);
-        assert(enc.feed(src.data(), src.size()));
-        assert(enc.finish(one_shot));
+        REQUIRE(enc.feed(src.data(), src.size()));
+        REQUIRE(enc.finish(one_shot));
     }
-    assert(!one_shot.empty());
+    REQUIRE(!one_shot.empty());
 
     auto chunked = [&](const std::vector<size_t>& sizes, const char* name) {
         StreamEncoder enc(3, WIN_SIZE);
@@ -1593,12 +1606,12 @@ void test_stream_encoder_chunking_invariance() {
         while (off < DATA_SIZE) {
             size_t len = (sizes.size() == 1) ? sizes[0] : sizes[i++ % sizes.size()];
             if (off + len > DATA_SIZE) len = DATA_SIZE - off;
-            assert(enc.feed(src.data() + off, len));
+            REQUIRE(enc.feed(src.data() + off, len));
             off += len;
         }
-        assert(enc.finish(out));
-        assert(out.size() == one_shot.size());
-        assert(std::memcmp(out.data(), one_shot.data(), out.size()) == 0);
+        REQUIRE(enc.finish(out));
+        REQUIRE(out.size() == one_shot.size());
+        REQUIRE(std::memcmp(out.data(), one_shot.data(), out.size()) == 0);
         std::cout << "    - " << name << " OK\n";
     };
 
@@ -1699,8 +1712,8 @@ void test_filter_detect_e8_binary() {
     auto bin = make_x86_binary(200);
     core::uint8 channels = 0;
     FilterType ft = Filters50::detect_filter(bin.data(), bin.size(), channels);
-    assert(ft == FilterType::E8);
-    assert(channels == 1);
+    REQUIRE(ft == FilterType::E8);
+    REQUIRE(channels == 1);
     std::cout << "    - E8 detection from PE header: OK" << std::endl;
 }
 
@@ -1709,8 +1722,8 @@ void test_filter_detect_arm_binary() {
     auto bin = make_arm_binary(200);
     core::uint8 channels = 0;
     FilterType ft = Filters50::detect_filter(bin.data(), bin.size(), channels);
-    assert(ft == FilterType::Arm);
-    assert(channels == 1);
+    REQUIRE(ft == FilterType::Arm);
+    REQUIRE(channels == 1);
     std::cout << "    - ARM detection from ELF header: OK" << std::endl;
 }
 
@@ -1719,8 +1732,8 @@ void test_filter_detect_delta_wav() {
     auto wav = make_wav_pcm(8000);
     core::uint8 channels = 0;
     FilterType ft = Filters50::detect_filter(wav.data(), wav.size(), channels);
-    assert(ft == FilterType::Delta);
-    assert(channels == 4); // 2ch * 16bit / 8 = 4 bytes stride
+    REQUIRE(ft == FilterType::Delta);
+    REQUIRE(channels == 4); // 2ch * 16bit / 8 = 4 bytes stride
     std::cout << "    - Delta detection from WAV header: OK (channels=" << (int)channels << ")"
               << std::endl;
 }
@@ -1732,7 +1745,7 @@ void test_filter_detect_disable_all() {
     FilterConfig cfg;
     cfg.mode = FilterMode::DisableAll;
     FilterType ft = Filters50::detect_filter(bin.data(), bin.size(), channels, cfg);
-    assert(ft == FilterType::None);
+    REQUIRE(ft == FilterType::None);
     std::cout << "    - DisableAll bypasses detection: OK" << std::endl;
 }
 
@@ -1748,12 +1761,12 @@ void test_detect_filter_hostile_pe_offset() {
     FilterConfig cfg; // Auto
     core::uint8 channels = 0;
     FilterType ft = Filters50::detect_filter(data.data(), data.size(), channels, cfg);
-    assert(ft == FilterType::None);
+    REQUIRE(ft == FilterType::None);
     // Boundary values of the wraparound range must also be rejected cleanly.
     for (core::uint32 bad_off : {0xFFFFFFFAu, 0xFFFFFFFBu, 0xFFFFFFFDu, 0xFFFFFFFFu}) {
         core::write_le32(data.data() + 0x3C, bad_off);
         ft = Filters50::detect_filter(data.data(), data.size(), channels, cfg);
-        assert(ft == FilterType::None);
+        REQUIRE(ft == FilterType::None);
     }
     std::cout << "    - Hostile e_lfanew rejected without OOB: OK" << std::endl;
 }
@@ -1773,28 +1786,28 @@ void test_stream_encoder_decoder_filter_roundtrip() {
         const size_t kFeed = 65536;
         for (size_t off = 0; off < data.size(); off += kFeed) {
             size_t n = std::min(kFeed, data.size() - off);
-            assert(enc.feed(data.data() + off, n));
+            REQUIRE(enc.feed(data.data() + off, n));
         }
-        assert(enc.finish(packed));
-        assert(!packed.empty());
+        REQUIRE(enc.finish(packed));
+        REQUIRE(!packed.empty());
 
         // Reference: whole-stream decode (single decompress call) must match.
         Decompressor50 dec_ref(4 * 1024 * 1024);
         std::vector<core::byte> reference;
-        assert(dec_ref.decompress_to_vector(packed.data(), packed.size(), reference, false));
-        assert(reference.size() == data.size());
-        assert(std::memcmp(reference.data(), data.data(), data.size()) == 0);
+        REQUIRE(dec_ref.decompress_to_vector(packed.data(), packed.size(), reference, false));
+        REQUIRE(reference.size() == data.size());
+        REQUIRE(std::memcmp(reference.data(), data.data(), data.size()) == 0);
 
         // Regression target: per-block decode through StreamDecoder.
         compress::StreamDecoder sdec(4 * 1024 * 1024, method);
         std::vector<core::byte> out;
         for (size_t off = 0; off < packed.size(); off += kFeed) {
             size_t n = std::min(kFeed, packed.size() - off);
-            assert(sdec.feed(packed.data() + off, n));
+            REQUIRE(sdec.feed(packed.data() + off, n));
         }
-        assert(sdec.finish(out));
-        assert(out.size() == data.size());
-        assert(std::memcmp(out.data(), data.data(), data.size()) == 0);
+        REQUIRE(sdec.finish(out));
+        REQUIRE(out.size() == data.size());
+        REQUIRE(std::memcmp(out.data(), data.data(), data.size()) == 0);
     }
     std::cout << "    - StreamEncoder→StreamDecoder with spanning E8 regions: OK (m1/m3/m5)"
               << std::endl;
@@ -1807,19 +1820,19 @@ void test_stream_decoder_defense() {
     compress::StreamDecoder zdec(0, 3);
     std::vector<core::byte> out;
     // Empty stream: nothing decoded and no LastBlock flag -> fail closed.
-    assert(!zdec.finish(out));
+    REQUIRE(!zdec.finish(out));
 
     // Truncated stream: valid blocks but the LastBlock-framed final block
     // never arrives -> finish() must fail instead of passing the payload.
     auto data = make_patterned_data(1 << 20);
     compress::StreamEncoder enc(3, 1024 * 1024);
     std::vector<core::byte> packed;
-    assert(enc.feed(data.data(), data.size()));
-    assert(enc.finish(packed));
-    assert(packed.size() > 16);
+    REQUIRE(enc.feed(data.data(), data.size()));
+    REQUIRE(enc.finish(packed));
+    REQUIRE(packed.size() > 16);
     compress::StreamDecoder tdec(1024 * 1024, 3);
-    assert(tdec.feed(packed.data(), packed.size() / 2));
-    assert(!tdec.finish(out));
+    REQUIRE(tdec.feed(packed.data(), packed.size() / 2));
+    REQUIRE(!tdec.finish(out));
     std::cout << "    - Zero-window clamp and truncated-stream rejection: OK" << std::endl;
 }
 
@@ -1827,15 +1840,15 @@ void test_filter_e8_roundtrip() {
     std::cout << "[+] test_filter_e8_roundtrip" << std::endl;
     auto original = make_x86_binary(500);
     std::vector<core::byte> compressed;
-    assert(Compressor50::compress_buffer(original.data(), original.size(), compressed, 3,
-                                         4 * 1024 * 1024));
-    assert(!compressed.empty());
+    REQUIRE(Compressor50::compress_buffer(original.data(), original.size(), compressed, 3,
+                                          4 * 1024 * 1024));
+    REQUIRE(!compressed.empty());
     Decompressor50 dec(4 * 1024 * 1024);
-    assert(dec.last_error() == DecompressErrorCode::Ok);
+    REQUIRE(dec.last_error() == DecompressErrorCode::Ok);
     std::vector<core::byte> decompressed;
-    assert(dec.decompress_to_vector(compressed.data(), compressed.size(), decompressed, false));
-    assert(decompressed.size() == original.size());
-    assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+    REQUIRE(dec.decompress_to_vector(compressed.data(), compressed.size(), decompressed, false));
+    REQUIRE(decompressed.size() == original.size());
+    REQUIRE(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
     std::cout << "    - E8 compress→decompress roundtrip: OK (" << original.size() << " → "
               << compressed.size() << ")" << std::endl;
 }
@@ -1844,15 +1857,15 @@ void test_filter_arm_roundtrip() {
     std::cout << "[+] test_filter_arm_roundtrip" << std::endl;
     auto original = make_arm_binary(500);
     std::vector<core::byte> compressed;
-    assert(Compressor50::compress_buffer(original.data(), original.size(), compressed, 3,
-                                         4 * 1024 * 1024));
-    assert(!compressed.empty());
+    REQUIRE(Compressor50::compress_buffer(original.data(), original.size(), compressed, 3,
+                                          4 * 1024 * 1024));
+    REQUIRE(!compressed.empty());
     Decompressor50 dec(4 * 1024 * 1024);
-    assert(dec.last_error() == DecompressErrorCode::Ok);
+    REQUIRE(dec.last_error() == DecompressErrorCode::Ok);
     std::vector<core::byte> decompressed;
-    assert(dec.decompress_to_vector(compressed.data(), compressed.size(), decompressed, false));
-    assert(decompressed.size() == original.size());
-    assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+    REQUIRE(dec.decompress_to_vector(compressed.data(), compressed.size(), decompressed, false));
+    REQUIRE(decompressed.size() == original.size());
+    REQUIRE(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
     std::cout << "    - ARM compress→decompress roundtrip: OK (" << original.size() << " → "
               << compressed.size() << ")" << std::endl;
 }
@@ -1861,15 +1874,15 @@ void test_filter_delta_roundtrip() {
     std::cout << "[+] test_filter_delta_roundtrip" << std::endl;
     auto original = make_wav_pcm(16000);
     std::vector<core::byte> compressed;
-    assert(Compressor50::compress_buffer(original.data(), original.size(), compressed, 3,
-                                         4 * 1024 * 1024));
-    assert(!compressed.empty());
+    REQUIRE(Compressor50::compress_buffer(original.data(), original.size(), compressed, 3,
+                                          4 * 1024 * 1024));
+    REQUIRE(!compressed.empty());
     Decompressor50 dec(4 * 1024 * 1024);
-    assert(dec.last_error() == DecompressErrorCode::Ok);
+    REQUIRE(dec.last_error() == DecompressErrorCode::Ok);
     std::vector<core::byte> decompressed;
-    assert(dec.decompress_to_vector(compressed.data(), compressed.size(), decompressed, false));
-    assert(decompressed.size() == original.size());
-    assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+    REQUIRE(dec.decompress_to_vector(compressed.data(), compressed.size(), decompressed, false));
+    REQUIRE(decompressed.size() == original.size());
+    REQUIRE(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
     std::cout << "    - Delta compress→decompress roundtrip: OK (" << original.size() << " → "
               << compressed.size() << ")" << std::endl;
 }
@@ -1880,33 +1893,33 @@ void test_filter_improves_compression() {
 
     // With filters (auto-detect)
     std::vector<core::byte> with_filter;
-    assert(Compressor50::compress_buffer(original.data(), original.size(), with_filter, 3,
-                                         4 * 1024 * 1024));
+    REQUIRE(Compressor50::compress_buffer(original.data(), original.size(), with_filter, 3,
+                                          4 * 1024 * 1024));
 
     // Without filters (disabled)
     FilterConfig no_filter;
     no_filter.mode = FilterMode::DisableAll;
     std::vector<core::byte> without_filter;
-    assert(Compressor50::compress_buffer(original.data(), original.size(), without_filter, 3,
-                                         4 * 1024 * 1024, no_filter));
+    REQUIRE(Compressor50::compress_buffer(original.data(), original.size(), without_filter, 3,
+                                          4 * 1024 * 1024, no_filter));
 
     std::cout << "    - With filter: " << with_filter.size() << " bytes" << std::endl;
     std::cout << "    - Without filter: " << without_filter.size() << " bytes" << std::endl;
     // Filter should improve or at least not hurt compression on x86 binaries
-    assert(with_filter.size() <= without_filter.size());
+    REQUIRE(with_filter.size() <= without_filter.size());
 
     // Verify both decompress correctly
     Decompressor50 dec(4 * 1024 * 1024);
     std::vector<core::byte> dec_filtered, dec_unfiltered;
-    assert(dec.decompress_to_vector(with_filter.data(), with_filter.size(), dec_filtered, false));
-    assert(dec_filtered.size() == original.size());
-    assert(std::memcmp(dec_filtered.data(), original.data(), original.size()) == 0);
+    REQUIRE(dec.decompress_to_vector(with_filter.data(), with_filter.size(), dec_filtered, false));
+    REQUIRE(dec_filtered.size() == original.size());
+    REQUIRE(std::memcmp(dec_filtered.data(), original.data(), original.size()) == 0);
 
     Decompressor50 dec2(4 * 1024 * 1024);
-    assert(dec2.decompress_to_vector(without_filter.data(), without_filter.size(), dec_unfiltered,
-                                     false));
-    assert(dec_unfiltered.size() == original.size());
-    assert(std::memcmp(dec_unfiltered.data(), original.data(), original.size()) == 0);
+    REQUIRE(dec2.decompress_to_vector(without_filter.data(), without_filter.size(), dec_unfiltered,
+                                      false));
+    REQUIRE(dec_unfiltered.size() == original.size());
+    REQUIRE(std::memcmp(dec_unfiltered.data(), original.data(), original.size()) == 0);
 
     std::cout << "    - Ratio improvement verified: OK" << std::endl;
 }
@@ -1931,7 +1944,7 @@ void test_chunk_framing_spike() {
         packer.set_external_buffer(original.data() + c * CHUNK_SIZE, CHUNK_SIZE);
         packer.set_memory_dest(&concatenated_stream);
         core::int64 packed = packer.compress(is_last);
-        assert(packed > 0);
+        REQUIRE(packed > 0);
     }
 
     // Unpack concatenated stream through standard Decompressor50
@@ -1939,9 +1952,9 @@ void test_chunk_framing_spike() {
     std::vector<core::byte> decompressed;
     bool ok = dec.decompress_to_vector(concatenated_stream.data(), concatenated_stream.size(),
                                        decompressed, false);
-    assert(ok);
-    assert(decompressed.size() == original.size());
-    assert(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
+    REQUIRE(ok);
+    REQUIRE(decompressed.size() == original.size());
+    REQUIRE(std::memcmp(decompressed.data(), original.data(), original.size()) == 0);
 
     // Wrap concatenated stream in full RAR5 archive container
     std::filesystem::path spike_arc = "build/spike_chunk_test.rar";
@@ -1963,16 +1976,16 @@ void test_chunk_framing_spike() {
 
     std::vector<archive::ArchiveMutator::PreparedAdd> batch;
     batch.push_back(std::move(prep));
-    assert(archive::ArchiveMutator::write_batch_add(spike_arc, batch));
+    REQUIRE(archive::ArchiveMutator::write_batch_add(spike_arc, batch));
 
     // Verify OpenRAR ArchiveReader tests and extracts successfully
     archive::ArchiveReader reader;
-    assert(reader.open(spike_arc));
-    assert(reader.entries().size() == 1);
-    assert(reader.test_entry(reader.entries()[0]));
+    REQUIRE(reader.open(spike_arc));
+    REQUIRE(reader.entries().size() == 1);
+    REQUIRE(reader.test_entry(reader.entries()[0]));
     std::vector<core::byte> extracted;
-    assert(reader.extract_entry_to_memory(0, extracted, 1024 * 1024, {}) == 0);
-    assert(extracted == original);
+    REQUIRE(reader.extract_entry_to_memory(0, extracted, 1024 * 1024, {}) == 0);
+    REQUIRE(extracted == original);
     reader.close();
 
     // Verify Official Reference UnRAR.exe if present on the host
@@ -1981,7 +1994,7 @@ void test_chunk_framing_spike() {
         std::string unrar_cmd =
             std::string("\"\"") + unrar_path + "\" t -y \"" + spike_arc.string() + "\" > nul\"";
         int rc = std::system(unrar_cmd.c_str());
-        assert(rc == 0 && "Official UnRAR.exe failed to test multi-block chunked RAR5 archive!");
+        REQUIRE((rc == 0 && "Official UnRAR.exe failed to test multi-block chunked RAR5 archive!"));
         std::cout << "    - Official UnRAR.exe 7.20 verification: OK" << std::endl;
     }
 
@@ -2019,7 +2032,7 @@ void test_match_length_bit_exactness() {
 #if defined(__aarch64__) || defined(__ARM_NEON) || defined(_M_ARM64)
     if (cpu.neon) impls.push_back({"neon", arch::match_length_neon});
 #endif
-    assert(impls.size() >= 1);
+    REQUIRE(impls.size() >= 1);
 
     // Deterministic corpus: high-entropy noise (frequent mismatches), long
     // runs (long matches), and near-identical buffers with late first
@@ -2053,7 +2066,7 @@ void test_match_length_bit_exactness() {
                 const size_t expect = arch::match_length_scalar(buf.data(), other.data(), cap);
                 for (const auto& impl : impls) {
                     const size_t got = impl.second(buf.data(), other.data(), cap);
-                    assert(got == expect && "SIMD match length diverged from scalar");
+                    REQUIRE((got == expect && "SIMD match length diverged from scalar"));
                 }
                 checked++;
             }
@@ -2095,13 +2108,36 @@ bool compress_buffer_no257(const std::vector<core::byte>& src, std::vector<core:
     return packer.compress() >= 0 && !dest.empty();
 }
 
+// M4 selection_reference (gate-ON): the SAME decision path as compress_buffer_no257
+// but with the 257 path ENABLED. Where no_257_reference (gate-off) locks the
+// v1.30.4 bytes and must never move, this gate-on reference is the A/B baseline
+// for the CURRENT selection: per I-2 a deliberate selection change is EXPECTED
+// to move it, and updating it here is what makes that change explicit rather
+// than incidental. Same filter-free / size-branch assumptions as the gate-off side.
+bool compress_buffer_gate_on(const std::vector<core::byte>& src, std::vector<core::byte>& dest,
+                             int method) {
+    const size_t win = 0x200000;
+    size_t comp_win_size = win;
+    if (src.size() > 0 && src.size() < win) {
+        size_t pow2_sz = 0x20000;
+        while (pow2_sz < src.size() && pow2_sz < win) pow2_sz <<= 1;
+        comp_win_size = std::min(win, pow2_sz);
+    }
+    Compressor50 packer;
+    packer.begin_archive(nullptr, method, comp_win_size);
+    packer.set_external_buffer(src.data(), src.size());
+    // lastlen NOT suppressed -> the real (257-enabled) selection path.
+    packer.set_memory_dest(&dest);
+    return packer.compress() >= 0 && !dest.empty();
+}
+
 void assert_roundtrip_2mib(const std::vector<core::byte>& packed,
                            const std::vector<core::byte>& src) {
     Decompressor50 dec(0x200000);
     std::vector<core::byte> out;
-    assert(dec.decompress_to_vector(packed.data(), packed.size(), out));
-    assert(out.size() == src.size());
-    assert(std::memcmp(out.data(), src.data(), src.size()) == 0);
+    REQUIRE(dec.decompress_to_vector(packed.data(), packed.size(), out));
+    REQUIRE(out.size() == src.size());
+    REQUIRE(std::memcmp(out.data(), src.data(), src.size()) == 0);
 }
 
 size_t count_lastlen(const std::vector<Compressor50Token>& toks) {
@@ -2156,6 +2192,26 @@ std::vector<core::byte> t9_mixed() {
     return v;
 }
 
+// v1.43 M2+ concession-sensitive corpus: an 8 KiB pseudo-random block repeated
+// at a fixed distance of 0x6000 (the inc == 2 band), separated by 16 KiB of
+// pseudo-random filler. At every offset inside the repeated block the finder
+// returns a fresh match at distance 0x6000 while the 4-thread rep path is hot
+// — the contested position class the axis-5 probe measured at ~7% of decisions,
+// where the cost-aware arbiter's concession now re-routes selection. This is
+// the corpus that makes the selection baseline actually discriminate: on the
+// legacy byte corpora (text/rand/zeros/mixed) the concession almost never
+// fires, so a stale baseline would pass vacuously.
+std::vector<core::byte> t9_far_repeat() {
+    std::vector<core::byte> v;
+    std::vector<core::byte> block = t9_rand(8192, 4242);
+    std::vector<core::byte> sep = t9_rand(16384, 1717);
+    for (int i = 0; i < 6; ++i) {
+        v.insert(v.end(), block.begin(), block.end());
+        v.insert(v.end(), sep.begin(), sep.end());
+    }
+    return v;
+}
+
 void sha256_hex(const std::vector<core::byte>& d, char* out /* 65 bytes */) {
     core::byte dig[32];
     crypto::Sha256::compute(d.data(), d.size(), dig);
@@ -2176,23 +2232,23 @@ void test_slot257_run_collapse() {
     packer.set_memory_dest(&packed);
     // compress() runs this first; process_available() alone does not.
     Compressor50TestAccess::init_match_params(packer);
-    assert(Compressor50TestAccess::process_available(packer, true));
+    REQUIRE(Compressor50TestAccess::process_available(packer, true));
     // Inspect before write_block() clears the token storage.
 
     const auto& toks = Compressor50TestAccess::match_tokens(packer);
-    assert(toks.size() > 10);
-    assert(toks[0].get_type() == Compressor50Token::TokenType::Match &&
-           "first match token must be a fresh Match, never LastLen");
+    REQUIRE(toks.size() > 10);
+    REQUIRE((toks[0].get_type() == Compressor50Token::TokenType::Match &&
+             "first match token must be a fresh Match, never LastLen"));
     const size_t lastlen = count_lastlen(toks);
-    assert(lastlen >= 60 && "257 chain must dominate a zero run");
-    assert(Compressor50TestAccess::write_block(packer, true));
+    REQUIRE((lastlen >= 60 && "257 chain must dominate a zero run"));
+    REQUIRE(Compressor50TestAccess::write_block(packer, true));
     assert_roundtrip_2mib(packed, data);
 
     // Suppressed rebuild: same decision path, rep0 chain instead of 257.
     std::vector<core::byte> packed2;
-    assert(compress_buffer_no257(data, packed2, 1));
+    REQUIRE(compress_buffer_no257(data, packed2, 1));
     assert_roundtrip_2mib(packed2, data);
-    assert(packed2.size() > packed.size() && "257 chain must be strictly cheaper than rep0");
+    REQUIRE((packed2.size() > packed.size() && "257 chain must be strictly cheaper than rep0"));
     std::cout << "[PASS] slot257 run collapse + first-token rule (T2)\n";
 }
 
@@ -2212,13 +2268,13 @@ void test_slot257_byte_verification() {
 
     for (int method = 1; method <= 5; ++method) {
         std::vector<core::byte> packed;
-        assert(
+        REQUIRE(
             Compressor50::compress_buffer(data.data(), data.size(), packed, method, 0x200000, {}));
         assert_roundtrip_2mib(packed, data);
     }
     // Same corpus through the suppressed path must roundtrip too.
     std::vector<core::byte> packed;
-    assert(compress_buffer_no257(data, packed, 3));
+    REQUIRE(compress_buffer_no257(data, packed, 3));
     assert_roundtrip_2mib(packed, data);
     std::cout << "[PASS] slot257 byte verification at period break (T1)\n";
 }
@@ -2236,7 +2292,7 @@ void test_slot257_filter_region_boundary() {
 
     // Pretransform path (compress_buffer detects and pre-transforms).
     std::vector<core::byte> packed;
-    assert(Compressor50::compress_buffer(data.data(), data.size(), packed));
+    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), packed));
     assert_roundtrip_2mib(packed, data);
 
     // In-loop transform path (StreamEncoder + filter config).
@@ -2246,9 +2302,9 @@ void test_slot257_filter_region_boundary() {
     const size_t chunk = 4096;
     for (size_t off = 0; off < data.size(); off += chunk) {
         const size_t n = std::min(chunk, data.size() - off);
-        assert(enc.feed(data.data() + off, n));
+        REQUIRE(enc.feed(data.data() + off, n));
     }
-    assert(enc.finish(streamed));
+    REQUIRE(enc.finish(streamed));
     assert_roundtrip_2mib(streamed, data);
 
     // Single-region rebuild through the pretransform contract exactly the
@@ -2268,15 +2324,77 @@ void test_slot257_filter_region_boundary() {
     packer.set_external_buffer(head_region.data(), head_region.size());
     std::vector<core::byte> packed_region;
     packer.set_memory_dest(&packed_region);
-    assert(packer.compress() >= 0);
+    REQUIRE(packer.compress() >= 0);
     {
         Decompressor50 dec(0x200000);
         std::vector<core::byte> out;
-        assert(dec.decompress_to_vector(packed_region.data(), packed_region.size(), out));
-        assert(out.size() == expected_raw.size());
-        assert(std::memcmp(out.data(), expected_raw.data(), expected_raw.size()) == 0);
+        REQUIRE(dec.decompress_to_vector(packed_region.data(), packed_region.size(), out));
+        REQUIRE(out.size() == expected_raw.size());
+        REQUIRE(std::memcmp(out.data(), expected_raw.data(), expected_raw.size()) == 0);
     }
     std::cout << "[PASS] slot257 filter region boundary, both transform paths (T3)\n";
+}
+
+static std::vector<core::byte> make_filtered_payload(size_t size) {
+    std::vector<core::byte> data(size, 0);
+    fill_pe_header(data);
+    for (size_t off = 128; off + 5 < data.size(); off += 5) plant_call(data, off);
+    return data;
+}
+
+void test_start_file_oneshot_filter_chunking() {
+    const size_t kSize = 1536 * 1024 + 37;
+    auto data = make_filtered_payload(kSize);
+    const std::filesystem::path path = "build/test_start_file_filter.tmp";
+    {
+        io::FileStream out;
+        REQUIRE(out.open(path, io::FileMode::CreateAlways));
+        REQUIRE(out.write(data.data(), data.size()) == data.size());
+    }
+
+    std::vector<core::byte> packed;
+    {
+        io::FileStream in;
+        REQUIRE(in.open(path, io::FileMode::ReadOnly));
+        Compressor50 packer;
+        packer.begin_archive(nullptr, 3, 0x200000);
+        packer.set_memory_dest(&packed);
+        packer.start_file(&in, data.size(), false);
+        packer.set_active_filter(FilterType::E8, 1, false);
+        REQUIRE(packer.compress(true) > 0);
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+
+    assert_roundtrip_2mib(packed, data);
+    std::cout << "[PASS] start_file one-shot filter crosses the 1 MiB chunk boundary\n";
+}
+
+void test_streaming_filter_feed_size_invariance() {
+    const size_t kSize = 1536 * 1024 + 37;
+    auto data = make_filtered_payload(kSize);
+
+    auto compress_with_feed = [&](size_t feed_size) {
+        Compressor50 packer;
+        REQUIRE(packer.begin_stream(3, 0x200000, false));
+        std::vector<core::byte> packed;
+        packer.set_memory_dest(&packed);
+        packer.set_active_filter(FilterType::E8, 1, false);
+        for (size_t off = 0; off < data.size(); off += feed_size) {
+            const size_t n = std::min(feed_size, data.size() - off);
+            REQUIRE(packer.feed(data.data() + off, n) == 0);
+        }
+        REQUIRE(packer.finish_stream() == 0);
+        return packed;
+    };
+
+    const auto whole = compress_with_feed(data.size());
+    const auto feed_64k = compress_with_feed(64 * 1024);
+    const auto feed_4k = compress_with_feed(4 * 1024);
+    REQUIRE((whole == feed_64k && "64 KiB feed changed the compressed stream"));
+    REQUIRE((whole == feed_4k && "4 KiB feed changed the compressed stream"));
+    assert_roundtrip_2mib(whole, data);
+    std::cout << "[PASS] streaming filter output is feed-size invariant\n";
 }
 
 // T4: distances within the written prefix (first-window rule) and a tail
@@ -2305,8 +2423,8 @@ void test_slot257_window_prefix_and_tail() {
     for (const auto& src : {data, tail}) {
         for (int method = 1; method <= 5; ++method) {
             std::vector<core::byte> packed;
-            assert(Compressor50::compress_buffer(src.data(), src.size(), packed, method, 0x200000,
-                                                 {}));
+            REQUIRE(Compressor50::compress_buffer(src.data(), src.size(), packed, method, 0x200000,
+                                                  {}));
             assert_roundtrip_2mib(packed, src);
         }
     }
@@ -2336,6 +2454,20 @@ void test_slot257_window_prefix_and_tail() {
 //   NB the run corpus cannot show Design A's win here at all - T9 suppresses
 //   257, and without 257 a run's rep lengths differ every block, so the tables
 //   never stabilise. The run case is measured on the real (257-enabled) path.
+//   v1.43.0 cost-aware arbiter (2026-10-17): the concession rule
+//   (rep_best_len + inc_f >= best.length, expert-reviewed — replaces the
+//   legacy rep_best_len + 1 > best.length) moved selection. All digests below
+//   were re-captured via OPENRAR_REFCAP=1 per this file's documented I-2
+//   protocol, plus the new farrepeat corpus (concession-sensitive). Legacy
+//   digests kept here for the record:
+//     text64k  m1 d34113c83d0b46137b98a0b269b764515c8c1e42f8509a4494534edec84bd27c
+//     text64k  m3 44495a7543dd7af0afba4a054b1a7032166d43fc969ae9715c0c8678fe005db0
+//     rand256k m1/m3 bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6
+//     zeros1m  m1/m3 cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa
+//     mixed    m1 15a4179c3715d7cd0d4e98a1b6c9f5d668e5fe646003371b172f5946c6d7f6b3
+//     mixed    m3 32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b
+//   (rand256k/zeros1m are suppression-referenced: their suppressed-257 digests
+//   equal the pre-257 v1.30.4-era values because 257 never fires there.)
 void test_slot257_pure_addition_suppressed() {
     struct Corpus {
         const char* name;
@@ -2345,6 +2477,7 @@ void test_slot257_pure_addition_suppressed() {
         {"rand256k", t9_rand(256 * 1024, 42)},
         {"zeros1m", std::vector<core::byte>(1024 * 1024, core::byte(0))},
         {"mixed", t9_mixed()},
+        {"farrepeat", t9_far_repeat()},
     };
     struct Expected {
         const char* corpus;
@@ -2352,42 +2485,133 @@ void test_slot257_pure_addition_suppressed() {
         const char* sha;
     } expected[] = {
         // m1/m3 only: those methods keep the v1.30 hash-chain finder, so the
-        // pure-addition property (257 suppression == v1.30.4 bytes) holds.
-        // m5 intentionally diverges from v1.30.4 starting with M2 — the
-        // binary-tree finder changes match selection by design, so no
-        // v1.30.4 byte identity is asserted there.
-        {"text64k", 1, "d34113c83d0b46137b98a0b269b764515c8c1e42f8509a4494534edec84bd27c"},
-        {"text64k", 3, "44495a7543dd7af0afba4a054b1a7032166d43fc969ae9715c0c8678fe005db0"},
+        // pure-addition property hold. m5 intentionally diverges from
+        // pre-M2 — the binary-tree finder changes match selection by design,
+        // so no byte identity is asserted there.
+        // v1.43.0 cost-aware arbiter re-capture (OPENRAR_REFCAP=1, 2026-10-17).
+        {"text64k", 1, "c3b2561b60200827b090f6f6b1ed85515cf938ea1ea20c4bac99358cbb6f82b3"},
+        {"text64k", 3, "91c101b563cfef69633b5caf071b08080303813e092fa3f35f0b6fb67e5d93e7"},
         {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"zeros1m", 1, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
         {"zeros1m", 3, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
         {"mixed", 1, "15a4179c3715d7cd0d4e98a1b6c9f5d668e5fe646003371b172f5946c6d7f6b3"},
         {"mixed", 3, "32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b"},
+        {"farrepeat", 1, "bdb80ea91cd0cbde64b19edaf6b72a8b499139979fe45db5ccbc13873a035340"},
+        {"farrepeat", 3, "bdb80ea91cd0cbde64b19edaf6b72a8b499139979fe45db5ccbc13873a035340"},
     };
 
+    const bool refcap = std::getenv("OPENRAR_REFCAP") != nullptr;
     for (const auto& c : corpora) {
         // The helper mirrors compress_buffer()'s no-filter branch; pin that
         // assumption so a detection change cannot silently invalidate T9.
         core::uint8 channels = 1;
-        assert(Filters50::detect_filter(c.data.data(), c.data.size(), channels, {}) ==
-                   FilterType::None &&
-               "T9 corpus must stay filter-free; re-capture reference hashes if this fires");
+        REQUIRE((Filters50::detect_filter(c.data.data(), c.data.size(), channels, {}) ==
+                     FilterType::None &&
+                 "T9 corpus must stay filter-free; re-capture reference hashes if this fires"));
         for (int method = 1; method <= 3; method += 2) {
             std::vector<core::byte> packed;
-            assert(compress_buffer_no257(c.data, packed, method));
+            REQUIRE(compress_buffer_no257(c.data, packed, method));
             char hex[65];
             sha256_hex(packed, hex);
             for (const auto& e : expected) {
                 if (std::strcmp(e.corpus, c.name) == 0 && e.method == method) {
-                    assert(std::strcmp(hex, e.sha) == 0 &&
-                           "suppressed-257 output drifted from the reference bytes");
+                    if (refcap) {
+                        std::cout << "REFCAP suppressed " << c.name << " m" << method << " " << hex
+                                  << "\n";
+                    } else {
+                        REQUIRE((std::strcmp(hex, e.sha) == 0 &&
+                                 "suppressed-257 output drifted from the reference bytes"));
+                    }
                 }
             }
             assert_roundtrip_2mib(packed, c.data);
         }
     }
-    std::cout << "[PASS] slot257 pure-addition when suppressed (T9, v1.30.4 reference bytes)\n";
+    if (!refcap)
+        std::cout << "[PASS] slot257 pure-addition when suppressed (T9, selection reference)\n";
+}
+
+// M4 selection_reference (gate-ON A/B baseline). Same T9 corpora, 257 ENABLED.
+// This is the split counterpart to the gate-off no_257_reference above:
+//   * gate-off (suppressed) MUST stay byte-locked to v1.30.4 — it is a hard
+//     historical regression lock and a selection change must NOT move it.
+//   * gate-on (this test) is the CURRENT selection's A/B baseline. Per I-2 a
+//     deliberate selection change (e.g. an arbiter/cost-pricing experiment) is
+//     EXPECTED to move these hashes; updating them in the same commit is what
+//     makes that change explicit instead of incidental.
+// Note: for text/rand/mixed the gate-on bytes are identical to gate-off (the 257
+// path never fires there); zeros is where 257's run-collapse actually changes the
+// selection, and is the corpus that carries a distinct gate-on reference.
+void test_selection_reference() {
+    struct Corpus {
+        const char* name;
+        std::vector<core::byte> data;
+    } corpora[] = {
+        {"text64k", t9_text(64 * 1024)},
+        {"rand256k", t9_rand(256 * 1024, 42)},
+        {"zeros1m", std::vector<core::byte>(1024 * 1024, core::byte(0))},
+        {"mixed", t9_mixed()},
+        {"farrepeat", t9_far_repeat()},
+    };
+    struct Expected {
+        const char* corpus;
+        int method;
+        const char* sha;
+    } expected[] = {
+        // v1.43.0 cost-aware arbiter re-capture (OPENRAR_REFCAP=1, 2026-10-17):
+        // the concession rule (rep_best_len + inc_f >= best.length) moved
+        // selection per I-2. farrepeat is the concession-sensitive corpus that
+        // makes this baseline discriminate — on the legacy farrepeat-less set
+        // the concession almost never fired, so a stale baseline passed
+        // vacuously (the M4 honest note). Legacy digests kept for the record:
+        //   text64k  m1 d34113c83d0b46137b98a0b269b764515c8c1e42f8509a4494534edec84bd27c
+        //   text64k  m3 44495a7543dd7af0afba4a054b1a7032166d43fc969ae9715c0c8678fe005db0
+        //   rand256k m1/m3 bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6
+        //   zeros1m  m1/m3 29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d
+        //   mixed    m1 15a4179c3715d7cd0d4e98a1b6c9f5d668e5fe646003371b172f5946c6d7f6b3
+        //   mixed    m3 32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b
+        {"text64k", 1, "c3b2561b60200827b090f6f6b1ed85515cf938ea1ea20c4bac99358cbb6f82b3"},
+        {"text64k", 3, "91c101b563cfef69633b5caf071b08080303813e092fa3f35f0b6fb67e5d93e7"},
+        {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
+        {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
+        {"zeros1m", 1, "29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d"},
+        {"zeros1m", 3, "29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d"},
+        {"mixed", 1, "15a4179c3715d7cd0d4e98a1b6c9f5d668e5fe646003371b172f5946c6d7f6b3"},
+        {"mixed", 3, "32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b"},
+        {"farrepeat", 1, "b1bffbe2c04024826cdb803e8621ffd93550d27a98a5124a04309170e3b0fa0e"},
+        {"farrepeat", 3, "b1bffbe2c04024826cdb803e8621ffd93550d27a98a5124a04309170e3b0fa0e"},
+    };
+    const bool refcap = std::getenv("OPENRAR_REFCAP") != nullptr;
+    for (const auto& c : corpora) {
+        // Same guard the gate-off side carries: if filter detection ever fires
+        // on these corpora the branch changes and the reference drifts, so pin
+        // the assumption explicitly rather than silently re-capturing hashes.
+        core::uint8 channels = 1;
+        REQUIRE((Filters50::detect_filter(c.data.data(), c.data.size(), channels, {}) ==
+                     FilterType::None &&
+                 "selection_reference corpus must stay filter-free; re-capture if this fires"));
+        for (int method = 1; method <= 3; method += 2) {
+            std::vector<core::byte> packed;
+            REQUIRE(compress_buffer_gate_on(c.data, packed, method));
+            assert_roundtrip_2mib(packed, c.data);
+            char hex[65];
+            sha256_hex(packed, hex);
+            for (const auto& e : expected) {
+                if (std::strcmp(e.corpus, c.name) == 0 && e.method == method) {
+                    if (refcap) {
+                        std::cout << "REFCAP gateon " << c.name << " m" << method << " " << hex
+                                  << "\n";
+                    } else {
+                        REQUIRE((std::strcmp(hex, e.sha) == 0 &&
+                                 "selection_reference (gate-on) drifted — a selection change must "
+                                 "update this baseline in the same commit (I-2)"));
+                    }
+                }
+            }
+        }
+    }
+    if (!refcap) std::cout << "[PASS] selection_reference gate-on A/B baseline (M4)\n";
 }
 
 // T5: the slot-257 shadow carries across the solid file boundary — the
@@ -2425,8 +2649,8 @@ void test_slot257_solid_carry() {
         std::filesystem::path f2 = dir / "m2.bin";
         {
             io::FileStream out;
-            assert(out.open(f1, io::FileMode::CreateAlways));
-            assert(out.write(m1.data(), m1.size()) == m1.size());
+            REQUIRE(out.open(f1, io::FileMode::CreateAlways));
+            REQUIRE(out.write(m1.data(), m1.size()) == m1.size());
             out.close();
         }
         Compressor50 packer;
@@ -2434,33 +2658,33 @@ void test_slot257_solid_carry() {
         packer.set_memory_dest(&packed);
         Compressor50TestAccess::init_match_params(packer);
         io::FileStream in1;
-        assert(in1.open(f1, io::FileMode::ReadOnly));
+        REQUIRE(in1.open(f1, io::FileMode::ReadOnly));
         packer.start_file(&in1, m1.size(), /*continue_window=*/false);
-        assert(Compressor50TestAccess::process_available(packer, true));
+        REQUIRE(Compressor50TestAccess::process_available(packer, true));
         m2_len = Compressor50TestAccess::last_length(packer);
-        assert(m2_len != 0 && "member 1 must end inside its zero run");
+        REQUIRE((m2_len != 0 && "member 1 must end inside its zero run"));
         // Member 2 continues the run with exactly the carried shadow length.
         m2.assign(m2_len, core::byte(0));
         {
             io::FileStream out;
-            assert(out.open(f2, io::FileMode::CreateAlways));
-            assert(out.write(m2.data(), m2.size()) == m2.size());
+            REQUIRE(out.open(f2, io::FileMode::CreateAlways));
+            REQUIRE(out.write(m2.data(), m2.size()) == m2.size());
             out.close();
         }
-        assert(Compressor50TestAccess::write_block(packer, false));
+        REQUIRE(Compressor50TestAccess::write_block(packer, false));
         const core::uint64 packed1 = Compressor50TestAccess::packed_total(packer);
         in1.close();
         io::FileStream in2;
-        assert(in2.open(f2, io::FileMode::ReadOnly));
+        REQUIRE(in2.open(f2, io::FileMode::ReadOnly));
         packer.start_file(&in2, m2.size(), /*continue_window=*/true);
-        assert(Compressor50TestAccess::process_available(packer, true));
+        REQUIRE(Compressor50TestAccess::process_available(packer, true));
         // Inspect member 2's tokens BEFORE write_block clears them: the
         // carried shadow must open the continuation with a 257.
         const auto& toks = Compressor50TestAccess::match_tokens(packer);
-        assert(!toks.empty());
-        assert(toks[0].get_type() == Compressor50Token::TokenType::LastLen &&
-               "carried shadow must open member 2 with a 257 continuation");
-        assert(Compressor50TestAccess::write_block(packer, true));
+        REQUIRE(!toks.empty());
+        REQUIRE((toks[0].get_type() == Compressor50Token::TokenType::LastLen &&
+                 "carried shadow must open member 2 with a 257 continuation"));
+        REQUIRE(Compressor50TestAccess::write_block(packer, true));
         const core::uint64 packed2 = Compressor50TestAccess::packed_total(packer);
         in2.close();
         m1_packed = static_cast<size_t>(packed1);
@@ -2469,27 +2693,27 @@ void test_slot257_solid_carry() {
     // Roundtrip: member 1 resets the window; member 2 continues as a solid
     // member on the SAME decoder instance (mirrors the decoder's carry).
     {
-        assert(packed.size() == m1_packed + m2_packed);
+        REQUIRE(packed.size() == m1_packed + m2_packed);
         Decompressor50 dec(0x200000);
         std::vector<core::byte> out1, out2;
         size_t written = 0;
         bool finished = false;
-        assert(dec.decompress(
+        REQUIRE(dec.decompress(
             packed.data(), m1_packed, m1.size(), false,
             [&out1](const core::byte* d, size_t n) {
                 out1.insert(out1.end(), d, d + n);
                 return true;
             },
             &written, &finished));
-        assert(out1.size() == m1.size() && std::memcmp(out1.data(), m1.data(), m1.size()) == 0);
-        assert(dec.decompress(
+        REQUIRE((out1.size() == m1.size() && std::memcmp(out1.data(), m1.data(), m1.size()) == 0));
+        REQUIRE(dec.decompress(
             packed.data() + m1_packed, m2_packed, m2.size(), true,
             [&out2](const core::byte* d, size_t n) {
                 out2.insert(out2.end(), d, d + n);
                 return true;
             },
             &written, &finished));
-        assert(out2.size() == m2.size() && std::memcmp(out2.data(), m2.data(), m2.size()) == 0);
+        REQUIRE((out2.size() == m2.size() && std::memcmp(out2.data(), m2.data(), m2.size()) == 0));
     }
     std::cout << "[PASS] slot257 solid carry opens member 2 with a 257 (T5)\n";
 }
@@ -2569,10 +2793,10 @@ void test_add_match_admissibility() {
         const bool admissible = c.len >= static_cast<size_t>(inc) + 2;
 
         if (!admissible) {
-            assert(covered == 0 && "inadmissible (len,dist) must be FILTERED, not clamped");
-            assert(shadow_after == shadow_before &&
-                   "a filtered match must not advance the shadow last_length_");
-            assert(tokens_after == tokens_before && "a filtered match must not emit a token");
+            REQUIRE((covered == 0 && "inadmissible (len,dist) must be FILTERED, not clamped"));
+            REQUIRE((shadow_after == shadow_before &&
+                     "a filtered match must not advance the shadow last_length_"));
+            REQUIRE((tokens_after == tokens_before && "a filtered match must not emit a token"));
             ++filtered;
             continue;
         }
@@ -2581,20 +2805,21 @@ void test_add_match_admissibility() {
         const bool over = base > kMaxLzMatch;
         if (over) base = kMaxLzMatch;
 
-        assert(tokens_after == tokens_before + 1 && "an admissible match emits exactly one token");
-        assert(covered == base + inc && "add_match must report the span the wire carries");
-        assert(shadow_after == base + inc &&
-               "shadow last_length_ must be base+increment, never the caller's length");
+        REQUIRE(
+            (tokens_after == tokens_before + 1 && "an admissible match emits exactly one token"));
+        REQUIRE((covered == base + inc && "add_match must report the span the wire carries"));
+        REQUIRE((shadow_after == base + inc &&
+                 "shadow last_length_ must be base+increment, never the caller's length"));
         if (over) {
             ++truncated;
         } else {
-            assert(shadow_after == c.len && "a non-truncated match must cover its full length");
+            REQUIRE((shadow_after == c.len && "a non-truncated match must cover its full length"));
             ++plain;
         }
     }
 
-    assert(filtered == 4 && truncated == 3 && plain == 13 &&
-           "case table drifted; update the counts with it");
+    REQUIRE((filtered == 4 && truncated == 3 && plain == 13 &&
+             "case table drifted; update the counts with it"));
     std::cout
         << "[PASS] match emitter filters inadmissible pairs and reports the encoded span (T10)\n";
 }
@@ -2623,7 +2848,7 @@ void test_length2_match_support() {
                            std::to_string(i % 97) + "); }\n";
         text.insert(text.end(), line.begin(), line.end());
     }
-    assert(text.size() > 256 * 1024 && "corpus must be big enough to fill a block");
+    REQUIRE((text.size() > 256 * 1024 && "corpus must be big enough to fill a block"));
 
     // The corpus below is deliberately one where the v1.33 floor-2 build DID
     // emit slot-0 tokens (T12 asserted slot0 > 0 at m1-m3 then), so a silent
@@ -2635,7 +2860,7 @@ void test_length2_match_support() {
         std::vector<core::byte> packed;
         packer.set_memory_dest(&packed);
         Compressor50TestAccess::init_match_params(packer);
-        assert(Compressor50TestAccess::process_available(packer, true));
+        REQUIRE(Compressor50TestAccess::process_available(packer, true));
 
         size_t slot0 = 0, matches = 0;
         for (const auto& t : Compressor50TestAccess::match_tokens(packer)) {
@@ -2647,16 +2872,16 @@ void test_length2_match_support() {
             if (is_match) ++matches;
             if (t.get_len_slot() == 0) ++slot0;
         }
-        assert(slot0 == 0 && "no method may emit a slot-0 length token - the "
-                             "admission floor is 3 at every method since v1.33.1");
-        assert(matches > 0);
+        REQUIRE((slot0 == 0 && "no method may emit a slot-0 length token - the "
+                               "admission floor is 3 at every method since v1.33.1"));
+        REQUIRE(matches > 0);
 
-        assert(Compressor50TestAccess::write_block(packer, true));
+        REQUIRE(Compressor50TestAccess::write_block(packer, true));
         Decompressor50 dec(0x200000);
         std::vector<core::byte> out;
-        assert(dec.decompress_to_vector(packed.data(), packed.size(), out));
-        assert(out.size() == text.size());
-        assert(std::memcmp(out.data(), text.data(), text.size()) == 0);
+        REQUIRE(dec.decompress_to_vector(packed.data(), packed.size(), out));
+        REQUIRE(out.size() == text.size());
+        REQUIRE(std::memcmp(out.data(), text.data(), text.size()) == 0);
     }
     std::cout << "[PASS] length-2 class wire-legal but unemitted at every method (T12)\n";
 }
@@ -2679,24 +2904,92 @@ void test_bit_output_unaligned_block_bits() {
             out.put_bits((b & 1) ? 1u : 0u, 1);
         }
         out.finish_block_data();
-        assert(out.get_block_bits() == bits);
-        assert(mem.size() == (bits + 7) / 8);
-        assert(out.get_block_bytes() == mem.size());
+        REQUIRE(out.get_block_bits() == bits);
+        REQUIRE(mem.size() == (bits + 7) / 8);
+        REQUIRE(out.get_block_bytes() == mem.size());
     }
     std::cout << "[PASS] BitOutput direct memory write & unaligned block bits (OPT-01)\n";
+}
+
+// C-04 at the finder level (large-window path): a hash-chain entry equal to
+// the query position is a distance-0 "match" against itself, which the byte
+// verification accepts for the full limit. Before the fix the head and chain
+// checks used `pos >= candidate`, so such an entry won (candidate == pos) and
+// the emitter silently rewrote distance 0 to 1 (a corrupt stream in Release,
+// an assert in Debug). Positive control first: the same setup without the
+// self entry must find the genuine earlier candidate.
+void test_find_match_rejects_zero_distance_self_candidate() {
+    const size_t WIN = 65536;
+    const core::uint64 MAX_DIST = 16ULL * 1024 * 1024 * 1024;
+    // Deterministic noise, then 8 bytes at 100 that equal the 8 at 50: the true
+    // match is 8 long, whereas a self "match" would run to the loaded limit.
+    std::vector<core::byte> buf(8192);
+    core::uint32 x = 0x1234567u;
+    for (auto& b : buf) {
+        x = x * 1664525u + 1013904223u;
+        b = static_cast<core::byte>(x >> 24);
+    }
+    for (size_t i = 0; i < 8; ++i) buf[100 + i] = buf[50 + i];
+
+    auto fresh = [&]() {
+        auto c = std::make_unique<Compressor50>();
+        Compressor50TestAccess::setup_mock_large_window(*c, MAX_DIST, WIN);
+        Compressor50TestAccess::set_test_buffer(*c, buf.data(), buf.size(), 0, buf.size());
+        return c;
+    };
+
+    // Positive control: earlier position inserted, query at 100 -> finds 50.
+    {
+        auto c = fresh();
+        Compressor50TestAccess::insert_pos(*c, 50);
+        const auto m = Compressor50TestAccess::find_match(*c, 100, 32, 258);
+        REQUIRE(m.second == 50);
+        REQUIRE(m.first >= 8);
+        REQUIRE(m.first < 64); // bounded by the real match, not the loaded limit
+    }
+    // Head entry == pos (the alias shape): must not produce a match to itself.
+    {
+        auto c = fresh();
+        Compressor50TestAccess::insert_pos(*c, 100);
+        const auto m = Compressor50TestAccess::find_match(*c, 100, 32, 258);
+        REQUIRE(m.second != 100);
+        REQUIRE(m.first == 0);
+    }
+    // Chain entry == pos: head is the genuine candidate 50, whose prev link is
+    // pos itself. The walk must stop at 50 instead of stepping onto pos.
+    {
+        auto c = fresh();
+        Compressor50TestAccess::insert_pos(*c, 100); // becomes the chain tail
+        Compressor50TestAccess::insert_pos(*c, 50);  // head -> 50, prev(50) -> 100
+        const auto m = Compressor50TestAccess::find_match(*c, 100, 32, 258);
+        REQUIRE(m.second == 50);
+        REQUIRE(m.first < 64); // the self entry (full-limit length) lost
+    }
+    std::cout << "[PASS] finder rejects distance-0 self candidates (C-04, large-window path)\n";
 }
 
 void test_reconstruct_pos_4gib_boundary() {
     Compressor50 c;
     c.begin_archive(nullptr, 3, 2 * 1024 * 1024);
     // Candidate ahead of pos before 4 GiB must be rejected, never wrap negative
-    assert(Compressor50TestAccess::reconstruct_pos(c, 100, 200) == -1);
-    assert(Compressor50TestAccess::reconstruct_pos(c, 100, 0xFFFFFFFFu) == -1);
-    assert(Compressor50TestAccess::reconstruct_pos(c, 1000, 900) == 900);
+    REQUIRE(Compressor50TestAccess::reconstruct_pos(c, 100, 200) == -1);
+    REQUIRE(Compressor50TestAccess::reconstruct_pos(c, 100, 0xFFFFFFFFu) == -1);
+    REQUIRE(Compressor50TestAccess::reconstruct_pos(c, 1000, 900) == 900);
     // Across 4 GiB boundary: pos = 0x100000005, trunc = 0xFFFFFFF0 (dist = 21)
     core::uint64 pos4g = 0x100000005ULL;
-    assert(Compressor50TestAccess::reconstruct_pos(c, pos4g, 0xFFFFFFF0u) ==
-           static_cast<core::int64>(0xFFFFFFF0ULL));
+    REQUIRE(Compressor50TestAccess::reconstruct_pos(c, pos4g, 0xFFFFFFF0u) ==
+            static_cast<core::int64>(0xFFFFFFF0ULL));
+    // C-04: an entry from EXACTLY 2^32 bytes earlier truncates to the same
+    // 32-bit value as pos, so dist32 == 0 and the "candidate" is pos itself.
+    // Byte verification trivially matches a position against itself, so it
+    // must be rejected here: a distance-0 match is not encodable.
+    REQUIRE(Compressor50TestAccess::reconstruct_pos(c, 5, 5) == -1);
+    REQUIRE(Compressor50TestAccess::reconstruct_pos(c, 1000, 1000) == -1);
+    REQUIRE(Compressor50TestAccess::reconstruct_pos(c, 0x100000005ULL, 5) == -1);
+    REQUIRE(Compressor50TestAccess::reconstruct_pos(c, 0x2000003E8ULL, 0x3E8u) == -1);
+    // ...while the neighbouring distances stay valid.
+    REQUIRE(Compressor50TestAccess::reconstruct_pos(c, 1000, 999) == 999);
+    REQUIRE(Compressor50TestAccess::reconstruct_pos(c, 0x100000005ULL, 4) == 0x100000004LL);
     std::cout << "[PASS] Compressor50::reconstruct_pos 4 GiB boundary & wrap guard (OPT-02)\n";
 }
 
@@ -2711,8 +3004,8 @@ void test_compressor50_unpacked_crc32_filtered_and_plain() {
         packer.set_external_buffer(plain.data(), plain.size());
         std::vector<core::byte> out;
         packer.set_memory_dest(&out);
-        assert(packer.compress() >= 0);
-        assert(packer.get_unpacked_crc32() == expected_plain.get());
+        REQUIRE(packer.compress() >= 0);
+        REQUIRE(packer.get_unpacked_crc32() == expected_plain.get());
     }
 
     // Filtered streaming input (E8 in-place transform must hash pre-filter bytes)
@@ -2725,10 +3018,10 @@ void test_compressor50_unpacked_crc32_filtered_and_plain() {
         Compressor50 packer;
         std::vector<core::byte> out;
         packer.set_memory_dest(&out);
-        assert(packer.begin_stream(3, 0x200000, false));
-        assert(packer.feed(pe.data(), pe.size()) == 0);
-        assert(packer.finish_stream() == 0);
-        assert(packer.get_unpacked_crc32() == expected_pe.get());
+        REQUIRE(packer.begin_stream(3, 0x200000, false));
+        REQUIRE(packer.feed(pe.data(), pe.size()) == 0);
+        REQUIRE(packer.finish_stream() == 0);
+        REQUIRE(packer.get_unpacked_crc32() == expected_pe.get());
     }
     std::cout << "[PASS] Compressor50::get_unpacked_crc32 plain & filtered (OPT-03)\n";
 }
@@ -2751,15 +3044,15 @@ void test_huffman_builder_kraft_exactness() {
     core::uint32 kraft_sum = 0;
     for (core::uint32 i = 0; i < size; ++i) {
         if (lengths[i] > 0) {
-            assert(lengths[i] <= max_bits);
+            REQUIRE(lengths[i] <= max_bits);
             kraft_sum += 1u << (max_bits - lengths[i]);
         }
     }
-    assert(kraft_sum == (1u << max_bits) &&
-           "Kraft sum must be exact (32768) after length-limiting");
-    assert(lengths[39] <= 2 && "Most frequent symbol must retain a short code");
+    REQUIRE(
+        (kraft_sum == (1u << max_bits) && "Kraft sum must be exact (32768) after length-limiting"));
+    REQUIRE((lengths[39] <= 2 && "Most frequent symbol must retain a short code"));
     HuffmanDecoder dec;
-    assert(dec.build(lengths, size));
+    REQUIRE(dec.build(lengths, size));
     std::cout << "[PASS] HuffmanBuilder Kraft-exact downward length-limiting (OPT-04)\n";
 }
 
@@ -2770,17 +3063,17 @@ void test_external_buffer_zero_internal_alloc() {
     packer.set_external_buffer(src.data(), src.size());
     std::vector<core::byte> out;
     packer.set_memory_dest(&out);
-    assert(packer.compress() >= 0);
-    assert(Compressor50TestAccess::buf_capacity(packer) == 0 &&
-           "External-buffer session must not allocate internal buf_");
+    REQUIRE(packer.compress() >= 0);
+    REQUIRE((Compressor50TestAccess::buf_capacity(packer) == 0 &&
+             "External-buffer session must not allocate internal buf_"));
 
     // Reuse same instance for a streaming session (must lazily allocate buf_)
     out.clear();
-    assert(packer.begin_stream(3, 0x200000, false));
+    REQUIRE(packer.begin_stream(3, 0x200000, false));
     packer.set_memory_dest(&out);
-    assert(packer.feed(src.data(), src.size()) == 0);
-    assert(packer.finish_stream() == 0);
-    assert(Compressor50TestAccess::buf_capacity(packer) > 0);
+    REQUIRE(packer.feed(src.data(), src.size()) == 0);
+    REQUIRE(packer.finish_stream() == 0);
+    REQUIRE(Compressor50TestAccess::buf_capacity(packer) > 0);
     assert_roundtrip_2mib(out, src);
     std::cout << "[PASS] Compressor50 lazy internal buffer allocation & reuse (OPT-06)\n";
 }
@@ -2803,10 +3096,10 @@ void test_bitreader_refill_short_tail() {
         for (size_t b = 0; b < len; ++b) {
             core::uint32 v1 = r_mem.get_bits(8);
             core::uint32 v2 = r_cb.get_bits(8);
-            assert(v1 == buf[b] && v2 == buf[b]);
+            REQUIRE((v1 == buf[b] && v2 == buf[b]));
         }
-        assert(r_mem.peek_bits(32) == 0);
-        assert(r_cb.peek_bits(32) == 0);
+        REQUIRE(r_mem.peek_bits(32) == 0);
+        REQUIRE(r_cb.peek_bits(32) == 0);
     }
     std::cout << "[PASS] BitReader 8-byte fast refill & short-tail parity (OPT-16)\n";
 }
@@ -2821,11 +3114,11 @@ void test_filter_wrapping_and_oversized_region_ram_cap() {
         wav[i] = static_cast<core::byte>((i * 7 + (i >> 3)) & 0xFF);
     }
     std::vector<core::byte> packed;
-    assert(Compressor50::compress_buffer(wav.data(), wav.size(), packed, 3, 0x20000));
+    REQUIRE(Compressor50::compress_buffer(wav.data(), wav.size(), packed, 3, 0x20000));
     Decompressor50 dec(0x20000);
     std::vector<core::byte> out;
-    assert(dec.decompress_to_vector(packed.data(), packed.size(), out));
-    assert(out == wav);
+    REQUIRE(dec.decompress_to_vector(packed.data(), packed.size(), out));
+    REQUIRE(out == wav);
     std::cout
         << "[PASS] Decompressor50 persistent filter scratch & Delta SIMD roundtrip (OPT-19/20)\n";
 }
@@ -2853,10 +3146,10 @@ void test_bit_output_put_bits64() {
                 exp[i / 8] = static_cast<core::byte>(exp[i / 8] | (0x80 >> (i % 8)));
             }
         }
-        assert(mem.size() == nbytes);
-        assert(std::memcmp(mem.data(), exp.data(), nbytes) == 0 &&
-               "put_bits64 emitted the wrong bits");
-        assert(out.get_block_bits() == nb);
+        REQUIRE(mem.size() == nbytes);
+        REQUIRE((std::memcmp(mem.data(), exp.data(), nbytes) == 0 &&
+                 "put_bits64 emitted the wrong bits"));
+        REQUIRE(out.get_block_bits() == nb);
     }
     std::cout << "[PASS] BitOutput::put_bits64 MSB-first packing widths 1..64 (OPT-09)\n";
 }
@@ -2883,7 +3176,7 @@ void test_block_table_reuse() {
             packer.begin_archive(nullptr, method[s], 0x200000);
             packer.set_external_buffer(rnd.data(), rnd.size());
             packer.set_memory_dest(&packed);
-            assert(packer.compress() >= 0 && !packed.empty());
+            REQUIRE((packer.compress() >= 0 && !packed.empty()));
         }
         assert_roundtrip_2mib(packed, rnd);
 
@@ -2891,166 +3184,371 @@ void test_block_table_reuse() {
         size_t off = 0;
         int block = 0;
         while (off < packed.size()) {
-            assert(off + 2 <= packed.size() && "truncated block header");
+            REQUIRE((off + 2 <= packed.size() && "truncated block header"));
             const core::uint8 flags = packed[off];
             const core::uint8 byte_cnt = static_cast<core::uint8>(((flags >> 3) & 3) + 1);
-            assert(byte_cnt >= 1 && byte_cnt <= 3);
-            assert(off + 2 + byte_cnt <= packed.size() && "truncated block size field");
+            REQUIRE((byte_cnt >= 1 && byte_cnt <= 3));
+            REQUIRE((off + 2 + byte_cnt <= packed.size() && "truncated block size field"));
             core::uint32 bsize = 0;
             for (core::uint8 i = 0; i < byte_cnt; ++i)
                 bsize |= static_cast<core::uint32>(packed[off + 2 + i]) << (8 * i);
             const bool tables_present = (flags & 0x80) != 0;
-            assert(tables_present &&
-                   "every block MUST carry its table description (reference encoder "
-                   "compatibility: reuse blocks corrupt UnRAR's MT decode of a solid "
-                   "chain that also contains file-copy refs)");
+            REQUIRE((tables_present &&
+                     "every block MUST carry its table description (reference encoder "
+                     "compatibility: reuse blocks corrupt UnRAR's MT decode of a solid "
+                     "chain that also contains file-copy refs)"));
             ++block;
             off += 2 + byte_cnt + bsize;
         }
-        assert(block > 1 && "expected a multi-block stream for this corpus");
+        REQUIRE((block > 1 && "expected a multi-block stream for this corpus"));
         std::cout << "[PASS] block table reuse: " << streams[s].name << " " << block
                   << " blocks, all carry tables (T11)\n";
     }
 }
 
+// H-08/H-09: the single-pass / SIMD Delta kernels must be bit-identical to
+// the original per-channel strided reference, for every channel count, odd
+// tails (size % channels != 0, size % 16 != 0), and both in-place and
+// out-of-place calls.
+static void test_delta_kernels_match_reference() {
+    auto ref_encode = [](const std::vector<core::byte>& src, core::uint8 ch) {
+        std::vector<core::byte> out(src.size());
+        size_t dp = 0;
+        for (core::uint8 c = 0; c < ch; ++c) {
+            core::byte prev = 0;
+            for (size_t sp = c; sp < src.size(); sp += ch) {
+                out[dp++] = static_cast<core::byte>(prev - src[sp]);
+                prev = src[sp];
+            }
+        }
+        return out;
+    };
+    auto ref_decode = [](const std::vector<core::byte>& src, core::uint8 ch) {
+        std::vector<core::byte> out(src.size());
+        size_t sp = 0;
+        for (core::uint8 c = 0; c < ch; ++c) {
+            core::byte prev = 0;
+            for (size_t dp = c; dp < src.size(); dp += ch) {
+                prev = static_cast<core::byte>(prev - src[sp++]);
+                out[dp] = prev;
+            }
+        }
+        return out;
+    };
+    std::mt19937 rng(7);
+    const size_t sizes[] = {1, 2, 3, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 1000, 4099};
+    for (core::uint8 ch = 1; ch <= 32; ++ch) {
+        for (size_t n : sizes) {
+            std::vector<core::byte> src(n);
+            for (auto& b : src) b = static_cast<core::byte>(rng());
+            const std::vector<core::byte> want_enc = ref_encode(src, ch);
+            const std::vector<core::byte> want_dec = ref_decode(want_enc, ch);
+            REQUIRE((want_dec == src && "reference round-trip"));
 
-int main() {
-#ifdef _MSC_VER
-    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
-    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
-    // test process forever while ctest moves on, leaving file locks behind.
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
-    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
-    // process still hangs after printing the assert.
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
+            std::vector<core::byte> enc(n);
+            REQUIRE(Filters50::encode_delta(src.data(), enc.data(), n, ch));
+            REQUIRE((enc == want_enc && "encode_delta out-of-place"));
+            std::vector<core::byte> inplace = src;
+            REQUIRE(Filters50::encode_delta(inplace.data(), inplace.data(), n, ch));
+            REQUIRE((inplace == want_enc && "encode_delta in-place"));
+
+            std::vector<core::byte> dec(n);
+            REQUIRE(Filters50::apply_delta(enc.data(), dec.data(), n, ch));
+            REQUIRE((dec == src && "apply_delta out-of-place"));
+            REQUIRE(Filters50::apply_delta(inplace.data(), inplace.data(), n, ch));
+            REQUIRE((inplace == src && "apply_delta in-place"));
+        }
+    }
+    std::cout << "[PASS] Delta kernels match the strided reference (1..32 channels)\n";
+}
+
+
+// Regression (found by tests/fuzz/fuzz_target.cpp): at the 64 KiB window
+// floor the plain-byte flush cadence equalled the window, so a long match
+// that crossed the cadence point left more than win_size_ unflushed bytes
+// and flush_plain_up_to() failed a VALID stream closed.
+static void test_small_window_long_match_roundtrip() {
+    std::mt19937 rng(11);
+    for (size_t win : {size_t(0x10000), size_t(0x20000)}) {
+        for (int shape = 0; shape < 3; ++shape) {
+            std::vector<core::byte> src(win + win / 4 + 777);
+            for (size_t i = 0; i < src.size(); ++i) {
+                if (shape == 0)
+                    src[i] = 0; // maximal matches / 257 runs
+                else if (shape == 1)
+                    src[i] = static_cast<core::byte>(i % 7);
+                else
+                    src[i] = (i % 8192) < 64 ? static_cast<core::byte>(rng()) : core::byte(0x55);
+            }
+            for (int method : {1, 3, 5}) {
+                std::vector<core::byte> comp;
+                REQUIRE(Compressor50::compress_buffer(src.data(), src.size(), comp, method, win));
+                Decompressor50 dec(win);
+                std::vector<core::byte> out;
+                const bool ok = dec.decompress(comp.data(), comp.size(), src.size(), false,
+                                               [&](const core::byte* d, size_t n) {
+                                                   out.insert(out.end(), d, d + n);
+                                                   return true;
+                                               });
+                REQUIRE((ok && "valid small-window stream must decode"));
+                REQUIRE(out == src);
+            }
+        }
+    }
+    std::cout << "[PASS] small-window long-match streams round-trip (flush cadence headroom)\n";
+}
+
+// ── Lazy dictionary window + table flavor (large-dictionary interop) ─────
+
+static std::vector<core::byte> lazy_corpus(int shape, size_t n, unsigned seed) {
+    std::vector<core::byte> v(n);
+    std::mt19937 rng(seed);
+    for (size_t i = 0; i < n; ++i) {
+        switch (shape) {
+        case 0:
+            v[i] = static_cast<core::byte>(rng());
+            break; // noise
+        case 1:
+            v[i] = static_cast<core::byte>("abcdefgh "[(i * 7 + (i >> 9)) % 9]);
+            break;
+        case 2:
+            v[i] = 0;
+            break; // zeros
+        default:   // long-range repeats: a 48 KiB block recurring every ~200 KiB
+            v[i] = (i % 200000) < 49152 ? static_cast<core::byte>((i % 200000) * 13)
+                                        : static_cast<core::byte>(rng());
+        }
+    }
+    return v;
+}
+
+static bool lazy_decode(const std::vector<core::byte>& comp, size_t win, size_t n,
+                        std::vector<core::byte>& out, bool solid, Decompressor50& dec) {
+    (void)win;
+    return dec.decompress(comp.data(), comp.size(), n, solid, [&](const core::byte* d, size_t k) {
+        out.insert(out.end(), d, d + k);
+        return true;
+    });
+}
+
+// The window allocation must follow decoded output, not the declared size.
+static void test_lazy_window_tracks_output() {
+#if SIZE_MAX > 0xFFFFFFFFu
+    const size_t declared[] = {size_t(8) << 30, size_t(64) << 30};
+#else
+    const size_t declared[] = {size_t(1) << 30};
 #endif
-    std::cout << "Running Clean-Room Milestone 6 Compression Verification...\n" << std::flush;
-    test_cpu_features();
-    std::cout << std::flush;
-    test_match_length_bit_exactness();
-    std::cout << std::flush;
-    test_delta_filter();
-    std::cout << std::flush;
-    test_e8_filter();
-    std::cout << std::flush;
-    test_arm_filter();
-    std::cout << std::flush;
-    test_forced_scalar_filters();
-    std::cout << std::flush;
-    test_forward_filters();
-    std::cout << std::flush;
-    test_e8_filter_chunk_boundary_symmetry();
-    std::cout << std::flush;
-    test_filter_chunk_boundary_roundtrip_p1();
-    std::cout << std::flush;
-    test_filter_multi_token_multiblock_roundtrip();
-    std::cout << std::flush;
-    test_default_window_pairing_roundtrip();
-    std::cout << std::flush;
-    test_bit_reader_and_huffman();
-    std::cout << std::flush;
-    test_decompressor50();
-    std::cout << std::flush;
-    test_compressor50_roundtrip();
-    std::cout << std::flush;
-    test_compressor50_external_buffer_no_slide();
-    std::cout << std::flush;
-    test_decompressor50_post_wrap_overlap_match();
-    std::cout << std::flush;
-    test_decompressor50_slow_path_wildcopy_wrap();
-    test_decompressor50_wrapped_src_stale_gap();
-    std::cout << std::flush;
-    test_compressor50_reset_after_external_buffer();
-    std::cout << std::flush;
-    test_compressor50_all_zeros_8mib();
-    std::cout << std::flush;
-    test_compressor50_boundary_sizes();
-    std::cout << std::flush;
-    test_compressor50_filestream_roundtrip();
-    std::cout << std::flush;
-    test_compressor50_truncated_source();
-    std::cout << std::flush;
-    test_compressor50_streaming_feed_large_chunks();
-    std::cout << std::flush;
-    test_chunking_invariance();
-    std::cout << std::flush;
-    test_stream_encoder_chunking_invariance();
-    std::cout << std::flush;
-    test_recompress_stability();
-    std::cout << std::flush;
-    test_truncation_sweep();
-    std::cout << std::flush;
-    test_archive_roundtrip();
-    std::cout << std::flush;
-    test_huffman_builder_shrink();
-    std::cout << std::flush;
-    test_huffman_builder_adversarial();
-    std::cout << std::flush;
-    test_match_length_tail_caps();
-    std::cout << std::flush;
-    test_decompressor_lazy_alloc();
-    std::cout << std::flush;
-    test_bit_reader_get_bits64();
-    std::cout << std::flush;
-    test_token_holds_every_distance_slot();
-    test_extra_distance_slot_decoding();
-    std::cout << std::flush;
-    test_compressor50_large_window_match_finding();
-    std::cout << std::flush;
-    test_filter_detect_e8_binary();
-    std::cout << std::flush;
-    test_filter_detect_arm_binary();
-    std::cout << std::flush;
-    test_filter_detect_delta_wav();
-    std::cout << std::flush;
-    test_filter_detect_disable_all();
-    std::cout << std::flush;
-    test_detect_filter_hostile_pe_offset();
-    std::cout << std::flush;
-    test_stream_encoder_decoder_filter_roundtrip();
-    std::cout << std::flush;
-    test_slot257_run_collapse();
-    std::cout << std::flush;
-    test_slot257_byte_verification();
-    std::cout << std::flush;
-    test_slot257_filter_region_boundary();
-    std::cout << std::flush;
-    test_slot257_window_prefix_and_tail();
-    std::cout << std::flush;
-    test_slot257_pure_addition_suppressed();
-    std::cout << std::flush;
-    test_slot257_solid_carry();
-    test_add_match_admissibility();
-    test_length2_match_support();
-    test_bit_output_unaligned_block_bits();
-    test_reconstruct_pos_4gib_boundary();
-    test_compressor50_unpacked_crc32_filtered_and_plain();
-    test_huffman_builder_kraft_exactness();
-    test_external_buffer_zero_internal_alloc();
-    test_bitreader_refill_short_tail();
-    test_filter_wrapping_and_oversized_region_ram_cap();
-    test_bit_output_put_bits64();
-    test_block_table_reuse();
-    std::cout << std::flush;
+    for (size_t w : declared) {
+        const std::vector<core::byte> src = lazy_corpus(3, 3 << 20, 5);
+        std::vector<core::byte> comp;
+        REQUIRE(Compressor50::compress_buffer(src.data(), src.size(), comp, 3, w));
+        Decompressor50 dec(w);
+        REQUIRE(dec.last_error() == DecompressErrorCode::Ok);
+        REQUIRE(dec.window_capacity() == 0); // nothing allocated before decoding
+        std::vector<core::byte> out;
+        REQUIRE(lazy_decode(comp, w, src.size(), out, false, dec));
+        REQUIRE(out == src);
+        // Geometric growth: at most 2x the output (plus the initial chunk).
+        REQUIRE(dec.window_capacity() <= 2 * src.size() + Decompressor50::window_initial_bytes());
+        REQUIRE(dec.window_capacity() >= src.size());
+    }
+    std::cout << "[PASS] lazy window: 8/64 GiB declared, allocation tracks the 3 MiB output\n";
+}
 
-    std::cout << std::flush;
-    std::cout << std::flush;
-    test_stream_decoder_defense();
-    std::cout << std::flush;
-    test_filter_e8_roundtrip();
-    std::cout << std::flush;
-    test_filter_arm_roundtrip();
-    std::cout << std::flush;
-    test_filter_delta_roundtrip();
-    std::cout << std::flush;
-    test_filter_improves_compression();
-    std::cout << std::flush;
-    test_chunk_framing_spike();
-    std::cout << std::flush;
-    std::cout << "All Milestone 6 Compression & Decompression Primitives PASSED!\n" << std::flush;
-    return 0;
+// Decoded bytes must not depend on how much larger than the stream's
+// dictionary the declared window is - across ring wraps, solid carry, and
+// the filter paths that read the window.
+static void test_lazy_window_equivalence() {
+    const size_t enc_win = 0x10000; // 64 KiB: the 1 MiB inputs wrap the ring
+    const size_t dec_wins[] = {0x10000, 0x40000, 0x400000, size_t(64) << 20};
+    for (int shape = 0; shape < 4; ++shape) {
+        const std::vector<core::byte> src = lazy_corpus(shape, (1 << 20) + 4099, 40 + shape);
+        for (int f = 0; f < 3; ++f) {
+            FilterConfig fc;
+            if (f == 1) fc.e8_override = 1;
+            if (f == 2) {
+                fc.delta_override = 1;
+                fc.delta_channels = 3;
+            }
+            std::vector<core::byte> comp;
+            REQUIRE(Compressor50::compress_buffer(src.data(), src.size(), comp, 3, enc_win, fc));
+            for (size_t w : dec_wins) {
+                Decompressor50 dec(w);
+                std::vector<core::byte> out;
+                REQUIRE(lazy_decode(comp, w, src.size(), out, false, dec));
+                REQUIRE(out == src);
+            }
+        }
+    }
+    // Solid chain: member 2 references member 1 through the carried window,
+    // which grew lazily during member 1. A reused decoder (smaller member
+    // after a larger one) must not leak stale bytes either.
+    {
+        const std::vector<core::byte> a = lazy_corpus(3, 700000, 1);
+        std::vector<core::byte> b(a.begin() + 1000, a.begin() + 400000); // all matches into a
+        compress::StreamEncoder enc(3, 0x100000);
+        std::vector<core::byte> ca, cb;
+        REQUIRE(enc.pack_solid_begin(false));
+        REQUIRE(enc.feed(a.data(), a.size()));
+        REQUIRE(enc.pack_solid_finish());
+        REQUIRE(enc.take_output(ca));
+        REQUIRE(enc.pack_solid_begin(true));
+        REQUIRE(enc.feed(b.data(), b.size()));
+        REQUIRE(enc.pack_solid_finish());
+        REQUIRE(enc.take_output(cb));
+        REQUIRE(cb.size() < b.size() / 4); // it really did reference member 1
+        for (size_t w : {size_t(0x100000), size_t(256) << 20}) {
+            Decompressor50 dec(w);
+            std::vector<core::byte> oa, ob;
+            REQUIRE(lazy_decode(ca, w, a.size(), oa, false, dec));
+            REQUIRE(lazy_decode(cb, w, b.size(), ob, true, dec));
+            REQUIRE(oa == a);
+            REQUIRE(ob == b);
+            // Reuse for an unrelated non-solid member: fresh state, same bytes.
+            std::vector<core::byte> again;
+            REQUIRE(lazy_decode(ca, w, a.size(), again, false, dec));
+            REQUIRE(again == a);
+        }
+    }
+    std::cout << "[PASS] lazy window: output identical for 1x..1024x declared windows "
+                 "(wraps, E8/Delta, solid carry, reuse)\n";
+}
+
+// Table flavor is the header's algorithm field, never the window size: the
+// encoder always emits 430-entry (RAR5) tables, even under a > 4 GiB window,
+// and a decoder configured for the 446-entry RAR7 flavor rejects them.
+static void test_large_window_uses_rar5_tables() {
+#if SIZE_MAX > 0xFFFFFFFFu
+    const size_t w = size_t(8) << 30;
+    const std::vector<core::byte> src = lazy_corpus(1, 2 << 20, 9);
+    std::vector<core::byte> comp;
+    REQUIRE(Compressor50::compress_buffer(src.data(), src.size(), comp, 5, w));
+    Decompressor50 scan(w);
+    Decompressor50::PrescanTimeline tl;
+    REQUIRE(scan.prescan_member(comp.data(), comp.size(), tl));
+    REQUIRE(!tl.descriptions.empty());
+    for (const auto& d : tl.descriptions) {
+        REQUIRE(!d.extra_dist);
+        REQUIRE(d.lengths.size() == 430);
+    }
+    Decompressor50 rar5(w, /*extra_dist=*/false);
+    std::vector<core::byte> out;
+    REQUIRE(lazy_decode(comp, w, src.size(), out, false, rar5));
+    REQUIRE(out == src);
+    Decompressor50 rar7(w, /*extra_dist=*/true);
+    std::vector<core::byte> wrong;
+    const bool ok7 = lazy_decode(comp, w, src.size(), wrong, false, rar7);
+    REQUIRE(((!ok7 || wrong != src) && "446-table decoder must not accept 430-table stream"));
+    // Parallel chunked encode too (the old hybrid-table failure mode).
+    std::vector<core::byte> big = lazy_corpus(3, 6 << 20, 12);
+    std::vector<core::byte> pcomp;
+    REQUIRE(Compressor50::compress_buffer_parallel(big.data(), big.size(), pcomp, 3, w, {}, 4));
+    Decompressor50 pdec(w);
+    std::vector<core::byte> pout;
+    REQUIRE(lazy_decode(pcomp, w, big.size(), pout, false, pdec));
+    REQUIRE(pout == big);
+    std::cout << "[PASS] > 4 GiB windows encode/decode with 430-entry tables (single + parallel)\n";
+#else
+    std::cout << "[SKIP] > 4 GiB windows need a 64-bit size_t\n";
+#endif
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"test_cpu_features", test_cpu_features, false},
+    {"test_delta_kernels_match_reference", test_delta_kernels_match_reference, false},
+    {"test_small_window_long_match_roundtrip", test_small_window_long_match_roundtrip, false},
+    {"test_lazy_window_tracks_output", test_lazy_window_tracks_output, false},
+    {"test_lazy_window_equivalence", test_lazy_window_equivalence, false},
+    {"test_large_window_uses_rar5_tables", test_large_window_uses_rar5_tables, false},
+    {"test_match_length_bit_exactness", test_match_length_bit_exactness, false},
+    {"test_delta_filter", test_delta_filter, false},
+    {"test_e8_filter", test_e8_filter, false},
+    {"test_arm_filter", test_arm_filter, false},
+    {"test_forced_scalar_filters", test_forced_scalar_filters, false},
+    {"test_forward_filters", test_forward_filters, false},
+    {"test_e8_filter_chunk_boundary_symmetry", test_e8_filter_chunk_boundary_symmetry, false},
+    {"test_filter_chunk_boundary_roundtrip_p1", test_filter_chunk_boundary_roundtrip_p1, false},
+    {"test_filter_multi_token_multiblock_roundtrip", test_filter_multi_token_multiblock_roundtrip,
+     false},
+    {"test_default_window_pairing_roundtrip", test_default_window_pairing_roundtrip, false},
+    {"test_bit_reader_and_huffman", test_bit_reader_and_huffman, false},
+    {"test_decompressor50", test_decompressor50, false},
+    {"test_compressor50_roundtrip", test_compressor50_roundtrip, false},
+    {"test_compressor50_external_buffer_no_slide", test_compressor50_external_buffer_no_slide,
+     false},
+    {"test_decompressor50_post_wrap_overlap_match", test_decompressor50_post_wrap_overlap_match,
+     false},
+    {"test_decompressor50_slow_path_wildcopy_wrap", test_decompressor50_slow_path_wildcopy_wrap,
+     false},
+    {"test_decompressor50_wrapped_src_stale_gap", test_decompressor50_wrapped_src_stale_gap, false},
+    {"test_compressor50_reset_after_external_buffer", test_compressor50_reset_after_external_buffer,
+     false},
+    {"test_compressor50_all_zeros_8mib", test_compressor50_all_zeros_8mib, false},
+    {"test_compressor50_boundary_sizes", test_compressor50_boundary_sizes, false},
+    {"test_compressor50_filestream_roundtrip", test_compressor50_filestream_roundtrip, false},
+    {"test_compressor50_truncated_source", test_compressor50_truncated_source, false},
+    {"test_compressor50_streaming_feed_large_chunks", test_compressor50_streaming_feed_large_chunks,
+     false},
+    {"test_chunking_invariance", test_chunking_invariance, false},
+    {"test_stream_encoder_chunking_invariance", test_stream_encoder_chunking_invariance, false},
+    {"test_recompress_stability", test_recompress_stability, false},
+    {"test_truncation_sweep", test_truncation_sweep, false},
+    {"test_archive_roundtrip", test_archive_roundtrip, false},
+    {"test_huffman_builder_shrink", test_huffman_builder_shrink, false},
+    {"test_huffman_builder_adversarial", test_huffman_builder_adversarial, false},
+    {"test_match_length_tail_caps", test_match_length_tail_caps, false},
+    {"test_decompressor_lazy_alloc", test_decompressor_lazy_alloc, false},
+    {"test_bit_reader_get_bits64", test_bit_reader_get_bits64, false},
+    {"test_token_holds_every_distance_slot", test_token_holds_every_distance_slot, false},
+    {"test_extra_distance_slot_decoding", test_extra_distance_slot_decoding, false},
+    {"test_compressor50_large_window_match_finding", test_compressor50_large_window_match_finding,
+     false},
+    {"test_filter_detect_e8_binary", test_filter_detect_e8_binary, false},
+    {"test_filter_detect_arm_binary", test_filter_detect_arm_binary, false},
+    {"test_filter_detect_delta_wav", test_filter_detect_delta_wav, false},
+    {"test_filter_detect_disable_all", test_filter_detect_disable_all, false},
+    {"test_detect_filter_hostile_pe_offset", test_detect_filter_hostile_pe_offset, false},
+    {"test_stream_encoder_decoder_filter_roundtrip", test_stream_encoder_decoder_filter_roundtrip,
+     false},
+    {"test_slot257_run_collapse", test_slot257_run_collapse, false},
+    {"test_slot257_byte_verification", test_slot257_byte_verification, false},
+    {"test_slot257_filter_region_boundary", test_slot257_filter_region_boundary, false},
+    {"test_start_file_oneshot_filter_chunking", test_start_file_oneshot_filter_chunking, false},
+    {"test_streaming_filter_feed_size_invariance", test_streaming_filter_feed_size_invariance,
+     false},
+    {"test_slot257_window_prefix_and_tail", test_slot257_window_prefix_and_tail, false},
+    {"test_slot257_pure_addition_suppressed", test_slot257_pure_addition_suppressed, false},
+    {"test_selection_reference", test_selection_reference, false},
+    {"test_slot257_solid_carry", test_slot257_solid_carry, false},
+    {"test_add_match_admissibility", test_add_match_admissibility, false},
+    {"test_length2_match_support", test_length2_match_support, false},
+    {"test_bit_output_unaligned_block_bits", test_bit_output_unaligned_block_bits, false},
+    {"test_reconstruct_pos_4gib_boundary", test_reconstruct_pos_4gib_boundary, false},
+    {"test_find_match_rejects_zero_distance_self_candidate",
+     test_find_match_rejects_zero_distance_self_candidate, false},
+    {"test_compressor50_unpacked_crc32_filtered_and_plain",
+     test_compressor50_unpacked_crc32_filtered_and_plain, false},
+    {"test_huffman_builder_kraft_exactness", test_huffman_builder_kraft_exactness, false},
+    {"test_external_buffer_zero_internal_alloc", test_external_buffer_zero_internal_alloc, false},
+    {"test_bitreader_refill_short_tail", test_bitreader_refill_short_tail, false},
+    {"test_filter_wrapping_and_oversized_region_ram_cap",
+     test_filter_wrapping_and_oversized_region_ram_cap, false},
+    {"test_bit_output_put_bits64", test_bit_output_put_bits64, false},
+    {"test_block_table_reuse", test_block_table_reuse, false},
+    {"test_stream_decoder_defense", test_stream_decoder_defense, false},
+    {"test_filter_e8_roundtrip", test_filter_e8_roundtrip, false},
+    {"test_filter_arm_roundtrip", test_filter_arm_roundtrip, false},
+    {"test_filter_delta_roundtrip", test_filter_delta_roundtrip, false},
+    {"test_filter_improves_compression", test_filter_improves_compression, false},
+    {"test_chunk_framing_spike", test_chunk_framing_spike, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    if (!openrar::test::is_list_only(argc, argv) && !openrar::test::last_run_was_filtered())
+        std::cout << "Running Clean-Room Milestone 6 Compression Verification...\n";
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All Milestone 6 Compression & Decompression Primitives PASSED!\n";
+    return rc;
 }

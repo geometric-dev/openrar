@@ -10,6 +10,8 @@
 #include <vector>
 #include <random>
 #include <filesystem>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _MSC_VER
 #include <crtdbg.h>
@@ -65,13 +67,13 @@ static void test_framing_spike() {
 
         bool is_last = (i == num_chunks - 1);
         core::int64 packed = packer.compress(is_last);
-        assert(packed > 0);
+        REQUIRE(packed > 0);
     }
 
     std::vector<core::byte> decompressed;
     bool ok = decompress_buffer(full_compressed, data.size(), 128 * 1024, decompressed);
-    assert(ok && "Decompression of framed chunks failed");
-    assert(decompressed == data && "Payload mismatch");
+    REQUIRE((ok && "Decompression of framed chunks failed"));
+    REQUIRE((decompressed == data && "Payload mismatch"));
     std::cout << "    - Framing spike: OK (decompressed " << decompressed.size() << " bytes)"
               << std::endl;
 }
@@ -89,13 +91,13 @@ static void test_parallel_roundtrip_methods() {
         bool comp_ok = Compressor50::compress_buffer_parallel(
             original.data(), original.size(), compressed, method, dict_size, {}, /*threads=*/4);
 
-        assert(comp_ok && !compressed.empty() && "compress_buffer_parallel failed");
+        REQUIRE((comp_ok && !compressed.empty() && "compress_buffer_parallel failed"));
 
         std::vector<core::byte> decompressed;
         bool dec_ok = decompress_buffer(compressed, original.size(), dict_size, decompressed);
 
-        assert(dec_ok && "Decompression failed");
-        assert(decompressed == original && "Content mismatch");
+        REQUIRE((dec_ok && "Decompression failed"));
+        REQUIRE((decompressed == original && "Content mismatch"));
         std::cout << "    - Method " << method << ": OK (ratio "
                   << (compressed.size() * 100.0 / original.size()) << "%)" << std::endl;
     }
@@ -109,17 +111,17 @@ static void test_parallel_determinism() {
     auto data = generate_payload(payload_size, 303);
 
     std::vector<core::byte> run1, run2, run3;
-    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), run1, 3,
-                                                  2 * 1024 * 1024, {}, 4));
-    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), run2, 3,
-                                                  2 * 1024 * 1024, {}, 4));
-    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), run3, 3,
-                                                  2 * 1024 * 1024, {}, 4));
+    REQUIRE(Compressor50::compress_buffer_parallel(data.data(), data.size(), run1, 3,
+                                                   2 * 1024 * 1024, {}, 4));
+    REQUIRE(Compressor50::compress_buffer_parallel(data.data(), data.size(), run2, 3,
+                                                   2 * 1024 * 1024, {}, 4));
+    REQUIRE(Compressor50::compress_buffer_parallel(data.data(), data.size(), run3, 3,
+                                                   2 * 1024 * 1024, {}, 4));
 
-    assert(run1.size() == run2.size() && "Size differs between run1 and run2");
-    assert(run1.size() == run3.size() && "Size differs between run1 and run3");
-    assert(run1 == run2 && "Bitstream differs between run1 and run2");
-    assert(run1 == run3 && "Bitstream differs between run1 and run3");
+    REQUIRE((run1.size() == run2.size() && "Size differs between run1 and run2"));
+    REQUIRE((run1.size() == run3.size() && "Size differs between run1 and run3"));
+    REQUIRE((run1 == run2 && "Bitstream differs between run1 and run2"));
+    REQUIRE((run1 == run3 && "Bitstream differs between run1 and run3"));
     std::cout << "    - Determinism: OK (3 runs byte-identical, " << run1.size() << " bytes)"
               << std::endl;
 }
@@ -135,8 +137,8 @@ static void test_parallel_pipeline_streaming() {
     std::filesystem::path temp_in = "test_parallel_in.tmp";
     {
         io::FileStream out;
-        assert(out.open(temp_in, io::FileMode::CreateAlways));
-        assert(out.write(data.data(), data.size()) == data.size());
+        REQUIRE(out.open(temp_in, io::FileMode::CreateAlways));
+        REQUIRE(out.write(data.data(), data.size()) == data.size());
     }
 
     ParallelCompressConfig cfg;
@@ -151,7 +153,7 @@ static void test_parallel_pipeline_streaming() {
 
     {
         io::FileStream in_stream;
-        assert(in_stream.open(temp_in, io::FileMode::ReadOnly));
+        REQUIRE(in_stream.open(temp_in, io::FileMode::ReadOnly));
 
         ParallelBlockPipeline pipeline(cfg);
         bool ok = pipeline.compress_stream(
@@ -163,27 +165,73 @@ static void test_parallel_pipeline_streaming() {
             },
             out_crc, out_packed);
 
-        assert(ok && "compress_stream returned false");
-        assert(in_stream.tell() == total_size && "in_stream must be read in a single forward pass");
+        REQUIRE((ok && "compress_stream returned false"));
+        REQUIRE(
+            (in_stream.tell() == total_size && "in_stream must be read in a single forward pass"));
     }
 
     std::error_code ec;
     std::filesystem::remove(temp_in, ec);
 
-    assert(!compressed_stream.empty());
-    assert(out_packed == compressed_stream.size());
+    REQUIRE(!compressed_stream.empty());
+    REQUIRE(out_packed == compressed_stream.size());
 
     // Verify CRC
     crypto::Crc32 expected_crc;
     expected_crc.update(data.data(), data.size());
-    assert(out_crc == expected_crc.get());
+    REQUIRE(out_crc == expected_crc.get());
 
     std::vector<core::byte> decompressed;
     bool dec_ok = decompress_buffer(compressed_stream, total_size, cfg.win_size, decompressed);
-    assert(dec_ok && "Decompression failed");
-    assert(decompressed == data && "Content mismatch");
+    REQUIRE((dec_ok && "Decompression failed"));
+    REQUIRE((decompressed == data && "Content mismatch"));
     std::cout << "    - Pipeline streaming: OK (" << total_size << " bytes streamed and verified)"
               << std::endl;
+}
+
+static void test_parallel_pipeline_default_window() {
+    std::cout << "[+] test_parallel_pipeline_default_window: win_size=0 seed underflow regression"
+              << std::endl;
+    const size_t total_size = 3 * 1024 * 1024;
+    auto data = generate_payload(total_size, 505);
+
+    std::filesystem::path temp_in = "test_parallel_win0.tmp";
+    {
+        io::FileStream out;
+        REQUIRE(out.open(temp_in, io::FileMode::CreateAlways));
+        REQUIRE(out.write(data.data(), data.size()) == data.size());
+    }
+
+    ParallelCompressConfig cfg;
+    cfg.method = 3;
+    cfg.win_size = 0;
+    cfg.threads = 2;
+    cfg.chunk_size = 1024 * 1024;
+
+    std::vector<core::byte> compressed_stream;
+    core::uint32 out_crc = 0;
+    core::uint64 out_packed = 0;
+    {
+        io::FileStream in_stream;
+        REQUIRE(in_stream.open(temp_in, io::FileMode::ReadOnly));
+        ParallelBlockPipeline pipeline(cfg);
+        REQUIRE(pipeline.compress_stream(
+            in_stream, total_size,
+            [&](const core::byte* chunk_bytes, size_t chunk_len) {
+                compressed_stream.insert(compressed_stream.end(), chunk_bytes,
+                                         chunk_bytes + chunk_len);
+                return true;
+            },
+            out_crc, out_packed));
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(temp_in, ec);
+
+    std::vector<core::byte> decompressed;
+    REQUIRE(decompress_buffer(compressed_stream, total_size, 2 * 1024 * 1024, decompressed));
+    REQUIRE((decompressed == data && "win_size=0 pipeline roundtrip mismatch"));
+    std::cout << "    - Default window pipeline: OK" << std::endl;
 }
 
 // 5. Cancellation Test
@@ -196,8 +244,8 @@ static void test_parallel_pipeline_cancellation() {
     std::filesystem::path temp_in = "test_parallel_cancel.tmp";
     {
         io::FileStream out;
-        assert(out.open(temp_in, io::FileMode::CreateAlways));
-        assert(out.write(data.data(), data.size()) == data.size());
+        REQUIRE(out.open(temp_in, io::FileMode::CreateAlways));
+        REQUIRE(out.write(data.data(), data.size()) == data.size());
     }
 
     ParallelCompressConfig cfg;
@@ -218,7 +266,7 @@ static void test_parallel_pipeline_cancellation() {
     };
 
     io::FileStream in_stream;
-    assert(in_stream.open(temp_in, io::FileMode::ReadOnly));
+    REQUIRE(in_stream.open(temp_in, io::FileMode::ReadOnly));
 
     ParallelBlockPipeline pipeline(cfg);
     core::uint32 out_crc = 0;
@@ -228,7 +276,7 @@ static void test_parallel_pipeline_cancellation() {
         in_stream, total_size, [&](const core::byte* /*chunk*/, size_t /*len*/) { return true; },
         out_crc, out_packed);
 
-    assert(!ok && "compress_stream should have aborted upon cancellation");
+    REQUIRE((!ok && "compress_stream should have aborted upon cancellation"));
 
     in_stream.close();
     std::error_code ec;
@@ -246,13 +294,13 @@ static void test_small_file_bypass() {
     for (size_t sz : small_sizes) {
         auto data = generate_payload(sz, static_cast<uint32_t>(sz));
         std::vector<core::byte> comp;
-        assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), comp, 3, 128 * 1024,
-                                                      {}, 4));
-        assert(!comp.empty());
+        REQUIRE(Compressor50::compress_buffer_parallel(data.data(), data.size(), comp, 3,
+                                                       128 * 1024, {}, 4));
+        REQUIRE(!comp.empty());
 
         std::vector<core::byte> decompressed;
-        assert(decompress_buffer(comp, sz, 128 * 1024, decompressed));
-        assert(decompressed == data && "Content mismatch");
+        REQUIRE(decompress_buffer(comp, sz, 128 * 1024, decompressed));
+        REQUIRE((decompressed == data && "Content mismatch"));
     }
     std::cout << "    - Small file bypass: OK" << std::endl;
 }
@@ -309,17 +357,18 @@ static void test_parallel_filter_parity() {
     auto data = generate_e8_dense(6 * 1024 * 1024);
 
     std::vector<core::byte> sequential;
-    assert(Compressor50::compress_buffer(data.data(), data.size(), sequential, 3, 4 * 1024 * 1024));
+    REQUIRE(
+        Compressor50::compress_buffer(data.data(), data.size(), sequential, 3, 4 * 1024 * 1024));
 
     for (unsigned threads : {2u, 4u, 8u}) {
         std::vector<core::byte> parallel;
-        assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), parallel, 3,
-                                                      4 * 1024 * 1024, {}, threads));
-        assert(parallel == sequential &&
-               "parallel output diverged from sequential for filter-triggering content");
+        REQUIRE(Compressor50::compress_buffer_parallel(data.data(), data.size(), parallel, 3,
+                                                       4 * 1024 * 1024, {}, threads));
+        REQUIRE((parallel == sequential &&
+                 "parallel output diverged from sequential for filter-triggering content"));
         std::vector<core::byte> decompressed;
-        assert(decompress_buffer(parallel, data.size(), 4 * 1024 * 1024, decompressed));
-        assert(decompressed == data && "Content mismatch");
+        REQUIRE(decompress_buffer(parallel, data.size(), 4 * 1024 * 1024, decompressed));
+        REQUIRE((decompressed == data && "Content mismatch"));
     }
     std::cout << "    - Filter parity across -mt2/-mt4/-mt8: OK" << std::endl;
 }
@@ -339,8 +388,8 @@ static void test_parallel_path_selection() {
               << std::endl;
 
     FilterConfig auto_cfg; // default: Auto
-    assert(auto_cfg.mode == FilterMode::Auto && "default must be Auto for this test to mean "
-                                                "anything");
+    REQUIRE((auto_cfg.mode == FilterMode::Auto && "default must be Auto for this test to mean "
+                                                  "anything"));
 
     FilterConfig off_cfg;
     off_cfg.mode = FilterMode::DisableAll;
@@ -348,27 +397,27 @@ static void test_parallel_path_selection() {
     // Filter-free content: MT must be allowed.
     {
         auto data = generate_text_like(256 * 1024);
-        assert(mt_should_use_parallel(auto_cfg, data.data(), data.size()) &&
-               "filter-free input must take the MT path (it used to fall back to sequential)");
+        REQUIRE((mt_should_use_parallel(auto_cfg, data.data(), data.size()) &&
+                 "filter-free input must take the MT path (it used to fall back to sequential)"));
     }
     // E8-dense content: a filter WOULD fire, so MT must be declined so the
     // sequential path honors -mc.
     {
         auto data = generate_e8_dense(256 * 1024);
-        assert(!mt_should_use_parallel(auto_cfg, data.data(), data.size()) &&
-               "filter-triggering input must take the sequential path to preserve -mc parity");
+        REQUIRE((!mt_should_use_parallel(auto_cfg, data.data(), data.size()) &&
+                 "filter-triggering input must take the sequential path to preserve -mc parity"));
     }
     // Filters explicitly off: chunking loses nothing, so MT is allowed even
     // for content a filter would otherwise have caught.
     {
         auto data = generate_e8_dense(256 * 1024);
-        assert(mt_should_use_parallel(off_cfg, data.data(), data.size()) &&
-               "with filters disabled, MT must be allowed unconditionally");
+        REQUIRE((mt_should_use_parallel(off_cfg, data.data(), data.size()) &&
+                 "with filters disabled, MT must be allowed unconditionally"));
     }
     // No sample available (read failed / empty): take MT, do not silently
     // fall back to sequential.
-    assert(mt_should_use_parallel(auto_cfg, nullptr, 0) &&
-           "no sample must not silently disable MT");
+    REQUIRE(
+        (mt_should_use_parallel(auto_cfg, nullptr, 0) && "no sample must not silently disable MT"));
     std::cout << "    - Both selection branches + no-sample fallback: OK" << std::endl;
 }
 
@@ -396,36 +445,38 @@ static void test_parallel_mt_dictionary_is_member_scoped() {
     }
 
     std::vector<core::byte> st, mt;
-    assert(Compressor50::compress_buffer(data.data(), data.size(), st, 3, 8 * 1024 * 1024));
-    assert(Compressor50::compress_buffer_parallel(data.data(), data.size(), mt, 3, 8 * 1024 * 1024,
-                                                  {}, 4));
+    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), st, 3, 8 * 1024 * 1024));
+    REQUIRE(Compressor50::compress_buffer_parallel(data.data(), data.size(), mt, 3, 8 * 1024 * 1024,
+                                                   {}, 4));
     // Within 5% of sequential. Pre-fix this was ~9x.
-    assert(mt.size() <= st.size() * 105 / 100 &&
-           "MT lost cross-chunk matches: the member-scoped dictionary seed regressed");
+    REQUIRE((mt.size() <= st.size() * 105 / 100 &&
+             "MT lost cross-chunk matches: the member-scoped dictionary seed regressed"));
 
     std::vector<core::byte> back;
-    assert(decompress_buffer(mt, data.size(), 8 * 1024 * 1024, back));
-    assert(back == data && "MT roundtrip diverged after dictionary seeding");
+    REQUIRE(decompress_buffer(mt, data.size(), 8 * 1024 * 1024, back));
+    REQUIRE((back == data && "MT roundtrip diverged after dictionary seeding"));
     std::cout << "    - MT within 5% of sequential and roundtrips: OK (" << st.size() << " vs "
               << mt.size() << ")" << std::endl;
 }
 
-int main() {
-#ifdef _MSC_VER
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-#endif
+static const openrar::test::Case k_cases[] = {
+    {"test_framing_spike", test_framing_spike, false},
+    {"test_parallel_roundtrip_methods", test_parallel_roundtrip_methods, false},
+    {"test_parallel_determinism", test_parallel_determinism, false},
+    {"test_parallel_pipeline_default_window", test_parallel_pipeline_default_window, false},
+    {"test_parallel_pipeline_streaming", test_parallel_pipeline_streaming, false},
+    {"test_parallel_pipeline_cancellation", test_parallel_pipeline_cancellation, false},
+    {"test_small_file_bypass", test_small_file_bypass, false},
+    {"test_parallel_filter_parity", test_parallel_filter_parity, false},
+    {"test_parallel_path_selection", test_parallel_path_selection, false},
+    {"test_parallel_mt_dictionary_is_member_scoped", test_parallel_mt_dictionary_is_member_scoped,
+     false}};
 
-    std::cout << "=== Running Parallel Compression Tests ===" << std::endl;
-    test_framing_spike();
-    test_parallel_roundtrip_methods();
-    test_parallel_determinism();
-    test_parallel_pipeline_streaming();
-    test_parallel_pipeline_cancellation();
-    test_small_file_bypass();
-    test_parallel_filter_parity();
-    test_parallel_path_selection();
-    test_parallel_mt_dictionary_is_member_scoped();
-    std::cout << "All Parallel Compression Tests PASSED!" << std::endl;
-    return 0;
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All Parallel Compression Tests PASSED!";
+    return rc;
 }

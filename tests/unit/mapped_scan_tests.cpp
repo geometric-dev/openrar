@@ -17,6 +17,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -69,7 +71,7 @@ void rm(const fs::path& p) {
 void write_file(const fs::path& p, const std::string& data) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     f.write(data.data(), static_cast<std::streamsize>(data.size()));
-    assert(f.good());
+    REQUIRE(f.good());
 }
 
 std::string read_file(const fs::path& p) {
@@ -84,7 +86,7 @@ fs::path build_archive(const fs::path& dir, const char* name,
     const fs::path blob = dir / "m2_blob.bin";
     for (const auto& [n, content] : entries) {
         write_file(blob, content);
-        assert(archive::ArchiveMutator::add_file_to_archive(arc, blob, n, 0));
+        REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, blob, n, 0));
     }
     fs::remove(blob);
     return arc;
@@ -104,11 +106,11 @@ void test_extraction_bytes_identical_mapped_vs_buffered() {
     {
         archive::ArchiveReader reader;
         reader.set_extraction_root(dir);
-        assert(reader.open(arc));
+        REQUIRE(reader.open(arc));
         const fs::path out = dir / "out_mapped";
         const char* names[3] = {"one.txt", "two.txt", "sub/three.bin"};
         for (int i = 0; i < 3; ++i) {
-            assert(reader.extract_entry(reader.entries()[i], out / names[i]));
+            REQUIRE(reader.extract_entry(reader.entries()[i], out / names[i]));
             mapped_bytes[i] = read_file(out / names[i]);
         }
     }
@@ -116,18 +118,18 @@ void test_extraction_bytes_identical_mapped_vs_buffered() {
         set_env("OPENRAR_NO_MMAP", "1");
         archive::ArchiveReader reader;
         reader.set_extraction_root(dir);
-        assert(reader.open(arc));
+        REQUIRE(reader.open(arc));
         const fs::path out = dir / "out_buffered";
         const char* names[3] = {"one.txt", "two.txt", "sub/three.bin"};
         for (int i = 0; i < 3; ++i) {
-            assert(reader.extract_entry(reader.entries()[i], out / names[i]));
+            REQUIRE(reader.extract_entry(reader.entries()[i], out / names[i]));
             buffered_bytes[i] = read_file(out / names[i]);
         }
         unset_env("OPENRAR_NO_MMAP");
     }
 
-    for (int i = 0; i < 3; ++i) assert(mapped_bytes[i] == buffered_bytes[i]);
-    assert(mapped_bytes[0] == "first-payload");
+    for (int i = 0; i < 3; ++i) REQUIRE(mapped_bytes[i] == buffered_bytes[i]);
+    REQUIRE(mapped_bytes[0] == "first-payload");
     std::cout << "[PASS] extraction_bytes_identical_mapped_vs_buffered\n";
     rm(dir);
 }
@@ -150,8 +152,8 @@ void test_limits_enforced_on_mapped_path() {
         int status = 0;
         std::string detail;
         // open_ex fails with the limit status (fail-closed, not silent).
-        assert(!reader.open_ex(arc, "", status, detail, {}, false, &limits, &state));
-        assert(status == archive::RAR_ERR_LIMIT_EXCEEDED);
+        REQUIRE(!reader.open_ex(arc, "", status, detail, {}, false, &limits, &state));
+        REQUIRE(status == archive::RAR_ERR_LIMIT_EXCEEDED);
         if (no_mmap) unset_env("OPENRAR_NO_MMAP");
         reader.close();
         state = archive::LimitState{};
@@ -165,14 +167,14 @@ void shrink_file(const fs::path& p, unsigned long long new_size) {
     HANDLE h = CreateFileW(p.wstring().c_str(), GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    assert(h != INVALID_HANDLE_VALUE);
+    REQUIRE(h != INVALID_HANDLE_VALUE);
     LARGE_INTEGER li;
     li.QuadPart = static_cast<long long>(new_size);
-    assert(SetFilePointerEx(h, li, nullptr, FILE_BEGIN));
-    assert(SetEndOfFile(h));
+    REQUIRE(SetFilePointerEx(h, li, nullptr, FILE_BEGIN));
+    REQUIRE(SetEndOfFile(h));
     CloseHandle(h);
 #else
-    assert(::truncate(p.c_str(), static_cast<off_t>(new_size)) == 0);
+    REQUIRE(::truncate(p.c_str(), static_cast<off_t>(new_size)) == 0);
 #endif
 }
 
@@ -184,7 +186,7 @@ void test_truncation_mid_scan_falls_back() {
     const fs::path blob = dir / "blob.bin";
     write_file(blob, std::string(200000, 'A'));
     const fs::path seed = dir / "mv.rar";
-    assert(archive::ArchiveMutator::add_file_to_archive_vol(seed, blob, "big.bin", 0, 65536));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive_vol(seed, blob, "big.bin", 0, 65536));
     fs::remove(blob);
 
     // Find the LAST volume of the set and truncate it mid-header.
@@ -194,12 +196,12 @@ void test_truncation_mid_scan_falls_back() {
             if (last.empty() || e.path() > last) last = e.path();
         }
     }
-    assert(!last.empty());
+    REQUIRE(!last.empty());
     shrink_file(last, 30);
 
     archive::ArchiveReader reader;
     reader.set_extraction_root(dir);
-    assert(reader.open(dir / "mv.part01.rar")); // tolerant open
+    REQUIRE(reader.open(dir / "mv.part01.rar")); // tolerant open
     // No crash, no SIGBUS — the scan ends deterministically at the
     // truncation point.
     std::cout << "[PASS] truncation_mid_scan_falls_back: clean truncated verdict\n";
@@ -209,17 +211,17 @@ void test_truncation_mid_scan_falls_back() {
 
 } // namespace
 
-int main() {
-#ifdef _MSC_VER
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    test_extraction_bytes_identical_mapped_vs_buffered();
-    test_limits_enforced_on_mapped_path();
-    test_truncation_mid_scan_falls_back();
-    std::cout << "All mapped_scan_tests passed.\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_extraction_bytes_identical_mapped_vs_buffered",
+     test_extraction_bytes_identical_mapped_vs_buffered, false},
+    {"test_limits_enforced_on_mapped_path", test_limits_enforced_on_mapped_path, false},
+    {"test_truncation_mid_scan_falls_back", test_truncation_mid_scan_falls_back, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All mapped_scan_tests passed.\n";
+    return rc;
 }

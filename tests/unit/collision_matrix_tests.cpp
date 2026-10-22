@@ -32,6 +32,9 @@
 #include <crtdbg.h>
 #endif
 
+#include <doctest.h>
+#include "../support/test_runner.hpp"
+
 using namespace openrar;
 
 namespace {
@@ -54,7 +57,7 @@ void rm(const fs::path& p) {
 void write_file(const fs::path& p, const std::string& data) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     f.write(data.data(), static_cast<std::streamsize>(data.size()));
-    assert(f.good());
+    REQUIRE(f.good());
 }
 
 // NFC and NFD spellings of "café" (U+00E9 vs e + U+0301).
@@ -77,26 +80,26 @@ void test_detector_matrix() {
 
     // duplicate-identical
     out.clear();
-    assert(CollisionDetector::detect({{"a.txt", false}, {"a.txt", false}}, out));
-    assert(has_class(out, "duplicate"));
+    REQUIRE(CollisionDetector::detect({{"a.txt", false}, {"a.txt", false}}, out));
+    REQUIRE(has_class(out, "duplicate"));
 
     // case_fold: Readme vs README; also Unicode fold (İ vs i̇ folds equal)
     out.clear();
-    assert(CollisionDetector::detect({{"Readme", false}, {"README", false}}, out));
-    assert(has_class(out, "case_fold"));
+    REQUIRE(CollisionDetector::detect({{"Readme", false}, {"README", false}}, out));
+    REQUIRE(has_class(out, "case_fold"));
 
     // NFC: NFC vs NFD café
     out.clear();
-    assert(CollisionDetector::detect({{kCafeNFC, false}, {kCafeNFD, false}}, out));
-    assert(has_class(out, "nfc"));
+    REQUIRE(CollisionDetector::detect({{kCafeNFC, false}, {kCafeNFD, false}}, out));
+    REQUIRE(has_class(out, "nfc"));
 
     // file_vs_dir: foo (file) vs foo/bar; either registration order
     out.clear();
-    assert(CollisionDetector::detect({{"foo", false}, {"foo/bar", false}}, out));
-    assert(has_class(out, "file_vs_dir"));
+    REQUIRE(CollisionDetector::detect({{"foo", false}, {"foo/bar", false}}, out));
+    REQUIRE(has_class(out, "file_vs_dir"));
     out.clear();
-    assert(CollisionDetector::detect({{"foo/bar", false}, {"foo", false}}, out));
-    assert(has_class(out, "file_vs_dir"));
+    REQUIRE(CollisionDetector::detect({{"foo/bar", false}, {"foo", false}}, out));
+    REQUIRE(has_class(out, "file_vs_dir"));
 
     // Non-collisions must stay silent:
     //  - normal nesting (dir entry foo + file foo/bar)
@@ -111,10 +114,10 @@ void test_detector_matrix() {
                                                      {"caf\xC3\xA9"
                                                       "d",
                                                       false}};
-    assert(!CollisionDetector::detect(ok, out));
+    REQUIRE(!CollisionDetector::detect(ok, out));
 
     // Unicode version constant is surfaced for the JSON summary (§3.3).
-    assert(std::string(CollisionDetector::unicode_version()) == "15.1.0");
+    REQUIRE(std::string(CollisionDetector::unicode_version()) == "15.1.0");
     std::cout << "[PASS] detector matrix: four classes + non-collision silence\n";
 }
 
@@ -151,7 +154,7 @@ int extract_exit_code(const fs::path& dir,
     const fs::path arc = dir / "g2.rar";
     {
         io::FileStream out_stream;
-        assert(out_stream.open(arc, io::FileMode::CreateAlways));
+        REQUIRE(out_stream.open(arc, io::FileMode::CreateAlways));
         format::HeaderWriter::write_signature(out_stream);
         format::MainBlock mb;
         format::HeaderWriter::write_main_block(out_stream, mb);
@@ -162,7 +165,7 @@ int extract_exit_code(const fs::path& dir,
             fb.pack_size = content.size();
             fb.method = 0;
             fb.win_size = 0;
-            assert(format::HeaderWriter::write_file_block(out_stream, fb));
+            REQUIRE(format::HeaderWriter::write_file_block(out_stream, fb));
             out_stream.write(content.data(), content.size());
         }
         format::EndArcBlock eb;
@@ -191,12 +194,12 @@ void test_cli_collision_aborts() {
         const fs::path out = dir / "out_dup";
         const int rc = extract_exit_code(dir, {{"x.txt", "one"}, {"x.txt", "two"}}, out);
 #ifdef _WIN32
-        assert(rc == 2);
+        REQUIRE(rc == 2);
 #else
-        assert(WIFEXITED(rc) && WEXITSTATUS(rc) == 2);
+        REQUIRE((WIFEXITED(rc) && WEXITSTATUS(rc) == 2));
 #endif
         std::error_code ec;
-        assert(!fs::exists(out, ec) || fs::is_empty(out, ec)); // nothing written
+        REQUIRE((!fs::exists(out, ec) || fs::is_empty(out, ec))); // nothing written
     }
 
     // Test 8 — collision_case_folded_abort: Readme + README.
@@ -204,9 +207,9 @@ void test_cli_collision_aborts() {
         const fs::path out = dir / "out_case";
         const int rc = extract_exit_code(dir, {{"Readme", "a"}, {"README", "b"}}, out);
 #ifdef _WIN32
-        assert(rc == 2);
+        REQUIRE(rc == 2);
 #else
-        assert(WIFEXITED(rc) && WEXITSTATUS(rc) == 2);
+        REQUIRE((WIFEXITED(rc) && WEXITSTATUS(rc) == 2));
 #endif
     }
 
@@ -215,9 +218,9 @@ void test_cli_collision_aborts() {
         const fs::path out = dir / "out_nfc";
         const int rc = extract_exit_code(dir, {{kCafeNFC, "a"}, {kCafeNFD, "b"}}, out);
 #ifdef _WIN32
-        assert(rc == 2);
+        REQUIRE(rc == 2);
 #else
-        assert(WIFEXITED(rc) && WEXITSTATUS(rc) == 2);
+        REQUIRE((WIFEXITED(rc) && WEXITSTATUS(rc) == 2));
 #endif
     }
 
@@ -226,9 +229,9 @@ void test_cli_collision_aborts() {
         const fs::path out = dir / "out_fvd";
         const int rc = extract_exit_code(dir, {{"foo", "a"}, {"foo/bar", "b"}}, out);
 #ifdef _WIN32
-        assert(rc == 2);
+        REQUIRE(rc == 2);
 #else
-        assert(WIFEXITED(rc) && WEXITSTATUS(rc) == 2);
+        REQUIRE((WIFEXITED(rc) && WEXITSTATUS(rc) == 2));
 #endif
     }
 
@@ -245,13 +248,13 @@ void test_service_headers_exempt() {
     const fs::path blob = dir / "blob.bin";
     write_file(blob, "user data");
     std::vector<core::byte> comment = {'a', 'b', 'c'};
-    assert(archive::ArchiveMutator::add_file_to_archive_vol(arc, blob, "user.txt", 0, 0, "", false,
-                                                            0, {}, false, &comment));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive_vol(arc, blob, "user.txt", 0, 0, "", false,
+                                                             0, {}, false, &comment));
 
     archive::ArchiveReader reader;
-    assert(reader.open(arc));
+    REQUIRE(reader.open(arc));
     std::vector<archive::CollisionPair> collisions;
-    assert(!reader.detect_collisions(collisions)); // services exempt
+    REQUIRE(!reader.detect_collisions(collisions)); // services exempt
     std::cout << "[PASS] collision_service_headers_exempt\n";
     rm(dir);
 }
@@ -271,9 +274,9 @@ void test_multivolume_span() {
     // duplicate the detector must catch.
     const fs::path arc = dir / "mv.part01.rar";
     const fs::path seed = dir / "mv.rar";
-    assert(archive::ArchiveMutator::add_file_to_archive_vol(seed, blob, "big1.bin", 0, 65536));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive_vol(seed, blob, "big1.bin", 0, 65536));
     write_file(blob, std::string(200000, 'B'));
-    assert(archive::ArchiveMutator::add_file_to_archive_vol(seed, blob, "big2.bin", 0, 65536));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive_vol(seed, blob, "big2.bin", 0, 65536));
 
     // Patch big2.bin -> big1.bin in whichever volume holds its header.
     bool patched = false;
@@ -282,7 +285,7 @@ void test_multivolume_span() {
         std::error_code vol_ec;
         if (!fs::exists(vol, vol_ec)) break;
         io::FileStream f;
-        assert(f.open(vol, io::FileMode::ReadWrite));
+        REQUIRE(f.open(vol, io::FileMode::ReadWrite));
         core::byte sig[8];
         if (f.read(sig, 8) != 8) break;
         for (;;) {
@@ -313,7 +316,7 @@ void test_multivolume_span() {
                     break;
                 }
             }
-            assert(name_off < body.size());
+            REQUIRE(name_off < body.size());
             std::memcpy(body.data() + name_off, "big1.bin", 8);
             // Recompute the header CRC over (size vint + body) and write it.
             std::vector<core::byte> size_vint;
@@ -326,42 +329,41 @@ void test_multivolume_span() {
                                     static_cast<core::byte>((crc.get() >> 16) & 0xFF),
                                     static_cast<core::byte>((crc.get() >> 24) & 0xFF)};
             f.seek(static_cast<core::int64>(header_pos), io::SeekOrigin::Begin);
-            assert(f.write(crc_le, 4) == 4);
+            REQUIRE(f.write(crc_le, 4) == 4);
             f.seek(static_cast<core::int64>(header_pos + 4 + size_vint.size() + name_off),
                    io::SeekOrigin::Begin);
-            assert(f.write("big1.bin", 8) == 8);
+            REQUIRE(f.write("big1.bin", 8) == 8);
             patched = true;
             break;
         }
         f.close();
     }
-    assert(patched);
+    REQUIRE(patched);
 
     // the volume set opens (merged list spans several volume files)
     archive::ArchiveReader reader;
-    assert(reader.open(arc));
-    assert(reader.entries().size() >= 2); // merged list spans the volume set
+    REQUIRE(reader.open(arc));
+    REQUIRE(reader.entries().size() >= 2); // merged list spans the volume set
     std::vector<archive::CollisionPair> collisions;
-    assert(reader.detect_collisions(collisions));
-    assert(has_class(collisions, "duplicate"));
+    REQUIRE(reader.detect_collisions(collisions));
+    REQUIRE(has_class(collisions, "duplicate"));
     std::cout << "[PASS] collision_multivolume_span\n";
     rm(dir);
 }
 
 } // namespace
 
-int main() {
-#ifdef _MSC_VER
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    test_detector_matrix();
-    test_cli_collision_aborts();
-    test_service_headers_exempt();
-    test_multivolume_span();
-    std::cout << "All collision_matrix_tests passed.\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_detector_matrix", test_detector_matrix, false},
+    {"test_cli_collision_aborts", test_cli_collision_aborts, false},
+    {"test_service_headers_exempt", test_service_headers_exempt, false},
+    {"test_multivolume_span", test_multivolume_span, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All collision_matrix_tests passed.\n";
+    return rc;
 }

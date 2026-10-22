@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <iostream>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #include <cstdlib>
@@ -325,37 +327,31 @@ static void test_stream_compress_filter_ex() {
     openrar_free(comp_ptr);
 }
 
-int main() {
-#ifdef _MSC_VER
-    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
-    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
-    // test process forever while ctest moves on, leaving file locks behind.
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
-    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
-    // process still hangs after printing the assert.
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    test_version();
-    test_alloc_free();
-    test_roundtrip();
-    test_empty();
-    test_high_compress();
-    test_compress_buffer_raw_direct();
-    test_oversize_win_size_rejected();
-    test_decompress_corrupt_returns_empty();
-    test_decompress_raw_clears_on_failure();
-    test_stream_compress_roundtrip();
-    test_stream_compress_incremental_pull();
-    test_stream_compress_store();
-    test_stream_compress_filter_ex();
-    if (fails) {
+static const openrar::test::Case k_cases[] = {
+    {"test_version", test_version, false},
+    {"test_alloc_free", test_alloc_free, false},
+    {"test_roundtrip", test_roundtrip, false},
+    {"test_empty", test_empty, false},
+    {"test_high_compress", test_high_compress, false},
+    {"test_compress_buffer_raw_direct", test_compress_buffer_raw_direct, false},
+    {"test_oversize_win_size_rejected", test_oversize_win_size_rejected, false},
+    {"test_decompress_corrupt_returns_empty", test_decompress_corrupt_returns_empty, false},
+    {"test_decompress_raw_clears_on_failure", test_decompress_raw_clears_on_failure, false},
+    {"test_stream_compress_roundtrip", test_stream_compress_roundtrip, false},
+    {"test_stream_compress_incremental_pull", test_stream_compress_incremental_pull, false},
+    {"test_stream_compress_store", test_stream_compress_store, false},
+    {"test_stream_compress_filter_ex", test_stream_compress_filter_ex, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (fails != 0) {
         std::fprintf(stderr, "%d failure(s)\n", fails);
-        return 1;
+        rc = 1;
     }
-    std::fprintf(stderr, "wasm_api_tests OK\n");
-    return 0;
+    if (rc == 0 && fails != 0) rc = 1;
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::fprintf(stderr, "wasm_api_tests OK\n");
+    return rc;
 }
