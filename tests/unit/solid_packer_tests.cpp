@@ -13,6 +13,8 @@
 #include <cstring>
 #include <iostream>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _MSC_VER
 #include <crtdbg.h>
@@ -45,7 +47,7 @@ std::vector<core::byte> make_member(size_t n, unsigned seed,
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
@@ -63,19 +65,19 @@ int main() {
     // again), member. The gap exercises the chain-break reset path.
     compress::SolidPacker packer(3, 1 << 20); // -m3, 1 MiB window
     std::vector<std::vector<core::byte>> packed(4);
-    assert(packer.pack_begin(false)); // run head: fresh window
-    assert(packer.pack_feed(members[0].data(), members[0].size()));
-    assert(packer.pack_end(&packed[0]));
-    assert(packer.pack_begin(true)); // chain member: carry
-    assert(packer.pack_feed(members[1].data(), members[1].size()));
-    assert(packer.pack_end(&packed[1]));
-    assert(packer.pack_begin(false)); // chain break: reset window
-    assert(packer.pack_feed(members[2].data(), members[2].size()));
-    assert(packer.pack_end(&packed[2]));
-    assert(packer.pack_begin(true)); // carry again
-    assert(packer.pack_feed(members[3].data(), members[3].size()));
-    assert(packer.pack_end(&packed[3]));
-    assert(packer.has_state());
+    REQUIRE(packer.pack_begin(false)); // run head: fresh window
+    REQUIRE(packer.pack_feed(members[0].data(), members[0].size()));
+    REQUIRE(packer.pack_end(&packed[0]));
+    REQUIRE(packer.pack_begin(true)); // chain member: carry
+    REQUIRE(packer.pack_feed(members[1].data(), members[1].size()));
+    REQUIRE(packer.pack_end(&packed[1]));
+    REQUIRE(packer.pack_begin(false)); // chain break: reset window
+    REQUIRE(packer.pack_feed(members[2].data(), members[2].size()));
+    REQUIRE(packer.pack_end(&packed[2]));
+    REQUIRE(packer.pack_begin(true)); // carry again
+    REQUIRE(packer.pack_feed(members[3].data(), members[3].size()));
+    REQUIRE(packer.pack_end(&packed[3]));
+    REQUIRE(packer.has_state());
 
     const auto total_packed = [](const std::vector<std::vector<core::byte>>& v) {
         size_t t = 0;
@@ -87,10 +89,10 @@ int main() {
     // keeps only its incompressible noise half (plus stream overhead), while
     // the head and the post-break entry have no carried source and stay near
     // the raw size.
-    assert(packed[1].size() < member_size / 2 + 8192);
-    assert(packed[3].size() < member_size / 2 + 8192);
-    assert(packed[0].size() > member_size - 8192);
-    assert(packed[2].size() > member_size - 8192);
+    REQUIRE(packed[1].size() < member_size / 2 + 8192);
+    REQUIRE(packed[3].size() < member_size / 2 + 8192);
+    REQUIRE(packed[0].size() > member_size - 8192);
+    REQUIRE(packed[2].size() > member_size - 8192);
     std::cout << "[PASS] carried members realize cross-file compression (" << total_packed(packed)
               << " packed vs " << 4 * member_size << " raw)\n";
 
@@ -109,12 +111,13 @@ int main() {
             written += n;
             return true;
         };
-        assert(dec.decompress(packed[i].data(), packed[i].size(), member_size, solid_member, sink,
-                              &written, &finished));
-        assert(written == member_size);
-        assert(out == members[i]);
+        REQUIRE(dec.decompress(packed[i].data(), packed[i].size(), member_size, solid_member, sink,
+                               &written, &finished));
+        REQUIRE(written == member_size);
+        REQUIRE(out == members[i]);
     }
-    std::cout << "[PASS] carried-window decode reproduces every byte\n";
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[PASS] carried-window decode reproduces every byte\n";
 
     // v1.36.x regression: the E8/E8E9/ARM transform base resets PER MEMBER
     // even on solid chains (oracle-verified against a Rar 7.20-made solid
@@ -157,12 +160,12 @@ int main() {
         const std::vector<core::byte> member3 = pe_like(exe_size, 23);
 
         std::vector<core::byte> packed1, packed2, packed3;
-        assert(compress::Compressor50::compress_buffer(member1.data(), member1.size(), packed1, 3,
-                                                       1 << 20));
-        assert(compress::Compressor50::compress_buffer(member2.data(), member2.size(), packed2, 3,
-                                                       1 << 20));
-        assert(compress::Compressor50::compress_buffer(member3.data(), member3.size(), packed3, 3,
-                                                       1 << 20));
+        REQUIRE(compress::Compressor50::compress_buffer(member1.data(), member1.size(), packed1, 3,
+                                                        1 << 20));
+        REQUIRE(compress::Compressor50::compress_buffer(member2.data(), member2.size(), packed2, 3,
+                                                        1 << 20));
+        REQUIRE(compress::Compressor50::compress_buffer(member3.data(), member3.size(), packed3, 3,
+                                                        1 << 20));
 
         compress::Decompressor50 sdec(1 << 20);
         const std::vector<core::byte>* plain[] = {&member1, &member2, &member3};
@@ -179,12 +182,13 @@ int main() {
                 return true;
             };
             // Member 1 is the chain head; 2..3 ride the carried window.
-            assert(sdec.decompress(pk[i]->data(), pk[i]->size(), szs[i], i > 0, sink, &written,
-                                   &finished));
-            assert(written == szs[i]);
-            assert(out == *plain[i]);
+            REQUIRE(sdec.decompress(pk[i]->data(), pk[i]->size(), szs[i], i > 0, sink, &written,
+                                    &finished));
+            REQUIRE(written == szs[i]);
+            REQUIRE(out == *plain[i]);
         }
-        std::cout << "[PASS] solid-chain E8 transform base resets per member\n";
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] solid-chain E8 transform base resets per member\n";
     }
 
     // A fresh session's pack_begin(true) has nothing to carry and silently
@@ -193,10 +197,10 @@ int main() {
     {
         compress::SolidPacker fresh(3, 1 << 20);
         std::vector<core::byte> out;
-        assert(fresh.pack_begin(true));
-        assert(fresh.pack_feed(members[0].data(), members[0].size()));
-        assert(fresh.pack_end(&out));
-        assert(out.size() > member_size - 8192); // head-like: nothing matched
+        REQUIRE(fresh.pack_begin(true));
+        REQUIRE(fresh.pack_feed(members[0].data(), members[0].size()));
+        REQUIRE(fresh.pack_end(&out));
+        REQUIRE(out.size() > member_size - 8192); // head-like: nothing matched
     }
 
     // v1.31 M2: the binary-tree finder under the solid carry — m5 packs a
@@ -213,14 +217,14 @@ int main() {
 
         compress::SolidPacker packer5(5, 1 << 19);
         std::vector<core::byte> pa, pb;
-        assert(packer5.pack_begin(false));
-        assert(packer5.pack_feed(a.data(), a.size()));
-        assert(packer5.pack_end(&pa));
-        assert(packer5.pack_begin(true));
-        assert(packer5.pack_feed(b.data(), b.size()));
-        assert(packer5.pack_end(&pb));
+        REQUIRE(packer5.pack_begin(false));
+        REQUIRE(packer5.pack_feed(a.data(), a.size()));
+        REQUIRE(packer5.pack_end(&pa));
+        REQUIRE(packer5.pack_begin(true));
+        REQUIRE(packer5.pack_feed(b.data(), b.size()));
+        REQUIRE(packer5.pack_end(&pb));
         // carried member realizes cross-file compression through the tree
-        assert(pb.size() < m5_size / 2 + 8192);
+        REQUIRE(pb.size() < m5_size / 2 + 8192);
 
         compress::Decompressor50 dec5(1 << 19);
         for (int which = 0; which < 2; ++which) {
@@ -235,13 +239,23 @@ int main() {
                 written += n;
                 return true;
             };
-            assert(dec5.decompress(pk.data(), pk.size(), m5_size, which == 1, sink, &written,
-                                   &finished));
-            assert(written == m5_size);
-            assert(out == src);
+            REQUIRE(dec5.decompress(pk.data(), pk.size(), m5_size, which == 1, sink, &written,
+                                    &finished));
+            REQUIRE(written == m5_size);
+            REQUIRE(out == src);
         }
     }
 
-    std::cout << "All solid_packer_tests passed.\n";
-    return 0;
+    if (!openrar::test::last_run_was_filtered()) std::cout << "All solid_packer_tests passed.\n";
+    return;
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }

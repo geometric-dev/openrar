@@ -26,6 +26,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _WIN32
 #include <cstdlib>
@@ -328,17 +330,27 @@ void test_mode_decision_function() {
 
 } // namespace
 
-int main() {
-    OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
-    test_frame_roundtrip();
-    test_malformed_frames_poison();
-    test_incomplete_then_complete();
-    test_bounded_memory();
-    test_encode_rejections();
-    test_channel_roundtrip_and_eof();
-    test_channel_poison_propagates();
-    test_channel_large_frame_threaded();
-    test_mode_decision_function();
-    if (fails == 0) std::printf("[sandbox-ipc] frame codec + channel gates: OK\n");
-    return fails == 0 ? 0 : 1;
+static const openrar::test::Case k_cases[] = {
+    {"test_frame_roundtrip", test_frame_roundtrip, false},
+    {"test_malformed_frames_poison", test_malformed_frames_poison, false},
+    {"test_incomplete_then_complete", test_incomplete_then_complete, false},
+    {"test_bounded_memory", test_bounded_memory, false},
+    {"test_encode_rejections", test_encode_rejections, false},
+    {"test_channel_roundtrip_and_eof", test_channel_roundtrip_and_eof, false},
+    {"test_channel_poison_propagates", test_channel_poison_propagates, false},
+    {"test_channel_large_frame_threaded", test_channel_large_frame_threaded, false},
+    {"test_mode_decision_function", test_mode_decision_function, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (fails != 0) {
+        std::fprintf(stderr, "%d failure(s)\n", fails);
+        rc = 1;
+    }
+    if (rc == 0 && fails != 0) rc = 1;
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::printf("[sandbox-ipc] frame codec + channel gates: OK\n\n");
+    return rc;
 }

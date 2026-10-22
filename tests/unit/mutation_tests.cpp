@@ -30,6 +30,8 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _MSC_VER
 #include <crtdbg.h>
@@ -56,7 +58,7 @@ static fs::path make_scratch_dir(const char* name) {
 
 static void write_bytes(const fs::path& p, const std::vector<uint8_t>& data) {
     std::ofstream f(p, std::ios::binary);
-    assert(f);
+    REQUIRE(f);
     if (!data.empty())
         f.write(reinterpret_cast<const char*>(data.data()),
                 static_cast<std::streamsize>(data.size()));
@@ -81,7 +83,7 @@ static void set_xattr_posix(const fs::path& p, const char* name, const void* val
         std::fprintf(stderr, "setxattr(%s, %s) failed: errno=%d (%s)\n", p.string().c_str(), name,
                      errno, strerror(errno));
     }
-    assert(rc == 0);
+    REQUIRE(rc == 0);
 }
 
 // Picks a scratch base on a filesystem that supports user.* xattrs:
@@ -127,24 +129,24 @@ static fs::path xattr_scratch_base() {
 static void test_xattr_namespace_policy() {
     using engine::ArchiveMutator;
     // Allowed namespaces.
-    assert(ArchiveMutator::xattr_capturable("user.mime_type"));
-    assert(ArchiveMutator::xattr_capturable("security.selinux"));
-    assert(ArchiveMutator::xattr_capturable("trusted.backup.stamp"));
-    assert(ArchiveMutator::xattr_capturable("com.apple.metadata:_kMDItemUserTags"));
+    REQUIRE(ArchiveMutator::xattr_capturable("user.mime_type"));
+    REQUIRE(ArchiveMutator::xattr_capturable("security.selinux"));
+    REQUIRE(ArchiveMutator::xattr_capturable("trusted.backup.stamp"));
+    REQUIRE(ArchiveMutator::xattr_capturable("com.apple.metadata:_kMDItemUserTags"));
     // v1.35.0: the macOS content-class names (resource fork, FinderInfo).
-    assert(ArchiveMutator::xattr_capturable("com.apple.ResourceFork"));
-    assert(ArchiveMutator::xattr_capturable("com.apple.FinderInfo"));
+    REQUIRE(ArchiveMutator::xattr_capturable("com.apple.ResourceFork"));
+    REQUIRE(ArchiveMutator::xattr_capturable("com.apple.FinderInfo"));
     // Rejected: ACL side door, provenance, unknown.
-    assert(!ArchiveMutator::xattr_capturable("system.posix_acl_access"));
-    assert(!ArchiveMutator::xattr_capturable("com.apple.quarantine"));
-    assert(!ArchiveMutator::xattr_capturable("com.apple.provenance"));
-    assert(!ArchiveMutator::xattr_capturable("com.apple.decmpfs"));
-    assert(!ArchiveMutator::xattr_capturable("com.apple.lastuseddate#PS"));
-    assert(!ArchiveMutator::xattr_capturable("btrfs.compression"));
+    REQUIRE(!ArchiveMutator::xattr_capturable("system.posix_acl_access"));
+    REQUIRE(!ArchiveMutator::xattr_capturable("com.apple.quarantine"));
+    REQUIRE(!ArchiveMutator::xattr_capturable("com.apple.provenance"));
+    REQUIRE(!ArchiveMutator::xattr_capturable("com.apple.decmpfs"));
+    REQUIRE(!ArchiveMutator::xattr_capturable("com.apple.lastuseddate#PS"));
+    REQUIRE(!ArchiveMutator::xattr_capturable("btrfs.compression"));
     // Prefix discipline: "user" (no dot), "users.", "" do not match.
-    assert(!ArchiveMutator::xattr_capturable("user"));
-    assert(!ArchiveMutator::xattr_capturable("users.x"));
-    assert(!ArchiveMutator::xattr_capturable(""));
+    REQUIRE(!ArchiveMutator::xattr_capturable("user"));
+    REQUIRE(!ArchiveMutator::xattr_capturable("users.x"));
+    REQUIRE(!ArchiveMutator::xattr_capturable(""));
     std::cout << "[PASS] xattr_namespace_policy: allow-list excludes ACL/provenance/forks\n";
 }
 
@@ -178,38 +180,38 @@ static void test_xattr_capture_roundtrip() {
 
     // Default path: no capture.
     ArchiveMutator::PreparedAdd plain;
-    assert(ArchiveMutator::prepare_add_file(src, "xattrd.bin", 0, "", plain));
-    assert(plain.fb.xattrs.empty());
+    REQUIRE(ArchiveMutator::prepare_add_file(src, "xattrd.bin", 0, "", plain));
+    REQUIRE(plain.fb.xattrs.empty());
 
     // -ox: allow-listed attributes, sorted by name.
     ArchiveMutator::PreparedAdd p;
-    assert(ArchiveMutator::prepare_add_file(src, "xattrd.bin", 0, "", p, engine::time_flags::MTIME,
-                                            0, false, false, false, false, {}, "", "", 1, nullptr,
-                                            false, true));
-    assert(p.fb.xattrs.size() == 3);
-    assert(p.fb.xattrs[0].name == "user.test.alpha");
-    assert(std::memcmp(p.fb.xattrs[0].value.data(), "one", 3) == 0);
-    assert(p.fb.xattrs[1].name == "user.test.beta");
-    assert(std::memcmp(p.fb.xattrs[1].value.data(), "two", 3) == 0);
-    assert(p.fb.xattrs[2].name == "user.test.empty");
-    assert(p.fb.xattrs[2].value.empty());
+    REQUIRE(ArchiveMutator::prepare_add_file(src, "xattrd.bin", 0, "", p, engine::time_flags::MTIME,
+                                             0, false, false, false, false, {}, "", "", 1, nullptr,
+                                             false, true));
+    REQUIRE(p.fb.xattrs.size() == 3);
+    REQUIRE(p.fb.xattrs[0].name == "user.test.alpha");
+    REQUIRE(std::memcmp(p.fb.xattrs[0].value.data(), "one", 3) == 0);
+    REQUIRE(p.fb.xattrs[1].name == "user.test.beta");
+    REQUIRE(std::memcmp(p.fb.xattrs[1].value.data(), "two", 3) == 0);
+    REQUIRE(p.fb.xattrs[2].name == "user.test.empty");
+    REQUIRE(p.fb.xattrs[2].value.empty());
 
     const fs::path arc = dir / "xattr_capture.rar";
     std::vector<ArchiveMutator::PreparedAdd> batch;
     batch.push_back(std::move(p));
     std::string detail;
-    assert(ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {}, false, {}, detail) ==
-           0);
+    REQUIRE(ArchiveMutator::write_batch_add_ex(arc, batch, {}, "", false, {}, false, {}, detail) ==
+            0);
 
     engine::ArchiveReader reader;
-    assert(reader.open(arc));
-    assert(reader.entries().size() == 1);
+    REQUIRE(reader.open(arc));
+    REQUIRE(reader.entries().size() == 1);
     const auto& xas = reader.entries()[0].header.xattrs;
-    assert(xas.size() == 3);
-    assert(xas[0].name == "user.test.alpha" && std::memcmp(xas[0].value.data(), "one", 3) == 0);
-    assert(xas[1].name == "user.test.beta" && std::memcmp(xas[1].value.data(), "two", 3) == 0);
-    assert(xas[2].name == "user.test.empty" && xas[2].value.empty());
-    assert(reader.entries()[0].header.unknown_extras.empty());
+    REQUIRE(xas.size() == 3);
+    REQUIRE((xas[0].name == "user.test.alpha" && std::memcmp(xas[0].value.data(), "one", 3) == 0));
+    REQUIRE((xas[1].name == "user.test.beta" && std::memcmp(xas[1].value.data(), "two", 3) == 0));
+    REQUIRE((xas[2].name == "user.test.empty" && xas[2].value.empty()));
+    REQUIRE(reader.entries()[0].header.unknown_extras.empty());
 
     std::cout << "[PASS] xattr_capture_roundtrip: -ox captures sorted user.* records\n";
 #endif
@@ -231,23 +233,23 @@ static void test_xattr_writer_caps_skip() {
     const fs::path arc = dir / "capped.rar";
     {
         openrar::io::FileStream out;
-        assert(out.open(arc, openrar::io::FileMode::CreateAlways));
+        REQUIRE(out.open(arc, openrar::io::FileMode::CreateAlways));
         openrar::format::HeaderWriter::write_signature(out);
         openrar::format::MainBlock mb;
         openrar::format::HeaderWriter::write_main_block(out, mb);
-        assert(openrar::format::HeaderWriter::write_file_block(out, fb));
+        REQUIRE(openrar::format::HeaderWriter::write_file_block(out, fb));
         out.write("c", 1);
         openrar::format::EndArcBlock eb;
         openrar::format::HeaderWriter::write_end_block(out, eb);
     }
     engine::ArchiveReader reader;
-    assert(reader.open(arc));
-    assert(reader.entries().size() == 1);
+    REQUIRE(reader.open(arc));
+    REQUIRE(reader.entries().size() == 1);
     const auto& xas = reader.entries()[0].header.xattrs;
-    assert(xas.size() == 1); // over-cap attributes skipped whole
-    assert(xas[0].name == "user.ok");
-    assert(xas[0].value.size() == 4);
-    assert(reader.entries()[0].header.unknown_extras.empty());
+    REQUIRE(xas.size() == 1); // over-cap attributes skipped whole
+    REQUIRE(xas[0].name == "user.ok");
+    REQUIRE(xas[0].value.size() == 4);
+    REQUIRE(reader.entries()[0].header.unknown_extras.empty());
     std::cout << "[PASS] xattr_writer_caps_skip: over-cap attributes skipped, record well-formed\n";
 }
 
@@ -263,22 +265,22 @@ static void test_owner_capture_survives_prepared_move() {
     const fs::path src = dir / "owned.bin";
     write_bytes(src, {'o'});
     struct stat st;
-    assert(::lstat(src.c_str(), &st) == 0);
+    REQUIRE(::lstat(src.c_str(), &st) == 0);
 
     ArchiveMutator::PreparedAdd p;
-    assert(ArchiveMutator::prepare_add_file(src, "owned.bin", 0, "", p, engine::time_flags::MTIME,
-                                            0, false,
-                                            /*want_acl=*/true));
-    assert(p.fb.has_owner);
-    assert(p.fb.has_owner_uid);
-    assert(p.fb.owner_uid == static_cast<openrar::core::uint64>(st.st_uid));
+    REQUIRE(ArchiveMutator::prepare_add_file(src, "owned.bin", 0, "", p, engine::time_flags::MTIME,
+                                             0, false,
+                                             /*want_acl=*/true));
+    REQUIRE(p.fb.has_owner);
+    REQUIRE(p.fb.has_owner_uid);
+    REQUIRE(p.fb.owner_uid == static_cast<openrar::core::uint64>(st.st_uid));
     std::cout << "[PASS] owner_capture_survives_prepared_move: FHEXTRA_OWNER lands in out.fb\n";
 #endif
 }
 
 static std::vector<uint8_t> read_bytes(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
-    assert(f);
+    REQUIRE(f);
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
                                 std::istreambuf_iterator<char>());
 }
@@ -324,7 +326,7 @@ create_plain_archive(const fs::path& dir, const char* name,
     size_t out_len = 0;
     int rc = openrar_archive_create(name_ptrs.data(), data_ptrs.data(), sizes.data(),
                                     static_cast<uint32_t>(files.size()), 3, 2, &out, &out_len);
-    assert(rc == RAR_OK);
+    REQUIRE(rc == RAR_OK);
     fs::path arc = dir / name;
     write_bytes(arc, std::vector<uint8_t>(out, out + out_len));
     openrar_free(out);
@@ -342,10 +344,10 @@ static fs::path make_solid_archive(const fs::path& dir, const char* name) {
         ArchiveMutator::PreparedAdd p;
         p.entry_name = entry;
         p.src_path = src;
-        assert(ArchiveMutator::prepare_add_file(src, entry, 3, "", p));
+        REQUIRE(ArchiveMutator::prepare_add_file(src, entry, 3, "", p));
         prepared.push_back(std::move(p));
     }
-    assert(ArchiveMutator::write_batch_add(arc, prepared, {}, "", false, {}, /*solid=*/true));
+    REQUIRE(ArchiveMutator::write_batch_add(arc, prepared, {}, "", false, {}, /*solid=*/true));
     return arc;
 }
 
@@ -354,7 +356,7 @@ static fs::path make_volume_set(const fs::path& dir, const char* name) {
     const fs::path src = dir / "vol_src.bin";
     write_bytes(src, make_pattern(10u * 1024, 77));
     fs::path arc = dir / name;
-    assert(ArchiveMutator::add_file_to_archive_vol(arc, src, "vol.bin", 3, 4096));
+    REQUIRE(ArchiveMutator::add_file_to_archive_vol(arc, src, "vol.bin", 3, 4096));
     return arc;
 }
 
@@ -362,12 +364,12 @@ static fs::path make_volume_set(const fs::path& dir, const char* name) {
 static std::vector<std::string> handle_names(const fs::path& arc) {
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     uint32_t count = 0;
     void* ents = nullptr;
     void* paths = nullptr;
     size_t paths_sz = 0;
-    assert(openrar_archive_handle_list(h, &count, &ents, &paths, &paths_sz) == RAR_OK);
+    REQUIRE(openrar_archive_handle_list(h, &count, &ents, &paths, &paths_sz) == RAR_OK);
     auto* e = static_cast<const openrar_archive_entry_t*>(ents);
     const char* p = static_cast<const char*>(paths);
     std::vector<std::string> out;
@@ -383,7 +385,7 @@ static std::vector<std::string> handle_names(const fs::path& arc) {
 static std::vector<uint8_t> handle_extract(const fs::path& arc, uint32_t index) {
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     uint8_t* out = nullptr;
     size_t len = 0;
     int rc = openrar_archive_handle_extract(h, index, &out, &len);
@@ -393,7 +395,7 @@ static std::vector<uint8_t> handle_extract(const fs::path& arc, uint32_t index) 
         std::fprintf(stderr, "[diag] handle_extract(index=%u) rc=%d msg='%s'\n", index, rc, msg);
         std::fflush(stderr);
     }
-    assert(rc == RAR_OK);
+    REQUIRE(rc == RAR_OK);
     std::vector<uint8_t> data(out, out + len);
     if (out) openrar_free(out);
     openrar_archive_close(h);
@@ -412,7 +414,7 @@ static std::vector<uint8_t> handle_extract_via_handle(uint32_t h, uint32_t index
         std::fprintf(stderr, "[diag] handle_extract(index=%u) rc=%d msg='%s'\n", index, rc, msg);
         std::fflush(stderr);
     }
-    assert(rc == RAR_OK);
+    REQUIRE(rc == RAR_OK);
     std::vector<uint8_t> data(out, out + len);
     if (out) openrar_free(out);
     return data;
@@ -421,7 +423,7 @@ static std::vector<uint8_t> handle_extract_via_handle(uint32_t h, uint32_t index
 // Engine-side view (services included) for CMT/QO assertions.
 static bool has_service(const fs::path& arc, const char* type) {
     engine::ArchiveReader reader;
-    assert(reader.open(arc));
+    REQUIRE(reader.open(arc));
     for (const auto& e : reader.entries()) {
         if (e.header.is_service && e.header.service_type == type) return true;
     }
@@ -434,7 +436,7 @@ static fs::path create_qo_archive(const fs::path& dir, const char* name) {
     const std::vector<uint8_t> data = {'q', 'o', ' ', 'f', 'i', 'x', 't', 'u', 'r', 'e'};
     fs::path arc = dir / name;
     openrar::io::FileStream out;
-    assert(out.open(arc, openrar::io::FileMode::CreateAlways));
+    REQUIRE(out.open(arc, openrar::io::FileMode::CreateAlways));
     openrar::format::HeaderWriter::write_signature(out);
     openrar::format::MainBlock mb;
     openrar::format::HeaderWriter::write_main_block(out, mb);
@@ -453,8 +455,8 @@ static fs::path create_qo_archive(const fs::path& dir, const char* name) {
     qo.data_crc32 = qo_crc.get();
     qo.method = 0;
     qo.win_size = 0;
-    assert(openrar::format::HeaderWriter::write_file_block(out, qo, 0));
-    assert(out.write(qo_payload, sizeof(qo_payload)) == sizeof(qo_payload));
+    REQUIRE(openrar::format::HeaderWriter::write_file_block(out, qo, 0));
+    REQUIRE(out.write(qo_payload, sizeof(qo_payload)) == sizeof(qo_payload));
 
     openrar::format::FileBlock fb;
     fb.file_name = "kept.bin";
@@ -467,8 +469,8 @@ static fs::path create_qo_archive(const fs::path& dir, const char* name) {
     fb.data_crc32 = crc.get();
     fb.method = 0;
     fb.win_size = 0;
-    assert(openrar::format::HeaderWriter::write_file_block(out, fb, 0));
-    assert(out.write(data.data(), data.size()) == data.size());
+    REQUIRE(openrar::format::HeaderWriter::write_file_block(out, fb, 0));
+    REQUIRE(out.write(data.data(), data.size()) == data.size());
 
     openrar::format::EndArcBlock eb;
     openrar::format::HeaderWriter::write_end_block(out, eb);
@@ -485,15 +487,15 @@ static void test_delete_roundtrip() {
     const fs::path arc =
         create_plain_archive(dir, "del.rar", {{"a.txt", a}, {"b.txt", b}, {"c.txt", c}});
 
-    assert(handle_names(arc) == std::vector<std::string>({"a.txt", "b.txt", "c.txt"}));
+    REQUIRE(handle_names(arc) == std::vector<std::string>({"a.txt", "b.txt", "c.txt"}));
 
     const uint32_t idx[1] = {1}; // b.txt
-    assert(openrar_archive_delete_entries_file(arc.u8string().c_str(), idx, 1) == RAR_OK);
+    REQUIRE(openrar_archive_delete_entries_file(arc.u8string().c_str(), idx, 1) == RAR_OK);
 
     // Re-open: entry gone, others byte-identical.
-    assert(handle_names(arc) == std::vector<std::string>({"a.txt", "c.txt"}));
-    assert(handle_extract(arc, 0) == a);
-    assert(handle_extract(arc, 1) == c);
+    REQUIRE(handle_names(arc) == std::vector<std::string>({"a.txt", "c.txt"}));
+    REQUIRE(handle_extract(arc, 0) == a);
+    REQUIRE(handle_extract(arc, 1) == c);
     std::cout << "[PASS] delete_roundtrip\n";
 }
 
@@ -505,19 +507,19 @@ static void test_solid_orphan_delete_refused() {
 
     // Head delete (index 0) with later members retained → refused.
     const uint32_t head[1] = {0};
-    assert(openrar_archive_delete_entries_file(arc.u8string().c_str(), head, 1) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
-    assert(last_error().find("cannot delete head of solid block") != std::string::npos);
+    REQUIRE(openrar_archive_delete_entries_file(arc.u8string().c_str(), head, 1) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(last_error().find("cannot delete head of solid block") != std::string::npos);
 
     // Mid-run delete (index 1) with later member retained → refused.
     const uint32_t mid[1] = {1};
-    assert(openrar_archive_delete_entries_file(arc.u8string().c_str(), mid, 1) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
-    assert(last_error().find("cannot delete entries from solid archive") != std::string::npos);
+    REQUIRE(openrar_archive_delete_entries_file(arc.u8string().c_str(), mid, 1) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(last_error().find("cannot delete entries from solid archive") != std::string::npos);
 
     // Refusals leave the archive loadable and its data intact.
-    assert(handle_names(arc) == std::vector<std::string>({"s0.bin", "s1.bin", "s2.bin"}));
-    assert(handle_extract(arc, 2) == read_bytes(dir / "src_s2.bin"));
+    REQUIRE(handle_names(arc) == std::vector<std::string>({"s0.bin", "s1.bin", "s2.bin"}));
+    REQUIRE(handle_extract(arc, 2) == read_bytes(dir / "src_s2.bin"));
     std::cout << "[PASS] solid_orphan_delete_refused\n";
 }
 
@@ -531,16 +533,16 @@ static void test_solid_suffix_and_whole_run_delete() {
     const std::vector<uint8_t> s0 = read_bytes(dir / "src_s0.bin");
     const std::vector<uint8_t> s1 = read_bytes(dir / "src_s1.bin");
     const uint32_t tail[1] = {2};
-    assert(openrar_archive_delete_entries_file(suffix_arc.u8string().c_str(), tail, 1) == RAR_OK);
-    assert(handle_names(suffix_arc) == std::vector<std::string>({"s0.bin", "s1.bin"}));
-    assert(handle_extract(suffix_arc, 0) == s0);
-    assert(handle_extract(suffix_arc, 1) == s1);
+    REQUIRE(openrar_archive_delete_entries_file(suffix_arc.u8string().c_str(), tail, 1) == RAR_OK);
+    REQUIRE(handle_names(suffix_arc) == std::vector<std::string>({"s0.bin", "s1.bin"}));
+    REQUIRE(handle_extract(suffix_arc, 0) == s0);
+    REQUIRE(handle_extract(suffix_arc, 1) == s1);
 
     // Whole run: delete every member → allowed.
     const fs::path whole_arc = make_solid_archive(dir, "whole.rar");
     const uint32_t all[3] = {0, 1, 2};
-    assert(openrar_archive_delete_entries_file(whole_arc.u8string().c_str(), all, 3) == RAR_OK);
-    assert(handle_names(whole_arc).empty());
+    REQUIRE(openrar_archive_delete_entries_file(whole_arc.u8string().c_str(), all, 3) == RAR_OK);
+    REQUIRE(handle_names(whole_arc).empty());
     std::cout << "[PASS] solid_suffix_and_whole_run_delete\n";
 }
 
@@ -551,43 +553,43 @@ static void test_locked_volume_hp_refused() {
 
     // Locked archive: delete and add both refused.
     const fs::path locked = create_plain_archive(dir, "locked.rar", {{"x.txt", {'x'}}});
-    assert(ArchiveMutator::lock_archive(locked));
+    REQUIRE(ArchiveMutator::lock_archive(locked));
     const uint32_t idx0[1] = {0};
-    assert(openrar_archive_delete_entries_file(locked.u8string().c_str(), idx0, 1) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(openrar_archive_delete_entries_file(locked.u8string().c_str(), idx0, 1) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
     const fs::path src = dir / "add_src.bin";
     write_bytes(src, {'n', 'e', 'w'});
     const std::string src_u8 = src.u8string();
     const char* srcs[1] = {src_u8.c_str()};
     const char* names[1] = {"x.txt"};
-    assert(openrar_archive_add_files_file(locked.u8string().c_str(), srcs, names, 1, 3, 2) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(openrar_archive_add_files_file(locked.u8string().c_str(), srcs, names, 1, 3, 2) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
 
     // Multi-volume set: refused. The mutation exports take the path
     // literally (no first-volume derivation like open_file), so the first
     // volume's own name is what gets mutated/refused.
     const fs::path vol = make_volume_set(dir, "set.rar");
     const fs::path vol1 = dir / "set.part01.rar";
-    assert(fs::exists(vol1));
-    assert(openrar_archive_delete_entries_file(vol1.u8string().c_str(), idx0, 1) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
-    assert(openrar_archive_add_files_file(vol1.u8string().c_str(), srcs, names, 1, 3, 2) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(fs::exists(vol1));
+    REQUIRE(openrar_archive_delete_entries_file(vol1.u8string().c_str(), idx0, 1) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(openrar_archive_add_files_file(vol1.u8string().c_str(), srcs, names, 1, 3, 2) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
 
     // Header-encrypted (-hp): no password on this surface → refused, both.
     const fs::path hp_src = dir / "hp_src.bin";
     write_bytes(hp_src, make_pattern(1024, 9));
     const fs::path hp = dir / "hp.rar";
-    assert(ArchiveMutator::add_file_to_archive(hp, hp_src, "payload.bin", 3, {}, 0, "pw",
-                                               /*encrypt_headers=*/true));
+    REQUIRE(ArchiveMutator::add_file_to_archive(hp, hp_src, "payload.bin", 3, {}, 0, "pw",
+                                                /*encrypt_headers=*/true));
     const int hp_rc = openrar_archive_delete_entries_file(hp.u8string().c_str(), idx0, 1);
     if (hp_rc != RAR_ERR_UNSUPPORTED_FEATURE) {
         std::cout << "  hp delete rc=" << hp_rc << " err=" << last_error() << "\n" << std::flush;
     }
-    assert(hp_rc == RAR_ERR_UNSUPPORTED_FEATURE);
-    assert(last_error().find("mutating header-encrypted archive") != std::string::npos);
-    assert(openrar_archive_add_files_file(hp.u8string().c_str(), srcs, names, 1, 3, 2) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(hp_rc == RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(last_error().find("mutating header-encrypted archive") != std::string::npos);
+    REQUIRE(openrar_archive_add_files_file(hp.u8string().c_str(), srcs, names, 1, 3, 2) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
     std::cout << "[PASS] locked_volume_hp_refused\n";
 }
 
@@ -605,11 +607,11 @@ static void test_add_replace_u_semantics() {
     const std::string arc_u8 = arc.u8string();
     const char* srcs[1] = {a_src_u8.c_str()};
     const char* names[1] = {"a.txt"};
-    assert(openrar_archive_add_files_file(arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
+    REQUIRE(openrar_archive_add_files_file(arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
 
     // Same entry count (old instance stripped, new appended), new content.
-    assert(handle_names(arc) == std::vector<std::string>({"b.txt", "a.txt"}));
-    assert(handle_extract(arc, 0) == b);
+    REQUIRE(handle_names(arc) == std::vector<std::string>({"b.txt", "a.txt"}));
+    REQUIRE(handle_extract(arc, 0) == b);
     const std::vector<uint8_t> got = handle_extract(arc, 1);
     if (got != a_new) {
         std::cout << "  u_semantics: got size=" << got.size() << " want=" << a_new.size()
@@ -617,7 +619,7 @@ static void test_add_replace_u_semantics() {
         for (size_t i = 0; i < 8 && i < got.size(); ++i) std::cout << (int)got[i] << ",";
         std::cout << "\n" << std::flush;
     }
-    assert(got == a_new);
+    REQUIRE(got == a_new);
     std::cout << "[PASS] add_replace_u_semantics\n";
 }
 
@@ -634,20 +636,20 @@ static void test_solid_append_new_name() {
     const std::string solid_arc_u8 = arc.u8string();
     const char* srcs[1] = {extra_src_u8.c_str()};
     const char* names[1] = {"extra.bin"};
-    assert(openrar_archive_add_files_file(solid_arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
-    assert(handle_names(arc) ==
-           std::vector<std::string>({"s0.bin", "s1.bin", "s2.bin", "extra.bin"}));
-    assert(handle_extract(arc, 3) == extra);
+    REQUIRE(openrar_archive_add_files_file(solid_arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
+    REQUIRE(handle_names(arc) ==
+            std::vector<std::string>({"s0.bin", "s1.bin", "s2.bin", "extra.bin"}));
+    REQUIRE(handle_extract(arc, 3) == extra);
     // The retained solid chain still decodes.
-    assert(handle_extract(arc, 2) == read_bytes(dir / "src_s2.bin"));
+    REQUIRE(handle_extract(arc, 2) == read_bytes(dir / "src_s2.bin"));
 
     // Replacing a solid member (head or chained) is refused; the archive is
     // unchanged afterwards.
     const char* rnames[1] = {"s1.bin"};
-    assert(openrar_archive_add_files_file(solid_arc_u8.c_str(), srcs, rnames, 1, 3, 2) ==
-           RAR_ERR_UNSUPPORTED_FEATURE);
-    assert(last_error().find("cannot replace entry in solid archive") != std::string::npos);
-    assert(handle_names(arc).size() == 4);
+    REQUIRE(openrar_archive_add_files_file(solid_arc_u8.c_str(), srcs, rnames, 1, 3, 2) ==
+            RAR_ERR_UNSUPPORTED_FEATURE);
+    REQUIRE(last_error().find("cannot replace entry in solid archive") != std::string::npos);
+    REQUIRE(handle_names(arc).size() == 4);
     std::cout << "[PASS] solid_append_new_name\n";
 }
 
@@ -667,9 +669,9 @@ static void test_add_atomicity() {
     const std::string at_arc_u8 = arc.u8string();
     const char* srcs[2] = {good_u8.c_str(), missing_u8.c_str()};
     const char* names[2] = {"good.txt", "missing.bin"};
-    assert(openrar_archive_add_files_file(at_arc_u8.c_str(), srcs, names, 2, 3, 2) == RAR_ERR_IO);
-    assert(read_bytes(arc) == before);
-    assert(handle_names(arc) == std::vector<std::string>({"a.txt", "b.txt"}));
+    REQUIRE(openrar_archive_add_files_file(at_arc_u8.c_str(), srcs, names, 2, 3, 2) == RAR_ERR_IO);
+    REQUIRE(read_bytes(arc) == before);
+    REQUIRE(handle_names(arc) == std::vector<std::string>({"a.txt", "b.txt"}));
     std::cout << "[PASS] add_atomicity\n";
 }
 
@@ -682,11 +684,11 @@ static void test_busy_handle_collision() {
 
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
 
     const uint32_t idx[1] = {0};
-    assert(openrar_archive_delete_entries_file(arc.u8string().c_str(), idx, 1) == RAR_ERR_BUSY);
-    assert(last_error().find("close it before mutating") != std::string::npos);
+    REQUIRE(openrar_archive_delete_entries_file(arc.u8string().c_str(), idx, 1) == RAR_ERR_BUSY);
+    REQUIRE(last_error().find("close it before mutating") != std::string::npos);
 
     const fs::path src = dir / "z.bin";
     write_bytes(src, {'z'});
@@ -694,17 +696,17 @@ static void test_busy_handle_collision() {
     const std::string busy_arc_u8 = arc.u8string();
     const char* srcs[1] = {z_src_u8.c_str()};
     const char* names[1] = {"z.bin"};
-    assert(openrar_archive_add_files_file(busy_arc_u8.c_str(), srcs, names, 1, 3, 2) ==
-           RAR_ERR_BUSY);
+    REQUIRE(openrar_archive_add_files_file(busy_arc_u8.c_str(), srcs, names, 1, 3, 2) ==
+            RAR_ERR_BUSY);
 
     // The handle still works (its archive was not touched).
-    assert(handle_extract_via_handle(h, 0) == a);
+    REQUIRE(handle_extract_via_handle(h, 0) == a);
 
     openrar_archive_close(h);
     // Closed → both mutations succeed.
-    assert(openrar_archive_delete_entries_file(busy_arc_u8.c_str(), idx, 1) == RAR_OK);
-    assert(openrar_archive_add_files_file(busy_arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
-    assert(handle_names(arc) == std::vector<std::string>({"z.bin"}));
+    REQUIRE(openrar_archive_delete_entries_file(busy_arc_u8.c_str(), idx, 1) == RAR_OK);
+    REQUIRE(openrar_archive_add_files_file(busy_arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
+    REQUIRE(handle_names(arc) == std::vector<std::string>({"z.bin"}));
     std::cout << "[PASS] busy_handle_collision\n";
 }
 
@@ -718,13 +720,13 @@ static void test_validation_errors() {
 
     // Delete: null args, count 0, out-of-range index (with the pinned detail).
     const uint32_t idx[1] = {0};
-    assert(openrar_archive_delete_entries_file(nullptr, idx, 1) == RAR_ERR_INVALID_ARG);
-    assert(openrar_archive_delete_entries_file(arc_u8.c_str(), nullptr, 1) == RAR_ERR_INVALID_ARG);
-    assert(openrar_archive_delete_entries_file(arc_u8.c_str(), idx, 0) == RAR_ERR_INVALID_ARG);
+    REQUIRE(openrar_archive_delete_entries_file(nullptr, idx, 1) == RAR_ERR_INVALID_ARG);
+    REQUIRE(openrar_archive_delete_entries_file(arc_u8.c_str(), nullptr, 1) == RAR_ERR_INVALID_ARG);
+    REQUIRE(openrar_archive_delete_entries_file(arc_u8.c_str(), idx, 0) == RAR_ERR_INVALID_ARG);
     const uint32_t oor[1] = {3};
-    assert(openrar_archive_delete_entries_file(arc_u8.c_str(), oor, 1) == RAR_ERR_INVALID_ARG);
-    assert(last_error().find("entry index 3 out of range (archive has 3 entries)") !=
-           std::string::npos);
+    REQUIRE(openrar_archive_delete_entries_file(arc_u8.c_str(), oor, 1) == RAR_ERR_INVALID_ARG);
+    REQUIRE(last_error().find("entry index 3 out of range (archive has 3 entries)") !=
+            std::string::npos);
 
     // Add: method / window_log2 parity with create, null args, count 0.
     const fs::path src = dir / "s.bin";
@@ -732,23 +734,23 @@ static void test_validation_errors() {
     const std::string s_src_u8 = src.u8string();
     const char* srcs[1] = {s_src_u8.c_str()};
     const char* names[1] = {"s.bin"};
-    assert(openrar_archive_add_files_file(arc_u8.c_str(), srcs, names, 1, 1, 2) ==
-           RAR_ERR_INVALID_ARG); // method ∉ {0,3,5}
-    assert(openrar_archive_add_files_file(arc_u8.c_str(), srcs, names, 1, 3, 0) ==
-           RAR_ERR_INVALID_ARG); // window_log2 < 1
-    assert(openrar_archive_add_files_file(arc_u8.c_str(), srcs, names, 1, 3, 5) ==
-           RAR_ERR_INVALID_ARG); // window_log2 > 4
-    assert(openrar_archive_add_files_file(nullptr, srcs, names, 1, 3, 2) == RAR_ERR_INVALID_ARG);
-    assert(openrar_archive_add_files_file(arc_u8.c_str(), srcs, names, 0, 3, 2) ==
-           RAR_ERR_INVALID_ARG);
+    REQUIRE(openrar_archive_add_files_file(arc_u8.c_str(), srcs, names, 1, 1, 2) ==
+            RAR_ERR_INVALID_ARG); // method ∉ {0,3,5}
+    REQUIRE(openrar_archive_add_files_file(arc_u8.c_str(), srcs, names, 1, 3, 0) ==
+            RAR_ERR_INVALID_ARG); // window_log2 < 1
+    REQUIRE(openrar_archive_add_files_file(arc_u8.c_str(), srcs, names, 1, 3, 5) ==
+            RAR_ERR_INVALID_ARG); // window_log2 > 4
+    REQUIRE(openrar_archive_add_files_file(nullptr, srcs, names, 1, 3, 2) == RAR_ERR_INVALID_ARG);
+    REQUIRE(openrar_archive_add_files_file(arc_u8.c_str(), srcs, names, 0, 3, 2) ==
+            RAR_ERR_INVALID_ARG);
     const char* null_names[1] = {nullptr};
-    assert(openrar_archive_add_files_file(arc_u8.c_str(), srcs, null_names, 1, 3, 2) ==
-           RAR_ERR_INVALID_ARG);
+    REQUIRE(openrar_archive_add_files_file(arc_u8.c_str(), srcs, null_names, 1, 3, 2) ==
+            RAR_ERR_INVALID_ARG);
 
     // Missing archive → RAR_ERR_IO.
     const std::string missing = (dir / "nope.rar").u8string();
-    assert(openrar_archive_delete_entries_file(missing.c_str(), idx, 1) == RAR_ERR_IO);
-    assert(openrar_archive_add_files_file(missing.c_str(), srcs, names, 1, 3, 2) == RAR_ERR_IO);
+    REQUIRE(openrar_archive_delete_entries_file(missing.c_str(), idx, 1) == RAR_ERR_IO);
+    REQUIRE(openrar_archive_add_files_file(missing.c_str(), srcs, names, 1, 3, 2) == RAR_ERR_IO);
     std::cout << "[PASS] validation_errors\n";
 }
 
@@ -766,16 +768,16 @@ static void test_comment_preserved_qo_stripped() {
         ArchiveMutator::PreparedAdd p;
         p.entry_name = "f.bin";
         p.src_path = src;
-        assert(ArchiveMutator::prepare_add_file(src, "f.bin", 3, "", p));
+        REQUIRE(ArchiveMutator::prepare_add_file(src, "f.bin", 3, "", p));
         prepared.push_back(std::move(p));
         const std::vector<openrar::core::byte> comment = {'h', 'i', ' ', 'c', 'm', 't'};
-        assert(
+        REQUIRE(
             ArchiveMutator::write_batch_add(cmt_arc, prepared, {}, "", false, {}, false, comment));
     }
-    assert(has_service(cmt_arc, "CMT"));
+    REQUIRE(has_service(cmt_arc, "CMT"));
     const uint32_t idx0[1] = {0};
-    assert(openrar_archive_delete_entries_file(cmt_arc.u8string().c_str(), idx0, 1) == RAR_OK);
-    assert(has_service(cmt_arc, "CMT")); // comment survived the rewrite
+    REQUIRE(openrar_archive_delete_entries_file(cmt_arc.u8string().c_str(), idx0, 1) == RAR_OK);
+    REQUIRE(has_service(cmt_arc, "CMT")); // comment survived the rewrite
 
     // Same for the add path.
     const fs::path cmt_arc2 = dir / "cmt2.rar";
@@ -786,10 +788,10 @@ static void test_comment_preserved_qo_stripped() {
         ArchiveMutator::PreparedAdd p;
         p.entry_name = "f.bin";
         p.src_path = src;
-        assert(ArchiveMutator::prepare_add_file(src, "f.bin", 3, "", p));
+        REQUIRE(ArchiveMutator::prepare_add_file(src, "f.bin", 3, "", p));
         prepared.push_back(std::move(p));
         const std::vector<openrar::core::byte> comment = {'c', 'm', 't', '2'};
-        assert(
+        REQUIRE(
             ArchiveMutator::write_batch_add(cmt_arc2, prepared, {}, "", false, {}, false, comment));
     }
     const fs::path add_src = dir / "add.bin";
@@ -798,15 +800,15 @@ static void test_comment_preserved_qo_stripped() {
     const std::string cmt2_arc_u8 = cmt_arc2.u8string();
     const char* srcs[1] = {add_src_u8.c_str()};
     const char* names[1] = {"add.bin"};
-    assert(openrar_archive_add_files_file(cmt2_arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
-    assert(has_service(cmt_arc2, "CMT"));
+    REQUIRE(openrar_archive_add_files_file(cmt2_arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
+    REQUIRE(has_service(cmt_arc2, "CMT"));
 
     // QO: always stripped by the rewrite, file entries preserved.
     const fs::path qo_arc = create_qo_archive(dir, "qo.rar");
-    assert(has_service(qo_arc, "QO"));
-    assert(handle_names(qo_arc) == std::vector<std::string>({"kept.bin"})); // QO never listed
-    assert(openrar_archive_delete_entries_file(qo_arc.u8string().c_str(), idx0, 1) == RAR_OK);
-    assert(!has_service(qo_arc, "QO"));
+    REQUIRE(has_service(qo_arc, "QO"));
+    REQUIRE(handle_names(qo_arc) == std::vector<std::string>({"kept.bin"})); // QO never listed
+    REQUIRE(openrar_archive_delete_entries_file(qo_arc.u8string().c_str(), idx0, 1) == RAR_OK);
+    REQUIRE(!has_service(qo_arc, "QO"));
     std::cout << "[PASS] comment_preserved_qo_stripped\n";
 }
 
@@ -823,21 +825,21 @@ static void test_add_directory_record() {
     const std::string dir_arc_u8 = arc.u8string();
     const char* srcs[1] = {sub_u8.c_str()};
     const char* names[1] = {"subdir/"};
-    assert(openrar_archive_add_files_file(dir_arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
+    REQUIRE(openrar_archive_add_files_file(dir_arc_u8.c_str(), srcs, names, 1, 3, 2) == RAR_OK);
     uint32_t h =
         openrar_archive_open_file(arc.u8string().c_str(), nullptr, nullptr, nullptr, nullptr);
-    assert(h != 0);
+    REQUIRE(h != 0);
     uint32_t count = 0;
     void* ents = nullptr;
     void* paths = nullptr;
     size_t paths_sz = 0;
-    assert(openrar_archive_handle_list(h, &count, &ents, &paths, &paths_sz) == RAR_OK);
+    REQUIRE(openrar_archive_handle_list(h, &count, &ents, &paths, &paths_sz) == RAR_OK);
     auto* e = static_cast<const openrar_archive_entry_t*>(ents);
-    assert(count == 2);
+    REQUIRE(count == 2);
     // Order: original entry first, directory appended.
     const char* p = static_cast<const char*>(paths);
-    assert(std::string(p + e[1].path_offset, e[1].path_len) == "subdir/");
-    assert(e[1].is_dir == 1);
+    REQUIRE(std::string(p + e[1].path_offset, e[1].path_len) == "subdir/");
+    REQUIRE(e[1].is_dir == 1);
     openrar_archive_list_free(ents, paths, paths_sz);
     openrar_archive_close(h);
     std::cout << "[PASS] add_directory_record\n";
@@ -852,16 +854,16 @@ static void test_cpp_wrapper() {
 
     openrar::delete_entries(arc, {0});
     auto entries = openrar::list_archive_file(arc);
-    assert(entries.size() == 1 && entries[0].path == "b.txt");
+    REQUIRE((entries.size() == 1 && entries[0].path == "b.txt"));
 
     const fs::path src = dir / "c.txt";
     write_bytes(src, {'n', 'e', 'w'});
     openrar::add_files(arc, {{src, "c.txt"}}, openrar::AddOptions{3, 4});
     entries = openrar::list_archive_file(arc);
-    assert(entries.size() == 2 && entries[1].path == "c.txt");
+    REQUIRE((entries.size() == 2 && entries[1].path == "c.txt"));
     {
         openrar::ArchiveHandle h(arc);
-        assert(h.extract(1) == std::vector<uint8_t>({'n', 'e', 'w'}));
+        REQUIRE(h.extract(1) == std::vector<uint8_t>({'n', 'e', 'w'}));
     }
 
     // Wrapper errors surface as exceptions with the DLL detail.
@@ -871,7 +873,7 @@ static void test_cpp_wrapper() {
     } catch (const std::runtime_error& e) {
         threw = std::string(e.what()).find("out of range") != std::string::npos;
     }
-    assert(threw);
+    REQUIRE(threw);
     std::cout << "[PASS] cpp_wrapper\n";
 }
 
@@ -882,9 +884,9 @@ static void test_mutator_plan_single_file_stored() {
     reqs[0].method = 0;
     reqs[0].is_dir = false;
     auto plan = openrar::compress::CompressPlan::plan_entries(reqs, false);
-    assert(plan.entries.size() == 1);
-    assert(plan.entries[0].decision == openrar::compress::EntryDecision::Stored);
-    assert(!plan.entries[0].is_solid_chain);
+    REQUIRE(plan.entries.size() == 1);
+    REQUIRE(plan.entries[0].decision == openrar::compress::EntryDecision::Stored);
+    REQUIRE(!plan.entries[0].is_solid_chain);
     std::cout << "[PASS] MutatorPlan_SingleFileStored\n";
 }
 
@@ -894,9 +896,9 @@ static void test_mutator_plan_single_file_compressed() {
     reqs[0].method = 3;
     reqs[0].is_dir = false;
     auto plan = openrar::compress::CompressPlan::plan_entries(reqs, false);
-    assert(plan.entries.size() == 1);
-    assert(plan.entries[0].decision == openrar::compress::EntryDecision::BlockStream);
-    assert(!plan.entries[0].is_solid_chain);
+    REQUIRE(plan.entries.size() == 1);
+    REQUIRE(plan.entries[0].decision == openrar::compress::EntryDecision::BlockStream);
+    REQUIRE(!plan.entries[0].is_solid_chain);
     std::cout << "[PASS] MutatorPlan_SingleFileCompressed\n";
 }
 
@@ -910,13 +912,13 @@ static void test_mutator_plan_solid_chain_three_files() {
     reqs[2].method = 3;
     reqs[2].is_dir = false;
     auto plan = openrar::compress::CompressPlan::plan_entries(reqs, /*solid_mode=*/true);
-    assert(plan.entries.size() == 3);
-    assert(plan.entries[0].decision == openrar::compress::EntryDecision::BlockStream);
-    assert(!plan.entries[0].is_solid_chain); // first entry starts chain
-    assert(plan.entries[1].decision == openrar::compress::EntryDecision::Stored);
-    assert(!plan.entries[1].is_solid_chain); // stored entry never solid
-    assert(plan.entries[2].decision == openrar::compress::EntryDecision::BlockStream);
-    assert(plan.entries[2].is_solid_chain); // second compressed entry continues chain
+    REQUIRE(plan.entries.size() == 3);
+    REQUIRE(plan.entries[0].decision == openrar::compress::EntryDecision::BlockStream);
+    REQUIRE(!plan.entries[0].is_solid_chain); // first entry starts chain
+    REQUIRE(plan.entries[1].decision == openrar::compress::EntryDecision::Stored);
+    REQUIRE(!plan.entries[1].is_solid_chain); // stored entry never solid
+    REQUIRE(plan.entries[2].decision == openrar::compress::EntryDecision::BlockStream);
+    REQUIRE(plan.entries[2].is_solid_chain); // second compressed entry continues chain
     std::cout << "[PASS] MutatorPlan_SolidChain_ThreeFiles\n";
 }
 
@@ -945,12 +947,12 @@ static void test_mutator_plan_output_bit_identical() {
         std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
     }
     hex[64] = '\0';
-    assert(std::string(hex) == expected_sha);
+    REQUIRE(std::string(hex) == expected_sha);
 
     openrar::archive::ArchiveReader r;
-    assert(r.open(golden_solid));
-    assert(r.entries().size() >= 2);
-    for (const auto& e : r.entries()) assert(r.test_entry(e));
+    REQUIRE(r.open(golden_solid));
+    REQUIRE(r.entries().size() >= 2);
+    for (const auto& e : r.entries()) REQUIRE(r.test_entry(e));
 
     std::cout << "[PASS] MutatorPlan_OutputBitIdentical\n";
 }
@@ -990,30 +992,30 @@ static void test_execution_plan_workspace_gating() {
     auto cp = openrar::compress::CompressPlan::plan_entries(reqs, false, 3);
     auto ep = openrar::compress::ExecutionPlan::from_compress_plan(cp);
 
-    assert(ep.entries.size() == 4);
+    REQUIRE(ep.entries.size() == 4);
     // Entry 0: Stored
-    assert(ep.entries[0].decision == openrar::compress::EntryDecision::Stored);
-    assert(ep.entries[0].estimated_workspace_bytes == 5000);
+    REQUIRE(ep.entries[0].decision == openrar::compress::EntryDecision::Stored);
+    REQUIRE(ep.entries[0].estimated_workspace_bytes == 5000);
 
     // Entry 1: Method 3 (8 MB dict)
-    assert(ep.entries[1].decision == openrar::compress::EntryDecision::BlockStream);
-    assert(ep.entries[1].dict_size == 0x800000ULL);
+    REQUIRE(ep.entries[1].decision == openrar::compress::EntryDecision::BlockStream);
+    REQUIRE(ep.entries[1].dict_size == 0x800000ULL);
     uint64_t expected_m3 = (0x800000ULL * 5) + (6ULL * 1024ULL * 1024ULL);
-    assert(ep.entries[1].estimated_workspace_bytes == expected_m3);
+    REQUIRE(ep.entries[1].estimated_workspace_bytes == expected_m3);
 
     // Entry 2: Directory (0 bytes -> 1 byte floor)
-    assert(ep.entries[2].decision == openrar::compress::EntryDecision::Stored);
-    assert(ep.entries[2].estimated_workspace_bytes == 1);
+    REQUIRE(ep.entries[2].decision == openrar::compress::EntryDecision::Stored);
+    REQUIRE(ep.entries[2].estimated_workspace_bytes == 1);
 
     // Entry 3: Method 5 (64 MB dict)
-    assert(ep.entries[3].decision == openrar::compress::EntryDecision::BlockStream);
-    assert(ep.entries[3].dict_size == 0x4000000ULL);
+    REQUIRE(ep.entries[3].decision == openrar::compress::EntryDecision::BlockStream);
+    REQUIRE(ep.entries[3].dict_size == 0x4000000ULL);
     uint64_t expected_m5 = (0x4000000ULL * 5) + (6ULL * 1024ULL * 1024ULL);
-    assert(ep.entries[3].estimated_workspace_bytes == expected_m5);
+    REQUIRE(ep.entries[3].estimated_workspace_bytes == expected_m5);
 
     // Cumulative and peak
-    assert(ep.peak_entry_workspace == expected_m5);
-    assert(ep.estimated_workspace_bytes == (5000 + expected_m3 + 1 + expected_m5));
+    REQUIRE(ep.peak_entry_workspace == expected_m5);
+    REQUIRE(ep.estimated_workspace_bytes == (5000 + expected_m3 + 1 + expected_m5));
 
     std::cout << "[PASS] ExecutionPlan_WorkspaceGating\n";
 }
@@ -1036,25 +1038,25 @@ static void test_streaming_and_spooling() {
     prep_store.src_path = f_store;
     prep_store.entry_name = "store_17m.dat";
     bool ok = ArchiveMutator::prepare_add_file(f_store, "store_17m.dat", 0, "", prep_store);
-    assert(ok);
+    REQUIRE(ok);
     // Direct stream: payload empty and spool_path empty
-    assert(prep_store.payload.empty());
-    assert(prep_store.spool_path.empty());
+    REQUIRE(prep_store.payload.empty());
+    REQUIRE(prep_store.spool_path.empty());
 
     fs::path arc_store = dir / "store.rar";
     std::vector<ArchiveMutator::PreparedAdd> batch_store;
     batch_store.push_back(std::move(prep_store));
     ok = ArchiveMutator::write_batch_add(arc_store, batch_store);
-    assert(ok);
-    assert(fs::exists(arc_store));
+    REQUIRE(ok);
+    REQUIRE(fs::exists(arc_store));
 
     // Verify extraction of stored file
     engine::ArchiveReader reader_store;
-    assert(reader_store.open(arc_store));
-    assert(reader_store.entries().size() == 1);
+    REQUIRE(reader_store.open(arc_store));
+    REQUIRE(reader_store.entries().size() == 1);
     fs::path out_store = dir / "store_out.dat";
-    assert(reader_store.extract_entry(reader_store.entries()[0], out_store));
-    assert(fs::file_size(out_store) == 17 * 1024 * 1024);
+    REQUIRE(reader_store.extract_entry(reader_store.entries()[0], out_store));
+    REQUIRE(fs::file_size(out_store) == 17 * 1024 * 1024);
 
     // 2. Large encrypted spooled file (> 16 MiB pseudo-random data with method 1)
     fs::path f_rand = dir / "rand_17m.dat";
@@ -1076,17 +1078,17 @@ static void test_streaming_and_spooling() {
     prep_enc.entry_name = "rand_17m.dat";
     std::string psw = "SpoolPassword999";
     ok = ArchiveMutator::prepare_add_file(f_rand, "rand_17m.dat", 1, psw, prep_enc);
-    assert(ok);
-    assert(prep_enc.payload.empty());
-    assert(!prep_enc.spool_path.empty());
-    assert(fs::exists(prep_enc.spool_path));
+    REQUIRE(ok);
+    REQUIRE(prep_enc.payload.empty());
+    REQUIRE(!prep_enc.spool_path.empty());
+    REQUIRE(fs::exists(prep_enc.spool_path));
 
     // Verify spool file has data
     {
         std::ifstream sf(prep_enc.spool_path, std::ios::binary);
         std::vector<char> header_bytes(64);
         sf.read(header_bytes.data(), header_bytes.size());
-        assert(sf.gcount() == 64);
+        REQUIRE(sf.gcount() == 64);
     }
 
     fs::path arc_enc = dir / "enc.rar";
@@ -1094,19 +1096,19 @@ static void test_streaming_and_spooling() {
     std::vector<ArchiveMutator::PreparedAdd> batch_enc;
     batch_enc.push_back(std::move(prep_enc));
     ok = ArchiveMutator::write_batch_add(arc_enc, batch_enc, {}, psw);
-    assert(ok);
-    assert(fs::exists(arc_enc));
+    REQUIRE(ok);
+    REQUIRE(fs::exists(arc_enc));
 
     // SpoolFileGuard must have cleaned up the spool file
-    assert(!fs::exists(spool_temp_path));
+    REQUIRE(!fs::exists(spool_temp_path));
 
     // Verify extraction with password
     engine::ArchiveReader reader_enc;
-    assert(reader_enc.open(arc_enc, psw));
-    assert(reader_enc.entries().size() == 1);
+    REQUIRE(reader_enc.open(arc_enc, psw));
+    REQUIRE(reader_enc.entries().size() == 1);
     fs::path out_enc = dir / "enc_out.dat";
-    assert(reader_enc.extract_entry(reader_enc.entries()[0], out_enc, psw));
-    assert(fs::file_size(out_enc) == 17 * 1024 * 1024);
+    REQUIRE(reader_enc.extract_entry(reader_enc.entries()[0], out_enc, psw));
+    REQUIRE(fs::file_size(out_enc) == 17 * 1024 * 1024);
 
     // Verify bit-identical match between original rand file and extracted file
     {
@@ -1114,8 +1116,8 @@ static void test_streaming_and_spooling() {
         std::ifstream f2(out_enc, std::ios::binary);
         std::vector<char> b1(64 * 1024), b2(64 * 1024);
         while (f1.read(b1.data(), b1.size())) {
-            assert(f2.read(b2.data(), b2.size()));
-            assert(std::memcmp(b1.data(), b2.data(), b1.size()) == 0);
+            REQUIRE(f2.read(b2.data(), b2.size()));
+            REQUIRE(std::memcmp(b1.data(), b2.data(), b1.size()) == 0);
         }
     }
 
@@ -1139,8 +1141,8 @@ static void test_deferred_store_and_adaptive_clamping() {
         bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 3, "", prep,
                                                    openrar::archive::time_flags::MTIME, 0, false,
                                                    false, false);
-        assert(ok);
-        assert(prep.fb.win_size == 128 * 1024);
+        REQUIRE(ok);
+        REQUIRE(prep.fb.win_size == 128 * 1024);
     }
 
     // Explicit window_log2 = 2 (256 KiB) with method 3 -> honors 256 KiB
@@ -1149,8 +1151,8 @@ static void test_deferred_store_and_adaptive_clamping() {
         bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 3, "", prep,
                                                    openrar::archive::time_flags::MTIME, 2, false,
                                                    false, false);
-        assert(ok);
-        assert(prep.fb.win_size == 256 * 1024);
+        REQUIRE(ok);
+        REQUIRE(prep.fb.win_size == 256 * 1024);
     }
 
     // Auto window_log2 (0) with method 5 -> clamps to 128 KiB
@@ -1159,8 +1161,8 @@ static void test_deferred_store_and_adaptive_clamping() {
         bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 5, "", prep,
                                                    openrar::archive::time_flags::MTIME, 0, false,
                                                    false, false);
-        assert(ok);
-        assert(prep.fb.win_size == 128 * 1024);
+        REQUIRE(ok);
+        REQUIRE(prep.fb.win_size == 128 * 1024);
     }
 
     // Solid archive with auto window_log2 (0) and method 3 -> does NOT clamp, stays 8 MiB
@@ -1169,8 +1171,8 @@ static void test_deferred_store_and_adaptive_clamping() {
         bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 3, "", prep,
                                                    openrar::archive::time_flags::MTIME, 0, false,
                                                    false, true);
-        assert(ok);
-        assert(prep.fb.win_size == 8 * 1024 * 1024);
+        REQUIRE(ok);
+        REQUIRE(prep.fb.win_size == 8 * 1024 * 1024);
     }
 
     // Solid archive with auto window_log2 (0) and method 5 -> does NOT clamp, stays 64 MiB
@@ -1179,8 +1181,8 @@ static void test_deferred_store_and_adaptive_clamping() {
         bool ok = ArchiveMutator::prepare_add_file(f_32k, "f_32k.bin", 5, "", prep,
                                                    openrar::archive::time_flags::MTIME, 0, false,
                                                    false, true);
-        assert(ok);
-        assert(prep.fb.win_size == 64 * 1024 * 1024);
+        REQUIRE(ok);
+        REQUIRE(prep.fb.win_size == 64 * 1024 * 1024);
     }
 
     // 1 MiB file with auto window_log2 (0) and method 5 -> clamps to 1 MiB
@@ -1192,8 +1194,8 @@ static void test_deferred_store_and_adaptive_clamping() {
         bool ok = ArchiveMutator::prepare_add_file(f_1m, "f_1m.bin", 5, "", prep,
                                                    openrar::archive::time_flags::MTIME, 0, false,
                                                    false, false);
-        assert(ok);
-        assert(prep.fb.win_size == 1024 * 1024);
+        REQUIRE(ok);
+        REQUIRE(prep.fb.win_size == 1024 * 1024);
     }
 
     // 2. Deferred CRC on stored file:
@@ -1218,38 +1220,38 @@ static void test_deferred_store_and_adaptive_clamping() {
     prep_store.src_path = f_18m;
     prep_store.entry_name = "f_18m.bin";
     bool ok = ArchiveMutator::prepare_add_file(f_18m, "f_18m.bin", 0, "", prep_store);
-    assert(ok);
-    assert(prep_store.needs_deferred_crc);
-    assert(prep_store.fb.has_crc32);
-    assert(prep_store.fb.data_crc32 == 0); // Placeholder before write
+    REQUIRE(ok);
+    REQUIRE(prep_store.needs_deferred_crc);
+    REQUIRE(prep_store.fb.has_crc32);
+    REQUIRE(prep_store.fb.data_crc32 == 0); // Placeholder before write
 
     fs::path arc_path = dir / "test_deferred_crc.rar";
     std::vector<ArchiveMutator::PreparedAdd> batch;
     batch.push_back(std::move(prep_store));
     ok = ArchiveMutator::write_batch_add(arc_path, batch);
-    assert(ok);
-    assert(fs::exists(arc_path));
+    REQUIRE(ok);
+    REQUIRE(fs::exists(arc_path));
 
     // Verify written archive header has back-patched CRC
     engine::ArchiveReader reader;
-    assert(reader.open(arc_path));
-    assert(reader.entries().size() == 1);
+    REQUIRE(reader.open(arc_path));
+    REQUIRE(reader.entries().size() == 1);
     const auto& entry = reader.entries()[0];
-    assert(entry.header.has_crc32);
-    assert(entry.header.data_crc32 == expected_crc);
-    assert(reader.test_entry(entry));
+    REQUIRE(entry.header.has_crc32);
+    REQUIRE(entry.header.data_crc32 == expected_crc);
+    REQUIRE(reader.test_entry(entry));
 
     // Verify extraction bit-identical
     fs::path extracted = dir / "f_18m_extracted.bin";
-    assert(reader.extract_entry(entry, extracted));
-    assert(fs::file_size(extracted) == 18 * 1024 * 1024);
+    REQUIRE(reader.extract_entry(entry, extracted));
+    REQUIRE(fs::file_size(extracted) == 18 * 1024 * 1024);
     {
         std::ifstream f1(f_18m, std::ios::binary);
         std::ifstream f2(extracted, std::ios::binary);
         std::vector<char> b1(1024 * 1024), b2(1024 * 1024);
         while (f1.read(b1.data(), b1.size())) {
-            assert(f2.read(b2.data(), b2.size()));
-            assert(std::memcmp(b1.data(), b2.data(), b1.size()) == 0);
+            REQUIRE(f2.read(b2.data(), b2.size()));
+            REQUIRE(std::memcmp(b1.data(), b2.data(), b1.size()) == 0);
         }
     }
 
@@ -1276,32 +1278,32 @@ static void test_off_grid_dict_snap_roundtrip() {
     const fs::path arc = dir / "offgrid.rar";
 
     ArchiveMutator::PreparedAdd prep;
-    assert(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", prep, engine::time_flags::MTIME,
-                                            off_grid));
+    REQUIRE(ArchiveMutator::prepare_add_file(src, "data.bin", 3, "", prep,
+                                             engine::time_flags::MTIME, off_grid));
     std::vector<ArchiveMutator::PreparedAdd> batch;
     batch.push_back(std::move(prep));
-    assert(ArchiveMutator::write_batch_add(arc, batch, {}, "", false, {}, /*solid=*/false));
+    REQUIRE(ArchiveMutator::write_batch_add(arc, batch, {}, "", false, {}, /*solid=*/false));
 
     // The written header must record a value the FCI decode returns exactly:
     // base 2 MiB + fraction*(64 KiB), i.e. the snapped window — never the raw
     // off-grid request. Read it back and require a clean roundtrip, which
     // fails with "distance > window" if encoder and header disagree.
     engine::ArchiveReader reader;
-    assert(reader.open(arc));
+    REQUIRE(reader.open(arc));
     bool found = false;
     for (const auto& e : reader.entries()) {
         if (e.header.is_service || e.header.file_name != "data.bin") continue;
         found = true;
         const std::uint64_t win = e.header.win_size;
         const std::uint64_t base = 2ULL * 1024 * 1024;
-        assert(win >= base && win <= base + 31 * (base / 32));
-        assert((win - base) % (base / 32) == 0 && "header window is not on the FCI grid");
+        REQUIRE((win >= base && win <= base + 31 * (base / 32)));
+        REQUIRE(((win - base) % (base / 32) == 0 && "header window is not on the FCI grid"));
     }
-    assert(found && "entry missing after off-grid dict add");
+    REQUIRE((found && "entry missing after off-grid dict add"));
     reader.close();
 
     // Extract and verify byte-exactness through the quantized window.
-    assert(handle_extract(arc, 0) == data && "off-grid dict roundtrip mismatch");
+    REQUIRE((handle_extract(arc, 0) == data && "off-grid dict roundtrip mismatch"));
 
     std::error_code rm_ec;
     fs::remove_all(dir, rm_ec);
@@ -1336,43 +1338,43 @@ static void test_direct_stream_compression_and_backpatch() {
                                                openrar::archive::time_flags::MTIME, 0, false, false,
                                                false,
                                                /*direct_stream=*/true);
-    assert(ok);
-    assert(prep.needs_direct_stream);
-    assert(prep.spool_path.empty());
-    assert(prep.payload.empty());
-    assert(prep.fb.pack_size == 0);  // Placeholder
-    assert(prep.fb.data_crc32 == 0); // Placeholder
+    REQUIRE(ok);
+    REQUIRE(prep.needs_direct_stream);
+    REQUIRE(prep.spool_path.empty());
+    REQUIRE(prep.payload.empty());
+    REQUIRE(prep.fb.pack_size == 0);  // Placeholder
+    REQUIRE(prep.fb.data_crc32 == 0); // Placeholder
 
     fs::path arc_path = dir / "direct_stream.rar";
     std::vector<ArchiveMutator::PreparedAdd> batch;
     batch.push_back(std::move(prep));
     ok = ArchiveMutator::write_batch_add(arc_path, batch);
-    assert(ok);
-    assert(fs::exists(arc_path));
+    REQUIRE(ok);
+    REQUIRE(fs::exists(arc_path));
 
     // Verify written archive with ArchiveReader
     {
         engine::ArchiveReader reader;
-        assert(reader.open(arc_path));
-        assert(reader.entries().size() == 1);
+        REQUIRE(reader.open(arc_path));
+        REQUIRE(reader.entries().size() == 1);
         const auto& entry = reader.entries()[0];
-        assert(entry.header.has_crc32);
-        assert(entry.header.data_crc32 == expected_crc);
-        assert(entry.header.unp_size == 18 * 1024 * 1024);
-        assert(entry.header.pack_size < 18 * 1024 * 1024);
-        assert(entry.header.pack_size > 0);
-        assert(reader.test_entry(entry));
+        REQUIRE(entry.header.has_crc32);
+        REQUIRE(entry.header.data_crc32 == expected_crc);
+        REQUIRE(entry.header.unp_size == 18 * 1024 * 1024);
+        REQUIRE(entry.header.pack_size < 18 * 1024 * 1024);
+        REQUIRE(entry.header.pack_size > 0);
+        REQUIRE(reader.test_entry(entry));
 
         fs::path extracted = dir / "extracted_18m.bin";
-        assert(reader.extract_entry(entry, extracted));
-        assert(fs::file_size(extracted) == 18 * 1024 * 1024);
+        REQUIRE(reader.extract_entry(entry, extracted));
+        REQUIRE(fs::file_size(extracted) == 18 * 1024 * 1024);
 
         std::ifstream f1(f_18m, std::ios::binary);
         std::ifstream f2(extracted, std::ios::binary);
         std::vector<char> b1(1024 * 1024), b2(1024 * 1024);
         while (f1.read(b1.data(), b1.size())) {
-            assert(f2.read(b2.data(), b2.size()));
-            assert(std::memcmp(b1.data(), b2.data(), b1.size()) == 0);
+            REQUIRE(f2.read(b2.data(), b2.size()));
+            REQUIRE(std::memcmp(b1.data(), b2.data(), b1.size()) == 0);
         }
     }
 
@@ -1401,30 +1403,30 @@ static void test_direct_stream_compression_and_backpatch() {
                                           openrar::archive::time_flags::MTIME, 0, false, false,
                                           false,
                                           /*direct_stream=*/true);
-    assert(ok);
-    assert(prep_rand.needs_direct_stream);
+    REQUIRE(ok);
+    REQUIRE(prep_rand.needs_direct_stream);
 
     fs::path arc_fallback = dir / "store_fallback.rar";
     std::vector<ArchiveMutator::PreparedAdd> batch_fallback;
     batch_fallback.push_back(std::move(prep_rand));
     ok = ArchiveMutator::write_batch_add(arc_fallback, batch_fallback);
-    assert(ok);
-    assert(fs::exists(arc_fallback));
+    REQUIRE(ok);
+    REQUIRE(fs::exists(arc_fallback));
 
     {
         engine::ArchiveReader reader;
-        assert(reader.open(arc_fallback));
-        assert(reader.entries().size() == 1);
+        REQUIRE(reader.open(arc_fallback));
+        REQUIRE(reader.entries().size() == 1);
         const auto& entry = reader.entries()[0];
-        assert(entry.header.method == 0); // Downgraded to store because compression expanded
-        assert(entry.header.unp_size == 17 * 1024 * 1024);
-        assert(entry.header.pack_size == 17 * 1024 * 1024);
-        assert(entry.header.data_crc32 == rand_crc);
-        assert(reader.test_entry(entry));
+        REQUIRE(entry.header.method == 0); // Downgraded to store because compression expanded
+        REQUIRE(entry.header.unp_size == 17 * 1024 * 1024);
+        REQUIRE(entry.header.pack_size == 17 * 1024 * 1024);
+        REQUIRE(entry.header.data_crc32 == rand_crc);
+        REQUIRE(reader.test_entry(entry));
 
         fs::path extracted_rand = dir / "extracted_rand.bin";
-        assert(reader.extract_entry(entry, extracted_rand));
-        assert(fs::file_size(extracted_rand) == 17 * 1024 * 1024);
+        REQUIRE(reader.extract_entry(entry, extracted_rand));
+        REQUIRE(fs::file_size(extracted_rand) == 17 * 1024 * 1024);
     }
 
     // 3. Test openrar_archive_create_file on 18 MiB file (using direct streaming through DLL)
@@ -1433,16 +1435,16 @@ static void test_direct_stream_compression_and_backpatch() {
     const char* src_p = s_src.c_str();
     const char* arc_n = "dll_18m.bin";
     int rc = openrar_archive_create_file(arc_dll.string().c_str(), &src_p, &arc_n, 1, 3, 0);
-    assert(rc == RAR_OK);
-    assert(fs::exists(arc_dll));
+    REQUIRE(rc == RAR_OK);
+    REQUIRE(fs::exists(arc_dll));
     {
         engine::ArchiveReader reader;
-        assert(reader.open(arc_dll));
-        assert(reader.entries().size() == 1);
+        REQUIRE(reader.open(arc_dll));
+        REQUIRE(reader.entries().size() == 1);
         const auto& entry = reader.entries()[0];
-        assert(entry.header.has_crc32);
-        assert(entry.header.data_crc32 == expected_crc);
-        assert(reader.test_entry(entry));
+        REQUIRE(entry.header.has_crc32);
+        REQUIRE(entry.header.data_crc32 == expected_crc);
+        REQUIRE(reader.test_entry(entry));
     }
 
     fs::remove_all(dir, ec);
@@ -1460,11 +1462,11 @@ static fs::path create_ads_archive(const fs::path& dir, const char* name) {
     const std::vector<uint8_t> stm_payload = {'Z', 'o', 'n', 'e', '.', 'I', 'd'};
     fs::path arc = dir / name;
     openrar::io::FileStream out;
-    assert(out.open(arc, openrar::io::FileMode::CreateAlways));
+    REQUIRE(out.open(arc, openrar::io::FileMode::CreateAlways));
     using openrar::format::HeaderWriter;
-    assert(HeaderWriter::write_signature(out));
+    REQUIRE(HeaderWriter::write_signature(out));
     openrar::format::MainBlock mb;
-    assert(HeaderWriter::write_main_block(out, mb));
+    REQUIRE(HeaderWriter::write_main_block(out, mb));
 
     auto write_entry = [&](openrar::format::FileBlock fb, const std::vector<uint8_t>& payload,
                            uint64_t extra_flags) {
@@ -1472,8 +1474,8 @@ static fs::path create_ads_archive(const fs::path& dir, const char* name) {
         openrar::crypto::Crc32 crc;
         crc.update(payload.data(), payload.size());
         fb.data_crc32 = crc.get();
-        assert(HeaderWriter::write_file_block(out, fb, extra_flags));
-        assert(out.write(payload.data(), payload.size()) == payload.size());
+        REQUIRE(HeaderWriter::write_file_block(out, fb, extra_flags));
+        REQUIRE(out.write(payload.data(), payload.size()) == payload.size());
     };
 
     openrar::format::FileBlock victim_fb;
@@ -1508,7 +1510,7 @@ static fs::path create_ads_archive(const fs::path& dir, const char* name) {
     write_entry(keep_fb, keep, 0);
 
     openrar::format::EndArcBlock eb;
-    assert(HeaderWriter::write_end_block(out, eb));
+    REQUIRE(HeaderWriter::write_end_block(out, eb));
     out.close();
     return arc;
 }
@@ -1521,20 +1523,20 @@ static void test_delete_removes_ads_children() {
     // Precondition: reader sees victim.bin, the STM child, survivor.txt.
     {
         engine::ArchiveReader reader;
-        assert(reader.open(arc));
+        REQUIRE(reader.open(arc));
         size_t stm_count = 0;
         for (const auto& e : reader.entries()) {
             if (e.header.is_service && e.header.service_type == "STM") ++stm_count;
         }
-        assert(stm_count == 1);
+        REQUIRE(stm_count == 1);
         reader.close();
     }
 
-    assert(engine::ArchiveMutator::delete_entries(arc, {"victim.bin"}));
+    REQUIRE(engine::ArchiveMutator::delete_entries(arc, {"victim.bin"}));
 
     // Postcondition: the STM child died with its file.
     engine::ArchiveReader reader;
-    assert(reader.open(arc));
+    REQUIRE(reader.open(arc));
     std::vector<std::string> names;
     size_t stm_count = 0;
     for (const auto& e : reader.entries()) {
@@ -1542,8 +1544,8 @@ static void test_delete_removes_ads_children() {
         if (!e.header.is_service) names.push_back(e.header.file_name);
     }
     reader.close();
-    assert(names == std::vector<std::string>({"survivor.txt"}));
-    assert(stm_count == 0 && "orphaned STM child survived the delete");
+    REQUIRE(names == std::vector<std::string>({"survivor.txt"}));
+    REQUIRE((stm_count == 0 && "orphaned STM child survived the delete"));
     std::cout << "test_delete_removes_ads_children OK\n";
 }
 
@@ -1581,58 +1583,59 @@ static void test_store_fallback_parallel_crc() {
                                                openrar::archive::time_flags::MTIME, 0, false, false,
                                                false, /*direct_stream=*/false, {}, "", "",
                                                /*threads=*/4);
-    assert(ok);
-    assert(prep.fb.method == 0);            // incompressible -> store fallback
-    assert(prep.fb.data_crc32 == expected); // FILE crc, not the never-fed crc_calc
+    REQUIRE(ok);
+    REQUIRE(prep.fb.method == 0);            // incompressible -> store fallback
+    REQUIRE(prep.fb.data_crc32 == expected); // FILE crc, not the never-fed crc_calc
 
     fs::path arc = dir / "sf.rar";
     std::vector<ArchiveMutator::PreparedAdd> batch;
     batch.push_back(std::move(prep));
-    assert(ArchiveMutator::write_batch_add(arc, batch));
+    REQUIRE(ArchiveMutator::write_batch_add(arc, batch));
     engine::ArchiveReader reader;
-    assert(reader.open(arc));
-    assert(reader.entries().size() == 1);
-    assert(reader.test_entry(reader.entries()[0]));
+    REQUIRE(reader.open(arc));
+    REQUIRE(reader.entries().size() == 1);
+    REQUIRE(reader.test_entry(reader.entries()[0]));
 
     fs::remove_all(dir, ec);
     std::cout << "[PASS] store-fallback CRC under parallel compression (v1.42.0)\n";
 }
 
-int main() {
-#ifdef _MSC_VER
-    // Route assert failures to stderr under ctest (piped stdio).
-    _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-#endif
-    test_delete_roundtrip();
-    test_delete_removes_ads_children();
-    test_solid_orphan_delete_refused();
-    test_solid_suffix_and_whole_run_delete();
-    test_locked_volume_hp_refused();
-    test_add_replace_u_semantics();
-    test_solid_append_new_name();
-    test_add_atomicity();
-    test_busy_handle_collision();
-    test_validation_errors();
-    test_comment_preserved_qo_stripped();
-    test_add_directory_record();
-    test_cpp_wrapper();
-    test_mutator_plan_single_file_stored();
-    test_mutator_plan_single_file_compressed();
-    test_mutator_plan_solid_chain_three_files();
-    test_mutator_plan_output_bit_identical();
-    test_execution_plan_workspace_gating();
-    test_streaming_and_spooling();
-    test_deferred_store_and_adaptive_clamping();
-    test_direct_stream_compression_and_backpatch();
-    test_store_fallback_parallel_crc();
-    test_off_grid_dict_snap_roundtrip();
-    test_xattr_namespace_policy();
-    test_xattr_capture_roundtrip();
-    test_xattr_writer_caps_skip();
-    test_owner_capture_survives_prepared_move();
-    std::cout << "ALL MUTATION TESTS PASSED\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_delete_roundtrip", test_delete_roundtrip, false},
+    {"test_delete_removes_ads_children", test_delete_removes_ads_children, false},
+    {"test_solid_orphan_delete_refused", test_solid_orphan_delete_refused, false},
+    {"test_solid_suffix_and_whole_run_delete", test_solid_suffix_and_whole_run_delete, false},
+    {"test_locked_volume_hp_refused", test_locked_volume_hp_refused, false},
+    {"test_add_replace_u_semantics", test_add_replace_u_semantics, false},
+    {"test_solid_append_new_name", test_solid_append_new_name, false},
+    {"test_add_atomicity", test_add_atomicity, false},
+    {"test_busy_handle_collision", test_busy_handle_collision, false},
+    {"test_validation_errors", test_validation_errors, false},
+    {"test_comment_preserved_qo_stripped", test_comment_preserved_qo_stripped, false},
+    {"test_add_directory_record", test_add_directory_record, false},
+    {"test_cpp_wrapper", test_cpp_wrapper, false},
+    {"test_mutator_plan_single_file_stored", test_mutator_plan_single_file_stored, false},
+    {"test_mutator_plan_single_file_compressed", test_mutator_plan_single_file_compressed, false},
+    {"test_mutator_plan_solid_chain_three_files", test_mutator_plan_solid_chain_three_files, false},
+    {"test_mutator_plan_output_bit_identical", test_mutator_plan_output_bit_identical, false},
+    {"test_execution_plan_workspace_gating", test_execution_plan_workspace_gating, false},
+    {"test_streaming_and_spooling", test_streaming_and_spooling, false},
+    {"test_deferred_store_and_adaptive_clamping", test_deferred_store_and_adaptive_clamping, false},
+    {"test_direct_stream_compression_and_backpatch", test_direct_stream_compression_and_backpatch,
+     false},
+    {"test_store_fallback_parallel_crc", test_store_fallback_parallel_crc, false},
+    {"test_off_grid_dict_snap_roundtrip", test_off_grid_dict_snap_roundtrip, false},
+    {"test_xattr_namespace_policy", test_xattr_namespace_policy, false},
+    {"test_xattr_capture_roundtrip", test_xattr_capture_roundtrip, false},
+    {"test_xattr_writer_caps_skip", test_xattr_writer_caps_skip, false},
+    {"test_owner_capture_survives_prepared_move", test_owner_capture_survives_prepared_move,
+     false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "ALL MUTATION TESTS PASSED\n";
+    return rc;
 }

@@ -19,6 +19,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifndef OPENRAR_CLI_EXE
 #define OPENRAR_CLI_EXE ""
@@ -69,7 +71,7 @@ std::string cli_path() {
 void write_raw_archive(const fs::path& arc,
                        const std::vector<std::pair<std::string, std::string>>& entries) {
     io::FileStream out;
-    assert(out.open(arc, io::FileMode::CreateAlways));
+    REQUIRE(out.open(arc, io::FileMode::CreateAlways));
     format::HeaderWriter::write_signature(out);
     format::MainBlock mb;
     format::HeaderWriter::write_main_block(out, mb);
@@ -80,7 +82,7 @@ void write_raw_archive(const fs::path& arc,
         fb.pack_size = content.size();
         fb.method = 0;
         fb.win_size = 0;
-        assert(format::HeaderWriter::write_file_block(out, fb));
+        REQUIRE(format::HeaderWriter::write_file_block(out, fb));
         out.write(content.data(), content.size());
     }
     format::EndArcBlock eb;
@@ -101,18 +103,18 @@ void test_report_model() {
     r.abort_reason = "user break";
     const std::string json = archive::to_json(r);
     // v2 (v1.29 D3): schema bumped for the additive transcode fields.
-    assert(json.find("\"schema_version\":2") != std::string::npos);
+    REQUIRE(json.find("\"schema_version\":2") != std::string::npos);
     // v1 documents (x/e): the transcode fields are absent.
-    assert(json.find("\"format\":") == std::string::npos);
-    assert(json.find("\"status\":\"pending_placeholder\"") == std::string::npos);
+    REQUIRE(json.find("\"format\":") == std::string::npos);
+    REQUIRE(json.find("\"status\":\"pending_placeholder\"") == std::string::npos);
     // the backslash and quote in the archive name are JSON-escaped
-    assert(json.find("a\\\\\\\"rar") != std::string::npos);
-    assert(json.find("\"reason\":null") != std::string::npos ||
-           json.find("\"reason\":\"") != std::string::npos);
+    REQUIRE(json.find("a\\\\\\\"rar") != std::string::npos);
+    REQUIRE((json.find("\"reason\":null") != std::string::npos ||
+             json.find("\"reason\":\"") != std::string::npos));
     // finalize: pending -> unprocessed
     r.finalize_pending();
-    assert(r.entries.back().status == "unprocessed");
-    assert(r.entries.back().reason == "extraction aborted");
+    REQUIRE(r.entries.back().status == "unprocessed");
+    REQUIRE(r.entries.back().reason == "extraction aborted");
     // control characters are \u-escaped (the "\x01" "b" split stops the
     // hex escape from swallowing the 'b')
     archive::ExtractionReport r2;
@@ -121,7 +123,7 @@ void test_report_model() {
                           "extracted",
                           "",
                           {}});
-    assert(archive::to_json(r2).find("\\u0001") != std::string::npos);
+    REQUIRE(archive::to_json(r2).find("\\u0001") != std::string::npos);
     std::cout << "[PASS] extraction report model + JSON escaping\n";
 }
 
@@ -143,20 +145,20 @@ void test_json_stdout_purity() {
                             "\"";
     const int rc = std::system(cmd.c_str());
 #ifdef _WIN32
-    assert(rc == 0);
+    REQUIRE(rc == 0);
 #else
-    assert(WIFEXITED(rc) && WEXITSTATUS(rc) == 0);
+    REQUIRE((WIFEXITED(rc) && WEXITSTATUS(rc) == 0));
 #endif
     const std::string stdout_txt = read_text(dir / "stdout.txt");
     const std::string stderr_txt = read_text(dir / "stderr.txt");
     // stdout is exactly one JSON object
-    assert(stdout_txt.find("{\"schema_version\":2") == 0);
-    assert(stdout_txt.find("\"exit_code\":0") != std::string::npos);
-    assert(stdout_txt.find("\"name\":\"fine.txt\"") != std::string::npos);
-    assert(stdout_txt.find("\"status\":\"extracted\"") != std::string::npos);
-    assert(stdout_txt.find("Extracting") == std::string::npos);
+    REQUIRE(stdout_txt.find("{\"schema_version\":2") == 0);
+    REQUIRE(stdout_txt.find("\"exit_code\":0") != std::string::npos);
+    REQUIRE(stdout_txt.find("\"name\":\"fine.txt\"") != std::string::npos);
+    REQUIRE(stdout_txt.find("\"status\":\"extracted\"") != std::string::npos);
+    REQUIRE(stdout_txt.find("Extracting") == std::string::npos);
     // stderr carries the human output
-    assert(stderr_txt.find("Extracting from") != std::string::npos);
+    REQUIRE(stderr_txt.find("Extracting from") != std::string::npos);
     std::cout << "[PASS] json_stdout_purity: stdout is JSON-only, humans on stderr\n";
     rm(dir);
 }
@@ -173,17 +175,17 @@ void test_displayed_equals_extracted() {
                             (dir / "stderr.txt").string() + "\"";
     const int rc = std::system(cmd.c_str());
 #ifdef _WIN32
-    assert(rc == 0);
+    REQUIRE(rc == 0);
 #else
-    assert(WIFEXITED(rc) && WEXITSTATUS(rc) == 0);
+    REQUIRE((WIFEXITED(rc) && WEXITSTATUS(rc) == 0));
 #endif
     const std::string json = read_text(dir / "stdout.txt");
     // Win32 strips trailing dots/spaces at open time: the sanitizer trimmed
     // them, so the on-disk name is "report" and the JSON says "report".
-    assert(json.find("\"name\":\"report\"") != std::string::npos);
-    assert(json.find("report. . .") == std::string::npos);
+    REQUIRE(json.find("\"name\":\"report\"") != std::string::npos);
+    REQUIRE(json.find("report. . .") == std::string::npos);
     std::error_code ec;
-    assert(fs::exists(out / "report", ec));
+    REQUIRE(fs::exists(out / "report", ec));
     std::cout << "[PASS] displayed_equals_extracted: trimmed name is the only name\n";
     rm(dir);
 }
@@ -203,24 +205,24 @@ void test_percent_encoded_undecodable() {
                             (dir / "stderr.txt").string() + "\"";
     const int rc = std::system(cmd.c_str());
 #ifdef _WIN32
-    assert(rc == 0);
+    REQUIRE(rc == 0);
 #else
-    assert(WIFEXITED(rc) && WEXITSTATUS(rc) == 0);
+    REQUIRE((WIFEXITED(rc) && WEXITSTATUS(rc) == 0));
 #endif
     const std::string json = read_text(dir / "stdout.txt");
-    assert(json.find("\"name\":\"bad%FF%FE.txt\"") != std::string::npos);
-    assert(json.find("name_escaped") != std::string::npos);
+    REQUIRE(json.find("\"name\":\"bad%FF%FE.txt\"") != std::string::npos);
+    REQUIRE(json.find("name_escaped") != std::string::npos);
     // the escaped name IS the filename on disk
     std::error_code ec;
     bool found = false;
     for (const auto& e : fs::directory_iterator(out)) {
         if (e.path().filename().string() == "bad%FF%FE.txt") found = true;
     }
-    assert(found);
+    REQUIRE(found);
     // reversibility: decode the escapes back to the original bytes
-    assert(io::is_valid_utf8("plain.txt"));
-    assert(!io::is_valid_utf8(raw_name));
-    assert(io::percent_encode_invalid_utf8("ok.txt") == "ok.txt");
+    REQUIRE(io::is_valid_utf8("plain.txt"));
+    REQUIRE(!io::is_valid_utf8(raw_name));
+    REQUIRE(io::percent_encode_invalid_utf8("ok.txt") == "ok.txt");
     std::cout << "[PASS] percent_encoded_undecodable: %XX name on disk + flag\n";
     rm(dir);
 }
@@ -233,44 +235,44 @@ void test_percent_encoded_undecodable() {
 void test_percent_encode_truncated() {
     using io::percent_encode_invalid_utf8;
     // 4-byte lead, nothing after it.
-    assert(percent_encode_invalid_utf8("\xF0") == "%F0");
+    REQUIRE(percent_encode_invalid_utf8("\xF0") == "%F0");
     // 3-byte lead, nothing after it.
-    assert(percent_encode_invalid_utf8("\xE2") == "%E2");
+    REQUIRE(percent_encode_invalid_utf8("\xE2") == "%E2");
     // 3-byte lead with one continuation, still short of three.
-    assert(percent_encode_invalid_utf8("\xE2\x82") == "%E2%82");
+    REQUIRE(percent_encode_invalid_utf8("\xE2\x82") == "%E2%82");
     // 4-byte lead with two continuations, short of four.
-    assert(percent_encode_invalid_utf8("\xF0\x9F\x98") == "%F0%9F%98");
+    REQUIRE(percent_encode_invalid_utf8("\xF0\x9F\x98") == "%F0%9F%98");
     // Truncated sequence not at the very start.
-    assert(percent_encode_invalid_utf8("a\xF0") == "a%F0");
-    assert(percent_encode_invalid_utf8("dir/\xE2") == "dir/%E2");
+    REQUIRE(percent_encode_invalid_utf8("a\xF0") == "a%F0");
+    REQUIRE(percent_encode_invalid_utf8("dir/\xE2") == "dir/%E2");
     // Well-formed sequences are still passed through untouched.
-    assert(percent_encode_invalid_utf8("\xC3\xA9") == "\xC3\xA9");                 // é (2-byte)
-    assert(percent_encode_invalid_utf8("\xE2\x82\xAC") == "\xE2\x82\xAC");         // € (3-byte)
-    assert(percent_encode_invalid_utf8("\xF0\x9F\x98\x80") == "\xF0\x9F\x98\x80"); // emoji (4-byte)
+    REQUIRE(percent_encode_invalid_utf8("\xC3\xA9") == "\xC3\xA9");         // é (2-byte)
+    REQUIRE(percent_encode_invalid_utf8("\xE2\x82\xAC") == "\xE2\x82\xAC"); // € (3-byte)
+    REQUIRE(percent_encode_invalid_utf8("\xF0\x9F\x98\x80") ==
+            "\xF0\x9F\x98\x80"); // emoji (4-byte)
     // A truncated lead still *claims* `len` bytes, matching the escaping
     // semantics used for a fully-present-but-invalid sequence, so the claimed
     // run is escaped as far as the buffer allows and no further. The fix is
     // that the read stops at end-of-string; it does not change how many bytes
     // a broken lead claims.
-    assert(percent_encode_invalid_utf8("\xF0\xC3\xA9") == "%F0%C3%A9");
+    REQUIRE(percent_encode_invalid_utf8("\xF0\xC3\xA9") == "%F0%C3%A9");
     std::cout << "[PASS] percent_encode_truncated: no OOB read on truncated lead\n";
 }
 
 } // namespace
 
-int main() {
-#ifdef _MSC_VER
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    test_report_model();
-    test_json_stdout_purity();
-    test_displayed_equals_extracted();
-    test_percent_encoded_undecodable();
-    test_percent_encode_truncated();
-    std::cout << "All extraction_report_tests passed.\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_report_model", test_report_model, false},
+    {"test_json_stdout_purity", test_json_stdout_purity, false},
+    {"test_displayed_equals_extracted", test_displayed_equals_extracted, false},
+    {"test_percent_encoded_undecodable", test_percent_encoded_undecodable, false},
+    {"test_percent_encode_truncated", test_percent_encode_truncated, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All extraction_report_tests passed.\n";
+    return rc;
 }
