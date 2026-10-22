@@ -15,6 +15,8 @@
 #include <cstring>
 #include <cstdint>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #endif
@@ -410,7 +412,7 @@ void test_stream_decoder_multi_block_single_feed_and_trailing_garbage() {
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
 #ifdef _MSC_VER
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
     _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
@@ -438,10 +440,16 @@ int main() {
     test_stream_decoder_store();
     test_stream_decoder_multi_block_single_feed_and_trailing_garbage();
 
-    if (fails) {
-        std::fprintf(stderr, "%d failure(s)\n", fails);
-        return 1;
-    }
     std::fprintf(stderr, "stream_encoder_tests OK\n");
-    return 0;
+    return;
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }

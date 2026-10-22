@@ -27,6 +27,8 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -64,7 +66,7 @@ void rm(const fs::path& p) {
 void write_file(const fs::path& p, const std::string& data) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     f.write(data.data(), static_cast<std::streamsize>(data.size()));
-    assert(f.good());
+    REQUIRE(f.good());
 }
 
 std::string read_file(const fs::path& p) {
@@ -82,10 +84,10 @@ void plant_link(const fs::path& link_path, const fs::path& target, bool dir_link
     re.type = dir_link ? io::RedirType::Junction : io::RedirType::WinSymlink;
     re.target = target.string();
     re.is_directory = dir_link;
-    assert(io::create_reparse_link(link_path, re));
+    REQUIRE(io::create_reparse_link(link_path, re));
 #else
     (void)dir_link;
-    assert(::symlink(target.c_str(), link_path.c_str()) == 0);
+    REQUIRE(::symlink(target.c_str(), link_path.c_str()) == 0);
 #endif
 }
 
@@ -110,7 +112,7 @@ fs::path build_archive(const fs::path& dir,
     bool first = true;
     for (const auto& [name, content] : entries) {
         write_file(blob, content);
-        assert(archive::ArchiveMutator::add_file_to_archive(arc, blob, name, 0) || !first);
+        REQUIRE((archive::ArchiveMutator::add_file_to_archive(arc, blob, name, 0) || !first));
         first = false;
     }
     fs::remove(blob);
@@ -125,7 +127,7 @@ fs::path build_redir_archive(const fs::path& dir, const std::string& name, int r
                              const std::string& target) {
     const fs::path arc = dir / "redir_fixture.rar";
     io::FileStream s;
-    assert(s.open(arc, io::FileMode::CreateAlways));
+    REQUIRE(s.open(arc, io::FileMode::CreateAlways));
     format::HeaderWriter::write_signature(s);
     format::MainBlock mb;
     format::HeaderWriter::write_main_block(s, mb);
@@ -137,7 +139,7 @@ fs::path build_redir_archive(const fs::path& dir, const std::string& name, int r
     fb.method = 0;
     fb.redir_type = redir_type;
     fb.redir_target = target;
-    assert(format::HeaderWriter::write_file_block(s, fb));
+    REQUIRE(format::HeaderWriter::write_file_block(s, fb));
     format::EndArcBlock eb;
     format::HeaderWriter::write_end_block(s, eb);
     s.close();
@@ -176,12 +178,12 @@ void suite_toctou_planted_links(const fs::path& work, bool force_fallback) {
         archive::ArchiveReader reader;
         reader.set_extraction_root(root);
         if (force_fallback) reader.force_containment_fallback_for_test();
-        assert(reader.open(arc));
-        assert(reader.extract_entry(reader.entries()[0], root / "sub" / "victim.txt"));
+        REQUIRE(reader.open(arc));
+        REQUIRE(reader.extract_entry(reader.entries()[0], root / "sub" / "victim.txt"));
 
-        assert(read_file(root / "sub" / "victim.txt") == "contained content");
-        assert(!is_symlink_like(root / "sub" / "victim.txt"));
-        assert(read_file(outside / "planted.txt") == "do not touch"); // never followed
+        REQUIRE(read_file(root / "sub" / "victim.txt") == "contained content");
+        REQUIRE(!is_symlink_like(root / "sub" / "victim.txt"));
+        REQUIRE(read_file(outside / "planted.txt") == "do not touch"); // never followed
         (void)tag;
         rm(root);
         rm(outside);
@@ -201,24 +203,24 @@ void suite_toctou_planted_links(const fs::path& work, bool force_fallback) {
         archive::ArchiveReader reader;
         reader.set_extraction_root(root);
         if (force_fallback) reader.force_containment_fallback_for_test();
-        assert(reader.open(arc));
-        assert(!reader.extract_entry(reader.entries()[0], root / "sub" / "inner.txt"));
+        REQUIRE(reader.open(arc));
+        REQUIRE(!reader.extract_entry(reader.entries()[0], root / "sub" / "inner.txt"));
 
-        assert(is_symlink_like(root / "sub")); // the planted link survives
+        REQUIRE(is_symlink_like(root / "sub")); // the planted link survives
         bool outside_clean = true;
         for (const auto& e : fs::directory_iterator(outside / "real")) {
             (void)e;
             outside_clean = false; // nothing may be written through the link
         }
-        assert(outside_clean);
+        REQUIRE(outside_clean);
         // No temps and no journals anywhere (archive fixture + the planted
         // junction are expected).
         std::error_code dec;
         for (const auto& e : fs::directory_iterator(root)) {
             const std::string name = io::u8_str(e.path().filename());
-            assert(name == "g1_fixture.rar" || name == "sub");
+            REQUIRE((name == "g1_fixture.rar" || name == "sub"));
         }
-        assert(!fs::exists(root / "sub" / "inner.txt", dec));
+        REQUIRE(!fs::exists(root / "sub" / "inner.txt", dec));
         rm(root);
         rm(outside);
     }
@@ -236,12 +238,12 @@ void suite_toctou_planted_links(const fs::path& work, bool force_fallback) {
         archive::ArchiveReader reader;
         reader.set_extraction_root(root);
         if (force_fallback) reader.force_containment_fallback_for_test();
-        assert(reader.open(arc));
-        assert(reader.extract_entry(reader.entries()[0], root / "leaf.txt"));
+        REQUIRE(reader.open(arc));
+        REQUIRE(reader.extract_entry(reader.entries()[0], root / "leaf.txt"));
 
-        assert(read_file(root / "leaf.txt") == "replacing content");
-        assert(!is_symlink_like(root / "leaf.txt"));
-        assert(read_file(outside / "real_target.txt") == "original outside bytes");
+        REQUIRE(read_file(root / "leaf.txt") == "replacing content");
+        REQUIRE(!is_symlink_like(root / "leaf.txt"));
+        REQUIRE(read_file(outside / "real_target.txt") == "original outside bytes");
         rm(root);
         rm(outside);
     }
@@ -263,16 +265,16 @@ void suite_containment_shapes(const fs::path& work, bool force_fallback) {
         archive::ArchiveReader reader;
         reader.set_extraction_root(root);
         if (force_fallback) reader.force_containment_fallback_for_test();
-        assert(reader.open(arc));
+        REQUIRE(reader.open(arc));
         const auto& es = reader.entries();
-        assert(reader.extract_entry(es[0], root / "deep" / "nest" / "a.txt"));
-        assert(reader.extract_entry(es[1], root / "deep" / "nest" / "b.txt"));
-        assert(reader.extract_entry(es[2], root / "deep" / "nest" / "c.txt"));
-        assert(reader.extract_entry(es[3], root / "top.txt"));
-        assert(read_file(root / "deep" / "nest" / "a.txt") == "A");
-        assert(read_file(root / "deep" / "nest" / "b.txt") == "BB");
-        assert(read_file(root / "deep" / "nest" / "c.txt") == "CCC");
-        assert(read_file(root / "top.txt") == "T");
+        REQUIRE(reader.extract_entry(es[0], root / "deep" / "nest" / "a.txt"));
+        REQUIRE(reader.extract_entry(es[1], root / "deep" / "nest" / "b.txt"));
+        REQUIRE(reader.extract_entry(es[2], root / "deep" / "nest" / "c.txt"));
+        REQUIRE(reader.extract_entry(es[3], root / "top.txt"));
+        REQUIRE(read_file(root / "deep" / "nest" / "a.txt") == "A");
+        REQUIRE(read_file(root / "deep" / "nest" / "b.txt") == "BB");
+        REQUIRE(read_file(root / "deep" / "nest" / "c.txt") == "CCC");
+        REQUIRE(read_file(root / "top.txt") == "T");
         rm(root);
     }
 
@@ -286,9 +288,9 @@ void suite_containment_shapes(const fs::path& work, bool force_fallback) {
         archive::ArchiveReader reader;
         reader.set_extraction_root(root);
         if (force_fallback) reader.force_containment_fallback_for_test();
-        assert(reader.open(arc));
-        assert(!reader.extract_entry(reader.entries()[0], root / "block" / "inner.txt"));
-        assert(read_file(root / "block") == "i am a file");
+        REQUIRE(reader.open(arc));
+        REQUIRE(!reader.extract_entry(reader.entries()[0], root / "block" / "inner.txt"));
+        REQUIRE(read_file(root / "block") == "i am a file");
         rm(root);
     }
 
@@ -300,9 +302,9 @@ void suite_containment_shapes(const fs::path& work, bool force_fallback) {
         archive::ArchiveReader reader;
         reader.set_extraction_root(root);
         if (force_fallback) reader.force_containment_fallback_for_test();
-        assert(reader.open(arc));
-        assert(reader.extract_entry(reader.entries()[0], root / "made" / "by" / "walk.txt"));
-        assert(read_file(root / "made" / "by" / "walk.txt") == "nested");
+        REQUIRE(reader.open(arc));
+        REQUIRE(reader.extract_entry(reader.entries()[0], root / "made" / "by" / "walk.txt"));
+        REQUIRE(read_file(root / "made" / "by" / "walk.txt") == "nested");
         rm(root);
     }
 
@@ -327,14 +329,14 @@ void test_toctou_symlink_target_race_and_friends() {
 
 void test_alias_83_rejected() {
     // Predicate level.
-    assert(io::is_83_alias_component("PROGRA~1"));
-    assert(io::is_83_alias_component("progra~1.txt"));
-    assert(io::is_83_alias_component("LONGFI~1.TXT"));
-    assert(!io::is_83_alias_component("a~b.txt"));
-    assert(!io::is_83_alias_component("plain.txt"));
-    assert(!io::is_83_alias_component("~filename")); // '~' not followed by a digit
-    assert(io::path_has_83_component("docs/PROGRA~1/x.txt"));
-    assert(!io::path_has_83_component("docs/fine~name/x.txt"));
+    REQUIRE(io::is_83_alias_component("PROGRA~1"));
+    REQUIRE(io::is_83_alias_component("progra~1.txt"));
+    REQUIRE(io::is_83_alias_component("LONGFI~1.TXT"));
+    REQUIRE(!io::is_83_alias_component("a~b.txt"));
+    REQUIRE(!io::is_83_alias_component("plain.txt"));
+    REQUIRE(!io::is_83_alias_component("~filename")); // '~' not followed by a digit
+    REQUIRE(io::path_has_83_component("docs/PROGRA~1/x.txt"));
+    REQUIRE(!io::path_has_83_component("docs/fine~name/x.txt"));
 
     // Reader level: an 8.3-shaped directory component fails closed in the
     // walk — the entry is rejected, nothing is created.
@@ -342,9 +344,9 @@ void test_alias_83_rejected() {
     const fs::path arc = build_archive(root, {{"PROGRA~1/app.txt", "aliased"}});
     archive::ArchiveReader reader;
     reader.set_extraction_root(root);
-    assert(reader.open(arc));
-    assert(!reader.extract_entry(reader.entries()[0], root / "PROGRA~1" / "app.txt"));
-    assert(!fs::exists(root / "PROGRA~1"));
+    REQUIRE(reader.open(arc));
+    REQUIRE(!reader.extract_entry(reader.entries()[0], root / "PROGRA~1" / "app.txt"));
+    REQUIRE(!fs::exists(root / "PROGRA~1"));
     std::cout << "[PASS] alias_83_rejected: 8.3-shaped paths fail closed\n";
     rm(root);
 }
@@ -388,18 +390,18 @@ void test_symlink_target_depth_uses_sanitized_name() {
         archive::ArchiveReader reader;
         reader.set_extraction_root(root);
         reader.set_extract_symlinks(true);
-        assert(reader.open(arc));
-        assert(reader.extract_entry(reader.entries()[0], dest_for(root, name)));
+        REQUIRE(reader.open(arc));
+        REQUIRE(reader.extract_entry(reader.entries()[0], dest_for(root, name)));
 
         const fs::path dest = dest_for(root, name);
         if (must_refuse) {
             // Refused BEFORE creation — nothing in the root, and nothing
             // anywhere outside it either.
-            assert(nothing_created(dest));
+            REQUIRE(nothing_created(dest));
             std::error_code ec;
-            assert(!fs::exists(root.parent_path() / "evil", ec));
+            REQUIRE(!fs::exists(root.parent_path() / "evil", ec));
         } else {
-            assert(is_symlink_like(dest)); // in-root target: still materialized
+            REQUIRE(is_symlink_like(dest)); // in-root target: still materialized
         }
         rm(root);
     }
@@ -414,9 +416,9 @@ void test_symlink_target_depth_uses_sanitized_name() {
         archive::ArchiveReader reader;
         reader.set_extraction_root(root);
         reader.set_extract_symlinks(true);
-        assert(reader.open(arc));
-        assert(reader.extract_entry(reader.entries()[0], dest_for(root, "a/b")));
-        assert(is_symlink_like(root / "a" / "b"));
+        REQUIRE(reader.open(arc));
+        REQUIRE(reader.extract_entry(reader.entries()[0], dest_for(root, "a/b")));
+        REQUIRE(is_symlink_like(root / "a" / "b"));
         rm(root);
     }
 
@@ -438,13 +440,13 @@ void test_filecopy_root_depth_uses_sanitized_name() {
         const fs::path arc = build_redir_archive(root, name, 5, "../secret.txt");
         archive::ArchiveReader reader;
         reader.set_extraction_root(root);
-        assert(reader.open(arc));
-        assert(reader.extract_entry(reader.entries()[0], dest_for(root, name)));
+        REQUIRE(reader.open(arc));
+        REQUIRE(reader.extract_entry(reader.entries()[0], dest_for(root, name)));
         // ../secret.txt only exists ABOVE the root, so every form must be
         // refused as an unsafe target — never materialized.
-        assert(reader.last_filecopy_outcome() ==
-               archive::ArchiveReader::FilecopyOutcome::TargetUnsafe);
-        assert(nothing_created(dest_for(root, name)));
+        REQUIRE(reader.last_filecopy_outcome() ==
+                archive::ArchiveReader::FilecopyOutcome::TargetUnsafe);
+        REQUIRE(nothing_created(dest_for(root, name)));
     }
 
     // Positive control: a genuinely in-root source still materializes, which
@@ -455,11 +457,11 @@ void test_filecopy_root_depth_uses_sanitized_name() {
         const fs::path arc = build_redir_archive(root, "a/b", 5, "planted.txt");
         archive::ArchiveReader reader;
         reader.set_extraction_root(root);
-        assert(reader.open(arc));
-        assert(reader.extract_entry(reader.entries()[0], dest_for(root, "a/b")));
-        assert(reader.last_filecopy_outcome() ==
-               archive::ArchiveReader::FilecopyOutcome::Materialized);
-        assert(read_file(dest_for(root, "a/b")) == "inside bytes");
+        REQUIRE(reader.open(arc));
+        REQUIRE(reader.extract_entry(reader.entries()[0], dest_for(root, "a/b")));
+        REQUIRE(reader.last_filecopy_outcome() ==
+                archive::ArchiveReader::FilecopyOutcome::Materialized);
+        REQUIRE(read_file(dest_for(root, "a/b")) == "inside bytes");
     }
 
     std::cout << "[PASS] filecopy depth: copy sources are confined to the sanitized root\n";
@@ -469,18 +471,20 @@ void test_filecopy_root_depth_uses_sanitized_name() {
 
 } // namespace
 
-int main() {
-#ifdef _MSC_VER
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    test_toctou_symlink_target_race_and_friends();
-    test_alias_83_rejected();
-    test_symlink_target_depth_uses_sanitized_name();
-    test_filecopy_root_depth_uses_sanitized_name();
-    std::cout << "All extraction_containment_tests passed.\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_toctou_symlink_target_race_and_friends", test_toctou_symlink_target_race_and_friends,
+     false},
+    {"test_alias_83_rejected", test_alias_83_rejected, false},
+    {"test_symlink_target_depth_uses_sanitized_name", test_symlink_target_depth_uses_sanitized_name,
+     false},
+    {"test_filecopy_root_depth_uses_sanitized_name", test_filecopy_root_depth_uses_sanitized_name,
+     false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All extraction_containment_tests passed.\n";
+    return rc;
 }

@@ -38,6 +38,8 @@
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #include <cstdlib>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 #endif
 
 using namespace openrar;
@@ -56,7 +58,7 @@ fs::path make_test_dir(const char* name) {
     std::error_code ec;
     rm_dir(dir);
     fs::create_directories(dir, ec);
-    assert(!ec);
+    REQUIRE(!ec);
     return dir;
 }
 
@@ -73,7 +75,7 @@ std::string read_file(const fs::path& p) {
 void write_file(const fs::path& p, const std::string& data) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     f.write(data.data(), static_cast<std::streamsize>(data.size()));
-    assert(f.good());
+    REQUIRE(f.good());
 }
 
 std::vector<fs::path> find_journals(const fs::path& dir) {
@@ -119,18 +121,18 @@ void test_atomic_commit_replaces() {
 
     io::ExtractionSession session;
     io::AtomicWriter writer;
-    assert(writer.open(session, dest));
-    assert(io::u8_str(writer.temp_path().filename()) != io::u8_str(dest.filename()));
+    REQUIRE(writer.open(session, dest));
+    REQUIRE(io::u8_str(writer.temp_path().filename()) != io::u8_str(dest.filename()));
     writer.stream().write("new contents", 12);
-    assert(writer.commit());
-    assert(read_file(dest) == "new contents");
-    assert(!file_exists(writer.temp_path()));
+    REQUIRE(writer.commit());
+    REQUIRE(read_file(dest) == "new contents");
+    REQUIRE(!file_exists(writer.temp_path()));
 
     // No temps, no journals after the run.
     std::error_code ec;
     for (fs::directory_iterator it(dir, ec), end; it != end; it.increment(ec)) {
         const std::string name = it->path().filename().string();
-        assert(name == "file.txt");
+        REQUIRE(name == "file.txt");
     }
     std::cout << "[PASS] atomic commit replaces destination\n";
     rm_dir(dir);
@@ -143,20 +145,20 @@ void test_commit_noclobber_preserves_dest() {
 
     io::ExtractionSession session;
     io::AtomicWriter writer;
-    assert(writer.open(session, dest));
+    REQUIRE(writer.open(session, dest));
     writer.stream().write("overwritten", 11);
-    assert(!writer.commit(io::CommitMode::NoClobber));
-    assert(read_file(dest) == "precious");    // destination untouched
-    assert(!file_exists(writer.temp_path())); // temp abandoned
-    assert(find_journals(dir).empty());       // journal released on abandon
+    REQUIRE(!writer.commit(io::CommitMode::NoClobber));
+    REQUIRE(read_file(dest) == "precious");    // destination untouched
+    REQUIRE(!file_exists(writer.temp_path())); // temp abandoned
+    REQUIRE(find_journals(dir).empty());       // journal released on abandon
 
     // NoClobber into a free name succeeds.
     const fs::path fresh = dir / "fresh.txt";
     io::AtomicWriter w2;
-    assert(w2.open(session, fresh));
+    REQUIRE(w2.open(session, fresh));
     w2.stream().write("fresh", 5);
-    assert(w2.commit(io::CommitMode::NoClobber));
-    assert(read_file(fresh) == "fresh");
+    REQUIRE(w2.commit(io::CommitMode::NoClobber));
+    REQUIRE(read_file(fresh) == "fresh");
     std::cout << "[PASS] no-clobber commit preserves existing destination\n";
     rm_dir(dir);
 }
@@ -169,26 +171,26 @@ void test_temp_names_crypto_random() {
     std::string first_temp;
     {
         io::AtomicWriter w;
-        assert(w.open(session, dest));
+        REQUIRE(w.open(session, dest));
         first_temp = io::u8_str(w.temp_path().filename());
-        assert(io::ExtractionSession::matches_temp_shape(first_temp));
+        REQUIRE(io::ExtractionSession::matches_temp_shape(first_temp));
         // Exactly one 32-hex segment between the name and ".tmp".
-        assert(hex32_from_name(first_temp).size() == 32);
+        REQUIRE(hex32_from_name(first_temp).size() == 32);
         w.abandon();
     }
     {
         io::AtomicWriter w;
-        assert(w.open(session, dest));
+        REQUIRE(w.open(session, dest));
         const std::string second_temp = io::u8_str(w.temp_path().filename());
-        assert(second_temp != first_temp); // fresh 128-bit draw per temp
-        assert(io::ExtractionSession::matches_temp_shape(second_temp));
+        REQUIRE(second_temp != first_temp); // fresh 128-bit draw per temp
+        REQUIRE(io::ExtractionSession::matches_temp_shape(second_temp));
         w.abandon();
     }
     // Shape predicate rejects look-alikes.
-    assert(!io::ExtractionSession::matches_temp_shape("x.0123456789abcdef0123456789abcde.tmp"));
-    assert(!io::ExtractionSession::matches_temp_shape("x.0123456789ABCDEF0123456789ABCDEF.tmp"));
-    assert(!io::ExtractionSession::matches_temp_shape(".tmp"));
-    assert(!io::ExtractionSession::matches_temp_shape("plain.tmp"));
+    REQUIRE(!io::ExtractionSession::matches_temp_shape("x.0123456789abcdef0123456789abcde.tmp"));
+    REQUIRE(!io::ExtractionSession::matches_temp_shape("x.0123456789ABCDEF0123456789ABCDEF.tmp"));
+    REQUIRE(!io::ExtractionSession::matches_temp_shape(".tmp"));
+    REQUIRE(!io::ExtractionSession::matches_temp_shape("plain.tmp"));
     std::cout << "[PASS] temp names are crypto-random and shape-checked\n";
     rm_dir(dir);
 }
@@ -200,32 +202,32 @@ void test_abandon_and_destructor_disposition() {
     {
         io::ExtractionSession session;
         io::AtomicWriter writer;
-        assert(writer.open(session, dest));
+        REQUIRE(writer.open(session, dest));
         writer.stream().write("partial", 7);
-        assert(file_exists(writer.temp_path()));
-        assert(writer.commit(io::CommitMode::NoClobber)); // fresh name: no-clobber succeeds
+        REQUIRE(file_exists(writer.temp_path()));
+        REQUIRE(writer.commit(io::CommitMode::NoClobber)); // fresh name: no-clobber succeeds
     }
     // (scope left a committed file; reuse dir for the abandon checks)
 
     {
         io::ExtractionSession session;
         io::AtomicWriter writer;
-        assert(writer.open(session, dir / "explicit.txt"));
-        assert(file_exists(writer.temp_path()));
+        REQUIRE(writer.open(session, dir / "explicit.txt"));
+        REQUIRE(file_exists(writer.temp_path()));
         writer.abandon();
-        assert(!file_exists(writer.temp_path()));
-        assert(find_journals(dir).empty());
+        REQUIRE(!file_exists(writer.temp_path()));
+        REQUIRE(find_journals(dir).empty());
     }
     {
         io::ExtractionSession session;
         io::AtomicWriter writer;
-        assert(writer.open(session, dir / "implicit.txt"));
-        assert(file_exists(writer.temp_path()));
+        REQUIRE(writer.open(session, dir / "implicit.txt"));
+        REQUIRE(file_exists(writer.temp_path()));
         // Destructor runs abandon().
     }
-    assert(!file_exists(dir / "explicit.txt"));
-    assert(!file_exists(dir / "implicit.txt"));
-    assert(find_journals(dir).empty());
+    REQUIRE(!file_exists(dir / "explicit.txt"));
+    REQUIRE(!file_exists(dir / "implicit.txt"));
+    REQUIRE(find_journals(dir).empty());
     std::cout << "[PASS] abandon (explicit and via destructor) removes the temp\n";
     rm_dir(dir);
 }
@@ -236,20 +238,20 @@ void test_journal_references_temp_during_flight() {
 
     io::ExtractionSession session;
     io::AtomicWriter writer;
-    assert(writer.open(session, dest));
+    REQUIRE(writer.open(session, dest));
 
     // Durable-first ordering observable state: the journal exists while the
     // temp is in flight and names it. (Read through the owning session — the
     // exclusive lock makes the file unopenable by anything else, by design.)
     const auto journals = find_journals(dir);
-    assert(journals.size() == 1);
+    REQUIRE(journals.size() == 1);
     const std::string content = session.journal_content(dir);
-    assert(content.find("OPENRAR-JOURNAL 1\n") == 0);
-    assert(content.find(io::u8_str(writer.temp_path())) != std::string::npos);
+    REQUIRE(content.find("OPENRAR-JOURNAL 1\n") == 0);
+    REQUIRE(content.find(io::u8_str(writer.temp_path())) != std::string::npos);
 
-    assert(writer.commit());
+    REQUIRE(writer.commit());
     // Committed: in-flight count dropped to zero → journal unlinked.
-    assert(find_journals(dir).empty());
+    REQUIRE(find_journals(dir).empty());
     std::cout << "[PASS] journal references the temp before it exists, unlinks after\n";
     rm_dir(dir);
 }
@@ -279,20 +281,20 @@ void test_journal_orphan_cleanup() {
         f.write(journal.data(), static_cast<std::streamsize>(journal.size()));
     }
 
-    assert(io::ExtractionSession::sweep_directory(dir));
+    REQUIRE(io::ExtractionSession::sweep_directory(dir));
 
-    assert(!file_exists(orphan));       // journal-referenced temp deleted
-    assert(file_exists(outside));       // cross-directory record ignored
-    assert(file_exists(badcrc));        // checksummed-out record ignored
-    assert(file_exists(bystander));     // never pattern-matched
-    assert(find_journals(dir).empty()); // dead journal unlinked
+    REQUIRE(!file_exists(orphan));       // journal-referenced temp deleted
+    REQUIRE(file_exists(outside));       // cross-directory record ignored
+    REQUIRE(file_exists(badcrc));        // checksummed-out record ignored
+    REQUIRE(file_exists(bystander));     // never pattern-matched
+    REQUIRE(find_journals(dir).empty()); // dead journal unlinked
     // Garbage journal: left in place, no deletions.
     const fs::path garbage = dir / ".openrar_journal_1_1_garbage.tmp";
     write_file(garbage, "not a journal at all");
     write_file(dir / "victim.0123456789abcdef0123456789abcdef.tmp", "victim");
-    assert(io::ExtractionSession::sweep_directory(dir));
-    assert(file_exists(garbage));
-    assert(file_exists(dir / "victim.0123456789abcdef0123456789abcdef.tmp"));
+    REQUIRE(io::ExtractionSession::sweep_directory(dir));
+    REQUIRE(file_exists(garbage));
+    REQUIRE(file_exists(dir / "victim.0123456789abcdef0123456789abcdef.tmp"));
     std::cout << "[PASS] journal_orphan_cleanup: sweep deletes only valid references\n";
     rm_dir(dir);
     rm_dir(other);
@@ -306,21 +308,21 @@ void test_journal_sweep_skips_locked_live_run() {
 
     io::ExtractionSession live_session;
     io::AtomicWriter live_writer;
-    assert(live_writer.open(live_session, dest));
+    REQUIRE(live_writer.open(live_session, dest));
     live_writer.stream().write("live", 4);
 
-    assert(io::ExtractionSession::sweep_directory(dir));
-    assert(file_exists(live_writer.temp_path())); // untouched
-    assert(find_journals(dir).size() == 1);       // live journal not unlinked
+    REQUIRE(io::ExtractionSession::sweep_directory(dir));
+    REQUIRE(file_exists(live_writer.temp_path())); // untouched
+    REQUIRE(find_journals(dir).size() == 1);       // live journal not unlinked
 
     // A second concurrent session in the same directory works alongside.
     io::ExtractionSession other_session;
     io::AtomicWriter other_writer;
-    assert(other_writer.open(other_session, dir / "other.txt"));
-    assert(find_journals(dir).size() == 2); // one journal per live run
-    assert(live_writer.commit());
-    assert(other_writer.commit());
-    assert(find_journals(dir).empty());
+    REQUIRE(other_writer.open(other_session, dir / "other.txt"));
+    REQUIRE(find_journals(dir).size() == 2); // one journal per live run
+    REQUIRE(live_writer.commit());
+    REQUIRE(other_writer.commit());
+    REQUIRE(find_journals(dir).empty());
     std::cout << "[PASS] toctou_journal_sweep_race: locked journals are skipped\n";
     rm_dir(dir);
 }
@@ -336,17 +338,17 @@ void test_commit_respects_readonly_dest() {
 #else
     made_readonly = ::chmod(dest.c_str(), 0444) == 0;
 #endif
-    assert(made_readonly);
+    REQUIRE(made_readonly);
 
     io::ExtractionSession session;
     io::AtomicWriter writer;
-    assert(writer.open(session, dest));
+    REQUIRE(writer.open(session, dest));
     writer.stream().write("clobber", 7);
-    assert(!writer.commit()); // READONLY destination is never clobbered
-    assert(read_file(dest) == "original");
+    REQUIRE(!writer.commit()); // READONLY destination is never clobbered
+    REQUIRE(read_file(dest) == "original");
     writer.abandon(); // temp still exists after a failed commit; dispose now
-    assert(!file_exists(writer.temp_path()));
-    assert(find_journals(dir).empty());
+    REQUIRE(!file_exists(writer.temp_path()));
+    REQUIRE(find_journals(dir).empty());
 
 #ifdef _WIN32
     SetFileAttributesW(dest.wstring().c_str(), FILE_ATTRIBUTE_NORMAL);
@@ -364,8 +366,8 @@ void test_open_failure_is_clean() {
     const fs::path dest = dir / "missing_sub" / "file.txt";
     io::ExtractionSession session;
     io::AtomicWriter writer;
-    assert(!writer.open(session, dest));
-    assert(find_journals(dir).empty());
+    REQUIRE(!writer.open(session, dest));
+    REQUIRE(find_journals(dir).empty());
     std::cout << "[PASS] open failure leaves no journal or temp\n";
     rm_dir(dir);
 }
@@ -381,11 +383,11 @@ void test_flat_cwd_destination() {
     {
         io::ExtractionSession session;
         io::AtomicWriter writer;
-        assert(writer.open(session, "flat.txt"));
+        REQUIRE(writer.open(session, "flat.txt"));
         writer.stream().write("flat", 4);
-        assert(writer.commit());
-        assert(file_exists(dir / "flat.txt"));
-        assert(find_journals(dir).empty()); // released → unlinked (key match)
+        REQUIRE(writer.commit());
+        REQUIRE(file_exists(dir / "flat.txt"));
+        REQUIRE(find_journals(dir).empty()); // released → unlinked (key match)
     }
     // Same-directory journal + sweep consistency for the flat case.
     const fs::path orphan = dir / "flat.0123456789abcdef0123456789abcdef.tmp";
@@ -396,9 +398,9 @@ void test_flat_cwd_destination() {
         f.write("OPENRAR-JOURNAL 1\n", 18);
         f.write(rec.data(), static_cast<std::streamsize>(rec.size()));
     }
-    assert(io::ExtractionSession::sweep_directory(dir));
-    assert(!file_exists(orphan));       // record validated against this dir
-    assert(find_journals(dir).empty()); // dead journal unlinked
+    REQUIRE(io::ExtractionSession::sweep_directory(dir));
+    REQUIRE(!file_exists(orphan));       // record validated against this dir
+    REQUIRE(find_journals(dir).empty()); // dead journal unlinked
     fs::current_path(saved);
     std::cout << "[PASS] flat (no-parent) destination keys agree end to end\n";
     rm_dir(dir);
@@ -428,10 +430,10 @@ void test_batch_kill_mid_run() {
     }
 
     // The next session's sweep must recover the journal and delete the orphan.
-    assert(io::ExtractionSession::sweep_directory(dir));
-    assert(find_journals(dir).empty());
-    assert(!file_exists(temp2)); // orphan deleted by sweep
-    assert(file_exists(dest1));  // committed destination survives
+    REQUIRE(io::ExtractionSession::sweep_directory(dir));
+    REQUIRE(find_journals(dir).empty());
+    REQUIRE(!file_exists(temp2)); // orphan deleted by sweep
+    REQUIRE(file_exists(dest1));  // committed destination survives
     std::cout << "[PASS] batch_kill_mid_run: sweep recovers journal after crash\n";
     rm_dir(dir);
 }
@@ -455,9 +457,9 @@ void test_torn_journal_tail_batched() {
     }
 
     // The sweep deletes the orphan (valid record) and stops at the torn tail.
-    assert(io::ExtractionSession::sweep_directory(dir));
-    assert(!file_exists(orphan));       // valid record replayed
-    assert(find_journals(dir).empty()); // journal unlinked (header verified)
+    REQUIRE(io::ExtractionSession::sweep_directory(dir));
+    REQUIRE(!file_exists(orphan));       // valid record replayed
+    REQUIRE(find_journals(dir).empty()); // journal unlinked (header verified)
     std::cout << "[PASS] torn_journal_tail_batched: conservative stop at torn record\n";
     rm_dir(dir);
 }
@@ -479,13 +481,13 @@ void test_rename_failure_mid_run_batched() {
     io::ExtractionSession session;
     session.set_durability_granularity(io::DurabilityGranularity::Batch);
     io::AtomicWriter writer;
-    assert(writer.open(session, dest));
+    REQUIRE(writer.open(session, dest));
     writer.stream().write("overwritten", 11);
-    assert(!writer.commit()); // READONLY destination is never clobbered
-    assert(read_file(dest) == "precious");
-    assert(!file_exists(writer.temp_path()));
+    REQUIRE(!writer.commit()); // READONLY destination is never clobbered
+    REQUIRE(read_file(dest) == "precious");
+    REQUIRE(!file_exists(writer.temp_path()));
     // The journal is still held (batch mode: not released on abandon).
-    assert(find_journals(dir).size() == 1);
+    REQUIRE(find_journals(dir).size() == 1);
 
 #ifdef _WIN32
     SetFileAttributesW(dest.wstring().c_str(), FILE_ATTRIBUTE_NORMAL);
@@ -507,9 +509,9 @@ void test_journal_sync_failure_fail_closed() {
     session.set_test_hooks(0, 1);
     io::AtomicWriter writer;
     // The open must fail (sync failure is fail-closed).
-    assert(!writer.open(session, dest));
-    assert(!file_exists(dest));
-    assert(find_journals(dir).empty());
+    REQUIRE(!writer.open(session, dest));
+    REQUIRE(!file_exists(dest));
+    REQUIRE(find_journals(dir).empty());
 
     std::cout << "[PASS] journal_sync_failure_fail_closed: temp not created on sync failure\n";
     rm_dir(dir);
@@ -524,13 +526,13 @@ void test_cancel_mid_batch() {
     io::ExtractionSession session;
     session.set_durability_granularity(io::DurabilityGranularity::Batch);
     io::AtomicWriter writer;
-    assert(writer.open(session, dest));
+    REQUIRE(writer.open(session, dest));
     writer.stream().write("partial", 7);
     writer.abandon(); // cooperative cancel
-    assert(!file_exists(writer.temp_path()));
-    assert(!file_exists(dest));
+    REQUIRE(!file_exists(writer.temp_path()));
+    REQUIRE(!file_exists(dest));
     // The journal is still held (batch mode: not released on abandon).
-    assert(find_journals(dir).size() == 1);
+    REQUIRE(find_journals(dir).size() == 1);
     std::cout << "[PASS] cancel_mid_batch: temp abandoned, journal held\n";
     rm_dir(dir);
 }
@@ -550,7 +552,7 @@ void test_window_1_equivalence() {
         session.set_batch_sync_boundary_for_test(1);
         session.set_test_hooks(0, 2);
         io::AtomicWriter w;
-        assert(!w.open(session, dir1 / "f0.txt")); // boundary sync fails
+        REQUIRE(!w.open(session, dir1 / "f0.txt")); // boundary sync fails
     }
 
     // boundary=32: first record does not reach the boundary → succeeds.
@@ -558,7 +560,7 @@ void test_window_1_equivalence() {
         io::ExtractionSession session;
         session.set_durability_granularity(io::DurabilityGranularity::Batch);
         io::AtomicWriter w;
-        assert(w.open(session, dir2 / "f0.txt")); // no boundary sync yet
+        REQUIRE(w.open(session, dir2 / "f0.txt")); // no boundary sync yet
         w.abandon();
     }
 
@@ -584,8 +586,8 @@ void test_forged_journal_batched() {
     }
 
     // The sweep must NOT delete the victim (forged record: wrong shape).
-    assert(io::ExtractionSession::sweep_directory(dir));
-    assert(file_exists(victim));
+    REQUIRE(io::ExtractionSession::sweep_directory(dir));
+    REQUIRE(file_exists(victim));
     std::cout << "[PASS] forged_journal_batched: forged record rejected\n";
     rm_dir(dir);
 }
@@ -600,11 +602,11 @@ void test_containment_batched() {
     session.set_durability_granularity(io::DurabilityGranularity::Batch);
     session.attach_root(dir);
     io::AtomicWriter writer;
-    assert(writer.open_contained(session, "sub", "file.txt"));
+    REQUIRE(writer.open_contained(session, "sub", "file.txt"));
     writer.stream().write("contained", 9);
-    assert(writer.commit());
-    assert(file_exists(dest));
-    assert(read_file(dest) == "contained");
+    REQUIRE(writer.commit());
+    REQUIRE(file_exists(dest));
+    REQUIRE(read_file(dest) == "contained");
     std::cout << "[PASS] containment_batched: anchored commit under batch policy\n";
     rm_dir(dir);
 }
@@ -615,7 +617,7 @@ void test_frozen_surface_absence() {
     // We verify the default is entry; the frozen surface is exercised by the
     // dll_* test suites which confirm it never enters batch mode.
     io::ExtractionSession session;
-    assert(session.durability_granularity() == io::DurabilityGranularity::Entry);
+    REQUIRE(session.durability_granularity() == io::DurabilityGranularity::Entry);
     std::cout << "[PASS] frozen_surface_absence: default granularity is entry\n";
 }
 
@@ -632,15 +634,15 @@ void test_batch_lru_eviction_occurs() {
         const fs::path d = root / ("d" + std::to_string(i));
         std::error_code ec;
         fs::create_directories(d, ec);
-        assert(!ec);
-        assert(session.register_temp(d, d / "f.0123456789abcdef0123456789abcdef.tmp"));
+        REQUIRE(!ec);
+        REQUIRE(session.register_temp(d, d / "f.0123456789abcdef0123456789abcdef.tmp"));
         session.release_temp(d / "f.0123456789abcdef0123456789abcdef.tmp");
     }
     // The oldest journal (d0) should have been evicted after the cap was
     // exceeded. d0's journal file should no longer exist.
-    assert(find_journals(root / "d0").empty());
+    REQUIRE(find_journals(root / "d0").empty());
     // The newest journals should still exist.
-    assert(!find_journals(root / ("d" + std::to_string(cap + 1))).empty());
+    REQUIRE(!find_journals(root / ("d" + std::to_string(cap + 1))).empty());
     std::cout << "[PASS] batch_lru_eviction_occurs: oldest journal evicted at cap\n";
     rm_dir(root);
 }
@@ -660,14 +662,14 @@ void test_batch_lru_eviction_skips_in_flight() {
         const fs::path d = root / ("d" + std::to_string(i));
         std::error_code ec;
         fs::create_directories(d, ec);
-        assert(!ec);
-        assert(session.register_temp(d, d / "f.0123456789abcdef0123456789abcdef.tmp"));
+        REQUIRE(!ec);
+        REQUIRE(session.register_temp(d, d / "f.0123456789abcdef0123456789abcdef.tmp"));
     }
     size_t held = 0;
     for (size_t i = 0; i < over_cap; ++i) {
         held += find_journals(root / ("d" + std::to_string(i))).size();
     }
-    assert(held == over_cap); // nothing evicted while temps are in flight
+    REQUIRE(held == over_cap); // nothing evicted while temps are in flight
     std::cout << "[PASS] batch_lru_eviction_skips_in_flight: " << held << " journals held\n";
     rm_dir(root);
 }
@@ -684,25 +686,25 @@ void test_late_entry_to_batch_switch() {
     // journal survives (in_flight > 0) into the policy switch.
     io::AtomicWriter w1;
     io::AtomicWriter w2;
-    assert(w1.open(session, dir / "a.txt"));
-    assert(w2.open(session, dir / "b.txt"));
+    REQUIRE(w1.open(session, dir / "a.txt"));
+    REQUIRE(w2.open(session, dir / "b.txt"));
 
     session.set_durability_granularity(io::DurabilityGranularity::Batch);
 
     // A later register on the same directory touches the pre-existing
     // journal (the untracked-iterator path).
     io::AtomicWriter w3;
-    assert(w3.open(session, dir / "c.txt"));
+    REQUIRE(w3.open(session, dir / "c.txt"));
 
     w1.stream().write("a", 1);
     w2.stream().write("b", 1);
     w3.stream().write("c", 1);
-    assert(w1.commit());
-    assert(w2.commit());
-    assert(w3.commit());
-    assert(read_file(dir / "a.txt") == "a");
-    assert(read_file(dir / "b.txt") == "b");
-    assert(read_file(dir / "c.txt") == "c");
+    REQUIRE(w1.commit());
+    REQUIRE(w2.commit());
+    REQUIRE(w3.commit());
+    REQUIRE(read_file(dir / "a.txt") == "a");
+    REQUIRE(read_file(dir / "b.txt") == "b");
+    REQUIRE(read_file(dir / "c.txt") == "c");
     std::cout << "[PASS] late_entry_to_batch_switch: pre-existing journal stays usable\n";
     rm_dir(dir);
 }
@@ -821,14 +823,14 @@ void test_crash_hook_kills_after_nth_record() {
         std::cout << "[note] crash hook: emulated runner (exit " << rc
                   << ") - exit code not asserted, journal count still checked\n";
     } else {
-        assert(rc == 99); // crash hook fired
+        REQUIRE(rc == 99); // crash hook fired
     }
 
     // The journal must contain exactly N records. Records are concatenated
     // without separators ("T <len> <crc>\n<path>" repeated), so count "T "
     // occurrences followed by a digit (the length prefix).
     const auto journals = find_journals(dir);
-    assert(journals.size() == 1);
+    REQUIRE(journals.size() == 1);
     std::ifstream f(journals[0], std::ios::binary);
     std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     int records = 0;
@@ -839,7 +841,7 @@ void test_crash_hook_kills_after_nth_record() {
         }
         ++pos;
     }
-    assert(records == n); // kill happened after the Nth append
+    REQUIRE(records == n); // kill happened after the Nth append
     std::cout << "[PASS] crash_hook_kills_after_nth_record: exit 99, journal has " << records
               << " records\n";
     rm_dir(dir);
@@ -851,43 +853,37 @@ int main(int argc, char* argv[]) {
         const int n = std::stoi(std::string(argv[1]).substr(18));
         return run_crash_hook_child(n, fs::path(argv[2]));
     }
-#ifdef _MSC_VER
-    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
-    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
-    // test process forever while ctest moves on, leaving file locks behind.
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
-    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
-    // process still hangs after printing the assert.
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    test_atomic_commit_replaces();
-    test_commit_noclobber_preserves_dest();
-    test_temp_names_crypto_random();
-    test_abandon_and_destructor_disposition();
-    test_journal_references_temp_during_flight();
-    test_journal_orphan_cleanup();
-    test_journal_sweep_skips_locked_live_run();
-    test_commit_respects_readonly_dest();
-    test_open_failure_is_clean();
-    test_flat_cwd_destination();
-    // v1.39.0 batch-mode failure matrix.
-    test_batch_kill_mid_run();
-    test_torn_journal_tail_batched();
-    test_rename_failure_mid_run_batched();
-    test_journal_sync_failure_fail_closed();
-    test_cancel_mid_batch();
-    test_window_1_equivalence();
-    test_forged_journal_batched();
-    test_containment_batched();
-    test_frozen_surface_absence();
-    test_batch_lru_eviction_skips_in_flight();
-    test_batch_lru_eviction_occurs();
-    test_late_entry_to_batch_switch();
-    test_crash_hook_kills_after_nth_record();
-    std::cout << "All extraction_atomic_tests passed.\n";
-    return 0;
+    static const openrar::test::Case k_cases[] = {
+        {"test_atomic_commit_replaces", test_atomic_commit_replaces, false},
+        {"test_commit_noclobber_preserves_dest", test_commit_noclobber_preserves_dest, false},
+        {"test_temp_names_crypto_random", test_temp_names_crypto_random, false},
+        {"test_abandon_and_destructor_disposition", test_abandon_and_destructor_disposition, false},
+        {"test_journal_references_temp_during_flight", test_journal_references_temp_during_flight,
+         false},
+        {"test_journal_orphan_cleanup", test_journal_orphan_cleanup, false},
+        {"test_journal_sweep_skips_locked_live_run", test_journal_sweep_skips_locked_live_run,
+         false},
+        {"test_commit_respects_readonly_dest", test_commit_respects_readonly_dest, false},
+        {"test_open_failure_is_clean", test_open_failure_is_clean, false},
+        {"test_flat_cwd_destination", test_flat_cwd_destination, false},
+        {"test_batch_kill_mid_run", test_batch_kill_mid_run, false},
+        {"test_torn_journal_tail_batched", test_torn_journal_tail_batched, false},
+        {"test_rename_failure_mid_run_batched", test_rename_failure_mid_run_batched, false},
+        {"test_journal_sync_failure_fail_closed", test_journal_sync_failure_fail_closed, false},
+        {"test_cancel_mid_batch", test_cancel_mid_batch, false},
+        {"test_window_1_equivalence", test_window_1_equivalence, false},
+        {"test_forged_journal_batched", test_forged_journal_batched, false},
+        {"test_containment_batched", test_containment_batched, false},
+        {"test_frozen_surface_absence", test_frozen_surface_absence, false},
+        {"test_batch_lru_eviction_skips_in_flight", test_batch_lru_eviction_skips_in_flight, false},
+        {"test_batch_lru_eviction_occurs", test_batch_lru_eviction_occurs, false},
+        {"test_late_entry_to_batch_switch", test_late_entry_to_batch_switch, false},
+        {"test_crash_hook_kills_after_nth_record", test_crash_hook_kills_after_nth_record, false},
+    };
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All extraction_atomic_tests passed.\n";
+    return rc;
 }

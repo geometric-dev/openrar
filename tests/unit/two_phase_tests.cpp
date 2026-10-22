@@ -14,6 +14,8 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _MSC_VER
 #include <crtdbg.h>
@@ -36,9 +38,9 @@ namespace {
 // _putenv directly, which does not exist on Linux/macOS, so those legs
 // failed to compile.)
 void set_env(const char* assignment) {
-    assert(assignment != nullptr);
+    REQUIRE(assignment != nullptr);
     const char* eq = std::strchr(assignment, '=');
-    assert(eq != nullptr && "set_env expects NAME or NAME=value");
+    REQUIRE((eq != nullptr && "set_env expects NAME or NAME=value"));
     const std::string name(assignment, static_cast<size_t>(eq - assignment));
 #ifdef _MSC_VER
     (void)name;
@@ -120,27 +122,27 @@ void test_overcomplete_huffman_rejected() {
     };
 
     // Over-complete: sum(len_cnt[i] / 2^i) > 1.
-    assert(!build({1, 1, 1})); // 3/2
+    REQUIRE(!build({1, 1, 1})); // 3/2
     {
         // 20 codes of length 1: sum = 10.0.
         std::vector<core::byte> v(20, 1);
-        assert(!HuffmanDecoder().build(v.data(), v.size()));
+        REQUIRE(!HuffmanDecoder().build(v.data(), v.size()));
     }
 
     // Legal tables still build.
-    assert(build({1, 1}));       // complete: 2/2 == 1
-    assert(build({2, 2, 2, 2})); // complete: 4/4 == 1
-    assert(build({2, 2, 2}));    // incomplete: 3/4
-    assert(build({15}));         // sparse/incomplete: allowed by RAR
-    assert(build({1, 3, 3}));    // 1/2 + 1/8 + 1/8 = 3/4, incomplete but valid
-    assert(build({0}));          // empty symbol
+    REQUIRE(build({1, 1}));       // complete: 2/2 == 1
+    REQUIRE(build({2, 2, 2, 2})); // complete: 4/4 == 1
+    REQUIRE(build({2, 2, 2}));    // incomplete: 3/4
+    REQUIRE(build({15}));         // sparse/incomplete: allowed by RAR
+    REQUIRE(build({1, 3, 3}));    // 1/2 + 1/8 + 1/8 = 3/4, incomplete but valid
+    REQUIRE(build({0}));          // empty symbol
 
     std::cout << "[PASS] over-complete Huffman descriptions are rejected\n";
 }
 
 } // namespace
 
-int main() {
+static void run_suite_body() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
 #ifdef _MSC_VER
@@ -169,27 +171,27 @@ int main() {
         };
         for (auto& c : cases) {
             std::vector<core::byte> packed;
-            assert(Compressor50::compress_buffer(c.plain.data(), c.plain.size(), packed, c.method,
-                                                 win));
+            REQUIRE(Compressor50::compress_buffer(c.plain.data(), c.plain.size(), packed, c.method,
+                                                  win));
             // Control: the sequential decoder accepts the member (roundtrip).
-            assert(roundtrip_ok(packed, c.plain, win));
+            REQUIRE(roundtrip_ok(packed, c.plain, win));
 
             Decompressor50 ps(win);
             Decompressor50::PrescanTimeline tl;
-            assert(ps.prescan_member(packed.data(), packed.size(), tl));
-            assert(tl.ok);
-            assert(tl.saw_last_block);
-            assert(!tl.blocks.empty());
-            assert(tl.packed_extent == packed.size()); // our encoder ends at LastBlock
-            assert(tl.blocks.front().table_present);   // non-solid member start
+            REQUIRE(ps.prescan_member(packed.data(), packed.size(), tl));
+            REQUIRE(tl.ok);
+            REQUIRE(tl.saw_last_block);
+            REQUIRE(!tl.blocks.empty());
+            REQUIRE(tl.packed_extent == packed.size()); // our encoder ends at LastBlock
+            REQUIRE(tl.blocks.front().table_present);   // non-solid member start
             // Table timeline: every block's desc_id is valid and descriptions
             // are exactly the table-bearing (non-empty) blocks.
             size_t table_blocks = 0;
             for (const auto& b : tl.blocks) {
-                assert(b.desc_id < tl.descriptions.size());
+                REQUIRE(b.desc_id < tl.descriptions.size());
                 if (b.table_present && b.block_size != 0) ++table_blocks;
             }
-            assert(tl.descriptions.size() == table_blocks);
+            REQUIRE(tl.descriptions.size() == table_blocks);
             std::cout << "[PASS] prescan agreement: " << c.name << " (" << tl.blocks.size()
                       << " blocks, " << tl.descriptions.size() << " descriptions)\n";
         }
@@ -199,16 +201,17 @@ int main() {
     {
         std::vector<core::byte> plain = make_text(2 * M, 0x55);
         std::vector<core::byte> packed;
-        assert(Compressor50::compress_buffer(plain.data(), plain.size(), packed, 3, win));
+        REQUIRE(Compressor50::compress_buffer(plain.data(), plain.size(), packed, 3, win));
 
         auto scan_fails = [&](const std::vector<core::byte>& bad, const char* what) {
             Decompressor50 ps(win);
             Decompressor50::PrescanTimeline tl;
             if (ps.prescan_member(bad.data(), bad.size(), tl)) {
-                std::cout << "[FAIL] prescan accepted hostile member: " << what << "\n";
+                if (!openrar::test::last_run_was_filtered())
+                    std::cout << "[FAIL] prescan accepted hostile member: " << what << "\n";
                 std::exit(1);
             }
-            assert(!tl.ok);
+            REQUIRE(!tl.ok);
         };
 
         // Truncation mid-header.
@@ -240,7 +243,8 @@ int main() {
         }
         // Empty stream.
         scan_fails(std::vector<core::byte>{}, "empty");
-        std::cout << "[PASS] prescan hostile rows fail closed\n";
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] prescan hostile rows fail closed\n";
     }
 
     // ── M1: R2 block-count cap — a chain of minimal empty blocks ────────────
@@ -257,8 +261,9 @@ int main() {
         }
         Decompressor50 ps(win);
         Decompressor50::PrescanTimeline tl;
-        assert(!ps.prescan_member(bad.data(), bad.size(), tl));
-        std::cout << "[PASS] prescan block-count cap falls back (R2)\n";
+        REQUIRE(!ps.prescan_member(bad.data(), bad.size(), tl));
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] prescan block-count cap falls back (R2)\n";
     }
 
     // ── M2: span-records semantics — any split replays to the same bytes ────
@@ -369,11 +374,11 @@ int main() {
         };
         for (auto& c : cases) {
             std::vector<core::byte> packed;
-            assert(Compressor50::compress_buffer(c.plain.data(), c.plain.size(), packed, c.method,
-                                                 win));
+            REQUIRE(Compressor50::compress_buffer(c.plain.data(), c.plain.size(), packed, c.method,
+                                                  win));
             Decompressor50 ps(win);
             Decompressor50::PrescanTimeline tl;
-            assert(ps.prescan_member(packed.data(), packed.size(), tl));
+            REQUIRE(ps.prescan_member(packed.data(), packed.size(), tl));
 
             for (size_t n_spans : {size_t{1}, size_t{2}, size_t{3}, size_t{4}, size_t{8}}) {
                 auto spans = split_bounds(tl, n_spans);
@@ -387,17 +392,17 @@ int main() {
                         tl.blocks[sp.second].src_byte + tl.blocks[sp.second].header_len +
                         tl.blocks[sp.second].block_size - tl.blocks[sp.first].src_byte;
                     size_t cap = span_packed * 16 + (16u << 20);
-                    assert(worker.decode_span(tl, packed.data(), packed.size(), c.plain.size(),
-                                              sp.first, sp.second, cap, sr));
-                    assert(sr.ok);
+                    REQUIRE(worker.decode_span(tl, packed.data(), packed.size(), c.plain.size(),
+                                               sp.first, sp.second, cap, sr));
+                    REQUIRE(sr.ok);
                     // Filters never appear in these corpora.
                     for (const auto& r : sr.recs) {
-                        assert(static_cast<Decompressor50::OpRecord::Tag>(r.tag) !=
-                               Decompressor50::OpRecord::Tag::Filter);
+                        REQUIRE(static_cast<Decompressor50::OpRecord::Tag>(r.tag) !=
+                                Decompressor50::OpRecord::Tag::Filter);
                     }
                     total_lower += sr.out_lower_bound;
                     apply_span(ap, sr, c.plain.size());
-                    assert(!ap.fail);
+                    REQUIRE(!ap.fail);
                 }
                 if (ap.out != c.plain) {
                     size_t d = 0;
@@ -444,9 +449,9 @@ int main() {
                     written += n;
                     return true;
                 };
-                assert(seq.decompress(packed.data(), packed.size(), dest, false, sink, &written,
-                                      &finished));
-                assert(seq_out.size() == dest);
+                REQUIRE(seq.decompress(packed.data(), packed.size(), dest, false, sink, &written,
+                                       &finished));
+                REQUIRE(seq_out.size() == dest);
 
                 MiniApplier ap;
                 auto spans = split_bounds(tl, 4);
@@ -454,12 +459,12 @@ int main() {
                     Decompressor50 worker(win);
                     Decompressor50::SpanRecords sr;
                     size_t cap = (16u << 20) + (1u << 20);
-                    assert(worker.decode_span(tl, packed.data(), packed.size(), dest, sp.first,
-                                              sp.second, cap, sr));
+                    REQUIRE(worker.decode_span(tl, packed.data(), packed.size(), dest, sp.first,
+                                               sp.second, cap, sr));
                     apply_span(ap, sr, dest);
-                    assert(!ap.fail);
+                    REQUIRE(!ap.fail);
                 }
-                assert(ap.out == seq_out);
+                REQUIRE(ap.out == seq_out);
             }
             std::cout << "[PASS] span-records identity: " << c.name
                       << " (splits 1/2/3/4/8 + dest-crossing)\n";
@@ -474,43 +479,43 @@ int main() {
         unsigned w = 0;
         const size_t MB = 1024 * 1024;
         // Baseline engagement (requested 0 = D9 default: 2 workers).
-        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, &w));
-        assert(w == 2);
+        REQUIRE(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, &w));
+        REQUIRE(w == 2);
         // Requested -mtN is honored (clamped to the 8-worker ceiling).
-        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 3, &w));
-        assert(w == 3);
-        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 64, &w));
-        assert(w == 8);
+        REQUIRE(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 3, &w));
+        REQUIRE(w == 3);
+        REQUIRE(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 64, &w));
+        REQUIRE(w == 8);
         // -mt1 forces sequential.
-        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 1, nullptr));
+        REQUIRE(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 1, nullptr));
         // G1: solid entries never engage.
-        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, true, 0, nullptr));
+        REQUIRE(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, true, 0, nullptr));
         // G2 flavor: v1 (446-table, > 4 GiB window) stays sequential.
-        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 5ULL * 1024 * 1024 * 1024, false, 0,
-                                           nullptr));
+        REQUIRE(!should_use_parallel_decode(32 * MB, 64 * MB, 5ULL * 1024 * 1024 * 1024, false, 0,
+                                            nullptr));
         // G3: packed amortization floor.
-        assert(!should_use_parallel_decode(2 * MB, 64 * MB, 0x200000, false, 0, nullptr));
+        REQUIRE(!should_use_parallel_decode(2 * MB, 64 * MB, 0x200000, false, 0, nullptr));
         // Degenerate sizes.
-        assert(!should_use_parallel_decode(32 * MB, 0, 0x200000, false, 0, nullptr));
-        assert(!should_use_parallel_decode(0, 64 * MB, 0x200000, false, 0, nullptr));
+        REQUIRE(!should_use_parallel_decode(32 * MB, 0, 0x200000, false, 0, nullptr));
+        REQUIRE(!should_use_parallel_decode(0, 64 * MB, 0x200000, false, 0, nullptr));
         // D9 kill switch.
         set_env("OPENRAR_NO_PARALLEL_DECODE=1");
-        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, nullptr));
+        REQUIRE(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, nullptr));
         set_env("OPENRAR_NO_PARALLEL_DECODE=");
         // F7: single-thread override.
         set_env("OPENRAR_PARALLEL_DECODE_THREADS=1");
-        assert(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, nullptr));
+        REQUIRE(!should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, nullptr));
         set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
         // The env override is real for the unset case (v1.37.2 — the
         // sandboxed-`t` channel): 4 through the env engages 4 workers, and
         // an explicit -mt still outranks it.
         set_env("OPENRAR_PARALLEL_DECODE_THREADS=4");
-        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, &w));
-        assert(w == 4);
-        assert(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 2, &w));
-        assert(w == 2);
+        REQUIRE(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 0, &w));
+        REQUIRE(w == 4);
+        REQUIRE(should_use_parallel_decode(32 * MB, 64 * MB, 0x200000, false, 2, &w));
+        REQUIRE(w == 2);
         set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
-        std::cout << "[PASS] driver gate matrix\n";
+        if (!openrar::test::last_run_was_filtered()) std::cout << "[PASS] driver gate matrix\n";
     }
 
     // ── M3: MT/ST byte- AND chunk-identity through the real driver ──────────
@@ -539,26 +544,27 @@ int main() {
         auto run_identity = [&](const char* name, std::vector<core::byte>& plain, int method,
                                 std::vector<unsigned> thread_counts) {
             std::vector<core::byte> packed;
-            assert(Compressor50::compress_buffer(plain.data(), plain.size(), packed, method,
-                                                 0x200000));
+            REQUIRE(Compressor50::compress_buffer(plain.data(), plain.size(), packed, method,
+                                                  0x200000));
             std::vector<core::byte> seq_out, par_out;
             std::vector<size_t> seq_chunks, par_chunks;
-            assert(
+            REQUIRE(
                 chunks_decode(packed, plain.size(), 0x200000, false, seq_out, seq_chunks, nullptr));
             for (unsigned threads : thread_counts) {
                 const std::string forced =
                     "OPENRAR_PARALLEL_DECODE_THREADS=" + std::to_string(threads);
                 set_env(forced.c_str());
                 ParallelDecodeDiag diag;
-                assert(chunks_decode(packed, plain.size(), 0x200000, true, par_out, par_chunks,
-                                     &diag));
-                assert(diag.engaged); // the identity rows require engagement
-                assert(!diag.fell_back);
-                assert(par_out == seq_out);
-                assert(par_chunks == seq_chunks); // chunk-identity [R1]
+                REQUIRE(chunks_decode(packed, plain.size(), 0x200000, true, par_out, par_chunks,
+                                      &diag));
+                REQUIRE(diag.engaged); // the identity rows require engagement
+                REQUIRE(!diag.fell_back);
+                REQUIRE(par_out == seq_out);
+                REQUIRE(par_chunks == seq_chunks); // chunk-identity [R1]
                 set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
             }
-            std::cout << "[PASS] driver MT/ST identity: " << name << "\n";
+            if (!openrar::test::last_run_was_filtered())
+                std::cout << "[PASS] driver MT/ST identity: " << name << "\n";
         };
 
         // m1 packs text loosely: a 96 MiB member clears the span floor at 8
@@ -582,9 +588,9 @@ int main() {
             set_env("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=262144");
             auto mid32 = make_text(32u * 1024 * 1024, 0x5a5);
             std::vector<core::byte> packed32;
-            assert(
+            REQUIRE(
                 Compressor50::compress_buffer(mid32.data(), mid32.size(), packed32, 1, 0x200000));
-            assert(packed32.size() >= 1024u * 1024); // the lowered G3 floor, explicitly
+            REQUIRE(packed32.size() >= 1024u * 1024); // the lowered G3 floor, explicitly
             std::vector<core::byte> seq_out;
             std::vector<size_t> seq_chunks;
             {
@@ -594,7 +600,7 @@ int main() {
                     seq_chunks.push_back(n);
                     return true;
                 };
-                assert(seq.decompress(packed32.data(), packed32.size(), mid32.size(), false, cb));
+                REQUIRE(seq.decompress(packed32.data(), packed32.size(), mid32.size(), false, cb));
             }
             for (unsigned requested : {2u, 4u, 8u}) {
                 ParallelDecodeDiag diag;
@@ -605,12 +611,12 @@ int main() {
                     par_chunks.push_back(n);
                     return true;
                 };
-                assert(decode_entry(packed32.data(), packed32.size(), mid32.size(), 0x200000, cb,
-                                    &diag, requested));
-                assert(diag.engaged && !diag.fell_back);
-                assert(diag.workers == requested);
-                assert(par_out == seq_out);
-                assert(par_chunks == seq_chunks);
+                REQUIRE(decode_entry(packed32.data(), packed32.size(), mid32.size(), 0x200000, cb,
+                                     &diag, requested));
+                REQUIRE((diag.engaged && !diag.fell_back));
+                REQUIRE(diag.workers == requested);
+                REQUIRE(par_out == seq_out);
+                REQUIRE(par_chunks == seq_chunks);
             }
             ParallelDecodeDiag diag1;
             std::vector<core::byte> out1;
@@ -618,12 +624,14 @@ int main() {
                 out1.insert(out1.end(), p, p + n);
                 return true;
             };
-            assert(decode_entry(packed32.data(), packed32.size(), mid32.size(), 0x200000, cb1,
-                                &diag1, 1));
-            assert(!diag1.engaged && !diag1.fell_back); // sequential, not fallback
-            assert(out1 == seq_out);
+            REQUIRE(decode_entry(packed32.data(), packed32.size(), mid32.size(), 0x200000, cb1,
+                                 &diag1, 1));
+            REQUIRE((!diag1.engaged && !diag1.fell_back)); // sequential, not fallback
+            REQUIRE(out1 == seq_out);
             set_env("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=");
-            std::cout << "[PASS] decode_entry requested-threads routing (2/4/8, mt1 sequential)\n";
+            if (!openrar::test::last_run_was_filtered())
+                std::cout
+                    << "[PASS] decode_entry requested-threads routing (2/4/8, mt1 sequential)\n";
         }
     }
 
@@ -633,7 +641,7 @@ int main() {
         // to the sequential path, whose verdict (failure) is the answer.
         auto plain = make_text(64u * 1024 * 1024, 0x91);
         std::vector<core::byte> packed;
-        assert(Compressor50::compress_buffer(plain.data(), plain.size(), packed, 3, 0x200000));
+        REQUIRE(Compressor50::compress_buffer(plain.data(), plain.size(), packed, 3, 0x200000));
         // 2 workers: with the span-floor test knob the truncated stream still
         // clears the G3 member floor, so the pre-scan (not the gate) is what
         // fails — at the default 16 MiB packed floor this member size would
@@ -646,19 +654,19 @@ int main() {
             auto cb = [&](const core::byte*, size_t) -> bool {
                 return true;
             };
-            assert(!decode_entry(trunc.data(), trunc.size(), plain.size(), 0x200000, cb, &diag));
-            assert(diag.fell_back);
+            REQUIRE(!decode_entry(trunc.data(), trunc.size(), plain.size(), 0x200000, cb, &diag));
+            REQUIRE(diag.fell_back);
         }
         // Filter-bearing member: the PE-like corpus engages E8 pretransform
         // tokens; the applier resolves them through the engine queue.
         {
             auto pe = make_pe_like(64u * 1024 * 1024, 99);
             std::vector<core::byte> packed_pe;
-            assert(Compressor50::compress_buffer(pe.data(), pe.size(), packed_pe, 3, 0x200000));
+            REQUIRE(Compressor50::compress_buffer(pe.data(), pe.size(), packed_pe, 3, 0x200000));
             // Confirm the corpus actually bears filters.
             Decompressor50 ps(0x200000);
             Decompressor50::PrescanTimeline tl;
-            assert(ps.prescan_member(packed_pe.data(), packed_pe.size(), tl));
+            REQUIRE(ps.prescan_member(packed_pe.data(), packed_pe.size(), tl));
             std::vector<core::byte> seq_out, par_out;
             std::vector<size_t> seq_chunks, par_chunks;
             auto collect = [&](std::vector<core::byte>& out, std::vector<size_t>& chunks) {
@@ -670,18 +678,19 @@ int main() {
             };
             {
                 Decompressor50 seq(0x200000);
-                assert(seq.decompress(packed_pe.data(), packed_pe.size(), pe.size(), false,
-                                      collect(seq_out, seq_chunks)));
+                REQUIRE(seq.decompress(packed_pe.data(), packed_pe.size(), pe.size(), false,
+                                       collect(seq_out, seq_chunks)));
             }
             ParallelDecodeDiag diag;
-            assert(decode_entry(packed_pe.data(), packed_pe.size(), pe.size(), 0x200000,
-                                collect(par_out, par_chunks), &diag));
-            assert(diag.engaged && !diag.fell_back);
-            assert(par_out == seq_out);
-            assert(par_chunks == seq_chunks);
+            REQUIRE(decode_entry(packed_pe.data(), packed_pe.size(), pe.size(), 0x200000,
+                                 collect(par_out, par_chunks), &diag));
+            REQUIRE((diag.engaged && !diag.fell_back));
+            REQUIRE(par_out == seq_out);
+            REQUIRE(par_chunks == seq_chunks);
         }
         set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
-        std::cout << "[PASS] driver hostile fallback + filter member identity\n";
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] driver hostile fallback + filter member identity\n";
     }
 
     // ── v1.38.0 M2: filter-region extraction + queue cursor edge rows ──────
@@ -699,7 +708,7 @@ int main() {
         {
             auto pe = make_pe_like(1 * M, 77);
             std::vector<core::byte> packed;
-            assert(Compressor50::compress_buffer(pe.data(), pe.size(), packed, 3, 128 * 1024));
+            REQUIRE(Compressor50::compress_buffer(pe.data(), pe.size(), packed, 3, 128 * 1024));
             std::vector<core::byte> seq_out, par_out;
             std::vector<size_t> seq_chunks, par_chunks;
             auto collect = [&](std::vector<core::byte>& out, std::vector<size_t>& chunks) {
@@ -711,10 +720,10 @@ int main() {
             };
             {
                 Decompressor50 seq(128 * 1024);
-                assert(seq.decompress(packed.data(), packed.size(), pe.size(), false,
-                                      collect(seq_out, seq_chunks)));
+                REQUIRE(seq.decompress(packed.data(), packed.size(), pe.size(), false,
+                                       collect(seq_out, seq_chunks)));
             }
-            assert(seq_out == pe);
+            REQUIRE(seq_out == pe);
             ParallelDecodeDiag diag;
             set_env("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=65536");
             set_env("OPENRAR_PARALLEL_DECODE_THREADS=2");
@@ -722,10 +731,11 @@ int main() {
                                    collect(par_out, par_chunks), &diag);
             set_env("OPENRAR_PARALLEL_DECODE_SPAN_FLOOR=");
             set_env("OPENRAR_PARALLEL_DECODE_THREADS=");
-            assert(ok);
-            assert(par_out == seq_out);
-            assert(par_chunks == seq_chunks);
-            std::cout << "[PASS] filter region crosses window wrap (128K window, E8 member)\n";
+            REQUIRE(ok);
+            REQUIRE(par_out == seq_out);
+            REQUIRE(par_chunks == seq_chunks);
+            if (!openrar::test::last_run_was_filtered())
+                std::cout << "[PASS] filter region crosses window wrap (128K window, E8 member)\n";
         }
         // Zero-length regions and the head cursor: feed the applier records
         // with 300 zero-length E8 regions interleaved with literals; the
@@ -756,22 +766,33 @@ int main() {
             }
             sr.ok = true;
             Decompressor50 applier(0x200000);
-            assert(applier.apply_begin());
+            REQUIRE(applier.apply_begin());
             size_t total = 0;
             std::vector<core::byte> out;
-            assert(applier.apply_span_records(
+            REQUIRE(applier.apply_span_records(
                 sr, plain.size(), true,
                 [&](const core::byte* p, size_t n) -> bool {
                     out.insert(out.end(), p, p + n);
                     return true;
                 },
                 &total));
-            assert(total == plain.size());
-            assert(out == plain);
-            std::cout << "[PASS] zero-length filter regions + queue cursor (301 groups)\n";
+            REQUIRE(total == plain.size());
+            REQUIRE(out == plain);
+            if (!openrar::test::last_run_was_filtered())
+                std::cout << "[PASS] zero-length filter regions + queue cursor (301 groups)\n";
         }
     }
 
-    std::cout << "All two_phase_tests passed.\n";
-    return 0;
+    if (!openrar::test::last_run_was_filtered()) std::cout << "All two_phase_tests passed.\n";
+    return;
+}
+
+static const openrar::test::Case k_cases[] = {
+    {"run_suite_body", run_suite_body, false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
+                                            argv);
 }

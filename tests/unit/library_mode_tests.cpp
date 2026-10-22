@@ -46,6 +46,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -103,10 +105,10 @@ fs::path make_dir(const char* name) {
 void craft_stored_archive(const fs::path& arc, const std::string& entry_name,
                           const std::vector<core::byte>& payload) {
     io::FileStream out;
-    assert(out.open(arc, io::FileMode::CreateAlways));
-    assert(format::HeaderWriter::write_signature(out));
+    REQUIRE(out.open(arc, io::FileMode::CreateAlways));
+    REQUIRE(format::HeaderWriter::write_signature(out));
     format::MainBlock mb;
-    assert(format::HeaderWriter::write_main_block(out, mb));
+    REQUIRE(format::HeaderWriter::write_main_block(out, mb));
 
     format::FileBlock fb;
     fb.file_name = entry_name;
@@ -115,10 +117,10 @@ void craft_stored_archive(const fs::path& arc, const std::string& entry_name,
     fb.method = 0;                        // store
     fb.host_os = 1;                       // unix-ish defaults; no metadata extras
     fb.mtime_win = 133000000000000000ull; // FILETIME (100 ns since 1601)
-    assert(format::HeaderWriter::write_file_block(out, fb, 0));
-    if (!payload.empty()) assert(out.write(payload.data(), payload.size()) == payload.size());
+    REQUIRE(format::HeaderWriter::write_file_block(out, fb, 0));
+    if (!payload.empty()) REQUIRE(out.write(payload.data(), payload.size()) == payload.size());
     format::EndArcBlock eb;
-    assert(format::HeaderWriter::write_end_block(out, eb));
+    REQUIRE(format::HeaderWriter::write_end_block(out, eb));
 }
 
 } // namespace
@@ -177,10 +179,10 @@ static void test_kdf_floor_unaffected_by_unlimited_limits() {
         // independent of any caller budget (the archive_tests.cpp
         // test_kdf_cap_pinned pattern, lifted to the C-ABI surface).
         io::FileStream out;
-        assert(out.open(arc, io::FileMode::CreateAlways));
-        assert(format::HeaderWriter::write_signature(out));
+        REQUIRE(out.open(arc, io::FileMode::CreateAlways));
+        REQUIRE(format::HeaderWriter::write_signature(out));
         format::MainBlock mb;
-        assert(format::HeaderWriter::write_main_block(out, mb));
+        REQUIRE(format::HeaderWriter::write_main_block(out, mb));
         format::FileBlock fb;
         fb.file_name = "hostile.bin";
         fb.unp_size = 16;
@@ -191,11 +193,11 @@ static void test_kdf_floor_unaffected_by_unlimited_limits() {
         fb.lg2_count = 25;
         fb.salt.fill(core::byte(0x5A));
         fb.init_v.fill(core::byte(0xA5));
-        assert(format::HeaderWriter::write_file_block(out, fb, 0));
+        REQUIRE(format::HeaderWriter::write_file_block(out, fb, 0));
         const core::byte payload[16] = {};
-        assert(out.write(payload, sizeof(payload)) == sizeof(payload));
+        REQUIRE(out.write(payload, sizeof(payload)) == sizeof(payload));
         format::EndArcBlock eb;
-        assert(format::HeaderWriter::write_end_block(out, eb));
+        REQUIRE(format::HeaderWriter::write_end_block(out, eb));
     }
 
     int rc_default = -100, rc_unlimited = -100;
@@ -273,10 +275,10 @@ static void plant_link(const fs::path& link_path, const fs::path& target, bool d
     re.type = dir_link ? io::RedirType::Junction : io::RedirType::WinSymlink;
     re.target = target.string();
     re.is_directory = dir_link;
-    assert(io::create_reparse_link(link_path, re));
+    REQUIRE(io::create_reparse_link(link_path, re));
 #else
     (void)dir_link;
-    assert(::symlink(target.c_str(), link_path.c_str()) == 0);
+    REQUIRE(::symlink(target.c_str(), link_path.c_str()) == 0);
 #endif
 }
 
@@ -323,7 +325,7 @@ static void test_containment_no_disable_switch() {
         std::ofstream f(blob, std::ios::binary | std::ios::trunc);
         f << "should not land";
     }
-    assert(archive::ArchiveMutator::add_file_to_archive(arc, blob, "sub/inner.txt", 0));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, blob, "sub/inner.txt", 0));
     fs::remove(blob);
 
     // Adversary: a junction/symlink planted at an INTERMEDIATE component,
@@ -358,12 +360,23 @@ static void test_containment_no_disable_switch() {
     unset_env("OPENRAR_NO_MMAP");
 }
 
-int main() {
-    OPENRAR_ROUTE_CRT_ASSERT_TO_STDERR();
-    test_set_limits_caller_layer_is_tunable();
-    test_kdf_floor_unaffected_by_unlimited_limits();
-    test_dll_destinations_are_caller_owned();
-    test_containment_no_disable_switch();
-    if (fails == 0) std::printf("[lm] library-mode containment gates: OK\n");
-    return fails == 0 ? 0 : 1;
+static const openrar::test::Case k_cases[] = {
+    {"test_set_limits_caller_layer_is_tunable", test_set_limits_caller_layer_is_tunable, false},
+    {"test_kdf_floor_unaffected_by_unlimited_limits", test_kdf_floor_unaffected_by_unlimited_limits,
+     false},
+    {"test_dll_destinations_are_caller_owned", test_dll_destinations_are_caller_owned, false},
+    {"test_containment_no_disable_switch", test_containment_no_disable_switch, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (fails != 0) {
+        std::fprintf(stderr, "%d failure(s)\n", fails);
+        rc = 1;
+    }
+    if (rc == 0 && fails != 0) rc = 1;
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::printf("[lm] library-mode containment gates: OK\n\n");
+    return rc;
 }

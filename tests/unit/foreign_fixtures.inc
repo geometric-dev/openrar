@@ -36,6 +36,7 @@ struct ZipMember {
     core::uint32 dos_attrs = 0;
     core::uint32 unix_mode = 0; // external attrs high 16 bits
     bool is_dir = false;
+    std::vector<core::byte> cd_extra; // raw extra-field bytes appended to the CDH
 };
 
 // Builds a complete ZIP (LFHs + data + CD + EOCD). With no injections the
@@ -100,7 +101,7 @@ std::vector<core::byte> build_zip(const std::vector<ZipMember>& members,
         put32(cdh, m.zip64 ? 0xFFFFFFFFu : static_cast<core::uint32>(m.unp_size));
         put16(cdh, static_cast<core::uint16>(m.name.size()));
         const bool zip64_extra = m.zip64;
-        put16(cdh, zip64_extra ? 20 : 0); // extra len
+        put16(cdh, static_cast<core::uint16>((zip64_extra ? 20 : 0) + m.cd_extra.size()));
         put16(cdh, static_cast<core::uint16>(m.entry_comment.size()));
         put16(cdh, 0); // disk start
         put16(cdh, 0); // internal attrs
@@ -117,6 +118,7 @@ std::vector<core::byte> build_zip(const std::vector<ZipMember>& members,
             put64(cdh, m.unp_size);
             put64(cdh, m.packed.size());
         }
+        cdh.insert(cdh.end(), m.cd_extra.begin(), m.cd_extra.end());
         put_str(cdh, m.entry_comment);
         out.insert(out.end(), cdh.begin(), cdh.end());
     }
@@ -297,4 +299,3 @@ std::vector<core::byte> build_gzip(const std::vector<const std::vector<core::byt
     }
     return out;
 }
-

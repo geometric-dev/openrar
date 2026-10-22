@@ -22,6 +22,8 @@
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #include <cstdlib>
+#include <doctest.h>
+#include "../support/test_runner.hpp"
 #endif
 
 using namespace openrar;
@@ -31,20 +33,20 @@ void test_gf_arithmetic() {
     ReedSolomon16 rs;
 
     // Zero element
-    assert(rs.gf_mul(0, 0) == 0);
-    assert(rs.gf_mul(0, 12345) == 0);
-    assert(rs.gf_mul(54321, 0) == 0);
-    assert(rs.gf_mul(0, 65535) == 0);
-    assert(rs.gf_mul(65535, 0) == 0);
+    REQUIRE(rs.gf_mul(0, 0) == 0);
+    REQUIRE(rs.gf_mul(0, 12345) == 0);
+    REQUIRE(rs.gf_mul(54321, 0) == 0);
+    REQUIRE(rs.gf_mul(0, 65535) == 0);
+    REQUIRE(rs.gf_mul(65535, 0) == 0);
 
     // Identity element
-    assert(rs.gf_mul(1, 12345) == 12345);
-    assert(rs.gf_mul(54321, 1) == 54321);
+    REQUIRE(rs.gf_mul(1, 12345) == 12345);
+    REQUIRE(rs.gf_mul(54321, 1) == 54321);
 
     // Inverse property: a * inv(a) == 1
     for (core::uint32 i = 1; i < 1000; ++i) {
         core::uint32 inv = rs.gf_inv(i);
-        assert(rs.gf_mul(i, inv) == 1);
+        REQUIRE(rs.gf_mul(i, inv) == 1);
     }
 
     std::cout << "[PASS] Galois Field GF(65536) Arithmetic\n";
@@ -63,7 +65,7 @@ void test_rs16_gfni_bit_exactness() {
     const core::uint32 ND = 6;
     const core::uint32 NR = 4;
     recovery::ReedSolomon16 rs;
-    assert(rs.init(ND, NR));
+    REQUIRE(rs.init(ND, NR));
 
     // Block sizes: 64-boundary classes and odd-word remainders (block_size
     // is always even per the codec contract).
@@ -83,7 +85,7 @@ void test_rs16_gfni_bit_exactness() {
                 ecc_gfni = ecc_ref;
                 rs.update_ecc_scalar(dn, en, data.data(), ecc_ref.data(), size);
                 rs.update_ecc(dn, en, data.data(), ecc_gfni.data(), size);
-                assert(ecc_gfni == ecc_ref && "GFNI fold diverged from scalar fold");
+                REQUIRE((ecc_gfni == ecc_ref && "GFNI fold diverged from scalar fold"));
             }
         }
     }
@@ -106,7 +108,7 @@ void test_rs16_neon_bit_exactness() {
     const core::uint32 ND = 6;
     const core::uint32 NR = 4;
     recovery::ReedSolomon16 rs;
-    assert(rs.init(ND, NR));
+    REQUIRE(rs.init(ND, NR));
 
     // Block sizes: 32-byte boundary classes and odd-word remainders
     // (block_size is always even per the codec contract).
@@ -126,7 +128,7 @@ void test_rs16_neon_bit_exactness() {
                 ecc_neon = ecc_ref;
                 rs.update_ecc_scalar(dn, en, data.data(), ecc_ref.data(), size);
                 rs.update_ecc(dn, en, data.data(), ecc_neon.data(), size);
-                assert(ecc_neon == ecc_ref && "NEON fold diverged from scalar fold");
+                REQUIRE((ecc_neon == ecc_ref && "NEON fold diverged from scalar fold"));
             }
         }
     }
@@ -151,7 +153,7 @@ void test_rs16_codec_roundtrip() {
     {
         ReedSolomon16 encoder;
         bool ok = encoder.init(ND, NR);
-        assert(ok);
+        REQUIRE(ok);
 
         for (core::uint32 d = 0; d < ND; ++d) {
             const core::byte* d_ptr = original_data.data() + d * SECTOR_SIZE;
@@ -175,7 +177,7 @@ void test_rs16_codec_roundtrip() {
     {
         ReedSolomon16 decoder;
         bool ok = decoder.init(ND, NR, valid_flags.data());
-        assert(ok);
+        REQUIRE(ok);
 
         // Build proc data: valid data, or replacement valid recovery
         std::vector<const core::byte*> proc(ND);
@@ -200,10 +202,10 @@ void test_rs16_codec_roundtrip() {
         }
 
         // Verify reconstructed sectors match original byte-for-byte
-        assert(std::memcmp(recon1.data(), original_data.data() + 1 * SECTOR_SIZE, SECTOR_SIZE) ==
-               0);
-        assert(std::memcmp(recon3.data(), original_data.data() + 3 * SECTOR_SIZE, SECTOR_SIZE) ==
-               0);
+        REQUIRE(std::memcmp(recon1.data(), original_data.data() + 1 * SECTOR_SIZE, SECTOR_SIZE) ==
+                0);
+        REQUIRE(std::memcmp(recon3.data(), original_data.data() + 3 * SECTOR_SIZE, SECTOR_SIZE) ==
+                0);
     }
 
     std::cout << "[PASS] Cauchy Reed-Solomon RS(ND=5, NR=3) Erasure Decoding\n";
@@ -217,11 +219,11 @@ void test_recovery_manager() {
     }
 
     auto params = RecoveryManager::calculate_params(PROTECTED_SIZE, 10); // 10% parity
-    assert(params.data_sectors == 16);
-    assert(params.recovery_sectors >= 2);
+    REQUIRE(params.data_sectors == 16);
+    REQUIRE(params.recovery_sectors >= 2);
 
     auto parity = RecoveryManager::generate_parity(original.data(), params);
-    assert(parity.size() == params.recovery_sectors * params.sector_size);
+    REQUIRE(parity.size() == params.recovery_sectors * params.sector_size);
 
     // Corrupt 2 sectors in original data
     std::vector<core::byte> working_copy = original;
@@ -234,10 +236,10 @@ void test_recovery_manager() {
 
     // Repair
     bool repaired = RecoveryManager::repair_data(working_copy.data(), parity.data(), params, valid);
-    assert(repaired);
+    REQUIRE(repaired);
 
     // Verify 100% byte-identical restoration
-    assert(std::memcmp(working_copy.data(), original.data(), PROTECTED_SIZE) == 0);
+    REQUIRE(std::memcmp(working_copy.data(), original.data(), PROTECTED_SIZE) == 0);
 
     // Verify unrecoverable damage exceeding parity capacity
     std::vector<core::byte> hopeless = valid;
@@ -246,7 +248,7 @@ void test_recovery_manager() {
     }
     bool should_fail =
         RecoveryManager::repair_data(working_copy.data(), parity.data(), params, hopeless);
-    assert(!should_fail);
+    REQUIRE(!should_fail);
 
     std::cout << "[PASS] RecoveryManager In-Archive Repair & Capacity Limits\n";
 }
@@ -262,23 +264,23 @@ void test_recovery_manager() {
 void test_recovery_params_overflow() {
     // 2 TiB: ceil(ps/512) == 2^32 — the exact uint32 truncation point.
     auto too_big = RecoveryManager::calculate_params(1ULL << 41, 5);
-    assert(too_big.data_sectors == 0);
-    assert(too_big.recovery_sectors == 0);
+    REQUIRE(too_big.data_sectors == 0);
+    REQUIRE(too_big.recovery_sectors == 0);
     // generate_parity must refuse the failure signal instead of computing.
-    assert(RecoveryManager::generate_parity(nullptr, too_big).empty());
+    REQUIRE(RecoveryManager::generate_parity(nullptr, too_big).empty());
 
     // percent = 2^32-1 must not wrap the data*percent product into a bogus
     // fitting geometry.
     auto huge_pct = RecoveryManager::calculate_params(65530ULL * 512, 0xFFFFFFFFu);
-    assert(huge_pct.data_sectors == 0);
-    assert(huge_pct.recovery_sectors == 0);
+    REQUIRE(huge_pct.data_sectors == 0);
+    REQUIRE(huge_pct.recovery_sectors == 0);
 
     // A geometry that exactly fills the RS16 capacity at 512-byte sectors
     // (62409 data + ceil(62409*5/100) = 3121 recovery = 65530) still works.
     auto ok = RecoveryManager::calculate_params(62409ULL * 512, 5);
-    assert(ok.sector_size == 512);
-    assert(ok.data_sectors == 62409);
-    assert(ok.recovery_sectors == 3121);
+    REQUIRE(ok.sector_size == 512);
+    REQUIRE(ok.data_sectors == 62409);
+    REQUIRE(ok.recovery_sectors == 3121);
 
     // repair_data with params inconsistent with the buffer: damaged sector 3
     // starts at offset 1536 > protected_size 1024 — the writeback clamp must
@@ -292,7 +294,7 @@ void test_recovery_params_overflow() {
     std::vector<core::byte> data(1024, 0xAB);
     std::vector<core::byte> parity(3 * 512, 0xCD);
     std::vector<core::byte> valid = {1, 1, 1, 0, 1, 1, 1}; // sector 3 damaged
-    assert(RecoveryManager::repair_data(data.data(), parity.data(), bad, valid));
+    REQUIRE(RecoveryManager::repair_data(data.data(), parity.data(), bad, valid));
 
     std::cout << "[PASS] RecoveryManager geometry overflow refused (H4/L4)\n";
 }
@@ -313,11 +315,11 @@ void test_repair_rejects_hostile_prot_size() {
     // A real minimal RAR5 archive: signature + main + stored file + end.
     {
         io::FileStream out;
-        assert(out.open(arc, io::FileMode::CreateAlways));
+        REQUIRE(out.open(arc, io::FileMode::CreateAlways));
         using namespace openrar::format;
-        assert(HeaderWriter::write_signature(out));
+        REQUIRE(HeaderWriter::write_signature(out));
         MainBlock mb;
-        assert(HeaderWriter::write_main_block(out, mb));
+        REQUIRE(HeaderWriter::write_main_block(out, mb));
         FileBlock fb;
         fb.file_name = "payload.bin";
         fb.unp_size = 4096;
@@ -331,22 +333,22 @@ void test_repair_rejects_hostile_prot_size() {
         crypto::Crc32 hc;
         hc.update(payload, sizeof(payload));
         fb.data_crc32 = hc.get();
-        assert(HeaderWriter::write_file_block(out, fb));
-        assert(out.write(payload, sizeof(payload)) == sizeof(payload));
+        REQUIRE(HeaderWriter::write_file_block(out, fb));
+        REQUIRE(out.write(payload, sizeof(payload)) == sizeof(payload));
         EndArcBlock eb;
-        assert(HeaderWriter::write_end_block(out, eb));
+        REQUIRE(HeaderWriter::write_end_block(out, eb));
     }
-    assert(RecoveryWriter::add_recovery_record(arc, 5));
+    REQUIRE(RecoveryWriter::add_recovery_record(arc, 5));
 
     // Control: the intact record still repairs (and repair is a no-op on an
     // undamaged archive).
-    assert(RecoveryWriter::repair(arc));
+    REQUIRE(RecoveryWriter::repair(arc));
 
     // Locate shard 0 via its magic and patch prot_size to 1 TiB.
     io::FileStream f;
-    assert(f.open(arc, io::FileMode::ReadOnly));
+    REQUIRE(f.open(arc, io::FileMode::ReadOnly));
     std::vector<core::byte> buf(static_cast<size_t>(f.size()));
-    assert(f.read(buf.data(), buf.size()) == buf.size());
+    REQUIRE(f.read(buf.data(), buf.size()) == buf.size());
     f.close();
     static const core::byte MAGIC[4] = {'{', 'R', 'B', '}'};
     size_t shard = std::string::npos;
@@ -356,21 +358,21 @@ void test_repair_rejects_hostile_prot_size() {
             break;
         }
     }
-    assert(shard != std::string::npos);
+    REQUIRE(shard != std::string::npos);
     core::uint32 shard_size = core::read_le32(buf.data() + shard + 0x0C);
-    assert(shard_size >= 0x40 && shard + shard_size <= buf.size());
+    REQUIRE((shard_size >= 0x40 && shard + shard_size <= buf.size()));
     core::write_le64(buf.data() + shard + 0x22, 1ULL << 40);
     core::write_le64(buf.data() + shard + 0x04,
                      crypto::Crc64Xz::compute(buf.data() + shard + 0x0C, shard_size - 0x0C));
     {
         io::FileStream g;
-        assert(g.open(arc, io::FileMode::CreateAlways));
-        assert(g.write(buf.data(), buf.size()) == buf.size());
+        REQUIRE(g.open(arc, io::FileMode::CreateAlways));
+        REQUIRE(g.write(buf.data(), buf.size()) == buf.size());
     }
 
     // Hostile record must be refused before any prot_size-sized allocation
     // (old code attempted resize(1 TiB) here and terminated on bad_alloc).
-    assert(!RecoveryWriter::repair(arc));
+    REQUIRE(!RecoveryWriter::repair(arc));
 
     std::filesystem::remove(arc, ec);
     std::cout << "[PASS] repair refuses hostile prot_size (M2)\n";
@@ -400,31 +402,31 @@ void test_recovery_writer_damage_roundtrip() {
     }
     {
         io::FileStream f;
-        assert(f.open(src, io::FileMode::CreateAlways));
-        assert(f.write(payload.data(), payload.size()) == payload.size());
+        REQUIRE(f.open(src, io::FileMode::CreateAlways));
+        REQUIRE(f.write(payload.data(), payload.size()) == payload.size());
     }
 
-    assert(archive::ArchiveMutator::add_file_to_archive(arc, src, "payload.bin",
-                                                        /*method=*/0));
-    assert(recovery::RecoveryWriter::add_recovery_record(arc, 5));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, src, "payload.bin",
+                                                         /*method=*/0));
+    REQUIRE(recovery::RecoveryWriter::add_recovery_record(arc, 5));
 
     // The stored file data starts at archive offset 67 (signature + main +
     // file header). Archive offset 100 flips payload byte 33.
     {
         io::FileStream f;
-        assert(f.open(arc, io::FileMode::ReadWrite));
+        REQUIRE(f.open(arc, io::FileMode::ReadWrite));
         f.seek(100, io::SeekOrigin::Begin);
         core::byte b = 0;
-        assert(f.read(&b, 1) == 1);
+        REQUIRE(f.read(&b, 1) == 1);
         b = static_cast<core::byte>(b ^ 0xFF);
         f.seek(100, io::SeekOrigin::Begin);
-        assert(f.write(&b, 1) == 1);
+        REQUIRE(f.write(&b, 1) == 1);
     }
 
-    assert(recovery::RecoveryWriter::repair(arc));
+    REQUIRE(recovery::RecoveryWriter::repair(arc));
 
     archive::ArchiveReader reader;
-    assert(reader.open(arc));
+    REQUIRE(reader.open(arc));
     // entries() surfaces service headers too (the RR block sits in the
     // archive like the QO service in oracle-produced goldens); assert on
     // the single real file entry.
@@ -432,19 +434,19 @@ void test_recovery_writer_damage_roundtrip() {
     for (const auto& e : reader.entries()) {
         if (e.header.is_service) continue;
         ++file_entries;
-        assert(e.header.file_name == "payload.bin");
+        REQUIRE(e.header.file_name == "payload.bin");
     }
-    assert(file_entries == 1);
-    assert(reader.extract_entry(reader.entries()[0], out));
+    REQUIRE(file_entries == 1);
+    REQUIRE(reader.extract_entry(reader.entries()[0], out));
     reader.close();
     io::FileStream f;
-    assert(f.open(out, io::FileMode::ReadOnly));
+    REQUIRE(f.open(out, io::FileMode::ReadOnly));
     std::vector<core::byte> restored(static_cast<size_t>(f.size()));
-    assert(f.read(restored.data(), restored.size()) == restored.size());
+    REQUIRE(f.read(restored.data(), restored.size()) == restored.size());
 
     const bool restored_ok = restored.size() == payload.size() &&
                              std::memcmp(restored.data(), payload.data(), payload.size()) == 0;
-    assert(restored_ok);
+    REQUIRE(restored_ok);
     std::cout << "[PASS] RecoveryWriter damage -> repair -> byte-identical extract\n";
 }
 
@@ -466,11 +468,11 @@ void test_repair_reconstructs_padded_prefix() {
     constexpr size_t PAYLOAD_SIZE = 64 * 1024; // yields header_offset % group_count != 0
     {
         io::FileStream out_str;
-        assert(out_str.open(arc, io::FileMode::CreateAlways));
+        REQUIRE(out_str.open(arc, io::FileMode::CreateAlways));
         using namespace openrar::format;
-        assert(HeaderWriter::write_signature(out_str));
+        REQUIRE(HeaderWriter::write_signature(out_str));
         MainBlock mb;
-        assert(HeaderWriter::write_main_block(out_str, mb));
+        REQUIRE(HeaderWriter::write_main_block(out_str, mb));
         FileBlock fb;
         fb.file_name = "payload.bin";
         fb.unp_size = PAYLOAD_SIZE;
@@ -484,20 +486,20 @@ void test_repair_reconstructs_padded_prefix() {
         crypto::Crc32 hc;
         hc.update(payload.data(), payload.size());
         fb.data_crc32 = hc.get();
-        assert(HeaderWriter::write_file_block(out_str, fb));
-        assert(out_str.write(payload.data(), payload.size()) == payload.size());
+        REQUIRE(HeaderWriter::write_file_block(out_str, fb));
+        REQUIRE(out_str.write(payload.data(), payload.size()) == payload.size());
         EndArcBlock eb;
-        assert(HeaderWriter::write_end_block(out_str, eb));
+        REQUIRE(HeaderWriter::write_end_block(out_str, eb));
     }
-    assert(RecoveryWriter::add_recovery_record(arc, 5));
+    REQUIRE(RecoveryWriter::add_recovery_record(arc, 5));
 
     // Locate shard 0 and patch prot_size up to D*group_count. group_count is
     // the writer's ceil(prefix/D) rounded to even; read it from the record
     // itself (SHARD_GROUP_CNT = 0x2A) rather than recomputing.
     io::FileStream f;
-    assert(f.open(arc, io::FileMode::ReadOnly));
+    REQUIRE(f.open(arc, io::FileMode::ReadOnly));
     std::vector<core::byte> buf(static_cast<size_t>(f.size()));
-    assert(f.read(buf.data(), buf.size()) == buf.size());
+    REQUIRE(f.read(buf.data(), buf.size()) == buf.size());
     f.close();
     static const core::byte MAGIC[4] = {'{', 'R', 'B', '}'};
     size_t shard = std::string::npos;
@@ -507,43 +509,43 @@ void test_repair_reconstructs_padded_prefix() {
             break;
         }
     }
-    assert(shard != std::string::npos);
+    REQUIRE(shard != std::string::npos);
     core::uint32 shard_size = core::read_le32(buf.data() + shard + 0x0C);
     core::uint64 group_count = core::read_le64(buf.data() + shard + 0x2A);
     core::uint32 header_size32 = core::read_le32(buf.data() + shard + 0x10);
     core::uint64 D = (header_size32 - 0x48) / 8; // writer: header_size = (D*8 + 0x48)*scale
-    assert(D >= 1 && D <= 200);
+    REQUIRE((D >= 1 && D <= 200));
     core::uint64 padded = D * group_count;
     core::write_le64(buf.data() + shard + 0x22, padded);
     core::write_le64(buf.data() + shard + 0x04,
                      crypto::Crc64Xz::compute(buf.data() + shard + 0x0C, shard_size - 0x0C));
     {
         io::FileStream g;
-        assert(g.open(arc, io::FileMode::CreateAlways));
-        assert(g.write(buf.data(), buf.size()) == buf.size());
+        REQUIRE(g.open(arc, io::FileMode::CreateAlways));
+        REQUIRE(g.write(buf.data(), buf.size()) == buf.size());
     }
 
     // The padded-but-plausible record must now take the reconstruction path
     // and succeed end to end. Two writer bugs had to be fixed for this to
     // hold: the splice size contract (report M2) and the main-header locator
     // patch that used to invalidate already-folded parity bytes.
-    assert(RecoveryWriter::repair(arc));
+    REQUIRE(RecoveryWriter::repair(arc));
 
     archive::ArchiveReader reader;
-    assert(reader.open(arc));
+    REQUIRE(reader.open(arc));
     bool extracted = false;
     for (const auto& e : reader.entries()) {
         if (e.header.is_service) continue;
-        assert(e.header.file_name == "payload.bin");
+        REQUIRE(e.header.file_name == "payload.bin");
         std::vector<core::byte> got;
-        assert(reader.read_packed_data(e, got));
-        assert(got.size() == PAYLOAD_SIZE);
+        REQUIRE(reader.read_packed_data(e, got));
+        REQUIRE(got.size() == PAYLOAD_SIZE);
         for (size_t i = 0; i < PAYLOAD_SIZE; ++i)
-            assert(got[i] == static_cast<core::byte>(i * 91 + 7));
+            REQUIRE(got[i] == static_cast<core::byte>(i * 91 + 7));
         extracted = true;
     }
     reader.close();
-    assert(extracted);
+    REQUIRE(extracted);
     fs::remove(arc, ec);
     std::cout
         << "[PASS] repair reconstructs padded prefix and splices byte-identical output (M2)\n";
@@ -574,22 +576,22 @@ void test_rr_thread_determinism() {
             f.write(block.data(), static_cast<std::streamsize>(block.size()));
         }
     }
-    assert(openrar::archive::ArchiveMutator::add_file_to_archive(base, src, "payload.bin"));
+    REQUIRE(openrar::archive::ArchiveMutator::add_file_to_archive(base, src, "payload.bin"));
 
     fs::copy_file(base, a1, fs::copy_options::overwrite_existing);
     fs::copy_file(base, a4, fs::copy_options::overwrite_existing);
-    assert(RecoveryWriter::add_recovery_record(a1, 10, 1));
-    assert(RecoveryWriter::add_recovery_record(a4, 10, 4));
+    REQUIRE(RecoveryWriter::add_recovery_record(a1, 10, 1));
+    REQUIRE(RecoveryWriter::add_recovery_record(a4, 10, 4));
 
     std::ifstream f1(a1, std::ios::binary), f4(a4, std::ios::binary);
     std::string d1((std::istreambuf_iterator<char>(f1)), std::istreambuf_iterator<char>());
     std::string d4((std::istreambuf_iterator<char>(f4)), std::istreambuf_iterator<char>());
-    assert(d1.size() == d4.size());
-    assert(d1 == d4);
+    REQUIRE(d1.size() == d4.size());
+    REQUIRE(d1 == d4);
 
     // Both records must still verify.
-    assert(RecoveryWriter::repair(a1));
-    assert(RecoveryWriter::repair(a4));
+    REQUIRE(RecoveryWriter::repair(a1));
+    REQUIRE(RecoveryWriter::repair(a4));
 
     fs::remove(base, ec);
     fs::remove(a1, ec);
@@ -602,40 +604,40 @@ void test_b10_calculate_parity_buffer_size() {
     using namespace openrar::recovery;
 
     // Zero checks
-    assert(!calculate_parity_buffer_size(0, 512).has_value());
-    assert(!calculate_parity_buffer_size(512, 0).has_value());
-    assert(!calculate_parity_buffer_size(0, 0).has_value());
+    REQUIRE(!calculate_parity_buffer_size(0, 512).has_value());
+    REQUIRE(!calculate_parity_buffer_size(512, 0).has_value());
+    REQUIRE(!calculate_parity_buffer_size(0, 0).has_value());
 
     // Valid sizes within 2 GiB
     auto valid_small = calculate_parity_buffer_size(10, 512);
-    assert(valid_small.has_value());
-    assert(valid_small.value() == 5120);
+    REQUIRE(valid_small.has_value());
+    REQUIRE(valid_small.value() == 5120);
 
     auto valid_2g = calculate_parity_buffer_size(2048, 1024 * 1024); // 2 GiB exactly
-    assert(valid_2g.has_value());
-    assert(valid_2g.value() == 2ULL * 1024 * 1024 * 1024);
+    REQUIRE(valid_2g.has_value());
+    REQUIRE(valid_2g.value() == 2ULL * 1024 * 1024 * 1024);
 
 #if defined(__EMSCRIPTEN__) || defined(_M_IX86) || defined(__i386__)
     // 32-bit cap: > 2 GiB fails
     auto over_cap_32 = calculate_parity_buffer_size(2049, 1024 * 1024);
-    assert(!over_cap_32.has_value());
+    REQUIRE(!over_cap_32.has_value());
 #else
     // 64-bit native cap: supports multi-gigabyte parity up to 64 GiB
     auto valid_4g = calculate_parity_buffer_size(4096, 1024 * 1024); // 4 GiB
-    assert(valid_4g.has_value());
-    assert(valid_4g.value() == 4ULL * 1024 * 1024 * 1024);
+    REQUIRE(valid_4g.has_value());
+    REQUIRE(valid_4g.value() == 4ULL * 1024 * 1024 * 1024);
 
     auto valid_64g = calculate_parity_buffer_size(65536, 1024 * 1024); // 64 GiB exactly
-    assert(valid_64g.has_value());
-    assert(valid_64g.value() == 64ULL * 1024 * 1024 * 1024);
+    REQUIRE(valid_64g.has_value());
+    REQUIRE(valid_64g.value() == 64ULL * 1024 * 1024 * 1024);
 
     auto over_cap_64 = calculate_parity_buffer_size(65537, 1024 * 1024); // > 64 GiB fails
-    assert(!over_cap_64.has_value());
+    REQUIRE(!over_cap_64.has_value());
 #endif
 
     // Overflow check: product overflow beyond uint64
     auto overflow = calculate_parity_buffer_size(0xFFFFFFFFFFFFFFFFULL, 2);
-    assert(!overflow.has_value());
+    REQUIRE(!overflow.has_value());
 
     std::cout << "[PASS] calculate_parity_buffer_size overflow and bounds checks\n";
 }
@@ -659,26 +661,26 @@ void test_b5_parity_only_corruption() {
     }
     {
         io::FileStream f;
-        assert(f.open(src, io::FileMode::CreateAlways));
-        assert(f.write(payload.data(), payload.size()) == payload.size());
+        REQUIRE(f.open(src, io::FileMode::CreateAlways));
+        REQUIRE(f.write(payload.data(), payload.size()) == payload.size());
     }
 
-    assert(archive::ArchiveMutator::add_file_to_archive(arc, src, "p_only.bin", /*method=*/0));
-    assert(recovery::RecoveryWriter::add_recovery_record(arc, 5));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, src, "p_only.bin", /*method=*/0));
+    REQUIRE(recovery::RecoveryWriter::add_recovery_record(arc, 5));
 
     // Confirm that the newly created archive entries are completely healthy
     {
         archive::ArchiveReader test_r;
-        assert(test_r.open(arc));
-        assert(test_r.test_entry(test_r.entries()[0]));
+        REQUIRE(test_r.open(arc));
+        REQUIRE(test_r.test_entry(test_r.entries()[0]));
     }
 
     // Corrupt shard 0's stored CRC64 so it fails CRC validation while file data remains untouched
     {
         io::FileStream f;
-        assert(f.open(arc, io::FileMode::ReadWrite));
+        REQUIRE(f.open(arc, io::FileMode::ReadWrite));
         std::vector<core::byte> arc_bytes(static_cast<size_t>(f.size()));
-        assert(f.read(arc_bytes.data(), arc_bytes.size()) == arc_bytes.size());
+        REQUIRE(f.read(arc_bytes.data(), arc_bytes.size()) == arc_bytes.size());
 
         static const core::byte MAGIC[4] = {'{', 'R', 'B', '}'};
         size_t shard_pos = std::string::npos;
@@ -688,31 +690,31 @@ void test_b5_parity_only_corruption() {
                 break;
             }
         }
-        assert(shard_pos != std::string::npos);
+        REQUIRE(shard_pos != std::string::npos);
 
         f.seek(static_cast<core::int64>(shard_pos + 4), io::SeekOrigin::Begin);
         core::byte bad_crc[8] = {0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0};
-        assert(f.write(bad_crc, 8) == 8);
+        REQUIRE(f.write(bad_crc, 8) == 8);
     }
 
     // Repair should recognize that file data is 100% healthy, recompute parity, and rewrite RR
-    assert(recovery::RecoveryWriter::repair(arc));
+    REQUIRE(recovery::RecoveryWriter::repair(arc));
 
     // Verify extraction works byte-identically
     archive::ArchiveReader reader;
-    assert(reader.open(arc));
-    assert(reader.extract_entry(reader.entries()[0], out));
+    REQUIRE(reader.open(arc));
+    REQUIRE(reader.extract_entry(reader.entries()[0], out));
     reader.close();
 
     io::FileStream f;
-    assert(f.open(out, io::FileMode::ReadOnly));
+    REQUIRE(f.open(out, io::FileMode::ReadOnly));
     std::vector<core::byte> restored(static_cast<size_t>(f.size()));
-    assert(f.read(restored.data(), restored.size()) == restored.size());
-    assert(restored.size() == payload.size());
-    assert(std::memcmp(restored.data(), payload.data(), payload.size()) == 0);
+    REQUIRE(f.read(restored.data(), restored.size()) == restored.size());
+    REQUIRE(restored.size() == payload.size());
+    REQUIRE(std::memcmp(restored.data(), payload.data(), payload.size()) == 0);
 
     // Verify that the repaired archive's RR is now valid
-    assert(recovery::RecoveryWriter::repair(arc));
+    REQUIRE(recovery::RecoveryWriter::repair(arc));
 
     std::cout << "[PASS] Parity-only corruption: recomputed and restored cleanly\n";
 }
@@ -731,17 +733,17 @@ void test_b5_unrecoverable_inconsistent_corruption() {
     std::vector<core::byte> payload(PAYLOAD_SIZE, 0xAA);
     {
         io::FileStream f;
-        assert(f.open(src, io::FileMode::CreateAlways));
-        assert(f.write(payload.data(), payload.size()) == payload.size());
+        REQUIRE(f.open(src, io::FileMode::CreateAlways));
+        REQUIRE(f.write(payload.data(), payload.size()) == payload.size());
     }
 
-    assert(archive::ArchiveMutator::add_file_to_archive(arc, src, "unrec.bin", /*method=*/0));
-    assert(recovery::RecoveryWriter::add_recovery_record(arc, 3));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, src, "unrec.bin", /*method=*/0));
+    REQUIRE(recovery::RecoveryWriter::add_recovery_record(arc, 3));
 
     // Corrupt bytes across multiple widely separated shards exceeding recovery capacity
     {
         io::FileStream f;
-        assert(f.open(arc, io::FileMode::ReadWrite));
+        REQUIRE(f.open(arc, io::FileMode::ReadWrite));
         for (int k = 0; k < 10; ++k) {
             f.seek(100 + k * 2000, io::SeekOrigin::Begin);
             core::byte b = 0x55;
@@ -750,7 +752,7 @@ void test_b5_unrecoverable_inconsistent_corruption() {
     }
 
     // Repair must return false instead of misreconstructing corrupt data
-    assert(!recovery::RecoveryWriter::repair(arc));
+    REQUIRE(!recovery::RecoveryWriter::repair(arc));
 
     std::cout << "[PASS] Unrecoverable damage safely rejected without corrupting archive\n";
 }
@@ -764,13 +766,13 @@ void test_rev_single_volume_rejection() {
 
     {
         io::FileStream f;
-        assert(f.open(arc, io::FileMode::CreateAlways));
+        REQUIRE(f.open(arc, io::FileMode::CreateAlways));
         const core::byte sig[] = {0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00};
-        assert(f.write(sig, sizeof(sig)) == sizeof(sig));
+        REQUIRE(f.write(sig, sizeof(sig)) == sizeof(sig));
     }
 
-    assert(!recovery::RecoveryWriter::write_rev_volumes(arc, 1, /*is_percent=*/false));
-    assert(!recovery::RecoveryWriter::write_rev_volumes(arc, 10, /*is_percent=*/true));
+    REQUIRE(!recovery::RecoveryWriter::write_rev_volumes(arc, 1, /*is_percent=*/false));
+    REQUIRE(!recovery::RecoveryWriter::write_rev_volumes(arc, 10, /*is_percent=*/true));
 
     std::cout << "[PASS] write_rev_volumes rejects single-volume archive\n";
 }
@@ -796,43 +798,45 @@ void test_rev_volumes_roundtrip() {
 
     {
         io::FileStream f;
-        assert(f.open(src, io::FileMode::CreateAlways));
-        assert(f.write(payload.data(), payload.size()) == payload.size());
+        REQUIRE(f.open(src, io::FileMode::CreateAlways));
+        REQUIRE(f.write(payload.data(), payload.size()) == payload.size());
     }
 
-    assert(archive::ArchiveMutator::add_file_to_archive_vol(arc_base, src, "data.bin",
-                                                            /*method=*/0, /*vol_size=*/10 * 1024));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive_vol(arc_base, src, "data.bin",
+                                                             /*method=*/0, /*vol_size=*/10 * 1024));
 
     fs::path p1 = dir / "multivol.part1.rar";
     fs::path p2 = dir / "multivol.part2.rar";
-    assert(fs::exists(p1));
-    assert(fs::exists(p2));
+    REQUIRE(fs::exists(p1));
+    REQUIRE(fs::exists(p2));
 
-    assert(recovery::RecoveryWriter::write_rev_volumes(p1, 1, /*is_percent=*/false, /*threads=*/2));
+    REQUIRE(
+        recovery::RecoveryWriter::write_rev_volumes(p1, 1, /*is_percent=*/false, /*threads=*/2));
     fs::path r1 = dir / "multivol.part1.rev";
-    assert(fs::exists(r1));
+    REQUIRE(fs::exists(r1));
 
     uintmax_t p2_size = fs::file_size(p2);
     std::vector<core::byte> p2_saved(static_cast<size_t>(p2_size));
     {
         io::FileStream f;
-        assert(f.open(p2, io::FileMode::ReadOnly));
-        assert(f.read(p2_saved.data(), p2_saved.size()) == p2_saved.size());
+        REQUIRE(f.open(p2, io::FileMode::ReadOnly));
+        REQUIRE(f.read(p2_saved.data(), p2_saved.size()) == p2_saved.size());
     }
 
     fs::remove(p2, ec);
-    assert(!fs::exists(p2));
+    REQUIRE(!fs::exists(p2));
 
-    assert(recovery::RecoveryWriter::repair(p1));
-    assert(fs::exists(p2));
+    REQUIRE(recovery::RecoveryWriter::repair(p1));
+    REQUIRE(fs::exists(p2));
 
     {
         io::FileStream f;
-        assert(f.open(p2, io::FileMode::ReadOnly));
-        assert(f.size() == p2_size);
+        REQUIRE(f.open(p2, io::FileMode::ReadOnly));
+        REQUIRE(f.size() == p2_size);
         std::vector<core::byte> p2_reconstructed(static_cast<size_t>(p2_size));
-        assert(f.read(p2_reconstructed.data(), p2_reconstructed.size()) == p2_reconstructed.size());
-        assert(p2_reconstructed == p2_saved);
+        REQUIRE(f.read(p2_reconstructed.data(), p2_reconstructed.size()) ==
+                p2_reconstructed.size());
+        REQUIRE(p2_reconstructed == p2_saved);
     }
 
     std::cout << "[PASS] Multi-threaded .rev volume generation and full volume reconstruction\n";
@@ -850,14 +854,14 @@ static fs::path build_rev_set(const fs::path& dir, const std::string& stem,
     fs::path src = dir / (stem + "_src.bin");
     {
         io::FileStream f;
-        assert(f.open(src, io::FileMode::CreateAlways));
-        assert(f.write(payload.data(), payload.size()) == payload.size());
+        REQUIRE(f.open(src, io::FileMode::CreateAlways));
+        REQUIRE(f.write(payload.data(), payload.size()) == payload.size());
     }
     fs::path p1 = dir / (stem + ".part1.rar");
-    assert(archive::ArchiveMutator::add_file_to_archive_vol(p1, src, "data.bin",
-                                                            /*method=*/0, /*vol_size=*/10 * 1024));
-    assert(recovery::RecoveryWriter::write_rev_volumes(p1, 1, /*is_percent=*/false,
-                                                       /*threads=*/2));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive_vol(p1, src, "data.bin",
+                                                             /*method=*/0, /*vol_size=*/10 * 1024));
+    REQUIRE(recovery::RecoveryWriter::write_rev_volumes(p1, 1, /*is_percent=*/false,
+                                                        /*threads=*/2));
     std::error_code ec;
     fs::remove(src, ec);
     return p1;
@@ -880,21 +884,21 @@ static void test_rev_foreign_set_refused() {
     std::vector<core::byte> saved(static_cast<size_t>(zzz2_size));
     {
         io::FileStream f;
-        assert(f.open(zzz2, io::FileMode::ReadOnly));
-        assert(f.read(saved.data(), saved.size()) == saved.size());
+        REQUIRE(f.open(zzz2, io::FileMode::ReadOnly));
+        REQUIRE(f.read(saved.data(), saved.size()) == saved.size());
     }
 
     // Case 1: foreign .rev files present, zzz repair still succeeds.
     std::error_code ec;
     fs::remove(zzz2, ec);
-    assert(recovery::RecoveryWriter::repair(zzz1));
-    assert(fs::exists(zzz2));
+    REQUIRE(recovery::RecoveryWriter::repair(zzz1));
+    REQUIRE(fs::exists(zzz2));
     {
         io::FileStream f;
-        assert(f.open(zzz2, io::FileMode::ReadOnly));
+        REQUIRE(f.open(zzz2, io::FileMode::ReadOnly));
         std::vector<core::byte> recon(static_cast<size_t>(zzz2_size));
-        assert(f.read(recon.data(), recon.size()) == recon.size());
-        assert(recon == saved && "foreign set poisoned reconstruction");
+        REQUIRE(f.read(recon.data(), recon.size()) == recon.size());
+        REQUIRE((recon == saved && "foreign set poisoned reconstruction"));
     }
 
     // Case 2: zzz's own revs removed — repair must refuse WITHOUT renaming
@@ -902,11 +906,11 @@ static void test_rev_foreign_set_refused() {
     fs::remove(dir / "zzz.part1.rev", ec);
     fs::remove(dir / "zzz.part2.rev", ec);
     fs::remove(zzz2, ec);
-    assert(!recovery::RecoveryWriter::repair(zzz1));
-    assert(fs::exists(zzz1) && "repair destroyed the first volume");
+    REQUIRE(!recovery::RecoveryWriter::repair(zzz1));
+    REQUIRE((fs::exists(zzz1) && "repair destroyed the first volume"));
     for (auto& e : fs::directory_iterator(dir, ec)) {
         std::string ext = e.path().extension().string();
-        assert(ext != ".bad" && "valid volume renamed to .bad by foreign table");
+        REQUIRE((ext != ".bad" && "valid volume renamed to .bad by foreign table"));
     }
     std::cout << "[PASS] Foreign .rev sets are stem-anchored out of repair\n";
 }
@@ -924,12 +928,12 @@ static void test_rev_legacy_numbering() {
     fs::path src = dir / "legacy_src.bin";
     {
         io::FileStream f;
-        assert(f.open(src, io::FileMode::CreateAlways));
-        assert(f.write(payload.data(), payload.size()) == payload.size());
+        REQUIRE(f.open(src, io::FileMode::CreateAlways));
+        REQUIRE(f.write(payload.data(), payload.size()) == payload.size());
     }
     fs::path p1 = dir / "legacy.part1.rar";
-    assert(archive::ArchiveMutator::add_file_to_archive_vol(p1, src, "data.bin",
-                                                            /*method=*/0, /*vol_size=*/10 * 1024));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive_vol(p1, src, "data.bin",
+                                                             /*method=*/0, /*vol_size=*/10 * 1024));
     std::error_code ec;
     fs::remove(src, ec);
 
@@ -939,32 +943,32 @@ static void test_rev_legacy_numbering() {
     fs::rename(dir / "legacy.part1.rar", leg0, ec);
     fs::rename(dir / "legacy.part2.rar", leg1, ec);
     fs::remove(dir / "legacy.part3.rar", ec);
-    assert(fs::exists(leg0) && fs::exists(leg1));
+    REQUIRE((fs::exists(leg0) && fs::exists(leg1)));
 
     // Recovery volumes for the legacy chain.
-    assert(recovery::RecoveryWriter::write_rev_volumes(leg0, 1, /*is_percent=*/false,
-                                                       /*threads=*/2));
+    REQUIRE(recovery::RecoveryWriter::write_rev_volumes(leg0, 1, /*is_percent=*/false,
+                                                        /*threads=*/2));
     fs::path rev1 = dir / "legacy.r00.rev";
-    assert(fs::exists(rev1) && "legacy chain must produce legacy-named .rev files");
+    REQUIRE((fs::exists(rev1) && "legacy chain must produce legacy-named .rev files"));
 
     uintmax_t leg1_size = fs::file_size(leg1);
     std::vector<core::byte> saved(static_cast<size_t>(leg1_size));
     {
         io::FileStream f;
-        assert(f.open(leg1, io::FileMode::ReadOnly));
-        assert(f.read(saved.data(), saved.size()) == saved.size());
+        REQUIRE(f.open(leg1, io::FileMode::ReadOnly));
+        REQUIRE(f.read(saved.data(), saved.size()) == saved.size());
     }
 
     fs::remove(leg1, ec);
-    assert(!fs::exists(leg1));
-    assert(recovery::RecoveryWriter::repair(leg0));
-    assert(fs::exists(leg1));
+    REQUIRE(!fs::exists(leg1));
+    REQUIRE(recovery::RecoveryWriter::repair(leg0));
+    REQUIRE(fs::exists(leg1));
     {
         io::FileStream f;
-        assert(f.open(leg1, io::FileMode::ReadOnly));
+        REQUIRE(f.open(leg1, io::FileMode::ReadOnly));
         std::vector<core::byte> recon(static_cast<size_t>(leg1_size));
-        assert(f.read(recon.data(), recon.size()) == recon.size());
-        assert(recon == saved && "legacy volume reconstruction mismatched");
+        REQUIRE(f.read(recon.data(), recon.size()) == recon.size());
+        REQUIRE((recon == saved && "legacy volume reconstruction mismatched"));
     }
     std::cout << "[PASS] Legacy .rNN sets are visible to .rev repair\n";
 }
@@ -1041,7 +1045,7 @@ struct ShardView {
 };
 
 ShardView parse_shard0(const std::vector<core::byte>& area) {
-    assert(area.size() >= 0x48);
+    REQUIRE(area.size() >= 0x48);
     ShardView v;
     v.total_size = core::read_le32(area.data() + 0x0C);
     v.header_size = core::read_le32(area.data() + 0x10);
@@ -1063,9 +1067,9 @@ ShardView parse_shard0(const std::vector<core::byte>& area) {
 // inside the whole archive file (store method keeps it verbatim).
 core::uint64 find_payload_start(const fs::path& arc, const std::vector<core::byte>& data) {
     io::FileStream f;
-    assert(f.open(arc, io::FileMode::ReadOnly));
+    REQUIRE(f.open(arc, io::FileMode::ReadOnly));
     std::vector<core::byte> whole(static_cast<size_t>(f.size()));
-    assert(f.read(whole.data(), whole.size()) == whole.size());
+    REQUIRE(f.read(whole.data(), whole.size()) == whole.size());
     f.close();
     for (size_t o = 0; o + 16 <= whole.size(); ++o) {
         if (std::memcmp(whole.data() + o, data.data(), 16) == 0) return o;
@@ -1075,14 +1079,14 @@ core::uint64 find_payload_start(const fs::path& arc, const std::vector<core::byt
 
 void flip_bytes(const fs::path& arc, const std::vector<core::uint64>& offsets) {
     io::FileStream f;
-    assert(f.open(arc, io::FileMode::ReadWrite));
+    REQUIRE(f.open(arc, io::FileMode::ReadWrite));
     for (core::uint64 off : offsets) {
         f.seek(static_cast<core::int64>(off), io::SeekOrigin::Begin);
         core::byte b = 0;
-        assert(f.read(&b, 1) == 1);
+        REQUIRE(f.read(&b, 1) == 1);
         b = static_cast<core::byte>(b ^ 0xFF);
         f.seek(static_cast<core::int64>(off), io::SeekOrigin::Begin);
-        assert(f.write(&b, 1) == 1);
+        REQUIRE(f.write(&b, 1) == 1);
     }
 }
 
@@ -1092,27 +1096,27 @@ fs::path build_protected(const fs::path& dir, const std::string& name,
     fs::path src = dir / (name + ".bin");
     fs::path arc = dir / (name + ".rar");
     io::FileStream f;
-    assert(f.open(src, io::FileMode::CreateAlways));
-    assert(f.write(data.data(), data.size()) == data.size());
+    REQUIRE(f.open(src, io::FileMode::CreateAlways));
+    REQUIRE(f.write(data.data(), data.size()) == data.size());
     f.close();
-    assert(archive::ArchiveMutator::add_file_to_archive(arc, src, name + ".bin", /*method=*/0));
-    assert(recovery::RecoveryWriter::add_recovery_record(arc, percent));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, src, name + ".bin", /*method=*/0));
+    REQUIRE(recovery::RecoveryWriter::add_recovery_record(arc, percent));
     return arc;
 }
 
 std::vector<core::byte> extract_payload(const fs::path& arc, const std::string& name) {
     archive::ArchiveReader reader;
-    assert(reader.open(arc));
+    REQUIRE(reader.open(arc));
     std::vector<core::byte> out;
     for (const auto& e : reader.entries()) {
         if (e.header.is_service) continue;
-        assert(e.header.file_name == name + ".bin");
+        REQUIRE(e.header.file_name == name + ".bin");
         fs::path tmp = arc.parent_path() / (name + ".out");
-        assert(reader.extract_entry(e, tmp));
+        REQUIRE(reader.extract_entry(e, tmp));
         io::FileStream f;
-        assert(f.open(tmp, io::FileMode::ReadOnly));
+        REQUIRE(f.open(tmp, io::FileMode::ReadOnly));
         out.resize(static_cast<size_t>(f.size()));
-        assert(f.read(out.data(), out.size()) == out.size());
+        REQUIRE(f.read(out.data(), out.size()) == out.size());
         f.close();
         std::filesystem::remove(tmp);
     }
@@ -1134,33 +1138,33 @@ void test_entry_emission() {
     fs::path src = dir / "rr35_emit.bin";
     {
         io::FileStream f;
-        assert(f.open(src, io::FileMode::CreateAlways));
-        assert(f.write(data.data(), data.size()) == data.size());
+        REQUIRE(f.open(src, io::FileMode::CreateAlways));
+        REQUIRE(f.write(data.data(), data.size()) == data.size());
     }
     fs::path arc = dir / "rr35_emit.rar";
     fs::path arc2 = dir / "rr35_emit2.rar";
-    assert(archive::ArchiveMutator::add_file_to_archive(arc, src, "rr35_emit.bin", /*method=*/0));
-    assert(recovery::RecoveryWriter::add_recovery_record(arc, 5));
-    assert(archive::ArchiveMutator::add_file_to_archive(arc2, src, "rr35_emit.bin",
-                                                        /*method=*/0));
-    assert(recovery::RecoveryWriter::add_recovery_record(arc2, 5));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc, src, "rr35_emit.bin", /*method=*/0));
+    REQUIRE(recovery::RecoveryWriter::add_recovery_record(arc, 5));
+    REQUIRE(archive::ArchiveMutator::add_file_to_archive(arc2, src, "rr35_emit.bin",
+                                                         /*method=*/0));
+    REQUIRE(recovery::RecoveryWriter::add_recovery_record(arc2, 5));
 
     core::uint64 rr_block = 0;
     std::vector<core::byte> area = rr_data_area(arc, &rr_block);
-    assert(!area.empty());
+    REQUIRE(!area.empty());
     ShardView v = parse_shard0(area);
-    assert(v.D == 4);
-    assert(v.NR == 1);
-    assert(v.group_count == 788);
+    REQUIRE(v.D == 4);
+    REQUIRE(v.NR == 1);
+    REQUIRE(v.group_count == 788);
     // The declared protected prefix must equal where the RR record actually
     // starts in the file. Measured, not hard-coded: the preceding file header
     // differs by platform (Host OS byte, attribute bits, UTIME encoding), so
     // an absolute offset recorded on one platform does not hold on another.
     // The relationship assertions below are what pin the emitted geometry.
-    assert(v.prot == rr_block);
-    assert(v.prot % v.group_count == v.extent); // unpadded final chunk
-    assert(v.extent == v.prot - 3 * v.group_count);
-    assert(v.seed == 0); // fixed zero seed (D1)
+    REQUIRE(v.prot == rr_block);
+    REQUIRE(v.prot % v.group_count == v.extent); // unpadded final chunk
+    REQUIRE(v.extent == v.prot - 3 * v.group_count);
+    REQUIRE(v.seed == 0); // fixed zero seed (D1)
     // The final chunk is payload-only (the file header with its mtime lives in
     // chunk 0), so its entry is independent of the build time. It is pinned
     // against the deterministic source payload rather than a recorded
@@ -1173,36 +1177,36 @@ void test_entry_emission() {
         // Payload occupies the tail of the protected prefix: [prot - size, prot).
         const size_t header_len = static_cast<size_t>(v.prot) - data.size();
         const size_t chunk3_start = static_cast<size_t>(3 * v.group_count);
-        assert(chunk3_start >= header_len);
+        REQUIRE(chunk3_start >= header_len);
         const size_t pay_off = chunk3_start - header_len;
         crypto::RawCrc64 crc;
         crc.update(data.data() + pay_off, data.size() - pay_off);
-        assert(v.entries[3] == crc.get());
+        REQUIRE(v.entries[3] == crc.get());
     }
     // Self-consistency: every entry recomputes from the protected prefix
     // (archive bytes [0, prot)) — not from the shard area.
     {
         io::FileStream f;
-        assert(f.open(arc, io::FileMode::ReadOnly));
+        REQUIRE(f.open(arc, io::FileMode::ReadOnly));
         std::vector<core::byte> whole(static_cast<size_t>(f.size()));
-        assert(f.read(whole.data(), whole.size()) == whole.size());
+        REQUIRE(f.read(whole.data(), whole.size()) == whole.size());
         f.close();
         for (core::uint32 k = 0; k < v.D; ++k) {
             core::uint64 off = static_cast<core::uint64>(k) * v.group_count;
             core::uint64 end = std::min<core::uint64>(off + v.group_count, v.prot);
             crypto::RawCrc64 crc;
             crc.update(whole.data() + off, static_cast<size_t>(end - off));
-            assert(crc.get() == v.entries[k]);
+            REQUIRE(crc.get() == v.entries[k]);
         }
     }
     // Reproducibility (D1): a second build over the same source is identical.
     io::FileStream fa, fb;
-    assert(fa.open(arc, io::FileMode::ReadOnly));
-    assert(fb.open(arc2, io::FileMode::ReadOnly));
+    REQUIRE(fa.open(arc, io::FileMode::ReadOnly));
+    REQUIRE(fb.open(arc2, io::FileMode::ReadOnly));
     std::vector<core::byte> ba(static_cast<size_t>(fa.size())), bb(static_cast<size_t>(fb.size()));
-    assert(fa.read(ba.data(), ba.size()) == ba.size());
-    assert(fb.read(bb.data(), bb.size()) == bb.size());
-    assert(ba == bb);
+    REQUIRE(fa.read(ba.data(), ba.size()) == ba.size());
+    REQUIRE(fb.read(bb.data(), bb.size()) == bb.size());
+    REQUIRE(ba == bb);
     std::cout << "[PASS] rr35_entry_emission: entries/extent/seed match the probe model\n";
 }
 
@@ -1221,43 +1225,43 @@ void test_multi_erasure_repair() {
         // equals the file content, so flipping payload-anchored offsets inside
         // two distinct chunk-sized windows needs the group size — derive it.
         ShardView v = parse_shard0(rr_data_area(arc));
-        assert(v.D == 65 && v.NR == 3); // ceil(65603/1024)=65; floor(5*65/100)=3
+        REQUIRE((v.D == 65 && v.NR == 3)); // ceil(65603/1024)=65; floor(5*65/100)=3
         // The protected prefix starts at 0; the payload starts after sig+main+
         // file header. Damage archive offsets spread across chunks 10 and 40.
         std::vector<core::byte> area = rr_data_area(arc);
         core::uint64 payload_start = find_payload_start(arc, data);
-        assert(payload_start > 0);
+        REQUIRE(payload_start > 0);
         core::uint64 g = v.group_count;
         core::uint64 c10 = payload_start + 10 * g + 5;
         core::uint64 c40 = payload_start + 40 * g + 5;
         flip_bytes(arc, {c10, c40});
-        assert(recovery::RecoveryWriter::repair(arc));
-        assert(extract_payload(arc, "rr35_me2") == data);
+        REQUIRE(recovery::RecoveryWriter::repair(arc));
+        REQUIRE(extract_payload(arc, "rr35_me2") == data);
     }
     // Two words in the same chunk.
     {
         fs::path arc = build_protected(dir, "rr35_me1", data, 5);
         ShardView v = parse_shard0(rr_data_area(arc));
         core::uint64 payload_start = find_payload_start(arc, data);
-        assert(payload_start > 0);
+        REQUIRE(payload_start > 0);
         core::uint64 g = v.group_count;
         flip_bytes(arc, {payload_start + 20 * g + 5, payload_start + 20 * g + 261});
-        assert(recovery::RecoveryWriter::repair(arc));
-        assert(extract_payload(arc, "rr35_me1") == data);
+        REQUIRE(recovery::RecoveryWriter::repair(arc));
+        REQUIRE(extract_payload(arc, "rr35_me1") == data);
     }
     // NR+1 damaged chunks: refuse (D6) and leave the archive loadable.
     {
         fs::path arc = build_protected(dir, "rr35_me4", data, 5);
         ShardView v = parse_shard0(rr_data_area(arc));
         core::uint64 payload_start = find_payload_start(arc, data);
-        assert(payload_start > 0);
+        REQUIRE(payload_start > 0);
         core::uint64 g = v.group_count;
         std::vector<core::uint64> offs;
         for (core::uint32 c = 0; c <= v.NR; ++c) {
             offs.push_back(payload_start + static_cast<core::uint64>(c) * 3 * g + 7);
         }
         flip_bytes(arc, offs);
-        assert(!recovery::RecoveryWriter::repair(arc));
+        REQUIRE(!recovery::RecoveryWriter::repair(arc));
     }
     std::cout << "[PASS] rr35_multi_erasure_repair: k<=NR chunks rebuild, NR+1 refuses\n";
 }
@@ -1271,11 +1275,11 @@ void test_zero_entry_fallback() {
     fs::path arc = build_protected(dir, "rr35_zero", data, 5);
     ShardView v = parse_shard0(rr_data_area(arc));
     std::vector<core::byte> area = rr_data_area(arc);
-    assert(v.header_size >= 0x40 + (static_cast<size_t>(v.D) + 1) * 8);
+    REQUIRE(v.header_size >= 0x40 + (static_cast<size_t>(v.D) + 1) * 8);
 
     // Zero every shard's state region and re-forge the shard CRC-64s.
     io::FileStream f;
-    assert(f.open(arc, io::FileMode::ReadWrite));
+    REQUIRE(f.open(arc, io::FileMode::ReadWrite));
     core::uint64 rr_data_off = 0;
     {
         // find the data area offset by locating the first {RB} magic in file
@@ -1284,7 +1288,7 @@ void test_zero_entry_fallback() {
         // i=(116)/91 not integral, so no false positives).
         std::vector<core::byte> whole(static_cast<size_t>(f.size()));
         f.seek(0, io::SeekOrigin::Begin);
-        assert(f.read(whole.data(), whole.size()) == whole.size());
+        REQUIRE(f.read(whole.data(), whole.size()) == whole.size());
         const core::byte magic[4] = {0x7B, 0x52, 0x42, 0x7D};
         for (size_t o = 0; o + 4 < whole.size(); ++o) {
             if (std::memcmp(whole.data() + o, magic, 4) == 0) {
@@ -1292,24 +1296,24 @@ void test_zero_entry_fallback() {
                 break;
             }
         }
-        assert(rr_data_off > 0);
+        REQUIRE(rr_data_off > 0);
     }
     for (core::uint16 j = 0; j < v.NR; ++j) {
         core::uint64 shard = rr_data_off + static_cast<core::uint64>(j) * v.shard_size;
         std::vector<core::byte> zeros(static_cast<size_t>(v.D + 1) * 8, 0);
         f.seek(static_cast<core::int64>(shard + 0x40), io::SeekOrigin::Begin);
-        assert(f.write(zeros.data(), zeros.size()) == zeros.size());
+        REQUIRE(f.write(zeros.data(), zeros.size()) == zeros.size());
         // Re-forge: CRC-64/XZ over [+0x0C, shard end).
         std::vector<core::byte> shard_bytes(static_cast<size_t>(v.shard_size));
         f.seek(static_cast<core::int64>(shard), io::SeekOrigin::Begin);
-        assert(f.read(shard_bytes.data(), shard_bytes.size()) == shard_bytes.size());
+        REQUIRE(f.read(shard_bytes.data(), shard_bytes.size()) == shard_bytes.size());
         for (size_t b = 0x40; b < 0x40 + zeros.size(); ++b) shard_bytes[b] = 0;
         core::uint64 crc =
             crypto::Crc64Xz::compute(shard_bytes.data() + 0x0C, shard_bytes.size() - 0x0C);
         core::byte crc_bytes[8];
         for (int k = 0; k < 8; ++k) crc_bytes[k] = static_cast<core::byte>((crc >> (8 * k)) & 0xFF);
         f.seek(static_cast<core::int64>(shard + 0x04), io::SeekOrigin::Begin);
-        assert(f.write(crc_bytes, 8) == 8);
+        REQUIRE(f.write(crc_bytes, 8) == 8);
     }
     f.close();
 
@@ -1319,10 +1323,10 @@ void test_zero_entry_fallback() {
         one += ".one";
         fs::copy(arc, one, std::filesystem::copy_options::overwrite_existing);
         core::uint64 payload_start = find_payload_start(arc, data);
-        assert(payload_start > 0);
+        REQUIRE(payload_start > 0);
         flip_bytes(one, {payload_start + 15 * v.group_count + 3});
-        assert(recovery::RecoveryWriter::repair(one));
-        assert(extract_payload(one, "rr35_zero") == data);
+        REQUIRE(recovery::RecoveryWriter::repair(one));
+        REQUIRE(extract_payload(one, "rr35_zero") == data);
     }
     // Two damaged chunks: refusal (unchanged failure class).
     {
@@ -1330,51 +1334,140 @@ void test_zero_entry_fallback() {
         two += ".two";
         fs::copy(arc, two, std::filesystem::copy_options::overwrite_existing);
         core::uint64 payload_start = find_payload_start(arc, data);
-        assert(payload_start > 0);
+        REQUIRE(payload_start > 0);
         flip_bytes(two,
                    {payload_start + 5 * v.group_count + 3, payload_start + 45 * v.group_count + 3});
-        assert(!recovery::RecoveryWriter::repair(two));
+        REQUIRE(!recovery::RecoveryWriter::repair(two));
     }
     std::cout << "[PASS] rr35_zero_entry_fallback: legacy records keep T1/T2 behavior\n";
 }
 
+// C-01 regression: multi-physical reassembly derives allocation sizes from
+// attacker-controlled shard fields (d0, nr). Hostile geometry with a valid
+// CRC-64 must be refused cleanly; a CRC-only re-forge of a sane record must
+// still repair (proves the forgery itself is valid, so the refusals below are
+// geometry refusals and not CRC refusals).
+void test_hostile_reassembly_geometry_refused() {
+    namespace fs = std::filesystem;
+    fs::path dir = openrar::test::scratch_dir("recovery");
+    auto data = payload(300 * 1024);
+
+    // Rewrite every shard of the RR record in place via `mutate(shard_ptr,
+    // shard_index)` on the raw bytes, then re-forge each shard's CRC-64.
+    auto forge = [&](const fs::path& arc, auto mutate) {
+        io::FileStream f;
+        REQUIRE(f.open(arc, io::FileMode::ReadWrite));
+        std::vector<core::byte> whole(static_cast<size_t>(f.size()));
+        REQUIRE(f.read(whole.data(), whole.size()) == whole.size());
+        const core::byte magic[4] = {0x7B, 0x52, 0x42, 0x7D};
+        size_t off = 0;
+        for (; off + 4 < whole.size(); ++off) {
+            if (std::memcmp(whole.data() + off, magic, 4) == 0) break;
+        }
+        REQUIRE(off + 4 < whole.size());
+        size_t first = off;
+        size_t idx = 0;
+        while (off + 0x40 < whole.size() && std::memcmp(whole.data() + off, magic, 4) == 0) {
+            core::uint32 total = core::read_le32(whole.data() + off + 0x0C);
+            REQUIRE(total >= 0x40);
+            REQUIRE(off + total <= whole.size());
+            core::byte* s = whole.data() + off;
+            mutate(s, idx++);
+            core::uint64 crc = crypto::Crc64Xz::compute(s + 0x0C, total - 0x0C);
+            core::write_le64(s + 0x04, crc);
+            off += total;
+        }
+        f.seek(static_cast<core::int64>(first), io::SeekOrigin::Begin);
+        REQUIRE(f.write(whole.data() + first, off - first) == off - first);
+    };
+
+    auto damaged_copy = [&](const std::string& name) {
+        fs::path arc = build_protected(dir, name, data, 5);
+        ShardView v = parse_shard0(rr_data_area(arc));
+        REQUIRE(v.D > 0);
+        REQUIRE(v.NR > 0);
+        // Need total > 0x40 + 251*8 so the forged d0 = 250 header fits a piece.
+        REQUIRE(v.total_size > 0x40 + 251 * 8);
+        core::uint64 ps = find_payload_start(arc, data);
+        REQUIRE(ps > 0);
+        flip_bytes(arc, {ps + 10 * v.group_count + 5});
+        return arc;
+    };
+
+    // Control: CRC-only re-forge of a sane record still repairs.
+    {
+        fs::path arc = damaged_copy("rr_c01_ctl");
+        forge(arc, [](core::byte*, size_t) {});
+        REQUIRE(recovery::RecoveryWriter::repair(arc));
+        REQUIRE(extract_payload(arc, "rr_c01_ctl") == data);
+    }
+    // d0 > 200: header declares D=250 (header grown to fit), total unchanged
+    // so the chain takes the multi-physical path.
+    {
+        fs::path arc = damaged_copy("rr_c01_d");
+        forge(arc, [](core::byte* s, size_t) {
+            core::write_le16(s + 0x3A, 250);
+            core::write_le32(s + 0x10, 0x40 + 251 * 8);
+        });
+        REQUIRE(!recovery::RecoveryWriter::repair(arc));
+    }
+    // d0 == 0.
+    {
+        fs::path arc = damaged_copy("rr_c01_d0");
+        forge(arc, [](core::byte* s, size_t i) {
+            if (i == 0) core::write_le16(s + 0x3A, 0);
+            core::write_le16(s + 0x3E, static_cast<core::uint16>(i + 50)); // force multi-physical
+        });
+        REQUIRE(!recovery::RecoveryWriter::repair(arc));
+    }
+    // nr_logical > 10 * d0: a shard index of 50 against D=1.
+    {
+        fs::path arc = damaged_copy("rr_c01_nr");
+        forge(arc, [](core::byte* s, size_t i) {
+            core::write_le16(s + 0x3A, 1);
+            core::write_le16(s + 0x3E, static_cast<core::uint16>(i == 0 ? 50 : i));
+        });
+        REQUIRE(!recovery::RecoveryWriter::repair(arc));
+    }
+    std::cout
+        << "[PASS] rr_c01_hostile_reassembly_geometry: hostile d0/nr refused, control repairs\n";
+}
+
 } // namespace rr35
 
-int main() {
-#ifdef _MSC_VER
-    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
-    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
-    // test process forever while ctest moves on, leaving file locks behind.
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
-    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
-    // process still hangs after printing the assert.
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    std::cout << "Running Clean-Room Milestone 4 Recovery Verification...\n";
-    test_gf_arithmetic();
-    test_rs16_codec_roundtrip();
-    test_rs16_gfni_bit_exactness();
-    test_rs16_neon_bit_exactness();
-    test_recovery_manager();
-    test_recovery_params_overflow();
-    test_repair_rejects_hostile_prot_size();
-    test_repair_reconstructs_padded_prefix();
-    test_recovery_writer_damage_roundtrip();
-    test_rr_thread_determinism();
-    test_b10_calculate_parity_buffer_size();
-    test_b5_parity_only_corruption();
-    test_b5_unrecoverable_inconsistent_corruption();
-    test_rev_single_volume_rejection();
-    test_rev_volumes_roundtrip();
-    test_rev_foreign_set_refused();
-    test_rev_legacy_numbering();
-    rr35::test_entry_emission();
-    rr35::test_multi_erasure_repair();
-    rr35::test_zero_entry_fallback();
-    std::cout << "All Milestone 4 Recovery & Reed-Solomon Primitives PASSED!\n";
-    return 0;
+static const openrar::test::Case k_cases[] = {
+    {"test_gf_arithmetic", test_gf_arithmetic, false},
+    {"test_rs16_codec_roundtrip", test_rs16_codec_roundtrip, false},
+    {"test_rs16_gfni_bit_exactness", test_rs16_gfni_bit_exactness, false},
+    {"test_rs16_neon_bit_exactness", test_rs16_neon_bit_exactness, false},
+    {"test_recovery_manager", test_recovery_manager, false},
+    {"test_recovery_params_overflow", test_recovery_params_overflow, false},
+    {"test_repair_rejects_hostile_prot_size", test_repair_rejects_hostile_prot_size, false},
+    {"test_repair_reconstructs_padded_prefix", test_repair_reconstructs_padded_prefix, false},
+    {"test_recovery_writer_damage_roundtrip", test_recovery_writer_damage_roundtrip, false},
+    {"test_rr_thread_determinism", test_rr_thread_determinism, false},
+    {"test_b10_calculate_parity_buffer_size", test_b10_calculate_parity_buffer_size, false},
+    {"test_b5_parity_only_corruption", test_b5_parity_only_corruption, false},
+    {"test_b5_unrecoverable_inconsistent_corruption", test_b5_unrecoverable_inconsistent_corruption,
+     false},
+    {"test_rev_single_volume_rejection", test_rev_single_volume_rejection, false},
+    {"test_rev_volumes_roundtrip", test_rev_volumes_roundtrip, false},
+    {"test_rev_foreign_set_refused", test_rev_foreign_set_refused, false},
+    {"test_rev_legacy_numbering", test_rev_legacy_numbering, false},
+    {"test_entry_emission", rr35::test_entry_emission, false},
+    {"test_multi_erasure_repair", rr35::test_multi_erasure_repair, false},
+    {"test_zero_entry_fallback", rr35::test_zero_entry_fallback, false},
+    {"test_hostile_reassembly_geometry_refused", rr35::test_hostile_reassembly_geometry_refused,
+     false},
+};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    if (!openrar::test::is_list_only(argc, argv) && !openrar::test::last_run_was_filtered())
+        std::cout << "Running Clean-Room Milestone 4 Recovery Verification...\n";
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::cout << "All Milestone 4 Recovery & Reed-Solomon Primitives PASSED!\n";
+    return rc;
 }

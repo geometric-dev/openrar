@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <vector>
 #include <string>
+#include "../support/test_runner.hpp"
 #ifdef _MSC_VER
 #include <crtdbg.h>
 #include <cstdlib>
@@ -527,41 +528,35 @@ static void test_handle_set_limits() {
     openrar_archive_close(h2);
 }
 
-int main() {
-#ifdef _MSC_VER
-    // Route assert failures to stderr: under ctest (piped stdio) the MSVC
-    // default for _CRT_ASSERT is a modal dialog, which silently hangs the
-    // test process forever while ctest moves on, leaving file locks behind.
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    // assert() ends in abort(), whose Debug-CRT "abort() has been called"
-    // modal is a SEPARATE dialog (_CALL_REPORTFAULT) — without this the
-    // process still hangs after printing the assert.
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _CALL_REPORTFAULT);
-#endif
-    test_version();
-    test_alloc_free();
-    test_validate_path();
-    test_list_roundtrip();
-    test_list_bad_inputs();
-    test_extract_roundtrip();
-    test_extract_out_of_range();
-    test_extract_all();
-    test_create_through_abi();
-    test_create_invalid_method();
-    test_create_invalid_window_log2();
-    test_create_invalid_path();
-    test_get_error_after_success();
-    test_create2_with_mtime_progress();
-    test_extract_all2_cancel();
-    test_create2_invalid_args();
-    test_handle_set_limits();
-    if (fails) {
+static const openrar::test::Case k_cases[] = {
+    {"test_version", test_version, false},
+    {"test_alloc_free", test_alloc_free, false},
+    {"test_validate_path", test_validate_path, false},
+    {"test_list_roundtrip", test_list_roundtrip, false},
+    {"test_list_bad_inputs", test_list_bad_inputs, false},
+    {"test_extract_roundtrip", test_extract_roundtrip, false},
+    {"test_extract_out_of_range", test_extract_out_of_range, false},
+    {"test_extract_all", test_extract_all, false},
+    {"test_create_through_abi", test_create_through_abi, false},
+    {"test_create_invalid_method", test_create_invalid_method, false},
+    {"test_create_invalid_window_log2", test_create_invalid_window_log2, false},
+    {"test_create_invalid_path", test_create_invalid_path, false},
+    {"test_get_error_after_success", test_get_error_after_success, false},
+    {"test_create2_with_mtime_progress", test_create2_with_mtime_progress, false},
+    {"test_extract_all2_cancel", test_extract_all2_cancel, false},
+    {"test_create2_invalid_args", test_create2_invalid_args, false},
+    {"test_handle_set_limits", test_handle_set_limits, false}};
+
+int main(int argc, char* argv[]) {
+    openrar::test::route_crt_asserts_to_stderr();
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (fails != 0) {
         std::fprintf(stderr, "%d failure(s)\n", fails);
-        return 1;
+        rc = 1;
     }
-    std::fprintf(stderr, "archive_api_tests OK\n");
-    return 0;
+    if (rc == 0 && fails != 0) rc = 1;
+    if (rc == 0 && !openrar::test::last_run_was_filtered())
+        std::fprintf(stderr, "archive_api_tests OK\n");
+    return rc;
 }
