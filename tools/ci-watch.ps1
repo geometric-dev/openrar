@@ -16,9 +16,12 @@
 #   tools\ci-watch.ps1 -Ref v1.40.5             # a tag
 #   tools\ci-watch.ps1 -TimeoutMin 60 -Quiet    # less chatter
 #
-# Exit codes: 0 = all jobs green (or skipped, e.g. release-assets off-tag)
-#             1 = at least one job failed, or the run's own conclusion was
-#                 failure/cancelled while the job list showed no failure
+# Exit codes: 0 = the RUN concluded success. Jobs printed red on a success run
+#             are continue-on-error legs (e.g. MSan (best-effort), which is red
+#             on every green run by design) and are reported as NON-GATING.
+#             1 = the run did not conclude success - a gating job failed, or
+#                 the run was cancelled/failed and the job list shows why, or
+#                 the list shows no failing job to explain a failed conclusion
 #             2 = timed out, no run could be resolved, or the run's job list
 #                 could not be read (NEVER reported as green - fail closed)
 
@@ -67,7 +70,23 @@ function Get-Runs([string] $ref, [string] $sha) {
     $json = & gh @args 2>$null | Out-String
     if ($LASTEXITCODE -ne 0) { return @() }
     $runs = @()
-    try { $runs = @($json | ConvertFrom-Json) } catch { return @() }
+    # Assign the parse result BEFORE wrapping in @(). Windows PowerShell 5.1's
+    # ConvertFrom-Json emits a top-level JSON array as ONE nested object (pwsh 7
+    # enumerates it), so `@($json | ConvertFrom-Json)` produced a 1-element
+    # array holding the whole run list. Downstream, Where-Object then saw
+    # $_.headSha/headBranch as an ARRAY: `-like`/`-eq` returned an array of
+    # booleans, and a non-empty array is truthy - so the filter passed the
+    # nested list for any matching-ish pattern, @() in the caller flattened it,
+    # and $target became runs[0]: the newest run. On 5.1, -Sha and -Ref both
+    # silently watched an unrelated run and reported ITS verdict as ours -
+    # precisely the failure this function exists to prevent (it only never bit
+    # in practice because the newest run is usually the run just pushed).
+    # Assignment gives both shells the same shape: $parsed = the array object,
+    # @($parsed) = its elements.
+    try {
+        $parsed = ConvertFrom-Json $json
+        $runs = @($parsed)
+    } catch { return @() }
     if ($runs.Count -eq 0) { return @() }
     if ($sha -ne '') {
         # A run id (-Sha accepted a paste of `gh run view <id>` output) has no
@@ -102,7 +121,8 @@ $deadline = (Get-Date).AddMinutes($TimeoutMin)
 $target = $null
 $shownQueued = $false
 
-Write-Host "waiting for CI on '${Ref}'${Sha} (timeout ${TimeoutMin}m)..." -ForegroundColor Cyan
+$watchLabel = if ($Ref -ne '' -and $Sha -ne '') { "${Ref} (${Sha})" } elseif ($Sha -ne '') { $Sha } else { $Ref }
+Write-Host "waiting for CI on '$watchLabel' (timeout ${TimeoutMin}m)..." -ForegroundColor Cyan
 
 while ((Get-Date) -lt $deadline) {
     # A bare numeric argument that resolves as a run id is treated as one:
@@ -179,20 +199,36 @@ foreach ($j in $jobs) {
 # gated on a version tag, so it is skipped on branch pushes by design.
 $failed = @($jobs | Where-Object { $_.conclusion -ne 'success' -and $_.conclusion -ne 'skipped' -and $_.conclusion -ne '' })
 
-if ($failed.Count -eq 0) {
-    # The run-level conclusion is the independent cross-check: a workflow that
-    # reported failure with no failed job means the job list does not describe
-    # what happened (e.g. a job-level failure outside the normal conclusion
-    # flow). Trust the run verdict over the derived one.
-    if ($target.conclusion -ne 'success') {
+# The gate is the RUN-LEVEL conclusion, not the derived job list. GitHub only
+# concludes success when every required (non-continue-on-error) job succeeded,
+# so a failed job on a success run is non-gating by definition - MSan
+# (best-effort) is red on EVERY green run (its findings are uninstrumented-
+# libc++ false positives; the job carries continue-on-error: true). Counting
+# it as fatal made this script exit 1 on runs the platform itself considers
+# green: it could never report ALL GREEN on any run, contradicting
+# docs/versioning.md ("Exit 0 is the only green") and breaking the
+# push; watch; tag chain this script exists to guard.
+if ($target.conclusion -eq 'success') {
+    if ($failed.Count -gt 0) {
         Write-Host ""
-        Write-Host ("Run concluded '{0}' but no failing job was found in the job list - not treating as green." -f $target.conclusion) -ForegroundColor Red
-        Write-Host ("Inspect it:  gh run view {0}" -f $target.databaseId) -ForegroundColor Yellow
-        exit 1
+        Write-Host ("NON-GATING: {0} job(s) failed but the run concluded success (continue-on-error): {1}" -f $failed.Count, (($failed | ForEach-Object { $_.name }) -join ', ')) -ForegroundColor Yellow
+        Write-Host ("Inspect them:  gh run view {0}" -f $target.databaseId) -ForegroundColor DarkGray
     }
     Write-Host ""
     Write-Host "ALL GREEN" -ForegroundColor Green
     exit 0
+}
+
+if ($failed.Count -eq 0) {
+    # The run-level conclusion is the independent cross-check: a workflow that
+    # reported failure/cancelled with no failed job in the list means the list
+    # does not describe what happened (e.g. a job-level failure outside the
+    # normal conclusion flow, or cancellation before any job resolved). Trust
+    # the run verdict over the derived one - never green.
+    Write-Host ""
+    Write-Host ("Run concluded '{0}' but no failing job was found in the job list - not treating as green." -f $target.conclusion) -ForegroundColor Red
+    Write-Host ("Inspect it:  gh run view {0}" -f $target.databaseId) -ForegroundColor Yellow
+    exit 1
 }
 
 Write-Host ""
