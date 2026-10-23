@@ -428,6 +428,38 @@ target_link_libraries(archive_api_tests PRIVATE
             COMMAND ${Python3_EXECUTABLE}
                     ${PROJECT_SOURCE_DIR}/bindings/python/tests/conformance_test.py
                     $<TARGET_FILE:openrar_dll>)
+        # A sanitized libopenrar.so loaded by an unsanitized python needs the
+        # sanitizer runtime preloaded (otherwise: undefined symbol
+        # __ubsan_vptr_type_cache / asan_* at dlopen).
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND OPENRAR_SANITIZE_ACTIVE_MODES
+           AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+            set(_openrar_preload "")
+            foreach(_rt IN ITEMS asan ubsan_standalone)
+                if(_rt STREQUAL "asan" AND NOT OPENRAR_SANITIZE_ACTIVE_MODES MATCHES "address")
+                    continue()
+                endif()
+                if(_rt STREQUAL "ubsan_standalone" AND NOT OPENRAR_SANITIZE_ACTIVE_MODES MATCHES "undefined")
+                    continue()
+                endif()
+                if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+                    set(_rtname "libclang_rt.${_rt}-${CMAKE_SYSTEM_PROCESSOR}.so")
+                elseif(_rt STREQUAL "asan")
+                    set(_rtname "libasan.so")
+                else()
+                    set(_rtname "libubsan.so")
+                endif()
+                execute_process(COMMAND ${CMAKE_CXX_COMPILER} -print-file-name=${_rtname}
+                                OUTPUT_VARIABLE _rtpath OUTPUT_STRIP_TRAILING_WHITESPACE)
+                if(IS_ABSOLUTE "${_rtpath}" AND EXISTS "${_rtpath}")
+                    list(APPEND _openrar_preload "${_rtpath}")
+                endif()
+            endforeach()
+            if(_openrar_preload)
+                list(JOIN _openrar_preload ":" _openrar_preload_str)
+                set_tests_properties(python_conformance PROPERTIES
+                    ENVIRONMENT "LD_PRELOAD=${_openrar_preload_str};ASAN_OPTIONS=detect_leaks=0")
+            endif()
+        endif()
 
         # Aggregator fail-closed contract (v1.44 M0): in-process negative
         # tests for tools/ctest_to_junit.py.
@@ -577,13 +609,16 @@ target_link_libraries(archive_api_tests PRIVATE
             add_test(NAME fuzz_archive COMMAND fuzz_archive -runs=2000 -max_len=1048576)
             add_test(NAME fuzz_inflate COMMAND fuzz_inflate -runs=2000 -max_len=1048576)
             add_test(NAME fuzz_target COMMAND fuzz_target -runs=2000 -max_len=262144)
+            # libFuzzer mode runs until killed without -runs; an unbounded ctest entry hung
+            # the sanitizer leg for an hour.
+            add_test(NAME fuzz_file_handle COMMAND fuzz_file_handle -runs=500 -max_len=1048576)
         else()
             add_test(NAME fuzz_decompress COMMAND fuzz_decompress)
             add_test(NAME fuzz_archive COMMAND fuzz_archive)
             add_test(NAME fuzz_inflate COMMAND fuzz_inflate)
             add_test(NAME fuzz_target COMMAND fuzz_target)
+            add_test(NAME fuzz_file_handle COMMAND fuzz_file_handle)
         endif()
-        add_test(NAME fuzz_file_handle COMMAND fuzz_file_handle)
     endif()
 endif()
 
