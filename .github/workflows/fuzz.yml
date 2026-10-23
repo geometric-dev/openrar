@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: 'Duration per libFuzzer harness in seconds'
+        description: 'Duration per libFuzzer harness in seconds (max 900)'
         required: false
         default: '60'
 
@@ -28,7 +28,15 @@ jobs:
     env:
       UBSAN_OPTIONS: halt_on_error=1
       ASAN_OPTIONS: detect_leaks=1
-      FUZZ_TIME: ${{ github.event.inputs.duration || '1800' }}
+      # Scheduled runs have no dispatch input. This used to be 1800s, which
+      # made the nightly math 5 harnesses x 30 min + build > the 120 min
+      # timeout-minutes below: every scheduled run for a week ended
+      # "cancelled" at the ceiling without finishing fuzz_inflate or
+      # fuzz_file_handle. 600s per harness is ~65 min total, roughly 2x
+      # under the ceiling, and the ceiling still breaks a wedged harness.
+      # Raise the bound below and timeout-minutes together if longer runs
+      # are wanted: (duration * 5) + build must stay under the ceiling.
+      FUZZ_TIME: ${{ github.event.inputs.duration || '600' }}
 
     steps:
       - name: Checkout repository
@@ -55,13 +63,20 @@ jobs:
         run: |
           set -euo pipefail
           if ! [[ "$FUZZ_TIME" =~ ^[0-9]+$ ]]; then
-            echo "::error::duration must be an integer in [10, 86400], got '$FUZZ_TIME'"
+            echo "::error::duration must be an integer in [10, 900], got '$FUZZ_TIME'"
             exit 1
           fi
           # 10# forces base 10; without it a leading zero makes bash read the
           # value as octal, so '060' would silently mean 48 seconds.
-          if (( 10#$FUZZ_TIME < 10 || 10#$FUZZ_TIME > 86400 )); then
-            echo "::error::duration must be an integer in [10, 86400], got '$FUZZ_TIME'"
+          #
+          # Upper bound 900, not the previous 86400: the job is a ceiling
+          # (timeout-minutes: 120) over 5 sequential harnesses plus build.
+          # A duration above ~1000 per harness guarantees the job dies at the
+          # ceiling mid-harness, which is exactly how the scheduled 1800s
+          # default failed every night. Raising the cap and the ceiling are a
+          # paired change.
+          if (( 10#$FUZZ_TIME < 10 || 10#$FUZZ_TIME > 900 )); then
+            echo "::error::duration must be an integer in [10, 900], got '$FUZZ_TIME'"
             exit 1
           fi
           echo "fuzz duration: $((10#$FUZZ_TIME))s per harness"
@@ -171,3 +186,17 @@ jobs:
         with:
           name: fuzzer-corpus
           path: tests/fuzz/seeds/
+
+      - name: Upload crash artifacts
+        # libFuzzer writes ./crash-<sha1> and the roundtrip oracle writes
+        # ./fuzz_target_failure.bin into the workspace; both died with the
+        # runner on the first oracle finding (the reproducer was lost with
+        # it, and the input had to be rediscovered locally). Preserve them.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: fuzzer-crashes
+          path: |
+            crash-*
+            fuzz_target_failure.bin
+          if-no-files-found: ignore
