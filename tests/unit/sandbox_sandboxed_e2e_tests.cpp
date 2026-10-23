@@ -18,6 +18,7 @@
 
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/archive/rar_errors.hpp"
+#include "../../src/core/sanitizer.hpp"
 #include "../../src/core/types.hpp"
 #include "../../src/sandbox/spawn.hpp"
 #include "../../src/sandbox/worker_broker.hpp"
@@ -83,7 +84,7 @@ static void run_suite_body() {
         std::printf("[SKIP] sandbox_sandboxed_e2e: openrar_worker not built\n");
         return;
     }
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#if OPENRAR_ANY_SANITIZER_BUILD
     // The e2e spawns CHILD processes; under an instrumented parent the
     // child's runtime setup (shadow mapping, vptr checks across the
     // inherited-fd boundary) produces false findings. The denial matrix
