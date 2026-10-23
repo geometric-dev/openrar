@@ -802,7 +802,17 @@ jobs:
       - name: Attest build provenance (Sigstore keyless)
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
+          # Every subject is a workspace-ROOT file: the zips are created by
+          # `zip -qr` in the job root (NOT inside the downloaded artifact
+          # directories), and SHA256SUMS + the SBOM are written there too.
+          # The previous `openrar-*/openrar-*.zip` pattern matched zero files
+          # since this job switched to root-level zips, so releases attested
+          # only SHA256SUMS while SECURITY.md promises "each artifact"
+          # (confirmed broken on v1.45.0: `gh attestation verify` on a zip
+          # 404s). This list must stay equal to what `gh release upload`
+          # publishes above.
           subject-path: |
-            openrar-*/openrar-*.zip
+            openrar-*.zip
             SHA256SUMS
+            openrar-*-sbom.json
 
