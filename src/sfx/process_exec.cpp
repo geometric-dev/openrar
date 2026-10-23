@@ -1,4 +1,5 @@
 #include "process_exec.hpp"
+#include "../core/sanitizer.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -310,9 +311,15 @@ ExecResult spawn_contained(const std::string& command, const std::string& resolv
         rl.rlim_cur = 600;
         rl.rlim_max = 600;
         setrlimit(RLIMIT_CPU, &rl);
+#if !OPENRAR_SANITIZER_SHADOW_BUILD
+        // Skipped only in ASan/TSan/MSan builds: their shadow mapping needs
+        // terabytes of address space and aborts the child at startup under a
+        // 2 GiB cap. Release builds always apply it; RLIMIT_CPU and
+        // RLIMIT_NPROC (and the fail-closed check below) still apply.
         rl.rlim_cur = 2ULL * 1024 * 1024 * 1024;
         rl.rlim_max = rl.rlim_cur;
         setrlimit(RLIMIT_AS, &rl);
+#endif
         rl.rlim_cur = 64;
         rl.rlim_max = 64;
         setrlimit(RLIMIT_NPROC, &rl);

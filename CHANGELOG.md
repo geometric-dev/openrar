@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sanitizer legs.** First local run of the clang ASan+UBSan lane (WSL Ubuntu 24.04, clang 18.1.3) found no findings in the library, but five suites could not run under it. `fuzz_file_handle` was registered without `-runs` and, being a libFuzzer binary under clang, ran until killed (`-runs=500` now); the SFX launcher's `RLIMIT_AS` cap is skipped in ASan/TSan/MSan builds only (their shadow map needs terabytes); the sandboxed-worker suite skips under any sanitizer (runtimes need syscalls seccomp denies; a UBSan vptr report there was a false positive from the blocked probe); `python_conformance` preloads the sanitizer runtimes. New `src/core/sanitizer.hpp` detects clang builds (`__SANITIZE_ADDRESS__` is GCC-only, so the old skip never fired under clang).
+- Verified: ASan+UBSan, UBSan-only and plain Release on Linux/clang; the plain leg runs 54/54 including the sandboxed worker (seccomp denial matrix). The sandboxed worker is not exercised under a sanitizer.
+
 ## [1.45.0] - 2026-10-22
 
 Rollup release. It carries the uncommitted v1.43 census work and the v1.44 A-6
