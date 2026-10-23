@@ -1,5 +1,21 @@
 # Retained fuzz crash artifacts
 
+## parallel_fallback_dup_input.bin (2026-10-23)
+
+`fuzz_target` bitflip-diff lane, 37-byte input, deterministic:
+`ORACLE FAILURE [bitflip-diff]: decoder emitted past dest_size
+(a=1081382 b=1052692)`. The parallel applier's span-0 emitted 557075 bytes
+and then failed; `decode_entry` only advances `total` at span boundaries,
+so the failure looked pre-emission (`total == 0`) and it fell back to
+`run_sequential()`, which re-decoded the same member into the same consumer
+(`557075 + 491539 + 32768 = 1081382`). Fixed: the fallback now keys off
+bytes actually handed to the consumer (`emitted == 0`), never retrying
+after emission.
+
+- Reproduce: `fuzz_target tests/fuzz/crashes/parallel_fallback_dup_input.bin`
+  (build with -DOPENRAR_FUZZ=ON); pre-fix it aborts in the oracle, post-fix
+  it exits 0.
+
 ## roundtrip_divergence_727_input.bin / _compressed.bin (2026-09-22)
 
 Deterministic-roundtrip fuzzer (rng(42), iteration 727, 80519 bytes, no
