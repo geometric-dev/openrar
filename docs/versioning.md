@@ -124,13 +124,17 @@ soname/dll file version automatically. Embedders keep probing
    tools\ci-watch.ps1 -Ref vX.Y.<counter>
    ```
 
-   It blocks until the tag's run finishes, prints every job, and exits
-   non-zero if any failed (with a failure excerpt). Exit 0 is the only
-   "green". The same applies after any ordinary push: `tools\ci-watch.ps1`
-   with no arguments watches the current branch. Step 4 is not complete until
-   this exits 0 — `release-assets` is gated on the whole matrix, so a single
-   red job means no artifacts were published, and that has happened (v1.40.5
-   needed a manual `gh run rerun --failed`).
+   It blocks until the tag's run finishes, prints every job, and exits 0
+   exactly when the run itself concluded success — the platform's verdict.
+   A continue-on-error leg (`MSan (best-effort)`) prints red on every green
+   run and is reported as NON-GATING; a red gating job makes the run conclude
+   failure and the script exits non-zero with a failure excerpt. Exit 0 is
+   the only "green". The same applies after any ordinary push:
+   `tools\ci-watch.ps1` with no arguments watches the current branch. Step 4
+   is not complete until this exits 0 — `release-assets` depends on the
+   required matrix legs (`msan` is deliberately outside its `needs`), so a
+   red job it depends on means no artifacts were published, and that has
+   happened (v1.40.5 needed a manual `gh run rerun --failed`).
 
    The script deliberately refuses to fall back to "some other run": if the
    ref or sha matches nothing it reports that and exits 2 rather than
