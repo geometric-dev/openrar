@@ -297,6 +297,17 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
     bool applied_ok = applier.apply_begin();
     if (trace) std::fprintf(stderr, "[pd] applier begin ok=%d\n", (int)applied_ok);
     size_t total = 0;
+    // Bytes the consumer has actually received. `total` only advances at span
+    // boundaries (apply_span_records writes it back on success), so a span
+    // that emits and then fails leaves `total` at its pre-span value. The
+    // fallback decision below must key off real emissions: retrying
+    // run_sequential() after any emitted chunk feeds the same consumer a
+    // second copy of the prefix (fuzz_target bitflip-diff overrun).
+    size_t emitted = 0;
+    auto count_cb = [&](const core::byte* d, size_t n) -> bool {
+        emitted += n;
+        return flush_cb(d, n);
+    };
     bool aborted = false;
     if (applied_ok) {
         if (trace) std::fprintf(stderr, "[pd] applier loop enter\n");
@@ -314,7 +325,7 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
             }
             if (trace) std::fprintf(stderr, "[pd] apply got span %zu\n", s);
             const auto ta = std::chrono::steady_clock::now();
-            if (!applier.apply_span_records(*sr, dest_size, s + 1 == nspans, flush_cb, &total)) {
+            if (!applier.apply_span_records(*sr, dest_size, s + 1 == nspans, count_cb, &total)) {
                 set_failed(applier.last_error_message());
                 aborted = true;
                 break;
@@ -356,7 +367,7 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
                      std::chrono::duration<double, std::milli>(t_end - t_start).count());
     }
     if (aborted) {
-        if (total == 0) {
+        if (emitted == 0) {
             // F1/F2/F3 pre-emission failure: the sequential path owns the
             // verdict (fail-safe-identical). The diag's fell_back flag keeps
             // the fallback observable so the identity tests see any masking.
@@ -364,7 +375,9 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
             return run_sequential();
         }
         // R5: post-emission failure = the sequential decoder's identical
-        // mid-stream failure; the consumer's containment discards.
+        // mid-stream failure; the consumer's containment discards. Never
+        // retry here: `emitted > 0` means the consumer already holds a
+        // prefix the sequential retry would duplicate.
         return false;
     }
     return true;
