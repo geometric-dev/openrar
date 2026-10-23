@@ -65,6 +65,7 @@ tools/testrun/
 
 # Scratch, benchmark, and temporary test outputs
 *.bin
+!tests/fuzz/crashes/parallel_fallback_dup_input.bin
 scratch/
 bench_out/
 debug_ext/
