@@ -377,9 +377,104 @@ std::filesystem::path worker_exe_path() {
 
 } // namespace openrar::sandbox
 
+#elif defined(__APPLE__)
+// ─────────────────────────────────────────────────────────────────────────────
+//  macOS (Seatbelt / sandbox_init via SBPL; v1.47.0 M0/M0b).
+// ─────────────────────────────────────────────────────────────────────────────
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <mach-o/dyld.h>
+#include <sandbox.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace openrar::sandbox {
+
+bool platform_sandbox_available() {
+    return true;
+}
+
+std::filesystem::path worker_exe_path() {
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    if (size == 0) return {};
+    std::string buf(size, '\0');
+    if (_NSGetExecutablePath(&buf[0], &size) != 0) return {};
+    return std::filesystem::path(buf.c_str()).parent_path() / "openrar_worker";
+}
+
+void install_macos_seatbelt() {
+    // macOS Seatbelt profile (SBPL syntax).
+    // Allows reading system libraries/dyld caches and /dev/urandom;
+    // denies file writes, network, fork, and exec.
+    // The worker's volume and command channel descriptors were opened before
+    // Seatbelt installation and remain valid.
+    static const char kSeatbeltProfile[] = "(version 1)\n"
+                                           "(deny default)\n"
+                                           "(allow file-read* (subpath \"/usr/lib\") (subpath "
+                                           "\"/System/Library\") (subpath \"/dev/urandom\"))\n"
+                                           "(deny file-write*)\n"
+                                           "(deny network*)\n"
+                                           "(deny process-fork)\n"
+                                           "(deny process-exec)\n";
+
+    char* errorbuf = nullptr;
+    if (::sandbox_init(kSeatbeltProfile, SANDBOX_NAMED, &errorbuf) != 0) {
+        if (errorbuf != nullptr) {
+            std::fprintf(stderr, "openrar_worker: sandbox_init failed: %s\n", errorbuf);
+            ::sandbox_free_error(errorbuf);
+        } else {
+            std::fprintf(stderr, "openrar_worker: sandbox_init failed\n");
+        }
+        // Fail-closed: exit code 4 (sandbox install failure contract)
+        ::_exit(4);
+    }
+}
+
+bool spawn_worker_process(const std::string& exe, const std::vector<std::string>& argv_tail,
+                          const ChildHandles& child_handles, SpawnProfile profile, void** proc_out,
+                          std::string& err) {
+    (void)profile; // The seatbelt profile is installed in-child via --install-seatbelt
+    std::vector<char*> argv;
+    argv.push_back(const_cast<char*>(exe.c_str()));
+    for (const std::string& a : argv_tail) argv.push_back(const_cast<char*>(a.c_str()));
+    argv.push_back(nullptr);
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+        err = "fork failed: " + std::string(std::strerror(errno));
+        return false;
+    }
+    if (pid == 0) {
+        // Child: drop every fd except the worker's three (POSIX equivalent of HANDLE_LIST).
+        int keep[3] = {-1, -1, -1};
+        int nkeep = 0;
+        for (void* h : {child_handles.cmd_read, child_handles.res_write, child_handles.volume})
+            if (h != nullptr) keep[nkeep++] = static_cast<int>(reinterpret_cast<intptr_t>(h));
+        long maxfd = ::sysconf(_SC_OPEN_MAX);
+        if (maxfd < 0 || maxfd > 4096) maxfd = 4096;
+        for (int fd = 3; fd < static_cast<int>(maxfd); ++fd) {
+            bool is_kept = false;
+            for (int j = 0; j < nkeep; ++j)
+                if (keep[j] == fd) {
+                    is_kept = true;
+                    break;
+                }
+            if (!is_kept) ::close(fd);
+        }
+        ::execv(exe.c_str(), argv.data());
+        ::_exit(127);
+    }
+    *proc_out = reinterpret_cast<void*>(static_cast<intptr_t>(pid));
+    return true;
+}
+
+} // namespace openrar::sandbox
+
 #else
 // ─────────────────────────────────────────────────────────────────────────────
-//  Other platforms (macOS until Seatbelt lands, wasm never): plain spawn only.
+//  Other platforms (BSD, wasm): plain spawn only.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <cerrno>
 #include <signal.h>
@@ -396,8 +491,6 @@ std::filesystem::path worker_exe_path() {
     char buf[4096];
     const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n <= 0) {
-        // macOS: no /proc — fall back to argv[0] via /proc-less proc_pidpath
-        // is private API; the empty path is the loud in-proc fallback.
         return std::filesystem::path();
     }
     buf[n] = 0;
@@ -421,8 +514,6 @@ bool spawn_worker_process(const std::string& exe, const std::vector<std::string>
         return false;
     }
     if (pid == 0) {
-        // Child: drop every fd except the worker's three (see the Linux
-        // branch for the rationale - POSIX equivalent of HANDLE_LIST).
         int keep[3] = {-1, -1, -1};
         int nkeep = 0;
         for (void* h : {child_handles.cmd_read, child_handles.res_write, child_handles.volume})

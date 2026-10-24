@@ -227,8 +227,8 @@ int run_selftest(const char* probe_dir, const char* cmd_read_s, const char* res_
 } // namespace
 
 int main(int argc, char** argv) {
-    // Sandbox model install (Linux seccomp; M3b). MUST run before any
-    // protocol I/O and before the self-test probes. Fail-closed: the
+    // Sandbox model install (Linux seccomp, macOS Seatbelt; M3b/M0b). MUST run
+    // before any protocol I/O and before the self-test probes. Fail-closed: the
     // installer _exits(4) if the filter cannot be installed — never
     // continues unsandboxed when a sandbox was requested.
     for (int i = 1; i < argc; ++i) {
@@ -237,6 +237,13 @@ int main(int argc, char** argv) {
             sandbox::install_linux_seccomp();
 #else
             std::fprintf(stderr, "openrar_worker: --install-seccomp on non-Linux\n");
+            return 4;
+#endif
+        } else if (std::strcmp(argv[i], "--install-seatbelt") == 0) {
+#if defined(__APPLE__)
+            sandbox::install_macos_seatbelt();
+#else
+            std::fprintf(stderr, "openrar_worker: --install-seatbelt on non-macOS\n");
             return 4;
 #endif
         }
@@ -266,10 +273,12 @@ int main(int argc, char** argv) {
         return run_selftest(probe_dir, selftest_args[0], selftest_args[1], selftest_args[2]);
     }
     if (worker_args[0] == nullptr || worker_args[1] == nullptr || worker_args[2] == nullptr) {
-        std::fprintf(stderr, "usage: openrar_worker [--install-seccomp] --openrar-sandbox-worker "
-                             "<cmd_read> <res_write> <volume_handle>\n"
-                             "       openrar_worker [--install-seccomp] --sandbox-selftest "
-                             "<probe_dir> <cmd_read> <res_write> <volume_handle>\n");
+        std::fprintf(
+            stderr,
+            "usage: openrar_worker [--install-seccomp|--install-seatbelt] --openrar-sandbox-worker "
+            "<cmd_read> <res_write> <volume_handle>\n"
+            "       openrar_worker [--install-seccomp|--install-seatbelt] --sandbox-selftest "
+            "<probe_dir> <cmd_read> <res_write> <volume_handle>\n");
         return 3;
     }
     void* cmd_read = parse_native(worker_args[0]);
