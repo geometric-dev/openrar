@@ -413,8 +413,8 @@ void print_help() {
         << "  -hp<p>        Encrypt both file data and headers\n"
         << "  -m<0..5>      Set compression level (0-store...3-default...5-maximal)\n"
         << "  -mc<par>      Set compression pre-processing filters (e.g. -mc-, -mcE+, -mcD+)\n"
-        << "  -md<size>     Accepted and validated (128k..1T); dictionary size is\n"
-        << "                auto-selected per entry\n"
+        << "  -md<size>     Set dictionary size (128k..1T) or -md=auto (default: auto-size\n"
+        << "                per entry based on compression method and input size)\n"
         << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto);\n"
         << "                on x/t: single-member decode workers (default: 2; -mt1 = sequential)\n"
         << "  -oh           Save hard links as the link instead of the file\n"
@@ -1389,7 +1389,19 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     // Dynamic concurrency throttling for large dictionaries:
     // If dictionary size W > 32 MiB, Compressor50's ~5W footprint requires clamping
     // max worker threads to prevent exceeding prepare_budget and exhausting RAM.
-    const core::uint64 eff_dict = resolve_effective_dict_size(dict_size, method);
+    core::uint64 eff_dict = 0;
+    if (dict_size == compress::DICT_SIZE_AUTO) {
+        core::uint64 max_file_sz = 0;
+        for (const auto& q : queue) {
+            if (!q.is_dir && !q.is_symlink && !q.is_hardlink && !q.is_filecopy &&
+                q.file_size > max_file_sz) {
+                max_file_sz = q.file_size;
+            }
+        }
+        eff_dict = compress::resolve_auto_dict(static_cast<core::uint32>(method), max_file_sz);
+    } else {
+        eff_dict = resolve_effective_dict_size(dict_size, method);
+    }
     if (eff_dict > 32ULL * 1024ULL * 1024ULL) {
         core::uint64 per_thread_mem = (eff_dict * 5) + (6ULL * 1024ULL * 1024ULL);
         unsigned max_safe_threads =
@@ -1497,7 +1509,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
         ep.raw_size = q.file_size;
         plan_reqs.push_back(ep);
     }
-    auto comp_plan = compress::CompressPlan::plan_entries(plan_reqs, solid, method, eff_dict);
+    auto comp_plan = compress::CompressPlan::plan_entries(plan_reqs, solid, method, dict_size);
     auto exec_plan = compress::ExecutionPlan::from_compress_plan(comp_plan);
 
     // Solid-window session (v1.26 M2b): multi-file solid batches pack
@@ -1519,9 +1531,13 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
             if (!q.is_dir && !q.is_symlink && !q.is_hardlink && !q.is_filecopy)
                 run_bytes += q.file_size;
         }
+        core::uint64 solid_dict =
+            (dict_size == compress::DICT_SIZE_AUTO)
+                ? compress::resolve_auto_dict(static_cast<core::uint32>(method), run_bytes)
+                : eff_dict;
         solid_packer = std::make_unique<compress::SolidPacker>(
             method, static_cast<size_t>(compress::lz_window_for_input(
-                        compress::snap_window_to_fci_grid(eff_dict), run_bytes)));
+                        compress::snap_window_to_fci_grid(solid_dict), run_bytes)));
         for (size_t i = 0; i < queue.size(); ++i) {
             solid_chain_member[i] = comp_plan.entries[i].is_solid_chain ? 1 : 0;
         }
@@ -3817,88 +3833,99 @@ static int cli_main(int argc, char* argv[]) {
                 is_mdx = true;
                 tail = tail.substr(1);
             }
+            if (!tail.empty() && (tail[0] == '=' || tail[0] == ':')) {
+                tail = tail.substr(1);
+            }
             if (tail.empty()) {
                 std::cerr << "Error: -md requires a size specification\n";
                 return 7;
             }
-            char unit = tail.empty() ? 0 : tail.back();
-            uint64_t mult = 1;
-            bool has_unit = false;
-            if (unit == 'k' || unit == 'K') {
-                mult = 1024ULL;
-                tail.pop_back();
-                has_unit = true;
-            } else if (unit == 'm' || unit == 'M') {
-                mult = 1024ULL * 1024ULL;
-                tail.pop_back();
-                has_unit = true;
-            } else if (unit == 'g' || unit == 'G') {
-                mult = 1024ULL * 1024ULL * 1024ULL;
-                tail.pop_back();
-                has_unit = true;
-            } else if (unit == 't' || unit == 'T') {
-                mult = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
-                tail.pop_back();
-                has_unit = true;
+            std::string lower_tail = tail;
+            for (char& c : lower_tail) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             }
-            if (!has_unit) {
-                // If no modifier is present, megabytes are assumed for -md
-                // and gigabytes for -mdx switch (matching WinRAR spec).
-                mult = is_mdx ? (1024ULL * 1024ULL * 1024ULL) : (1024ULL * 1024ULL);
-            }
-            uint64_t val = 0;
-            try {
-                size_t consumed = 0;
-                double dval = std::stod(tail, &consumed);
-                // Strict parse: the whole numeric tail must be consumed
-                // ("-md16mxyz" is an error, not 16 MB) and non-finite values
-                // are rejected before the double→uint64 cast, which is UB for
-                // out-of-range floats (v1.21.1 fix).
-                if (consumed != tail.size() || !std::isfinite(dval) || dval < 0) {
+            if (lower_tail == "auto") {
+                opt_dict_size = openrar::compress::DICT_SIZE_AUTO;
+            } else {
+                char unit = tail.empty() ? 0 : tail.back();
+                uint64_t mult = 1;
+                bool has_unit = false;
+                if (unit == 'k' || unit == 'K') {
+                    mult = 1024ULL;
+                    tail.pop_back();
+                    has_unit = true;
+                } else if (unit == 'm' || unit == 'M') {
+                    mult = 1024ULL * 1024ULL;
+                    tail.pop_back();
+                    has_unit = true;
+                } else if (unit == 'g' || unit == 'G') {
+                    mult = 1024ULL * 1024ULL * 1024ULL;
+                    tail.pop_back();
+                    has_unit = true;
+                } else if (unit == 't' || unit == 'T') {
+                    mult = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+                    tail.pop_back();
+                    has_unit = true;
+                }
+                if (!has_unit) {
+                    // If no modifier is present, megabytes are assumed for -md
+                    // and gigabytes for -mdx switch (matching WinRAR spec).
+                    mult = is_mdx ? (1024ULL * 1024ULL * 1024ULL) : (1024ULL * 1024ULL);
+                }
+                uint64_t val = 0;
+                try {
+                    size_t consumed = 0;
+                    double dval = std::stod(tail, &consumed);
+                    // Strict parse: the whole numeric tail must be consumed
+                    // ("-md16mxyz" is an error, not 16 MB) and non-finite values
+                    // are rejected before the double→uint64 cast, which is UB for
+                    // out-of-range floats (v1.21.1 fix).
+                    if (consumed != tail.size() || !std::isfinite(dval) || dval < 0) {
+                        std::cerr << "Error: invalid dictionary size '" << s << "'\n";
+                        return 7;
+                    }
+                    const double max_dict = 1024.0 * 1024.0 * 1024.0 * 1024.0; // 1 TB
+                    if (dval * static_cast<double>(mult) > max_dict) {
+                        std::cerr << "Error: dictionary size > 1 TB not allowed\n";
+                        return 7;
+                    }
+                    val = static_cast<uint64_t>(dval * static_cast<double>(mult));
+                } catch (...) {
                     std::cerr << "Error: invalid dictionary size '" << s << "'\n";
                     return 7;
                 }
-                const double max_dict = 1024.0 * 1024.0 * 1024.0 * 1024.0; // 1 TB
-                if (dval * static_cast<double>(mult) > max_dict) {
+                if (val < 128ULL * 1024ULL) {
+                    std::cerr << "Error: dictionary size < 128 KB not allowed\n";
+                    return 7;
+                }
+                if (val > 1024ULL * 1024ULL * 1024ULL * 1024ULL) { // 1 TB
                     std::cerr << "Error: dictionary size > 1 TB not allowed\n";
                     return 7;
                 }
-                val = static_cast<uint64_t>(dval * static_cast<double>(mult));
-            } catch (...) {
-                std::cerr << "Error: invalid dictionary size '" << s << "'\n";
-                return 7;
-            }
-            if (val < 128ULL * 1024ULL) {
-                std::cerr << "Error: dictionary size < 128 KB not allowed\n";
-                return 7;
-            }
-            if (val > 1024ULL * 1024ULL * 1024ULL * 1024ULL) { // 1 TB
-                std::cerr << "Error: dictionary size > 1 TB not allowed\n";
-                return 7;
-            }
-            // In RAR 7.0, non-power-of-two dictionary sizes are permitted.
-            // Adjust to the nearest discrete step: base 128K<<N + fraction*(base/32)
-            uint64_t requested = val;
-            uint64_t pow2 = 0x20000;
-            while (2 * pow2 <= val && pow2 < (1ULL << 39)) {
-                pow2 *= 2;
-            }
-            if (val > pow2) {
-                uint64_t step = pow2 / 32;
-                if (step > 0) {
-                    uint64_t fraction = (val - pow2) / step;
-                    if (fraction > 31) fraction = 31;
-                    val = pow2 + fraction * step;
+                // In RAR 7.0, non-power-of-two dictionary sizes are permitted.
+                // Adjust to the nearest discrete step: base 128K<<N + fraction*(base/32)
+                uint64_t requested = val;
+                uint64_t pow2 = 0x20000;
+                while (2 * pow2 <= val && pow2 < (1ULL << 39)) {
+                    pow2 *= 2;
                 }
+                if (val > pow2) {
+                    uint64_t step = pow2 / 32;
+                    if (step > 0) {
+                        uint64_t fraction = (val - pow2) / step;
+                        if (fraction > 31) fraction = 31;
+                        val = pow2 + fraction * step;
+                    }
+                }
+                if (val != requested) {
+                    // Accepted-but-snapped values must not shrink silently
+                    // (v1.21.2): -md1t snaps to 1008 GiB (grid cap), off-grid
+                    // values floor to the nearest step.
+                    std::cerr << "Warning: dictionary size snapped to " << (val >> 20)
+                              << " MiB (FCI grid limit)\n";
+                }
+                opt_dict_size = val;
             }
-            if (val != requested) {
-                // Accepted-but-snapped values must not shrink silently
-                // (v1.21.2): -md1t snaps to 1008 GiB (grid cap), off-grid
-                // values floor to the nearest step.
-                std::cerr << "Warning: dictionary size snapped to " << (val >> 20)
-                          << " MiB (FCI grid limit)\n";
-            }
-            opt_dict_size = val;
         } else if (sw_starts(s, "-ver") &&
                    (s.size() == 4 || std::all_of(s.begin() + 4, s.end(), [](unsigned char c) {
                         return std::isdigit(c);
@@ -4286,6 +4313,10 @@ static int cli_main(int argc, char* argv[]) {
         }
         if (oi_given) {
             std::cerr << "Error: cv does not support -oi\n";
+            return EXIT_USAGE;
+        }
+        if (opt_dict_size == openrar::compress::DICT_SIZE_AUTO) {
+            std::cerr << "Error: cv does not support -md=auto\n";
             return EXIT_USAGE;
         }
         if (ep_mode != openrar::io::ExcludePathMode::None) {

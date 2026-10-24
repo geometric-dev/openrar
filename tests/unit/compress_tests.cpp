@@ -6,6 +6,7 @@
 #include "../../src/compress/stream_decoder.hpp"
 #include "../../src/compress/arch/match_simd.hpp"
 #include "../../src/crypto/sha256.hpp"
+#include "../../src/compress/compress_plan.hpp"
 #include "test_support.hpp"
 
 #include <cassert>
@@ -3453,7 +3454,99 @@ static void test_large_window_uses_rar5_tables() {
 #endif
 }
 
+void test_resolve_auto_dict() {
+    // 1. Check ceilings per method (Invariant G-3: deterministic function of method and size)
+    REQUIRE(resolve_auto_dict(0, 1000000000ULL) == 128ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(1, 1000000000ULL) == 512ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(2, 1000000000ULL) == 2ULL * 1024ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(3, 1000000000ULL) == 64ULL * 1024ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(4, 1000000000ULL) == 64ULL * 1024ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(5, 1000000000ULL) == 256ULL * 1024ULL * 1024ULL);
+
+    // 2. Empty input (size 0) defaults to method defaults
+    REQUIRE(resolve_auto_dict(0, 0) == 128ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(1, 0) == 512ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(2, 0) == 1ULL * 1024ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(3, 0) == 8ULL * 1024ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(4, 0) == 16ULL * 1024ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(5, 0) == 64ULL * 1024ULL * 1024ULL);
+
+    // 3. Small inputs (< 128 KB) clamp to 128 KB wire minimum
+    REQUIRE(resolve_auto_dict(3, 1ULL) == 128ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(3, 1000ULL) == 128ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(3, 64ULL * 1024ULL) == 128ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(3, 128ULL * 1024ULL) == 128ULL * 1024ULL);
+
+    // 4. Power-of-two snapping above 128 KB
+    REQUIRE(resolve_auto_dict(3, 128ULL * 1024ULL + 1ULL) == 256ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(3, 200ULL * 1024ULL) == 256ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(3, 256ULL * 1024ULL) == 256ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(3, 256ULL * 1024ULL + 1ULL) == 512ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(3, 10ULL * 1024ULL * 1024ULL) == 16ULL * 1024ULL * 1024ULL);
+
+    // 5. Clamping by method ceiling
+    REQUIRE(resolve_auto_dict(1, 10ULL * 1024ULL * 1024ULL) == 512ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(2, 10ULL * 1024ULL * 1024ULL) == 2ULL * 1024ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(3, 100ULL * 1024ULL * 1024ULL) == 64ULL * 1024ULL * 1024ULL);
+    REQUIRE(resolve_auto_dict(5, 500ULL * 1024ULL * 1024ULL) == 256ULL * 1024ULL * 1024ULL);
+
+    // 6. resolve_dict_window_size helper integration
+    // Explicit dict_size overrides auto
+    REQUIRE(resolve_dict_window_size(4ULL * 1024ULL * 1024ULL, 3, 200ULL * 1024ULL) ==
+            4ULL * 1024ULL * 1024ULL);
+    // DICT_SIZE_AUTO triggers resolve_auto_dict
+    REQUIRE(resolve_dict_window_size(DICT_SIZE_AUTO, 3, 200ULL * 1024ULL) == 256ULL * 1024ULL);
+    // dict_size == 0 with input_size > 0 also triggers resolve_auto_dict
+    REQUIRE(resolve_dict_window_size(0, 3, 200ULL * 1024ULL) == 256ULL * 1024ULL);
+    // dict_size == 0 with input_size == 0 falls back to method default
+    REQUIRE(resolve_dict_window_size(0, 3, 0) == 8ULL * 1024ULL * 1024ULL);
+    REQUIRE(resolve_dict_window_size(0, 1, 0) == 512ULL * 1024ULL);
+    REQUIRE(resolve_dict_window_size(0, 5, 0) == 64ULL * 1024ULL * 1024ULL);
+
+    std::cout << "[PASS] Auto-dictionary resolution logic\n";
+}
+
+void test_decompressor_opt_d01_window_clamping() {
+    // 1. Clamped allocation vs declared window (OPT-D01)
+    // Declared: 64 MiB, Clamped allocation: 128 KiB
+    {
+        Decompressor50 dec(64ULL * 1024ULL * 1024ULL, false, 128ULL * 1024ULL);
+        REQUIRE(dec.declared_win() == 64ULL * 1024ULL * 1024ULL);
+        REQUIRE(dec.win_size() == 128ULL * 1024ULL);
+        REQUIRE(!dec.is_dictionary_too_large());
+        REQUIRE(dec.last_error() == DecompressErrorCode::Ok);
+
+        const std::vector<core::byte> src = lazy_corpus(1, 64 * 1024, 7);
+        std::vector<core::byte> comp;
+        REQUIRE(Compressor50::compress_buffer(src.data(), src.size(), comp, 3,
+                                              64ULL * 1024ULL * 1024ULL));
+        std::vector<core::byte> out;
+        REQUIRE(lazy_decode(comp, 64ULL * 1024ULL * 1024ULL, src.size(), out, false, dec));
+        REQUIRE(out == src);
+    }
+
+    // 2. Default behavior (alloc_win = 0 inherits declared window)
+    {
+        Decompressor50 dec(2ULL * 1024ULL * 1024ULL);
+        REQUIRE(dec.declared_win() == 2ULL * 1024ULL * 1024ULL);
+        REQUIRE(dec.win_size() == 2ULL * 1024ULL * 1024ULL);
+    }
+
+    // 3. Negative test (FMM-46-1): Hostile declared window > ALLOC_LIMIT
+    // Even if alloc_win is small (128 KiB), declared window > ALLOC_LIMIT must trigger DictionaryTooLarge
+    {
+        Decompressor50 dec_hostile(Decompressor50::ALLOC_LIMIT + 1ULL, false, 128ULL * 1024ULL);
+        REQUIRE(dec_hostile.declared_win() == Decompressor50::ALLOC_LIMIT + 1ULL);
+        REQUIRE(dec_hostile.is_dictionary_too_large());
+        REQUIRE(dec_hostile.last_error() == DecompressErrorCode::DictionaryTooLarge);
+    }
+
+    std::cout << "[PASS] Decompressor OPT-D01 window clamping and security ceiling\n";
+}
+
 static const openrar::test::Case k_cases[] = {
+    {"test_resolve_auto_dict", test_resolve_auto_dict, false},
+    {"test_decompressor_opt_d01_window_clamping", test_decompressor_opt_d01_window_clamping, false},
     {"test_cpu_features", test_cpu_features, false},
     {"test_delta_kernels_match_reference", test_delta_kernels_match_reference, false},
     {"test_small_window_long_match_roundtrip", test_small_window_long_match_roundtrip, false},

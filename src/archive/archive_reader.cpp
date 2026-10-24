@@ -2237,7 +2237,16 @@ bool ArchiveReader::select_unpacker(const ArchiveEntry& entry, UnpackerSelection
         if (win == 0) {
             win = 32 * 1024 * 1024;
         }
-        sel.local = std::make_unique<compress::Decompressor50>(win, entry.header.extra_dist);
+        size_t alloc_win = win;
+        if (entry.header.unp_size > 0 && win > 0) {
+            core::uint64 target = 0x20000ULL; // 128 KiB floor
+            while (target < entry.header.unp_size && target < win) {
+                target <<= 1;
+            }
+            alloc_win = static_cast<size_t>(std::min<core::uint64>(win, target));
+        }
+        sel.local =
+            std::make_unique<compress::Decompressor50>(win, entry.header.extra_dist, alloc_win);
         if (sel.local->last_error() != compress::DecompressErrorCode::Ok) {
             last_decompress_error_ = sel.local->last_error();
             return false;

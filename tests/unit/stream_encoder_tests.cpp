@@ -412,6 +412,95 @@ void test_stream_decoder_multi_block_single_feed_and_trailing_garbage() {
     }
 }
 
+// Bug #2 reproducer: M-08 fast-path stall at 32 KiB. The defensive
+// process_blocks() added at stream_decoder.cpp:64 prevents a complete block
+// from stalling in in_queue_ when the M-08 path stages an incomplete tail
+// that is actually a whole block. This test sweeps payload sizes and feed-chunk
+// boundaries that target the exact edge: feed sizes of 32768 and 65536
+// (the stall boundary), midpoint splits, and the all-but-last-3-bytes variant
+// (isolating the final empty-last-block header in the tail).
+void test_stream_decoder_71653_variant() {
+    const size_t win = 1024 * 1024;
+
+    for (int method : {1, 3, 5}) {
+        // Sweep payload sizes 60-80 KiB with seeds 0..7 to cover a range of
+        // compressed-stream lengths, including those near 71653.
+        for (size_t payload_kib = 60; payload_kib <= 80; payload_kib += 4) {
+            for (uint32_t seed = 0; seed < 8; ++seed) {
+                const std::vector<uint8_t> src =
+                    pattern_payload(payload_kib * 1024, seed + static_cast<uint32_t>(method) * 100);
+                std::vector<uint8_t> comp = one_shot(src, method, win);
+                if (comp.empty()) {
+                    FAIL("one_shot failed");
+                    return;
+                }
+
+                // Chunk sizes that target the stall boundary.
+                const size_t mid = comp.size() / 2;
+                const std::vector<size_t> chunks = {
+                    1,           // micro: many feeds, tests queue accumulation
+                    3,           // exactly a minimal block header
+                    32768,       // the stall boundary from the bug comment
+                    65536,       // double the stall boundary
+                    mid,         // midpoint split
+                    mid + 1,     // off-by-one midpoint
+                    comp.size(), // single feed (sanity)
+                };
+
+                for (const size_t chunk : chunks) {
+                    if (chunk == 0) continue;
+                    openrar::compress::StreamDecoder dec(win, method);
+                    for (size_t off = 0; off < comp.size(); off += chunk) {
+                        size_t n = std::min(chunk, comp.size() - off);
+                        if (!dec.feed(comp.data() + off, n)) {
+                            std::fprintf(stderr,
+                                         "  bug2: decoder feed failed: method=%d payload=%zuK "
+                                         "seed=%u chunk=%zu off=%zu comp=%zu\n",
+                                         method, payload_kib, seed, chunk, off, comp.size());
+                            FAIL("decoder feed failed (bug #2 variant)");
+                            return;
+                        }
+                    }
+                    std::vector<openrar::core::byte> restored;
+                    if (!dec.finish(restored)) {
+                        std::fprintf(stderr,
+                                     "  bug2: decoder finish failed: method=%d payload=%zuK "
+                                     "seed=%u chunk=%zu comp=%zu\n",
+                                     method, payload_kib, seed, chunk, comp.size());
+                        FAIL("decoder finish failed (bug #2 variant)");
+                        return;
+                    }
+                    CHECK(restored.size() == src.size());
+                    CHECK(std::memcmp(restored.data(), src.data(), src.size()) == 0);
+                }
+
+                // All-but-last-3-bytes variant: isolates the final empty
+                // last-block header (3 bytes) being the only content in the
+                // tail after the fast path consumes everything before it.
+                if (comp.size() > 3) {
+                    openrar::compress::StreamDecoder dec(win, method);
+                    size_t bulk = comp.size() - 3;
+                    if (!dec.feed(comp.data(), bulk)) {
+                        FAIL("decoder feed failed (all-but-3 variant)");
+                        return;
+                    }
+                    if (!dec.feed(comp.data() + bulk, 3)) {
+                        FAIL("decoder feed failed (last-3 variant)");
+                        return;
+                    }
+                    std::vector<openrar::core::byte> restored;
+                    if (!dec.finish(restored)) {
+                        FAIL("decoder finish failed (last-3 variant)");
+                        return;
+                    }
+                    CHECK(restored.size() == src.size());
+                    CHECK(std::memcmp(restored.data(), src.data(), src.size()) == 0);
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 static void run_suite_body() {
@@ -441,6 +530,7 @@ static void run_suite_body() {
     test_stream_decoder_incremental_pull();
     test_stream_decoder_store();
     test_stream_decoder_multi_block_single_feed_and_trailing_garbage();
+    test_stream_decoder_71653_variant();
 
     std::fprintf(stderr, "stream_encoder_tests OK\n");
     return;

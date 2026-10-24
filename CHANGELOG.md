@@ -5,6 +5,16 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.46.0] - 2026-10-24
+
+### Added
+
+- **Automatic dictionary sizing (`-md=auto`).** Dictionary size can now be auto-selected per entry based on compression method and input size. Sizing is a deterministic mathematical mapping $f(\text{method}, \text{input\_size})$ satisfying Invariant G-3 (cross-host byte-identity, no host RAM sniffing). Supports `-md=auto`, `-md:auto`, `-mdauto`, and default auto-selection. Ceilings: m0 (128 KiB), m1 (512 KiB), m2 (2 MiB), m3 (64 MiB), m4 (64 MiB), m5 (256 MiB). Explicitly refused by `cv` command (`EXIT_USAGE = 7`).
+- **Public C ABI Sentinel.** Added `#define OPENRAR_DICT_AUTO 0` to `include/openrar/openrar_dll.h`.
+- **Consumer-side window optimization (OPT-D01).** Sliding window memory is now allocated uninitialised via standard C++17 `default_init_allocator<core::byte>` in `Decompressor50`, eliminating redundant page zeroing on resize.
+- **Decoder allocation clamping.** For non-solid members with known unpacked size, `ArchiveReader` clamps the decompressor allocation window to `min(declared, round_up_pow2(max(unp_size, 128 KiB)))` while preserving the declared window for 446/430 symbol table flavor selection.
+- **Adversarial dictionary ceiling guard.** `Decompressor50` enforces `declared_win > ALLOC_LIMIT` (64 GiB) upon entry, preventing hostile dictionary declarations from evading safety limits via clamped allocation windows.
+
 ## [1.45.7] - 2026-10-23
 
 ### Fixed

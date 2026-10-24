@@ -303,25 +303,21 @@ core::uint32 HuffmanDecoder::decode(BitReader& reader) const {
 // ------------------------------------------------------------------
 // Decompressor50
 // ------------------------------------------------------------------
-Decompressor50::Decompressor50(size_t win_size, bool extra_dist) {
-    // win_size == 0 is rejected here: a zero window makes the circular-window
-    // arithmetic (modulo win_size_, window_[win_pos_]) undefined. Callers that
-    // genuinely want a placeholder window get the default 2 MiB one
-    // (DEFAULT_WIN_SIZE - see decompressor50.hpp for why it must mirror the
-    // compressor's 2 MiB default).
-    engine_.init(win_size ? win_size : DEFAULT_WIN_SIZE);
+Decompressor50::Decompressor50(size_t win_size, bool extra_dist, size_t alloc_win) {
+    declared_win_ = win_size ? win_size : DEFAULT_WIN_SIZE;
+    if (alloc_win == 0) alloc_win = declared_win_;
+    engine_.init(alloc_win ? alloc_win : DEFAULT_WIN_SIZE);
     last_error_ = DecompressErrorCode::Ok;
     last_error_str_.clear();
 
     // Two failure modes for the sliding dictionary:
     //   (a) declared size exceeds this build's ALLOC_LIMIT (64 GiB on 64-bit,
-    //       1 GiB on 32-bit/WASM). The archive layer maps spec-invalid
-    //       dictionary bits to a sentinel > ALLOC_LIMIT
-    //       (format/header_reader.cpp), which lands here.
+    //       1 GiB on 32-bit/WASM). Checked on declared_win_ so hostile/corrupt
+    //       declarations cannot slip past by clamping alloc_win.
     //   (b) the OS refuses memory while the window grows with the decoded
     //       output (ApplyEngine::grow -> AllocationFailed). The declared size
     //       is a ceiling, not an up-front commitment.
-    if (engine_.win_size_ > ALLOC_LIMIT) {
+    if (declared_win_ > ALLOC_LIMIT) {
         last_error_ = DecompressErrorCode::DictionaryTooLarge;
         last_error_str_ = "dictionary too large";
     }
