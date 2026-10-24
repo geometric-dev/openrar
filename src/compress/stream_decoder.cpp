@@ -56,7 +56,13 @@ bool StreamDecoder::feed(const core::byte* src, size_t n) {
         in_head_ = 0;
         size_t consumed = 0;
         if (!process_buffer(src, n, consumed)) return false;
-        if (consumed < n) in_queue_.insert(in_queue_.end(), src + consumed, src + n);
+        if (consumed < n) {
+            in_queue_.insert(in_queue_.end(), src + consumed, src + n);
+            // Defensive: process any queued complete blocks immediately;
+            // without this a queued tail could stall (bug #2, stream stall
+            // at 32768 bytes, nightly divergence a=32768).
+            process_blocks();
+        }
         return true;
     }
 

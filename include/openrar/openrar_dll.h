@@ -604,6 +604,9 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_add_files_file(const char* 
 //
 // Errors: RAR_ERR_INVALID_ARG on null args / empty batch / method not in 0..5;
 // RAR_ERR_BUSY (-14) if an open file-mode handle in this process holds arc_path;
+// Dictionary auto-sizing sentinel (0 selects method-tuned automatic sizing):
+#define OPENRAR_DICT_AUTO 0
+
 // Filter flags for openrar_archive_create_file_opts or filter configuration (bit 10):
 #define OPENRAR_FILTER_DEFAULT 0u
 #define OPENRAR_FILTER_DISABLE_ALL (1u << 0)   // Force disable all filters (-mc-)

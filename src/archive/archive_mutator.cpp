@@ -1261,12 +1261,19 @@ bool ArchiveMutator::prepare_add_file(
         file_sz = src.size();
         fb.unp_size = file_sz;
 
-        if (dict_size == 0 && !is_solid && method > 0 && file_sz > 0) {
+        if (dict_size == compress::DICT_SIZE_AUTO && !is_solid && method > 0 && file_sz > 0) {
+            win_size = compress::resolve_auto_dict(static_cast<core::uint32>(method), file_sz);
+            win_size = clamp_window_to_address_space(win_size);
+            bool is_np2 = (win_size & (win_size - 1)) != 0;
+            fb.unp_ver = (method > 0 && (win_size > (1ULL * 1024 * 1024 * 1024) || is_np2)) ? 1 : 0;
+        } else if (dict_size == 0 && !is_solid && method > 0 && file_sz > 0) {
             core::uint64 file_pow2 = 0x20000ULL; // 128 KiB floor
             while (file_pow2 < file_sz && file_pow2 < win_size) {
                 file_pow2 <<= 1;
             }
             win_size = std::min(win_size, file_pow2);
+            bool is_np2 = (win_size & (win_size - 1)) != 0;
+            fb.unp_ver = (method > 0 && (win_size > (1ULL * 1024 * 1024 * 1024) || is_np2)) ? 1 : 0;
         }
 
         if (file_sz == 0) {
@@ -3252,7 +3259,10 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         compress::resolve_dict_window_size(dict_size, static_cast<core::uint32>(method));
     win_size = compress::snap_window_to_fci_grid(win_size);
     win_size = clamp_window_to_address_space(win_size);
-    if (dict_size == 0 && !solid && method > 0 && file_sz > 0) {
+    if (dict_size == compress::DICT_SIZE_AUTO && !solid && method > 0 && file_sz > 0) {
+        win_size = compress::resolve_auto_dict(static_cast<core::uint32>(method), file_sz);
+        win_size = clamp_window_to_address_space(win_size);
+    } else if (dict_size == 0 && !solid && method > 0 && file_sz > 0) {
         core::uint64 file_pow2 = 0x20000ULL; // 128 KiB floor
         while (file_pow2 < file_sz && file_pow2 < win_size) {
             file_pow2 <<= 1;
