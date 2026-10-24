@@ -328,6 +328,9 @@ Standing gates: 24-stage interop (UnRAR 7.20 + WinRAR 7.20) where bytes change �
 
 **Release record — v1.45.0 rollup (2026-10-21).** Release-number allocation for the uncommitted tree, left open by the v1.44 plan ("decided at the release step"), is resolved as **v1.45.0**: one rollup tag covering the v1.43 measurement arc (including the shipped A-6 back-shift, which changes emitted RAR5 bytes and carries the `OPENRAR_NO_BACKSHIFT` kill-switch), the complete v1.44 verification substrate (M0-M5), and v1.45 M0-M2. The v1.45 item is therefore **partially released**: M3 onward continues as **v1.45.x patch releases**, not a new minor. The same tree carried the Phase 2 audit remediation (`docs/review-master-plan.md`) and the large-dictionary fix (table flavor from the header's algorithm field, lazily committed decoder window, input-bounded encoder window), whose compatibility note is in `CHANGELOG.md`. Pre-tag gates run on the final tree: anchor lint, clang-format, Release ctest, and the full interop gate. Not run before tagging: the clang libFuzzer/ASan/UBSan lane (WSL unavailable on the release host; it runs in the nightly job).
 
+**Release record — v1.45.7 patch (2026-10-23).** Patch release covering post-v1.45.0 fixes. **P1 fix (parallel decode dup-output):** `decode_entry` fallback keyed off `total` (only written on span completion) instead of `emitted` (actual callback bytes); a failed span that had partially emitted caused `run_sequential()` to re-emit the entire member — fuzz-found (a=1081382 b=1052692 on a 37-byte input). Fix: fallback keys on `emitted == 0`; never retries after emission. Reproducer retained at `tests/fuzz/crashes/parallel_fallback_dup_input.bin`. **Nightly fuzz budget:** per-fuzzer default reduced 1800s→600s to fit the workflow 120-minute ceiling; crash artifacts now upload with `if: always()`. **Sanitizer legs:** first local ASan+UBSan run (clang 18.1.3) found five suites needed fixes — `fuzz_file_handle` lacked `-runs`; SFX `RLIMIT_AS` skipped under sanitizers; sandboxed-worker skipped under any sanitizer; `python_conformance` preloads runtimes; new `src/core/sanitizer.hpp` for clang detection. **Release attestation:** subject list corrected to match actual asset paths (`openrar-*.zip` + `SHA256SUMS` + SBOM). **ci-watch:** exit-code fix (gate on run conclusion, not job-list errors; PowerShell 5.1 array-parsing fix). **README:** `-oz` table row line-break fixed. **Verification (v1.44) status confirmed:** FMM-44 all 17 rows present and mitigated; M3 `interop_gate` 0 violations; M4 doctest 2.4.12 vendored; M5 46/46 suites migrated to the runner (RAT-B green). **Open item (bug #2):** StreamDecoder M-08 fast-path stall at 32 KiB — defensive `process_blocks()` call shipped at `stream_decoder.cpp:64`. Exact 71653-byte reproducer not yet confirmed; `test_stream_decoder_71653_variant` added to sweep payload/chunk boundaries that target the stall path. Nightly fuzz (now with artifact retention) is the primary confirmation vector. **Pre-tag gates:** Release build rc=0; tag CI green.
+
+
 ### 7.4 v1.46 — Dictionary Auto-Sizing (`-md=auto`) · *Medium*
 
 **Delta work — verify, don't build:** `-md` accepted/validated 128k..1T (`main.cpp:416`) · method table m0 128K / m1 512K / m2 1M / m3 8M / m4 16M / m5 64M (`compress_plan.hpp:11-24`) · legacy scale (I-5) · FCI snap (`:48`) · RAR7 non-pow2 emission + `OPENRAR_ABI_FEATURE_DICT_EX` (bit 12) **already shipped** (`openrar_dll.h:103-104`).
@@ -365,6 +368,22 @@ Standing gates: 24-stage interop (UnRAR 7.20 + WinRAR 7.20) where bytes change �
 - m3 ratio + wall non-regression **incl. `-mt` scaling** (thread clamp I-7) · 24-stage interop · large-dict WinRAR/UnRAR readability oracle · C ABI + C# + Python + WASM conformance.
 - **M5 proofs:** the three decoder tests above.
 - MSan run of `extraction_fidelity_tests` + `golden_fixtures_tests` that **executed** (see the §7 intake rule) proves no read of unfilled window bytes. Where MSan cannot configure, Valgrind memcheck on the Linux leg is the accepted substitute, and must also be asserted executed.
+
+**§7.4 Implementation record — v1.46.0 (2026-10-24).**
+- **M0 Re-charter:** Based on v1.43 ratio attribution, dictionary auto-sizing is memory- and cache-efficiency focused rather than ratio-focused.
+- **M1 Auto-sizing pure function:** Implemented `resolve_auto_dict(method, input_size)` and `resolve_dict_window_size` in `src/compress/compress_plan.hpp`. Pure deterministic mapping $f(\text{method}, \text{input\_size}) \to \text{window}$ satisfying Invariant G-3 (cross-host byte identity, zero host RAM sniffing). Ceilings: m0 (128k), m1 (512k), m2 (2M), m3 (64M), m4 (64M), m5 (256M).
+- **M2-M4 Precedence & Wire Discipline:** CLI flag `-md<N>` > `-md=auto` > default (`dict_size == 0`). Supports `-md=auto`, `-md:auto`, `-mdauto`. Explicitly refused in `cv` command (`EXIT_USAGE = 7`). Wire rules preserved: `encoder_win <= header_win`, non-pow2 requires `unp_ver = 1`, `len >= inc + 2` wire floor. C ABI constant `OPENRAR_DICT_AUTO = 0` defined in `openrar_dll.h`.
+- **M5 Consumer-Side Window Optimization (OPT-D01):**
+  - Added C++17 `default_init_allocator<core::byte>` in `src/compress/decompressor50.hpp` (zero-fill overhead eliminated on resize).
+  - Split `Decompressor50` window tracking into `declared_win_` and `alloc_win` (`engine_.win_size_`).
+  - Hardened security ceiling against malicious archives: `Decompressor50` verifies `declared_win_ > ALLOC_LIMIT` (64 GiB), preventing spoofing via small member `alloc_win`.
+  - Non-solid reader decompression in `archive_reader.cpp` clamps `alloc_win = min(win, round_up_pow2(max(file_size, 128k)))` while preserving `declared_win_ = win` (ensuring table flavor selection remains intact).
+- **Verification Gates:**
+  - 55/55 CTest suites passing (100%).
+  - New test cases added in `compress_tests.cpp` (`test_resolve_auto_dict`, `test_decompressor_opt_d01_window_clamping`) and `cli_tests.cpp` (`test_cli_dict_size_flag` extended with auto-sizing and `cv` refusal).
+  - Verification ledger regenerated (`tools/genledger.py`): 4357 checks.
+  - Anchor lint clean (`tools/anchor_lint.py`): 0 violations.
+  - Layer check clean (`tools/layer_check.py`): 0 new violations.
 
 ### 7.5 v1.47 — macOS Seatbelt + Foreign-Format Fuzzing · *Medium*
 

@@ -27,33 +27,8 @@ inline uint64_t default_dict_size_for_method(uint32_t method) {
     }
 }
 
-// Full dictionary-window resolution shared by every archive pack path (the
-// non-volume prepare, the multivolume add, the CLI's solid-session and
-// workspace math): 1..15 is the legacy 128 KiB<<n scale, 0 selects the
-// method-tuned default, >15 is exact bytes. The result still goes through
-// snap_window_to_fci_grid() and the per-path pow2 file-size clamp — this
-// helper only owns the request-to-window mapping (v1.37 fix for the volume
-// path's flat 2 MiB default, question-log Entry 24).
-inline uint64_t resolve_dict_window_size(uint64_t dict_size, uint32_t method) {
-    if (dict_size >= 1 && dict_size <= 15) return 0x20000ULL << (dict_size - 1);
-    if (dict_size == 0) return default_dict_size_for_method(method);
-    return dict_size;
-}
-
-// LZ allocation window for an input of known size: the smallest power of two
-// covering the input (128 KiB floor), never above the declared dictionary.
-// The header keeps the DECLARED size - a decoder window larger than every
-// distance the stream uses is always valid - so this only bounds encoder
-// memory (match-finder state is ~5 bytes per window byte: -md8g on a 24 MiB
-// file used to try to allocate ~40 GiB). Safe because the table flavor no
-// longer depends on the window (see Compressor50::make_tables). Solid
-// sessions pass the whole run's input size.
-inline uint64_t lz_window_for_input(uint64_t declared, uint64_t input_bytes) {
-    if (declared <= 0x20000ULL || input_bytes == 0) return declared;
-    uint64_t w = 0x20000ULL;
-    while (w < input_bytes && w < declared) w <<= 1;
-    return w < declared ? w : declared;
-}
+// Sentinel for -md=auto (automatic input-scaled dictionary sizing)
+inline constexpr uint64_t DICT_SIZE_AUTO = UINT64_MAX;
 
 // Quantize a requested window to the FCI grid the header can represent
 // (power-of-two base + base/32 fractions, 128 KiB floor). Single copy shared
@@ -72,6 +47,84 @@ inline uint64_t snap_window_to_fci_grid(uint64_t win) {
     if (bits == 23) return pow2 + (pow2 / 32) * 31; // clamp to max representable
     uint64_t fraction = (win - pow2) * 32 / pow2;
     return pow2 + (pow2 / 32) * fraction;
+}
+
+// Ceiling for automatic dictionary sizing per RAR5 method 0-5.
+inline uint64_t auto_dict_ceiling_for_method(uint32_t method) {
+    switch (method) {
+    case 0:
+        return 0x20000ULL; // 128 KiB
+    case 1:
+        return 0x80000ULL; // 512 KiB
+    case 2:
+        return 0x200000ULL; // 2 MiB
+    case 3:
+        return 0x4000000ULL; // 64 MiB
+    case 4:
+        return 0x4000000ULL; // 64 MiB
+    case 5:
+        return 0x10000000ULL; // 256 MiB
+    default:
+        return 0x4000000ULL; // 64 MiB
+    }
+}
+
+// Automatic dictionary sizing for an input of known size (v1.46 -md=auto):
+// Single pure decision function f(method, input_size) -> window.
+// No RAM input is permitted (Invariant G-3, cross-host byte-identity).
+// - Floor: 128 KiB (0x20000ULL).
+// - Small inputs (< method default): round_up_pow2(max(128k, input_size)).
+// - Large inputs (>= method default): scales above method default up to the per-method ceiling.
+inline uint64_t resolve_auto_dict(uint32_t method, uint64_t input_size) {
+    const uint64_t def = default_dict_size_for_method(method);
+    if (input_size == 0) return def;
+    if (input_size < def) {
+        uint64_t w = 0x20000ULL;
+        while (w < input_size && w < def) w <<= 1;
+        return snap_window_to_fci_grid(w);
+    }
+    const uint64_t ceiling = auto_dict_ceiling_for_method(method);
+    uint64_t w = def;
+    while (w < input_size && w < ceiling) w <<= 1;
+    return snap_window_to_fci_grid(w);
+}
+
+// Full dictionary-window resolution shared by every archive pack path (the
+// non-volume prepare, the multivolume add, the CLI's solid-session and
+// workspace math):
+// - DICT_SIZE_AUTO: dynamic input-scaled auto-sizing (resolve_auto_dict).
+// - 1..15: legacy 128 KiB<<n scale.
+// - 0: method-tuned default (with shrink-only clamp if input_size > 0).
+// - >15: exact bytes.
+inline uint64_t resolve_dict_window_size(uint64_t dict_size, uint32_t method,
+                                         uint64_t input_size = 0) {
+    if (dict_size == DICT_SIZE_AUTO) return resolve_auto_dict(method, input_size);
+    if (dict_size >= 1 && dict_size <= 15) return 0x20000ULL << (dict_size - 1);
+    if (dict_size == 0) {
+        if (input_size > 0) {
+            uint64_t def = default_dict_size_for_method(method);
+            uint64_t w = 0x20000ULL;
+            while (w < input_size && w < def) w <<= 1;
+            return w;
+        }
+        return default_dict_size_for_method(method);
+    }
+    return dict_size;
+}
+
+// LZ allocation window for an input of known size: the smallest power of two
+// covering the input (128 KiB floor), never above the declared dictionary.
+// The header keeps the DECLARED size - a decoder window larger than every
+// distance the stream uses is always valid - so this only bounds encoder
+// memory (match-finder state is ~5 bytes per window byte: -md8g on a 24 MiB
+// file used to try to allocate ~40 GiB). Safe because the table flavor no
+// longer depends on the window (see Compressor50::make_tables). Solid
+// sessions pass the whole run's input size.
+inline uint64_t lz_window_for_input(uint64_t declared, uint64_t input_bytes) {
+    if (declared <= 0x20000ULL || input_bytes == 0) return declared;
+    uint64_t w = 0x20000ULL;
+    while (w < input_bytes && w < declared) w <<= 1;
+    return w < declared ? w : declared;
 }
 
 // Decision on how a single entry payload is encoded into the archive.
@@ -130,8 +183,9 @@ struct CompressPlan {
         } else {
             ep.decision = EntryDecision::BlockStream;
             if (ep.dict_size == 0) {
-                ep.dict_size =
-                    (dict_size != 0) ? dict_size : default_dict_size_for_method(ep.method);
+                ep.dict_size = resolve_dict_window_size(
+                    (dict_size != 0) ? dict_size : default_dict_size_for_method(ep.method),
+                    ep.method, ep.raw_size);
             }
             ep.is_solid_chain = (solid || continue_solid_stream) && seen_compressed_entry;
             seen_compressed_entry = true;

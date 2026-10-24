@@ -77,13 +77,31 @@ private:
     unsigned int quick_bits_{QUICK_BITS};
 };
 
+// C++17 default-initialising allocator: leaves primitive types uninitialised
+// on resize/allocation (OPT-D01), eliminating redundant page zeroing.
+template <typename T, typename A = std::allocator<T>> struct default_init_allocator : A {
+    using A::A;
+    template <typename U> struct rebind {
+        using other =
+            default_init_allocator<U, typename std::allocator_traits<A>::template rebind_alloc<U>>;
+    };
+    template <typename U>
+    void construct(U* ptr) noexcept(std::is_nothrow_default_constructible<U>::value) {
+        ::new (static_cast<void*>(ptr)) U;
+    }
+    template <typename U, typename... Args> void construct(U* ptr, Args&&... args) {
+        std::allocator_traits<A>::construct(static_cast<A&>(*this), ptr,
+                                            std::forward<Args>(args)...);
+    }
+};
+
 // Dictionary storage that grows IN PLACE. On 64-bit native builds a large
 // window reserves address space for the whole declared size up front (no
 // memory committed) and commits pages as decoded output arrives, so growth
 // never copies and the peak footprint is the committed size, not old + new.
 // Small windows and 32-bit/WASM builds use a std::vector (bounded at 1 GiB
-// there, where copying is affordable). Contents are zero-initialised either
-// way. Move-only.
+// there, where copying is affordable). Allocated uninitialised via
+// default_init_allocator (OPT-D01). Move-only.
 class WindowBuffer {
 public:
     WindowBuffer() = default;
@@ -125,7 +143,7 @@ private:
         o.size_ = o.reserved_ = o.committed_ = 0;
         o.vm_ = false;
     }
-    std::vector<core::byte> vec_; // non-VM storage
+    std::vector<core::byte, default_init_allocator<core::byte>> vec_; // non-VM storage
     core::byte* base_{nullptr};
     size_t size_{0};      // usable bytes
     size_t reserved_{0};  // VM: reserved address space
@@ -187,7 +205,8 @@ public:
     // RAR5-algorithm member may declare a window above 4 GiB and still use
     // 430-entry tables (that is what RAR writes and our encoder emits). Raw
     // block-codec streams carry no header and default to the RAR5 flavor.
-    explicit Decompressor50(size_t win_size = DEFAULT_WIN_SIZE, bool extra_dist = false);
+    explicit Decompressor50(size_t win_size = DEFAULT_WIN_SIZE, bool extra_dist = false,
+                            size_t alloc_win = 0);
     ~Decompressor50() = default;
     // Move-only: the window owns a virtual-memory reservation (WindowBuffer).
     Decompressor50(Decompressor50&&) noexcept = default;
@@ -212,6 +231,7 @@ public:
         return last_error_ == DecompressErrorCode::DictionaryTooLarge;
     }
     size_t win_size() const { return engine_.win_size_; }
+    size_t declared_win() const { return declared_win_; }
 
     // Callback type for streaming decompressed output.
     // The callback is invoked with contiguous chunks of unpacked data.
@@ -585,6 +605,7 @@ private:
 
     DecompressErrorCode last_error_{DecompressErrorCode::Ok};
     std::string last_error_str_;
+    size_t declared_win_{DEFAULT_WIN_SIZE};
 };
 
 } // namespace openrar::compress

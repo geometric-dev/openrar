@@ -801,6 +801,60 @@ void test_cli_dict_size_flag() {
     res = std::system(cmd.c_str());
     REQUIRE(res != 0);
 
+    // 5. -md=auto auto-sizes based on input size: 200 KiB -> 256 KiB
+    fs::path src_200k = temp_dir / "sample_200k.bin";
+    {
+        std::ofstream f(src_200k, std::ios::binary);
+        std::vector<char> buf(200 * 1024, 'Y');
+        f.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+    }
+    fs::path arc_auto = temp_dir / "auto.rar";
+    cmd = exe + " a -q -m3 -md=auto " + arc_auto.string() + " " + src_200k.string() +
+          " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    REQUIRE(res == 0);
+    {
+        openrar::archive::ArchiveReader r;
+        REQUIRE(r.open(arc_auto));
+        const auto* e = find_file(r);
+        REQUIRE(e != nullptr);
+        REQUIRE(e->header.win_size == 256 * 1024);
+    }
+
+    // 5b. -md:auto and -mdauto delimiter variants
+    fs::path arc_auto_colon = temp_dir / "auto_colon.rar";
+    cmd = exe + " a -q -m3 -md:auto " + arc_auto_colon.string() + " " + src_200k.string() +
+          " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    REQUIRE(res == 0);
+    {
+        openrar::archive::ArchiveReader r;
+        REQUIRE(r.open(arc_auto_colon));
+        const auto* e = find_file(r);
+        REQUIRE(e != nullptr);
+        REQUIRE(e->header.win_size == 256 * 1024);
+    }
+
+    // 6. Default (no -md specified) auto-sizes per entry: 200 KiB -> 256 KiB
+    fs::path arc_default = temp_dir / "default.rar";
+    cmd =
+        exe + " a -q -m3 " + arc_default.string() + " " + src_200k.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    REQUIRE(res == 0);
+    {
+        openrar::archive::ArchiveReader r;
+        REQUIRE(r.open(arc_default));
+        const auto* e = find_file(r);
+        REQUIRE(e != nullptr);
+        REQUIRE(e->header.win_size == 256 * 1024);
+    }
+
+    // 7. cv command explicitly refuses -md=auto
+    fs::path cv_out = temp_dir / "cv_out.rar";
+    cmd = exe + " cv -md=auto " + arc_auto.string() + " " + cv_out.string() + " > " DEVNULL " 2>&1";
+    res = std::system(cmd.c_str());
+    REQUIRE(res == 7); // EXIT_USAGE
+
     fs::remove_all(temp_dir, ec);
     std::cout << "[PASS] CLI -md<size> dictionary configuration\n";
 }
