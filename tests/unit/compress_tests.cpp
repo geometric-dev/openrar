@@ -1739,6 +1739,46 @@ void test_filter_detect_delta_wav() {
               << std::endl;
 }
 
+void test_filter_detect_delta_wav_bounds() {
+    std::cout << "[+] test_filter_detect_delta_wav_bounds" << std::endl;
+    auto wav = make_wav_pcm(100);
+    core::uint8 channels = 0;
+
+    auto test_combo = [&](core::uint16 ch, core::uint16 bps, FilterType expected_ft,
+                          core::uint8 expected_ch) {
+        core::write_le16(wav.data() + 22, ch);
+        core::write_le16(wav.data() + 34, bps);
+        channels = 0xFF;
+        FilterType ft = Filters50::detect_filter(wav.data(), wav.size(), channels);
+        REQUIRE(ft == expected_ft);
+        if (expected_ft == FilterType::Delta) {
+            REQUIRE(channels == expected_ch);
+        }
+    };
+
+    // Valid audio combinations:
+    test_combo(1, 8, FilterType::Delta, 1);   // mono 8-bit -> stride 1
+    test_combo(2, 16, FilterType::Delta, 4);  // stereo 16-bit -> stride 4
+    test_combo(6, 24, FilterType::Delta, 18); // 5.1 24-bit -> stride 18
+    test_combo(4, 32, FilterType::Delta, 16); // quad 32-bit -> stride 16
+    test_combo(32, 8, FilterType::Delta, 32); // 32-channel 8-bit -> stride 32 (upper limit)
+
+    // Malformed / truncation / attack combinations:
+    // OPT-F01 repro: 2 channels, 1032 bps -> total bits 2064, stride 258 -> would wrap to 2 if uint8 cast early!
+    test_combo(2, 1032, FilterType::None, 0);
+    // Integer overflow probe: 0xFFFF * 0xFFFF = 4294836225, exceeds INT32_MAX, no UB with uint32
+    test_combo(0xFFFF, 0xFFFF, FilterType::None, 0);
+    // Non-byte-aligned bits: 1 channel, 12 bps -> total bits 12 (not divisible by 8)
+    test_combo(1, 12, FilterType::None, 0);
+    // Zero channels / bps
+    test_combo(0, 16, FilterType::None, 0);
+    test_combo(2, 0, FilterType::None, 0);
+    // Stride 33 (exceeds RAR delta max stride 32)
+    test_combo(33, 8, FilterType::None, 0);
+
+    std::cout << "    - WAV delta audio bounds and OPT-F01 integer checks: OK" << std::endl;
+}
+
 void test_filter_detect_disable_all() {
     std::cout << "[+] test_filter_detect_disable_all" << std::endl;
     auto bin = make_x86_binary(200);
@@ -3599,6 +3639,7 @@ static const openrar::test::Case k_cases[] = {
     {"test_filter_detect_e8_binary", test_filter_detect_e8_binary, false},
     {"test_filter_detect_arm_binary", test_filter_detect_arm_binary, false},
     {"test_filter_detect_delta_wav", test_filter_detect_delta_wav, false},
+    {"test_filter_detect_delta_wav_bounds", test_filter_detect_delta_wav_bounds, false},
     {"test_filter_detect_disable_all", test_filter_detect_disable_all, false},
     {"test_detect_filter_hostile_pe_offset", test_detect_filter_hostile_pe_offset, false},
     {"test_stream_encoder_decoder_filter_roundtrip", test_stream_encoder_decoder_filter_roundtrip,

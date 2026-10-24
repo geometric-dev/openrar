@@ -396,6 +396,19 @@ Standing gates: 24-stage interop (UnRAR 7.20 + WinRAR 7.20) where bytes change �
 
 **Gates:** observed-denial e2e — write **and** network denied **by the kernel** — on all three engines, **with `OPENRAR_IN_PROC` asserted unset** (else the gate passes vacuously) · nightly green · residual-gap table published · **M3:** the TSan job's `-R` filter names the parallel-decode suite, and the run asserts the parallel path **engaged** (`ParallelDecodeDiag` reports not-fell-back on at least one input; small members fall back below the G3 floor, so use `OPENRAR_PARALLEL_DECODE_SPAN_FLOOR` in the test only) · **M5:** a UBSan-leg unit test on both seed headers, plus the seeds present in the checked-in corpus.
 
+**§7.5 Implementation record — v1.47.0 (2026-10-24).**
+- **M0 & M0b (macOS Seatbelt):** Implemented Apple Seatbelt isolation profile (`sandbox_init` / SBPL) in `spawn.cpp` allowing dyld/system libraries, frameworks, and `/dev/urandom` while denying file writes, network, fork, and exec. Resolved worker executable path dynamically via `_NSGetExecutablePath`. Handled `--install-seatbelt` CLI flag propagation in `worker_main.cpp` and `worker_broker.cpp` with fail-closed exit code 4 on error. Published residual capability-gap table in `docs/v1.47.0-pre-analysis.md`.
+- **M1 & M2 (Foreign-Format Fuzzers):** Implemented `fuzz_zip` and `fuzz_tar` in `tests/fuzz/` covering CD-vs-LFH exit-code oracle checks, ZIP64 extensions, hostile PAX records, GNU LongLink records, and extraction memory caps. Wired into CMake under `OPENRAR_FUZZ`. Deterministic standalone seed sweeps verified passing.
+- **M3 (Parallel Decode TSan Validation):** Audited mutex synchronization and handoffs in `src/compress/parallel_decode.cpp`. Added explicit assertion `REQUIRE(diag.spans >= requested);` in `tests/unit/two_phase_tests.cpp` to verify multi-span parallel worker engagement across threads.
+- **M4 (MSan Viability):** Feasibility assessment documented in `docs/v1.47.0-pre-analysis.md`.
+- **M5 / OPT-F01 (WAV Audio Filter Detection UB Fix):** Wrote 32-bit unsigned stride calculation in `Filters50::detect_filter` (`filters50.cpp:138-146`), checking `(total_bits % 8 == 0)` and `1 <= stride <= 32` before narrowing to `uint8`. Added comprehensive test suite `test_filter_detect_delta_wav_bounds` in `tests/unit/compress_tests.cpp`.
+- **Verification Gates:**
+  - 49/49 CTest test suites passing (100%).
+  - Verification ledger regenerated (`tools/genledger.py`): 4,360 checks.
+  - Anchor lint clean (`tools/anchor_lint.py`): 0 violations.
+  - Layer check clean (`tools/layer_check.py`): 0 new violations.
+  - Version stamps bumped to 1.47.0 in lockstep across all 6 canonical project files.
+
 ### 7.6 v1.48 — `cv` Phase 2 · *Medium*
 
 **OM-1 (hard):** requires v1.47 Seatbelt; else macOS default-deny — drop with `WARN_SYMLINK_CONTAINMENT_UNAVAILABLE`, non-zero exit, `symlink_dropped` in JSON, and a published **non-equivalence contract** so "extraction equivalence" is never claimed on that branch.

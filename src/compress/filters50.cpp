@@ -135,11 +135,12 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
     // 7. WAV / PCM audio detection
     if (config.delta_override >= 0 && size >= 44) {
         if (std::memcmp(data, "RIFF", 4) == 0 && std::memcmp(data + 8, "WAVEfmt ", 8) == 0) {
-            core::uint16 channels = core::read_le16(data + 22);
-            core::uint16 bits_per_sample = core::read_le16(data + 34);
-            core::uint8 stride = static_cast<core::uint8>((channels * bits_per_sample) / 8);
-            if (stride >= 1 && stride <= 32) {
-                out_channels = stride;
+            const core::uint32 ch = core::read_le16(data + 22);
+            const core::uint32 bps = core::read_le16(data + 34);
+            const core::uint32 total_bits = ch * bps;
+            const core::uint32 stride = total_bits / 8;
+            if ((total_bits % 8 == 0) && stride >= 1 && stride <= 32) {
+                out_channels = static_cast<core::uint8>(stride);
                 return FilterType::Delta;
             }
         }

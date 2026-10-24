@@ -81,6 +81,11 @@ std::filesystem::path worker_exe_path();
 // exit code 4 — a sandbox that cannot be installed must never fall back to
 // an unsandboxed parse silently.
 void install_linux_seccomp();
+#elif defined(__APPLE__)
+// Installs the macOS Seatbelt sandbox profile. Called INSIDE the worker
+// (post-CRT init, pre-protocol). Fail-closed: any install error terminates
+// the worker with exit code 4.
+void install_macos_seatbelt();
 #endif
 
 } // namespace openrar::sandbox
