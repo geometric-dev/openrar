@@ -615,6 +615,7 @@ static void run_suite_body() {
                                      &diag, requested));
                 REQUIRE((diag.engaged && !diag.fell_back));
                 REQUIRE(diag.workers == requested);
+                REQUIRE(diag.spans >= requested);
                 REQUIRE(par_out == seq_out);
                 REQUIRE(par_chunks == seq_chunks);
             }

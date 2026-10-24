@@ -161,6 +161,9 @@ bool WorkerBroker::start(const std::string& worker_exe, const std::filesystem::p
 #if defined(__linux__)
     if (profile_ == SpawnProfile::PlatformSandboxed)
         argv_tail.push_back("--install-seccomp"); // in-child filter install
+#elif defined(__APPLE__)
+    if (profile_ == SpawnProfile::PlatformSandboxed)
+        argv_tail.push_back("--install-seatbelt"); // in-child seatbelt install
 #endif
     argv_tail.push_back("--openrar-sandbox-worker");
     argv_tail.push_back(handle_str(pair_.cmd_read));
@@ -379,6 +382,8 @@ bool WorkerBroker::run_selftest(const std::string& worker_exe,
     std::vector<std::string> argv_tail;
 #if defined(__linux__)
     if (profile == SpawnProfile::PlatformSandboxed) argv_tail.push_back("--install-seccomp");
+#elif defined(__APPLE__)
+    if (profile == SpawnProfile::PlatformSandboxed) argv_tail.push_back("--install-seatbelt");
 #endif
     argv_tail.push_back("--sandbox-selftest");
     argv_tail.push_back(probe_dir.string());
