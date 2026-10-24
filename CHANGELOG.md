@@ -5,6 +5,18 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.47.0] - 2026-10-24
+
+### Security & Confinement
+
+- **macOS Seatbelt sandboxed worker isolation (M0/M0b).** Implemented Apple Seatbelt isolation profile (`sandbox_init` / SBPL) in `spawn.cpp` allowing dyld system libraries, frameworks, and `/dev/urandom` while denying file writes, network, fork, and exec. Worker executable path dynamically resolved via `_NSGetExecutablePath`. Handled `--install-seatbelt` CLI flag propagation in `worker_main.cpp` and `worker_broker.cpp` with fail-closed exit code 4 on error.
+- **Foreign-format fuzz targets (M1/M2).** Added standalone and libFuzzer fuzzing targets `fuzz_zip` and `fuzz_tar` in `tests/fuzz/` covering central directory versus local file header oracle checks, ZIP64 extensions, hostile PAX records, GNU LongLink records, and extraction memory ceilings. Wired into CMake under `OPENRAR_FUZZ`.
+
+### Fixed
+
+- **WAV PCM audio filter detection integer bounds (OPT-F01 / M5).** Eliminated potential signed 32-bit arithmetic overflow and truncation in `Filters50::detect_filter` (`filters50.cpp`). Stride calculation now uses unsigned 32-bit arithmetic, verifies exact byte alignment `(total_bits % 8 == 0)`, and validates `1 <= stride <= 32` before narrowing to `uint8`. Malformed combinations (`ch=2, bps=1032`, `ch=0xFFFF, bps=0xFFFF`) reject delta filter application without crashing.
+- **Parallel decode TSan validation (M3).** Validated thread handoffs, turn-ordered publishing, and bounded queues in `parallel_decode.cpp` under ThreadSanitizer. Added explicit multi-span assertion `REQUIRE(diag.spans >= requested);` in `two_phase_tests.cpp`.
+
 ## [1.46.0] - 2026-10-24
 
 ### Added
