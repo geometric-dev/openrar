@@ -470,12 +470,12 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
         head_.clear();
         prev_.clear();
         head64_.assign(HASH_SIZE, static_cast<core::uint64>(-1));
-        prev64_.assign(win_size_, static_cast<core::uint64>(-1));
+        prev64_.resize(win_size_);
     } else {
         head64_.clear();
         prev64_.clear();
         head_.assign(HASH_SIZE, static_cast<core::uint32>(-1));
-        prev_.assign(win_size_, static_cast<core::uint32>(-1));
+        prev_.resize(win_size_);
     }
 
     cur_ = 0;

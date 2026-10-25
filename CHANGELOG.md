@@ -5,6 +5,22 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.50.0] - 2026-10-25
+
+### Added
+
+- **Parallel CDC Fingerprint Pass (`chunk_parallel`).** Added candidate-then-stitch parallel content-defined chunking to `CdcChunker` (`src/compress/cdc_chunker.hpp`, `.cpp`):
+  - **S-15 Restart Halo Correction:** Struck fixed 256 KiB restart halo fallacy; cut phase is unbounded on periodic/constant data. Implemented two-phase architecture: Phase 1 scans candidate cut points in parallel using 63-byte window overlap (matching rolling Gear hash warmup); Phase 2 serial stitcher deterministically replays cuts.
+  - **Candidate Interval Encoding:** Coalesces consecutive candidate matches into `(start_off, count, flags)`, preventing candidate vector memory explosion on repetitive data ($O(1)$ representation) and capping entries at `range_len / 1024` with fallback diagnostics (G-9).
+  - **Cut-Set Identity Gate (`cdc_parallel_cutset_equals_sequential`):** Verified byte-for-byte, offset-for-offset, and hash-for-hash identity between sequential `chunk()` and parallel `chunk_parallel()` across 5 named corpora, 4 thread configurations (2, 3, 4, 8), and all 16 residues mod 16 KiB.
+  - **Negative Test Proof:** Implemented test-only 256 KiB restart halo chunker in `cdc_chunker_tests.cpp` and asserted that it fails on constant runs, confirming the S-15 flaw.
+  - **CLI Fingerprint Integration:** Wired `chunk_parallel` into `main.cpp` for files >= 512 KiB and <= 256 MiB when MT is active.
+
+### Optimized
+
+- **Encoder `prev_` Uninitialised Allocation (OPT-P01).** Factored shared `default_init_allocator` into `src/core/default_init_allocator.hpp` and updated `prev_` / `prev64_` in `Compressor50` to use uninitialised allocation (`resize(win_size_)` instead of `assign(win_size_, -1)`). Eliminates hundreds of megabytes of redundant zero/fill writes per MT session start while provably maintaining safety through `head_` validation and distance bounds.
+- **FastCDC Normalisation Correction (OPT-K02).** Corrected no-op FastCDC mask normalization in `CdcChunker` from identical 16-bit popcounts to distinct-popcount masks: strict (17-bit: `0xFFFF800000000000ULL`, $2^{-17}$) between MIN (16 KiB) and AVG (64 KiB), and light (15-bit: `0xFFFE000000000000ULL`, $2^{-15}$) between AVG and MAX (256 KiB), maintaining average target chunk size of 64 KiB.
+
 ## [1.49.0] - 2026-10-25
 
 ### Added

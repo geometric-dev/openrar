@@ -1,6 +1,7 @@
 #ifndef OPENRAR_COMPRESS_COMPRESSOR50_HPP
 #define OPENRAR_COMPRESS_COMPRESSOR50_HPP
 
+#include "../core/default_init_allocator.hpp"
 #include "../core/types.hpp"
 #include "../crypto/crc32.hpp"
 #include "../io/file_stream.hpp"
@@ -405,9 +406,9 @@ private:
     int method_{3};
 
     std::vector<core::uint32> head_;
-    std::vector<core::uint32> prev_;
+    std::vector<core::uint32, core::default_init_allocator<core::uint32>> prev_;
     std::vector<core::uint64> head64_;
-    std::vector<core::uint64> prev64_;
+    std::vector<core::uint64, core::default_init_allocator<core::uint64>> prev64_;
     bool is_large_window_{false};
 
     // Split token storage: literals go in lit_bytes_ (1 byte each),
