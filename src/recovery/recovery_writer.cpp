@@ -89,16 +89,16 @@ std::filesystem::path recovery_temp_path(const std::filesystem::path& arc_path, 
 //     +0x3E..+0x3F   shard_index (0..nr-1)                   (u16 LE)
 //     +0x40..+0x40+d*8-1   d * u64 LE   per-data-chunk checksum
 //                    (raw CRC-64: init 0, NO final XOR) over the chunk's
-//                    unpadded bytes — the reference repairer's erasure
+//                    unpadded bytes — erasure
 //                    locator (v1.35.0; docs/v1.35.0-rr-probe.md §5)
-//     +0x40+d*8..+0x47+d*8 u64 LE     per-run seed in the reference
-//                    writer (crypto-random; the sole source of its
+//     +0x40+d*8..+0x47+d*8 u64 LE     per-run seed
+//                    (crypto-random; the sole source of
 //                    record nondeterminism). We emit a fixed zero —
 //                    the validator ignores it (expA/expC).
 //     +header_size..+shard_size-1   parity payload (group_count bytes)
 //
 // The state region is NOT decoder-optional decoration: with real entries
-// the reference repair command localizes damage per chunk and repairs
+// the recovery repair command localizes damage per chunk and repairs
 // byte-exactly; with zeroed entries it phantom-reports "N blocks are
 // recovered" on pristine archives and does not repair damage at all
 // (probe record §5, experiments expA/expB/expC). Entries are a pure
@@ -434,7 +434,7 @@ std::vector<core::byte> build_shard(core::uint32 shard_index, const RecoveryGeom
     shard[SHARD_VER_B] = 0x01;
     // chunk_position: 0 for inline RR (our scaled single-shard packaging
     // carries the whole logical payload in one physical shard; the
-    // reference's multi-physical alternative is spec'd in 05-recovery.md).
+    // multi-physical alternative is spec'd in 05-recovery.md).
     // chunk_data_extent: unpadded byte count of the final data chunk.
     core::write_le64(shard.data() + SHARD_CHUNK_POS, 0);
     core::write_le32(shard.data() + SHARD_CHUNK_EXT, static_cast<core::uint32>(chunk_extent));
@@ -1095,7 +1095,7 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     // QO offset here would be wrong anyway: the combined QO+RR locator extra
     // record is 10 bytes larger than the QO-only record, shifting all
     // subsequent entries in the rewritten archive and making the stored offset
-    // point to the wrong location, which WinRAR detects as a corrupt header.
+    // point to the wrong location, resulting in a corrupt header.
     // See headers.hpp MainBlock::locator_qo_offset for sentinel semantics.
     mb.locator_qo_offset = -1;
     mb.has_locator = true;
@@ -1790,7 +1790,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
     if (std::memcmp(rr.raw_data.data(), SHARD_MAGIC, SHARD_MAGIC_SIZE) != 0) return false;
 
     // ─── Multi-physical reassembly (v1.35.0, Gate 0 E3 / D8+D13) ────────────────
-    // Above d*64 KiB protected size the reference writer packages each logical
+    // Above d*64 KiB protected size multi-physical packaging stores each logical
     // parity shard as multiple physical chunk-shards: unscaled d*8+0x48 headers,
     // chunk_position advancing in 64 KiB steps, the logical fields repeated per
     // piece (docs/v1.35.0-rr-probe.md §6). Our repair pipeline assumes one
@@ -1983,7 +1983,7 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
             // per-slice sets of a multi-row record, and zero is the established
             // "no whole-chunk entries" marker — T0 localization runs from
             // t0_slices instead. The on-disk record is untouched (splice_repair
-            // copies the original RR block verbatim), so the reference's own
+            // copies the original RR block verbatim), so original
             // per-slice semantics survive a data-only repair.
             // The canonical shard stores total/header as uint32 (SHARD_TOTAL_OFF,
             // SHARD_HEADER_OFF): both must fit or the rewritten record is lossy.

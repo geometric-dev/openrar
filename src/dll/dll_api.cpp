@@ -77,6 +77,15 @@ static_assert(static_cast<int>(RAR_ERR_ENCRYPTED) ==
 static_assert(static_cast<int>(RAR_ERR_MISSING_VOLUME) ==
               static_cast<int>(openrar::api::RAR_ERR_MISSING_VOLUME));
 static_assert(static_cast<int>(RAR_ERR_BUSY) == static_cast<int>(openrar::api::RAR_ERR_BUSY));
+static_assert(static_cast<int>(RAR_ERR_LIMIT_EXCEEDED) ==
+              static_cast<int>(openrar::api::RAR_ERR_LIMIT_EXCEEDED));
+static_assert(static_cast<int>(RAR_ERR_PASSWORD_TIMEOUT) ==
+              static_cast<int>(openrar::api::RAR_ERR_PASSWORD_TIMEOUT));
+static_assert(static_cast<int>(RAR_ERR_CONTAINMENT_BREACH) ==
+              static_cast<int>(openrar::api::RAR_ERR_CONTAINMENT_BREACH));
+static_assert(static_cast<int>(RAR_ERR_DECRYPT) == static_cast<int>(openrar::api::RAR_ERR_DECRYPT));
+static_assert(static_cast<int>(RAR_ERR_RESOURCE_EXHAUSTION) ==
+              static_cast<int>(openrar::api::RAR_ERR_RESOURCE_EXHAUSTION));
 static_assert(sizeof(openrar_archive_entry_t) == sizeof(openrar::api::ArchiveEntryOut),
               "openrar_archive_entry_t layout drifted from api::ArchiveEntryOut");
 static_assert(sizeof(openrar_entry_ex_t) == 48, "openrar_entry_ex_t must stay 48 bytes");

@@ -3,7 +3,7 @@
 // Named tests from the plan that land here:
 //   suid_sgid_stripped           (plan §10 test 18)
 //   hardlink_fallback_byte_cap   (plan §10 test 19 — session scoping +
-//                                 link-count oracles + the debit helper)
+//                                 link-count checks + the debit helper)
 //   dir_metadata_deferred        (plan §10 test 20)
 // plus the §6.1 default-deny pin.
 
@@ -57,7 +57,7 @@ void rm(const fs::path& p) {
 }
 
 // Raw-writes a stored archive with host_os=1 (Unix) entries carrying POSIX
-// modes and unix mtimes — the shape real WinRAR-on-Unix produces.
+// modes and unix mtimes.
 void write_unix_archive(
     const fs::path& arc,
     const std::vector<std::tuple<std::string, std::string, core::uint32, core::uint32>>& entries) {
@@ -199,12 +199,12 @@ void test_hardlink_session_and_cap() {
 #ifndef _WIN32
         struct stat st;
         REQUIRE(::stat(victim.c_str(), &st) == 0);
-        REQUIRE(st.st_nlink == 1); // link-count oracle: untouched
+        REQUIRE(st.st_nlink == 1); // link-count check: untouched
 #endif
     }
 
     // Session scoping (positive): extracting the target THEN the hardlink
-    // in one session produces a real link (link-count oracle == 2, and the
+    // in one session produces a real link (link-count == 2, and the
     // hardlink shares the target's inode).
     {
         archive::ArchiveReader reader;

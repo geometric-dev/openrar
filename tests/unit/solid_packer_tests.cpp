@@ -120,8 +120,7 @@ static void run_suite_body() {
         std::cout << "[PASS] carried-window decode reproduces every byte\n";
 
     // v1.36.x regression: the E8/E8E9/ARM transform base resets PER MEMBER
-    // even on solid chains (oracle-verified against a Rar 7.20-made solid
-    // multi-member archive). The decoder used to seed the transform base
+    // even on solid chains. The decoder used to seed the transform base
     // with the accumulated solid position, corrupting every non-first
     // member whose stream carries filter tokens (CRC-rejected end to end).
     // Member 1 primes the carried window (no filter); members 2..3 are

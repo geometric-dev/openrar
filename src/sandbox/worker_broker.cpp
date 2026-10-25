@@ -2,6 +2,8 @@
 #include "spawn.hpp"
 
 #include "../archive/rar_errors.hpp"
+#include "../crypto/crc32.hpp"
+#include "../crypto/pbkdf2.hpp"
 
 #include <chrono>
 #include <cstring>
@@ -86,6 +88,7 @@ void WorkerBroker::shutdown() {
     close_pair();
     volume_ = INVALID_IO_HANDLE;
     phase_ = Phase::Closed;
+    last_error_code_ = 0;
 }
 
 bool WorkerBroker::read_frames(std::vector<Frame>& out, std::string& detail) {
@@ -250,6 +253,7 @@ bool WorkerBroker::start(const std::string& worker_exe, const std::filesystem::p
             if (f.type == FrameType::Error) {
                 core::int32 rc = 0;
                 unpack_error(f.payload.data(), f.payload.size(), rc, detail);
+                last_error_code_ = rc;
                 detail = "worker open failed: " + detail;
                 kill();
                 return false;
@@ -276,17 +280,18 @@ int WorkerBroker::extract(core::uint32 index,
     if (!pack_extract_req(index, req.payload) || !cmd_->send(req)) {
         detail = "worker channel died at ExtractReq";
         kill();
-        return RAR_ERR_IO;
+        return RAR_ERR_CONTAINMENT_BREACH;
     }
 
     core::uint64 member_bytes = 0;
-    int rc = RAR_ERR_IO;
+    crypto::Crc32 broker_crc;
+    int rc = RAR_ERR_CONTAINMENT_BREACH;
     bool done = false;
     while (!done) {
         std::vector<Frame> in;
         if (!read_frames(in, detail)) {
             kill();
-            return RAR_ERR_IO; // EOF mid-extract = worker death (crash isolation)
+            return RAR_ERR_CONTAINMENT_BREACH; // EOF mid-extract = worker death (crash containment)
         }
         for (const Frame& f : in) {
             if (done) break;
@@ -300,6 +305,7 @@ int WorkerBroker::extract(core::uint32 index,
                     kill();
                     return RAR_ERR_LIMIT_EXCEEDED;
                 }
+                broker_crc.update(f.payload.data(), f.payload.size());
                 if (!sink(f.payload.data(), f.payload.size())) {
                     detail = "sink refused the stream";
                     kill();
@@ -318,6 +324,14 @@ int WorkerBroker::extract(core::uint32 index,
                     return RAR_ERR_IO;
                 }
                 rc = er.rc;
+                // Anti-forgery verification (FMM-51-6): broker independently confirms CRC
+                if (rc == RAR_OK && entries_[index].wire.crc32 != 0) {
+                    if (broker_crc.get() != entries_[index].wire.crc32) {
+                        detail = "broker CRC mismatch (anti-forgery denial)";
+                        kill();
+                        return RAR_ERR_CRC_MISMATCH;
+                    }
+                }
                 if (bytes_out != nullptr) *bytes_out = er.bytes_emitted;
                 done = true;
                 break;

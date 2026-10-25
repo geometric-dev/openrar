@@ -57,6 +57,10 @@ struct ExtractionReport {
     std::string durability = "entry";
     bool durability_kill_switch = false; // true when OPENRAR_NO_BATCH_DURABILITY overrode batch
 
+    // v1.51.0: sandbox_active disclosure (V-2 / FMM-51-7).
+    bool has_sandbox_field = false;
+    bool sandbox_active = true;
+
     // Marks every entry still pending as unprocessed (abort semantics, plan
     // §5.4: entries processed before an abort keep their real status).
     void finalize_pending();

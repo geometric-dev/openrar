@@ -252,7 +252,7 @@ public:
     // same content byte-for-byte. The caller owns the duplicate detection;
     // this only serializes the reference. The batch writer keeps the solid
     // window running across the emitted entry (compress_plan.hpp
-    // is_filecopy_ref) — the reference encoder never breaks runs around refs.
+    // is_filecopy_ref).
     static bool prepare_add_filecopy(const std::filesystem::path& src_file,
                                      const std::string& arc_entry_name,
                                      const std::string& target_entry_name, PreparedAdd& out,

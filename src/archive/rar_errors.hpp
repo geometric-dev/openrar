@@ -45,8 +45,16 @@ enum BufferArchiveError : int {
     // output cap, cumulative total-output cap, or header count/byte cap. The value
     // is assigned explicitly to prevent collisions with future additions and because
     // the C ABI header and the JS TypeScript mirror must match this exact integer.
-    // Gaps at -8 and -10 are documented above. Next available slot: -16.
+    // Gaps at -8 and -10 are documented above.
     RAR_ERR_LIMIT_EXCEEDED = -15,
+    // PBKDF2 iteration count exceeded the work bound (MAX_PBKDF2_LG2 = 24).
+    RAR_ERR_PASSWORD_TIMEOUT = -16,
+    // Sandboxed worker terminated unexpectedly / containment breach (crash isolation).
+    RAR_ERR_CONTAINMENT_BREACH = -17,
+    // Malformed encrypted header / decrypt failure.
+    RAR_ERR_DECRYPT = -18,
+    // Resource exhaustion / sandboxed worker out of memory. Next slot: -20.
+    RAR_ERR_RESOURCE_EXHAUSTION = -19,
 };
 
 } // namespace openrar::archive

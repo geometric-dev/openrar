@@ -47,6 +47,7 @@
 #include "worker_protocol.hpp"
 
 #include "../archive/archive_reader.hpp"
+#include "../archive/rar_errors.hpp"
 #include "../core/types.hpp"
 
 #include <cstdio>
@@ -304,59 +305,68 @@ int main(int argc, char** argv) {
         for (const sandbox::Frame& f : in) {
             switch (f.type) {
             case sandbox::FrameType::Open: {
-                int status = 0;
-                std::string detail;
-                if (reader.open_read_handle(volume, "", status, detail)) {
-                    // Worker mode is single-volume by contract: a set (split
-                    // entries in the scan) refuses HERE so the broker can
-                    // fall back in-process loudly — never a partial decode.
-                    for (const auto& e : reader.entries()) {
-                        if (e.split_before || e.split_after) {
-                            sandbox::Frame err{sandbox::FrameType::Error, {}};
-                            sandbox::pack_error(-13,
-                                                "multi-volume set: worker mode is "
-                                                "single-volume",
-                                                err.payload);
-                            if (!send_frame(res, err)) return 2;
-                            return 0;
+                try {
+                    int status = 0;
+                    std::string detail;
+                    if (reader.open_read_handle(volume, "", status, detail)) {
+                        // Worker mode is single-volume by contract: a set (split
+                        // entries in the scan) refuses HERE so the broker can
+                        // fall back in-process loudly — never a partial decode.
+                        for (const auto& e : reader.entries()) {
+                            if (e.split_before || e.split_after) {
+                                sandbox::Frame err{sandbox::FrameType::Error, {}};
+                                sandbox::pack_error(-13,
+                                                    "multi-volume set: worker mode is "
+                                                    "single-volume",
+                                                    err.payload);
+                                if (!send_frame(res, err)) return 2;
+                                return 0;
+                            }
+                        }
+                        reader_open = true;
+                        sandbox::ScanView view;
+                        view.entries.reserve(reader.entries().size());
+                        std::string paths;
+                        for (const archive::ArchiveEntry& e : reader.entries()) {
+                            sandbox::WireEntry w{};
+                            const format::FileBlock& fb = e.header;
+                            const std::string& name = fb.file_name;
+                            w.path_offset = static_cast<uint32_t>(paths.size());
+                            w.path_len = static_cast<uint32_t>(name.size());
+                            w.is_dir = (fb.file_flags & format::FHFL_DIRECTORY) ? 1u : 0u;
+                            w.method = fb.method;
+                            w.is_encrypted = fb.is_encrypted ? 1u : 0u;
+                            w.crc32 = fb.has_crc32 ? fb.data_crc32 : 0u;
+                            w.size = fb.unp_size;
+                            w.packed_size = e.data_size;
+                            // FILETIME (100 ns since 1601) to UNIX seconds, the
+                            // ABI mtime convention.
+                            w.mtime = fb.mtime_win >= 116444736000000000ull
+                                          ? (fb.mtime_win - 116444736000000000ull) / 10000000ull
+                                          : 0ull;
+                            w._pad[0] = fb.is_service ? sandbox::WIRE_FLAG_SERVICE : 0ull;
+                            view.entries.push_back(w);
+                            paths += name;
+                        }
+                        view.paths = std::move(paths);
+                        sandbox::Frame out{sandbox::FrameType::ScanResult, {}};
+                        if (!sandbox::pack_scan_result(view, out.payload) ||
+                            !send_frame(res, out)) {
+                            return 2;
+                        }
+                    } else {
+                        sandbox::Frame out{sandbox::FrameType::Error, {}};
+                        if (!sandbox::pack_error(status, detail, out.payload) ||
+                            !send_frame(res, out)) {
+                            return 2;
                         }
                     }
-                    reader_open = true;
-                    sandbox::ScanView view;
-                    view.entries.reserve(reader.entries().size());
-                    std::string paths;
-                    for (const archive::ArchiveEntry& e : reader.entries()) {
-                        sandbox::WireEntry w{};
-                        const format::FileBlock& fb = e.header;
-                        const std::string& name = fb.file_name;
-                        w.path_offset = static_cast<uint32_t>(paths.size());
-                        w.path_len = static_cast<uint32_t>(name.size());
-                        w.is_dir = (fb.file_flags & format::FHFL_DIRECTORY) ? 1u : 0u;
-                        w.method = fb.method;
-                        w.is_encrypted = fb.is_encrypted ? 1u : 0u;
-                        w.crc32 = fb.has_crc32 ? fb.data_crc32 : 0u;
-                        w.size = fb.unp_size;
-                        w.packed_size = e.data_size;
-                        // FILETIME (100 ns since 1601) to UNIX seconds, the
-                        // ABI mtime convention.
-                        w.mtime = fb.mtime_win >= 116444736000000000ull
-                                      ? (fb.mtime_win - 116444736000000000ull) / 10000000ull
-                                      : 0ull;
-                        w._pad[0] = fb.is_service ? sandbox::WIRE_FLAG_SERVICE : 0ull;
-                        view.entries.push_back(w);
-                        paths += name;
-                    }
-                    view.paths = std::move(paths);
-                    sandbox::Frame out{sandbox::FrameType::ScanResult, {}};
-                    if (!sandbox::pack_scan_result(view, out.payload) || !send_frame(res, out)) {
-                        return 2;
-                    }
-                } else {
+                } catch (const std::bad_alloc&) {
                     sandbox::Frame out{sandbox::FrameType::Error, {}};
-                    if (!sandbox::pack_error(status, detail, out.payload) ||
-                        !send_frame(res, out)) {
-                        return 2;
-                    }
+                    sandbox::pack_error(archive::RAR_ERR_RESOURCE_EXHAUSTION,
+                                        "worker memory exhausted during open (bad_alloc)",
+                                        out.payload);
+                    if (!send_frame(res, out)) return 2;
                 }
                 break;
             }
@@ -379,10 +389,18 @@ int main(int argc, char** argv) {
                     emitted += n;
                     return true;
                 };
-                const int erc = reader.extract_entry_sink(index, sink);
-                sandbox::Frame out{sandbox::FrameType::EntryResult, {}};
-                sandbox::pack_entry_result(index, erc, emitted, out.payload);
-                if (!send_frame(res, out)) return 2;
+                try {
+                    const int erc = reader.extract_entry_sink(index, sink);
+                    sandbox::Frame out{sandbox::FrameType::EntryResult, {}};
+                    sandbox::pack_entry_result(index, erc, emitted, out.payload);
+                    if (!send_frame(res, out)) return 2;
+                } catch (const std::bad_alloc&) {
+                    sandbox::Frame out{sandbox::FrameType::Error, {}};
+                    sandbox::pack_error(archive::RAR_ERR_RESOURCE_EXHAUSTION,
+                                        "worker memory exhausted during extract (bad_alloc)",
+                                        out.payload);
+                    if (!send_frame(res, out)) return 2;
+                }
                 break;
             }
             case sandbox::FrameType::Shutdown:
