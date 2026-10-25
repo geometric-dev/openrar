@@ -42,6 +42,11 @@ that keeps the history coherent.
    passing, and say so explicitly in the PR when a check was skipped or not
    run. A green claim without a runnable command behind it is not
    verification.
+7. **Repo-root-relative paths only.** All documentation, test scripts, benchmarks,
+   plans, walkthroughs, and error messages must use repository-root-relative or
+   relative paths. Never embed host-specific absolute paths (e.g. `file:///C:/...`,
+   `C:\Users\...`, `/home/...`). Markdown links in `docs/` must use relative targets
+   (e.g. `../src/...` or `../include/...`).
 
 ## Repository layout
 
