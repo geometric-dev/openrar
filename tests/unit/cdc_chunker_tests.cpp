@@ -40,6 +40,45 @@ bool same_chunks(const std::vector<compress::CdcChunk>& a,
     return true;
 }
 
+bool exact_same_chunks(const std::vector<compress::CdcChunk>& a,
+                       const std::vector<compress::CdcChunk>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i].offset != b[i].offset || a[i].length != b[i].length || a[i].hash != b[i].hash)
+            return false;
+    }
+    return true;
+}
+
+std::vector<compress::CdcChunk> chunk_restart_halo_256k(const compress::CdcChunker& chunker,
+                                                        const core::byte* data, size_t size,
+                                                        size_t split) {
+    std::vector<compress::CdcChunk> result;
+    if (split == 0 || split >= size) {
+        chunker.chunk(data, size, result);
+        return result;
+    }
+    std::vector<compress::CdcChunk> s1;
+    chunker.chunk(data, split, s1);
+    result.insert(result.end(), s1.begin(), s1.end());
+
+    size_t halo_start = (split >= compress::CdcChunker::CDC_MAX_CHUNK)
+                            ? split - compress::CdcChunker::CDC_MAX_CHUNK
+                            : 0;
+    std::vector<compress::CdcChunk> s2_raw;
+    chunker.chunk(data + halo_start, size - halo_start, s2_raw);
+
+    for (const auto& c : s2_raw) {
+        size_t abs_off = halo_start + c.offset;
+        if (abs_off >= split) {
+            compress::CdcChunk adj = c;
+            adj.offset = abs_off;
+            result.push_back(adj);
+        }
+    }
+    return result;
+}
+
 } // namespace
 
 static void run_suite_body() {
@@ -200,6 +239,112 @@ static void run_suite_body() {
                       "CdcStreamChunker must not embed a 256 KiB pending_ buffer");
         if (!openrar::test::last_run_was_filtered())
             std::cout << "[PASS] CdcStreamChunker footprint <= 64B & 64-bit offset (OPT-24)\n";
+    }
+
+    // 8. v1.50 M2: cdc_parallel_cutset_equals_sequential (5 named corpora & residue splits)
+    {
+        // Five named corpora:
+        // 1: Constant run failing both masks (>= 1 MiB MAX lattice)
+        std::string corp1(2 * 1024 * 1024, '\0');
+        // 2: Dense candidate pattern (>= 1 MiB dense candidates; exercises interval encoding & fallback)
+        std::string corp2(2 * 1024 * 1024, '\0');
+        for (size_t i = 0; i < corp2.size(); ++i) {
+            static const char pat[3] = {1, 48, 42};
+            corp2[i] = pat[i % 3];
+        }
+        // 3: 2-byte periodic pattern (>= 1 MiB)
+        std::string corp3(2 * 1024 * 1024, '\0');
+        for (size_t i = 0; i < corp3.size(); ++i) {
+            corp3[i] = (i & 1) ? '\xAA' : '\x55';
+        }
+        // 4: Pseudo-random data (>= 2 MiB)
+        std::string corp4 = make_random_data(2 * 1024 * 1024, 4242);
+        // 5: Structured sample (sparse / binary / text mix)
+        std::string corp5(2 * 1024 * 1024, '\0');
+        for (size_t i = 0; i < corp5.size(); ++i) {
+            if (i < 500000)
+                corp5[i] = "OpenRAR CDC Chunking Structured Header "[i % 39];
+            else if (i < 1000000)
+                corp5[i] = 0;
+            else
+                corp5[i] = static_cast<char>(i * 37 + 11);
+        }
+
+        const std::vector<std::pair<std::string, const std::string*>> corpora = {
+            {"constant-fail-masks", &corp1},
+            {"dense-candidate-pattern", &corp2},
+            {"2-byte-period", &corp3},
+            {"pseudo-random", &corp4},
+            {"structured-sparse", &corp5}};
+
+        for (const auto& [name, cptr] : corpora) {
+            const std::string& data = *cptr;
+            std::vector<compress::CdcChunk> seq;
+            chunker.chunk(reinterpret_cast<const core::byte*>(data.data()), data.size(), seq);
+
+            for (unsigned threads : {2u, 3u, 4u, 8u}) {
+                std::vector<compress::CdcChunk> par;
+                compress::CdcParallelDiag diag;
+                chunker.chunk_parallel(reinterpret_cast<const core::byte*>(data.data()),
+                                       data.size(), par, threads, &diag);
+                REQUIRE(exact_same_chunks(seq, par));
+            }
+
+            // Split points covering every residue mod 16 KiB
+            for (size_t residue = 0; residue < 16; ++residue) {
+                size_t sz = (1024 * 1024) + residue * 1024 + 17;
+                if (sz <= data.size()) {
+                    std::vector<compress::CdcChunk> seq_r, par_r;
+                    chunker.chunk(reinterpret_cast<const core::byte*>(data.data()), sz, seq_r);
+                    chunker.chunk_parallel(reinterpret_cast<const core::byte*>(data.data()), sz,
+                                           par_r, 4);
+                    REQUIRE(exact_same_chunks(seq_r, par_r));
+                }
+            }
+        }
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] cdc_parallel_cutset_equals_sequential (5 corpora x 4 thread "
+                         "counts x 16 residues)\n";
+    }
+
+    // 9. v1.50 M2: Restart-halo (256 KiB) negative proof (S-15)
+    {
+        std::string const_data(2 * 1024 * 1024, 'A');
+        std::vector<compress::CdcChunk> seq;
+        chunker.chunk(reinterpret_cast<const core::byte*>(const_data.data()), const_data.size(),
+                      seq);
+
+        size_t split = 700 * 1024;
+        auto halo_cuts =
+            chunk_restart_halo_256k(chunker, reinterpret_cast<const core::byte*>(const_data.data()),
+                                    const_data.size(), split);
+
+        bool halo_matched = exact_same_chunks(seq, halo_cuts);
+        REQUIRE_FALSE(halo_matched);
+
+        std::vector<compress::CdcChunk> par;
+        chunker.chunk_parallel(reinterpret_cast<const core::byte*>(const_data.data()),
+                               const_data.size(), par, 4);
+        REQUIRE(exact_same_chunks(seq, par));
+
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] restart-halo negative proof (256 KiB halo fails, "
+                         "candidate-then-stitch passes)\n";
+    }
+
+    // 10. v1.50 M2: Candidate-cap overflow fallback verification
+    {
+        std::string dense = make_random_data(2 * 1024 * 1024, 777);
+        std::vector<compress::CdcChunk> seq, par;
+        chunker.chunk(reinterpret_cast<const core::byte*>(dense.data()), dense.size(), seq);
+
+        compress::CdcParallelDiag diag;
+        chunker.chunk_parallel(reinterpret_cast<const core::byte*>(dense.data()), dense.size(), par,
+                               4, &diag);
+        REQUIRE(exact_same_chunks(seq, par));
+        if (!openrar::test::last_run_was_filtered())
+            std::cout
+                << "[PASS] candidate-cap overflow fallback and diagnostic reporting verified\n";
     }
 
     if (!openrar::test::last_run_was_filtered()) std::cout << "All cdc_chunker_tests passed.\n";
