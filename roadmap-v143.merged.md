@@ -419,6 +419,22 @@ Standing gates: 24-stage interop (UnRAR 7.20 + WinRAR 7.20) where bytes change �
 
 **FMM-48:** disk full mid-set (originals survive) · rename failure (temps unlinked) · symlink TOCTOU · case collision · reserved DOS names / UNC · dangling target.
 
+**§7.6 Implementation record — v1.48.0 (2026-10-25).**
+- **M0 (Symlink Legality Matrix):** Implemented 18-rule matrix in `ArchiveMutator::validate_symlink_target` / `ForeignTranscoder`. Relative and absolute symlinks, directory and file symlinks, traversal limits (`..`), containment checks, and self-references strictly validated. Illegal symlinks safely skipped during transcode with warnings without failing conversion. Preserved raw `effective_link` in `foreign_tar.cpp` for typeflag `'2'`.
+- **M1 (Solid Transcode & High-Resolution Timestamps):** Supported `-s` solid archive creation on transcode and preserved mtime, ctime, and atime across ZIP (extra fields 0x5455, 0x000a) and TAR (PAX records) into RAR5 0x03 file time records.
+- **M2 (FILECOPY Deduplication):** Identical entry deduplication via RAR5 `REDIR_FILECOPY` records. In-memory extraction (`ArchiveReader::extract_entry_to_memory`) transparently resolves FILECOPY records against master entries.
+- **M3 (ZipCrypto Security Posture):** Documented deprecation and refusal posture in `docs/SECURITY_ARCHITECTURE.md` and `docs/EXTRACTION_CONTRACT.md`.
+- **Bug Fixes:**
+  - Resolved Linux OpenAT2 macro collision in `src/io/containment.cpp` (`RESOLVE_BENEATH = 0x08ULL`, `RESOLVE_NO_SYMLINKS = 0x04ULL`).
+  - Corrected fuzzer differential oracle false positive on bit-flipped streams in `tests/fuzz/fuzz_target.cpp` and added explicit clean-stream `roundtrip-diff` with `exact=true`.
+- **Verification Gates:**
+  - 49/49 CTest suites passing (100%).
+  - 9/9 `transcode_tests` passing.
+  - Verification ledger regenerated (`tools/genledger.py`): 4,431 checks.
+  - Anchor lint clean (`tools/anchor_lint.py`): 0 violations.
+  - Layer check clean (`tools/layer_check.py`): 0 new violations.
+  - Version stamps bumped to 1.48.0 in lockstep across all 5 project files.
+
 ### 7.7 v1.49 — WASM Streaming Encode & Memory Accounting · *Medium*
 
 **Facts:** block-level `compressStream` exists and is byte-identical to `compress` (`wasm/js/helpers.test.mjs:161`); `compressStreamChunks` at `openrar.js:442`; the gap is **archive-level** `createArchiveStream` (**0 hits today**). Default method 3 / `window_log2` 4 (`archive_api.cpp:336`). Native footprint ≈ 5 × window (I-7).

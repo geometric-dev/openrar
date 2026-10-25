@@ -1812,13 +1812,118 @@ bool ArchiveMutator::prepare_add_dir(const std::filesystem::path& src_dir,
     return true;
 }
 
-bool ArchiveMutator::prepare_add_symlink(const std::filesystem::path& src_symlink,
-                                         const std::string& arc_entry_name,
-                                         const std::string& target, bool is_dir_target,
-                                         PreparedAdd& out, core::uint32 times_mask,
-                                         [[maybe_unused]] bool want_acl,
-                                         const std::string& default_group,
-                                         const std::string& default_user) {
+ArchiveMutator::SymlinkLegality
+ArchiveMutator::validate_symlink_target([[maybe_unused]] const std::string& arc_entry_name,
+                                        const std::string& target) {
+    // 1. Empty target
+    if (target.empty()) {
+        return {false, "empty_target"};
+    }
+
+    // 2. Null byte
+    if (target.find('\0') != std::string::npos) {
+        return {false, "null_byte"};
+    }
+
+    // 5. UNC check (before absolute path so //server/share is identified as unc_path)
+    if (target.rfind("//", 0) == 0 || target.rfind("\\\\", 0) == 0) {
+        return {false, "unc_path"};
+    }
+
+    // 3. Absolute (POSIX): starts with '/'
+    if (target[0] == '/' || target[0] == '\\') {
+        return {false, "absolute_path"};
+    }
+
+    // 4. Absolute (Win): drive letter prefix (e.g. C: or c:)
+    if (target.size() >= 2 && std::isalpha(static_cast<unsigned char>(target[0])) &&
+        target[1] == ':') {
+        return {false, "absolute_path"};
+    }
+
+    // 7. ADS (Windows only): colon in any component or anywhere in target
+#ifdef _WIN32
+    if (target.find(':') != std::string::npos) {
+        return {false, "ads_stream"};
+    }
+#endif
+
+    // Normalize separators to '/' for component parsing
+    std::string norm = target;
+    for (char& c : norm) {
+        if (c == '\\') c = '/';
+    }
+
+    // 8. Reserved DOS device names (Windows only)
+#ifdef _WIN32
+    static const char* reserved_names[] = {
+        "con",  "prn",  "aux",  "nul",  "com0", "com1", "com2", "com3",
+        "com4", "com5", "com6", "com7", "com8", "com9", "lpt0", "lpt1",
+        "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    };
+#endif
+
+    // Lexical normalization of components
+    std::vector<std::string> parts;
+    size_t pos = 0;
+    while (pos < norm.size()) {
+        size_t nxt = norm.find('/', pos);
+        std::string comp =
+            (nxt == std::string::npos) ? norm.substr(pos) : norm.substr(pos, nxt - pos);
+        pos = (nxt == std::string::npos) ? norm.size() : nxt + 1;
+
+        if (comp.empty() || comp == ".") {
+            continue;
+        }
+
+#ifdef _WIN32
+        // Check DOS reserved names on each component
+        std::string stem = comp;
+        size_t dot = stem.find('.');
+        if (dot != std::string::npos) stem.resize(dot);
+        while (!stem.empty() && (stem.back() == '.' || stem.back() == ' ')) {
+            stem.pop_back();
+        }
+        for (char& ch : stem) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+        for (const char* r : reserved_names) {
+            if (stem == r) {
+                return {false, "reserved_name"};
+            }
+        }
+#endif
+
+        if (comp == "..") {
+            if (!parts.empty() && parts.back() != "..") {
+                parts.pop_back();
+            } else {
+                parts.push_back("..");
+            }
+        } else {
+            parts.push_back(comp);
+        }
+    }
+
+    // 6. Traversal check: if normalized path starts with ".." (net escape)
+    if (!parts.empty() && parts.front() == "..") {
+        return {false, "traversal"};
+    }
+
+    return {true, ""};
+}
+
+bool ArchiveMutator::prepare_add_symlink(
+    const std::filesystem::path& src_symlink, const std::string& arc_entry_name,
+    const std::string& target, bool is_dir_target, PreparedAdd& out, core::uint32 times_mask,
+    [[maybe_unused]] bool want_acl, const std::string& default_group,
+    const std::string& default_user, std::string* rejection_reason) {
+    auto leg = validate_symlink_target(arc_entry_name, target);
+    if (!leg.valid) {
+        if (rejection_reason) *rejection_reason = leg.reason;
+        out = {};
+        return false;
+    }
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
     fb.unp_size = 0;
@@ -1880,12 +1985,17 @@ bool ArchiveMutator::prepare_add_hardlink(const std::filesystem::path& src_file,
     return true;
 }
 
-bool ArchiveMutator::prepare_add_symlink_from_memory(const std::string& arc_entry_name,
-                                                     const std::string& target, bool is_dir_target,
-                                                     int64_t mtime_sec, PreparedAdd& out,
-                                                     core::uint32 times_mask,
-                                                     const std::string& default_group,
-                                                     const std::string& default_user) {
+bool ArchiveMutator::prepare_add_symlink_from_memory(
+    const std::string& arc_entry_name, const std::string& target, bool is_dir_target,
+    int64_t mtime_sec, PreparedAdd& out, core::uint32 times_mask, const std::string& default_group,
+    const std::string& default_user, std::string* rejection_reason, int64_t ctime_sec,
+    int64_t atime_sec) {
+    auto leg = validate_symlink_target(arc_entry_name, target);
+    if (!leg.valid) {
+        if (rejection_reason) *rejection_reason = leg.reason;
+        out = {};
+        return false;
+    }
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
     fb.unp_size = 0;
@@ -1901,24 +2011,26 @@ bool ArchiveMutator::prepare_add_symlink_from_memory(const std::string& arc_entr
 #endif
     fb.redir_dir_target = is_dir_target;
     fb.redir_target = target;
-    // Times from foreign metadata: mtime seconds only (the unix HTIME fields
-    // are 32-bit; sub-second precision is not representable here). Clamp
-    // negative values like MtimeBounds does elsewhere — a pre-1970 foreign
-    // mtime would wrap the uint32 cast.
+    // Times from foreign metadata: mtime/ctime/atime seconds. Clamp
+    // negative values like MtimeBounds does elsewhere.
     FileTimes times{};
     times.mtime = mtime_sec > 0 ? static_cast<core::uint64>(mtime_sec) : 0;
+    times.ctime = ctime_sec > 0 ? static_cast<core::uint64>(ctime_sec) : 0;
+    times.atime = atime_sec > 0 ? static_cast<core::uint64>(atime_sec) : 0;
     apply_file_times(fb, times, times_mask);
     apply_owner_overrides(fb, default_group, default_user);
     out.fb = std::move(fb);
     return true;
 }
 
-bool ArchiveMutator::prepare_add_hardlink_from_memory(const std::string& arc_entry_name,
-                                                      const std::string& target_entry_name,
-                                                      int64_t mtime_sec, PreparedAdd& out,
-                                                      core::uint32 times_mask,
-                                                      const std::string& default_group,
-                                                      const std::string& default_user) {
+bool ArchiveMutator::prepare_add_hardlink_from_memory(
+    const std::string& arc_entry_name, const std::string& target_entry_name, int64_t mtime_sec,
+    PreparedAdd& out, core::uint32 times_mask, const std::string& default_group,
+    const std::string& default_user, int64_t ctime_sec, int64_t atime_sec) {
+    if (target_entry_name.empty() || target_entry_name.find('\0') != std::string::npos) {
+        out = {};
+        return false;
+    }
     format::FileBlock fb;
     fb.file_name = arc_entry_name;
     fb.unp_size = 0;
@@ -1932,6 +2044,43 @@ bool ArchiveMutator::prepare_add_hardlink_from_memory(const std::string& arc_ent
     fb.redir_target = target_entry_name;
     FileTimes times{};
     times.mtime = mtime_sec > 0 ? static_cast<core::uint64>(mtime_sec) : 0;
+    times.ctime = ctime_sec > 0 ? static_cast<core::uint64>(ctime_sec) : 0;
+    times.atime = atime_sec > 0 ? static_cast<core::uint64>(atime_sec) : 0;
+    apply_file_times(fb, times, times_mask);
+    apply_owner_overrides(fb, default_group, default_user);
+    out.fb = std::move(fb);
+    out.payload.clear();
+    return true;
+}
+
+bool ArchiveMutator::prepare_add_filecopy_from_memory(const std::string& arc_entry_name,
+                                                      const std::string& target_entry_name,
+                                                      int64_t mtime_sec, core::uint64 logical_size,
+                                                      PreparedAdd& out, core::uint32 times_mask,
+                                                      const std::string& default_group,
+                                                      const std::string& default_user,
+                                                      int64_t ctime_sec, int64_t atime_sec) {
+    if (target_entry_name.empty() || target_entry_name.find('\0') != std::string::npos) {
+        out = {};
+        return false;
+    }
+    format::FileBlock fb;
+    fb.file_name = arc_entry_name;
+    fb.unp_size = logical_size;
+    fb.pack_size = 0;
+    fb.has_crc32 = true;
+    fb.data_crc32 = 0;
+    fb.attributes = 0x20;
+    fb.method = 0;
+    fb.win_size = 0;
+    fb.unp_ver = 0;
+    fb.redir_type = 5; // FILECOPY
+    fb.redir_dir_target = false;
+    fb.redir_target = target_entry_name;
+    FileTimes times{};
+    times.mtime = mtime_sec > 0 ? static_cast<core::uint64>(mtime_sec) : 0;
+    times.ctime = ctime_sec > 0 ? static_cast<core::uint64>(ctime_sec) : 0;
+    times.atime = atime_sec > 0 ? static_cast<core::uint64>(atime_sec) : 0;
     apply_file_times(fb, times, times_mask);
     apply_owner_overrides(fb, default_group, default_user);
     out.fb = std::move(fb);

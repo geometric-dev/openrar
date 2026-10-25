@@ -5,6 +5,21 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.48.0] - 2026-10-25
+
+### Added
+
+- **Cross-Format Transcode (`cv` Phase 2).** Complete Phase 2 milestones for the `cv` command:
+  - **Symlink Legality Matrix (M0):** Unified 18-rule symlink validation matrix in `ArchiveMutator::validate_symlink_target` / `ForeignTranscoder`. Relative and absolute symlinks, directory and file symlinks, traversal limits (`..`), containment checks, and self-references are strictly validated. Illegal symlinks are safely skipped during transcode with warnings without failing the entire conversion, while legal symlinks are preserved verbatim (including `foreign_tar` raw link targets).
+  - **Solid Mode & High-Resolution Timestamps (M1):** Added `-s` solid archive encoding support and high-resolution mtime, ctime, and atime extra field preservation across ZIP (Extended Timestamp `0x5455`, NTFS extra `0x000a`) and TAR (POSIX ustar, PAX `mtime`/`atime`/`ctime`) to RAR5 `0x03` file time records.
+  - **FILECOPY Duplicate Deduplication (M2):** Implemented identical entry deduplication using RAR5 `REDIR_FILECOPY` (redir type 5). Identical uncompressed files share compressed data streams, saving archive space. In-memory extraction (`ArchiveReader::extract_entry_to_memory`) transparently resolves FILECOPY records against master entries.
+  - **ZipCrypto Security Posture Note (M3):** Documented ZipCrypto deprecation posture in `docs/SECURITY_ARCHITECTURE.md` and `docs/EXTRACTION_CONTRACT.md` detailing security risks and refusal rationale.
+
+### Fixed
+
+- **Linux openat2 macro conflict in containment (`containment.cpp`).** Fixed a compile failure under Linux Clang where `constexpr uint64_t RESOLVE_BENEATH` conflicted with the `<linux/openat2.h>` preprocessor macro. Guarded definitions with `#ifndef` / `#define` and updated bitmask values to match the Linux kernel constants (`RESOLVE_BENEATH = 0x08ULL`, `RESOLVE_NO_SYMLINKS = 0x04ULL`).
+- **Fuzzer differential oracle false positive on bit-flipped streams (`fuzz_target.cpp`).** Corrected `exact` assertion parameter in the `bitflip-diff` fuzzing lane. Corrupted streams with inverted bits can legitimately diverge at block bit boundaries between streaming sequential decoding and block-bounded parallel worker decoding. Added explicit `roundtrip-diff` with `exact=true` on clean compressed streams.
+
 ## [1.47.0] - 2026-10-24
 
 ### Security & Confinement

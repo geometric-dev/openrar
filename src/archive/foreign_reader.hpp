@@ -77,6 +77,8 @@ struct ForeignEntry {
     int64_t mtime_sec = 0;  // epoch seconds, clamped through MtimeBounds
     int32_t mtime_nsec = 0; // sub-second when the source carries it
     bool timestamp_clamped = false;
+    int64_t ctime_sec = 0; // v1.48: epoch seconds (0 = not available)
+    int64_t atime_sec = 0; // v1.48: epoch seconds (0 = not available)
     bool encrypted = false;
     std::string method_name; // human-readable method label for reports
     std::string comment;     // entry-level comment (no RAR5 home: reported)

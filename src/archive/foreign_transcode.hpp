@@ -16,10 +16,11 @@
 namespace openrar::archive::foreign {
 
 struct TranscodeOptions {
-    int method = 3;             // output compression (-m0..-m5)
-    core::uint64 dict_size = 0; // -md pass-through
-    bool solid = false;         // -s
-    std::string password;       // OUTPUT encryption only (no foreign decryption)
+    int method = 3;                // output compression (-m0..-m5)
+    core::uint64 dict_size = 0;    // -md pass-through
+    bool solid = false;            // -s
+    core::uint32 times_mask = 0x1; // -ts (default MTIME)
+    std::string password;          // OUTPUT encryption only (no foreign decryption)
     bool encrypt_headers = false;
     bool want_rr = false;
     core::uint32 rr_percent = 0; // -rr[N%]
