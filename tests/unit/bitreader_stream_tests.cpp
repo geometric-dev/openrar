@@ -144,8 +144,32 @@ static void run_suite_body() {
     return;
 }
 
+// M5: 32-bit bit-position width boundary test (§10 OPT-D02)
+// Construct readers declaring 2^29 - 1, 2^29, and 2^29 + 1 bytes without
+// materializing buffers. Before any read, assert bits_remaining() == 8 * declared.
+static void test_m5_bit_position_width_boundary() {
+    const core::uint64 SIZES[] = {
+        (1ULL << 29) - 1ULL, // 536,870,911 bytes (2^32 - 8 bits)
+        (1ULL << 29),        // 536,870,912 bytes (2^32 bits: would wrap to 0 on 32-bit size_t)
+        (1ULL << 29) + 1ULL  // 536,870,913 bytes (2^32 + 8 bits: would wrap to 8 on 32-bit size_t)
+    };
+    for (core::uint64 sz : SIZES) {
+        BitReader stream([](core::byte*, size_t) -> size_t { return 0; }, sz);
+        core::uint64 rem = stream.bits_remaining();
+        if (rem != sz * 8ULL) {
+            std::cout << "[FAIL] M5 boundary: declared " << sz << " bytes, expected " << (sz * 8ULL)
+                      << " bits, got " << rem << "\n";
+            throw std::logic_error("M5 bit-position width boundary failed");
+        }
+    }
+    if (!openrar::test::last_run_was_filtered()) {
+        std::cout << "M5 bit-position width boundary: 2^29-1, 2^29, 2^29+1 OK\n";
+    }
+}
+
 static const openrar::test::Case k_cases[] = {
     {"run_suite_body", run_suite_body, false},
+    {"test_m5_bit_position_width_boundary", test_m5_bit_position_width_boundary, false},
 };
 
 int main(int argc, char* argv[]) {

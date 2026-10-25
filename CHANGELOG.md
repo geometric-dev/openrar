@@ -5,6 +5,23 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.49.0] - 2026-10-25
+
+### Added
+
+- **WASM Streaming Archive Encode (`createArchiveStream`).** Added streaming archive creation to `openrar-archive.js` and TypeScript typings in `openrar-archive.d.ts`.
+  - Yields chunks incrementally through `ReadableStream<Uint8Array>` and async iterables (`[Symbol.asyncIterator]()`).
+  - **Parity Rule (I-3):** Streamed chunks concatenated are 100% byte-identical to one-shot `createArchive` for identical inputs.
+  - **Fail-Closed Semantics:** Errors and aborts terminate the stream immediately via `controller.error(err)`, never cleanly closing a partial archive.
+  - **OOM Handling:** Out-of-memory transitions cleanly map to `RAR_ERR_NOMEM` (-5) and unroll state without leaking `WebAssembly.RuntimeError` to host JavaScript.
+  - **Chunk Ownership:** Engine memory is never retained or freed by the host; transfer semantics apply strictly to caller-owned decoupled copies.
+- **Node-Only Mock Harness for WASM Tests (`mock_module.js`).** Defeated Vacuous-Pass Vector 1 (V-1) per Invariant G-9. Implements an Emscripten C-ABI memory arena and block codec simulation enabling 49/49 WASM JS test suites to execute and assert correctness in native Node environments where `dist/` is unbuilt.
+- **WASM Memory Accounting.** Documented formal 3-class memory accounting table in `docs/wasm-limitations.md` §4.3.1 (Static, Dynamic — caller, Dynamic — engine). Added permanent audit-clean disposition for bespoke `Archive` class in §4.3 (`deferred: post-v1.52`, owner: `geometric-dev`).
+
+### Fixed
+
+- **M5 32-bit Bit-Position Width (OPT-D02).** Widened `BitReader::consumed_`, `size_`, `fetched_`, `bit_pos()`, `byte_pos()`, `bits_remaining()` and callback constructor `size` in `src/compress/decompressor50.hpp` and `src/compress/decompressor50.cpp` to `core::uint64`. Fixed narrowing of block boundary calculations to `size_t` so packed inputs >= 512 MiB do not wrap bit positions to 0 on wasm32 and ILP32 platforms. Added zero-allocation boundary unit test asserting exact bit width across $2^{29}-1, 2^{29}, 2^{29}+1$ bytes in `tests/unit/bitreader_stream_tests.cpp`.
+
 ## [1.48.0] - 2026-10-25
 
 ### Added

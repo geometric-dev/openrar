@@ -204,9 +204,26 @@ the JS realm.
 The bespoke `Archive` class was dropped in `e13c5f3`. `Archive.fromBytes`
 no longer exists. For archive-level work, see `docs/wasm-examples.md` §8.
 
-### 4.3 No streaming for `Archive.toBytes` / `fromBytes`
+### 4.3 No streaming for `Archive.toBytes` / `fromBytes` — **SUPERSEDED / DEFERRED**
 
-Subsumed by 1.2 (real-RAR5 archive work is deferred).
+- **Status:** `deferred: post-v1.52` (Owner: `geometric-dev`, Date: `2026-10-25`)
+- **Disposition:** The bespoke `Archive` class was dropped in `e13c5f3` and superseded by the modular archive API:
+  - `createArchive` and `createArchiveStream` in `openrar-archive.js` handle archive creation and streaming emission.
+  - `openArchive` and `extractAll` handle archive inspection and extraction.
+- Any bespoke OO `Archive` container class with streaming `toBytes`/`fromBytes` is deferred: post-v1.52.
+
+### 4.3.1 Memory Accounting Rules (v1.49)
+
+Memory usage within the WASM module adheres to a three-tier classification:
+
+| Class | Contents | Rule | Ceiling |
+|---|---|---|---|
+| **Static** | Codec tables, Huffman structures, ring buffer | Fixed at compile time / initialization | ≤512 KiB block / ≤1.5 MiB archive |
+| **Dynamic — caller** | Input files, yielded output chunks | Excluded (JS-held or transferred via `safeRead`) | Host memory limits |
+| **Dynamic — engine** | LZ match window (≤5 × window size), scratch | Bounded by caller's window log2 | Bounded by window; default peak ≈ 5 MiB |
+
+- Default peak engine footprint: method 3, `window_log2` 4 (1 MiB window) consumes $\approx 5 \times 1\text{ MiB} = 5\text{ MiB}$ peak engine memory.
+- Dynamic engine allocations are released deterministically at the conclusion of compression.
 
 ### 4.4 No `Archive` deduplication / hardlinks / symlinks
 
