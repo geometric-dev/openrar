@@ -142,6 +142,10 @@ std::string to_json(const ExtractionReport& report) {
     if (report.durability_kill_switch) {
         out += ",\"durability_kill_switch\":true";
     }
+    // v1.51.0: sandbox_active disclosure (V-2 / FMM-51-7).
+    if (report.has_sandbox_field) {
+        out += std::string(",\"sandbox_active\":") + (report.sandbox_active ? "true" : "false");
+    }
     out += "}";
     return out;
 }

@@ -21,7 +21,7 @@ inline uint64_t default_dict_size_for_method(uint32_t method) {
     case 4:
         return 0x1000000ULL; // 16 MB
     case 5:
-        return 0x4000000ULL; // 64 MB (matches WinRAR Best profile)
+        return 0x4000000ULL; // 64 MB (matches Best profile)
     default:
         return 0x800000ULL;
     }
@@ -168,11 +168,10 @@ struct CompressPlan {
             // never BE data-bearing chain members, but since v1.40.0 they no
             // longer BREAK the run either: the window persists across them
             // exactly like a stored entry, and the reference header itself
-            // carries the solid bit while a chain is active. This matches the
-            // reference encoder's layout (one continuous run, refs interleaved
-            // and marked solid); breaking runs around refs produced a mid-
-            // archive run-restart pattern the reference decoder's multithreaded
-            // unpacker mishandles (checksum errors on chain members at -mt5+).
+            // carries the solid bit while a chain is active. This ensures
+            // one continuous run with refs interleaved and marked solid;
+            // breaking runs around refs produces a mid-archive run-restart
+            // pattern that multithreaded unpackers can mishandle.
             ep.decision = EntryDecision::Stored;
             ep.is_solid_chain = (solid || continue_solid_stream) && seen_compressed_entry;
             ep.dict_size = 0;

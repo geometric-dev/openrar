@@ -137,7 +137,7 @@ foreach ($r in $existingRars) {
 Remove-Item -Recurse -Force $scratch
 
 # ── Cross-engine decode verification (v1.31.0 Gate 0 §2d) ────────────────────
-# Every golden archive must extract hash-exact under the reference decoders
+# Every golden archive must extract hash-exact.
 # before the new bytes are committed. Emitted bytes change whenever the
 # encoder changes; UnRAR/WinRAR acceptance is the format-legality proof for
 # the re-baseline. Skipped (with a loud marker) when the tools are absent.

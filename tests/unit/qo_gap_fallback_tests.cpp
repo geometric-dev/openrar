@@ -1,11 +1,11 @@
-// QO partial-cache fallback regression (v1.30.0): WinRAR 7.20's QuickOpen
-// record for -mt4 archives omits middle entries (zero-compressed files
-// vanished from listings/extraction). The scan's QO fast-path now validates
+// QO partial-cache fallback regression (v1.30.0): a QuickOpen
+// record for multithreaded archives may omit middle entries (zero-compressed files
+// could vanish from listings/extraction). The scan's QO fast-path now validates
 // chain CONTIGUITY — each cached header must start exactly where the
 // previous one ended — and falls back to the authoritative linear scan on
 // any gap.
 //
-// This test pins the fallback deterministically WITHOUT WinRAR: create an
+// This test pins the fallback deterministically: create an
 // archive with openrar (QO chain complete), surgically REMOVE one middle
 // struct from the QO payload (the structs are self-describing:
 // crc32+size+body), and assert the reader still enumerates every entry via

@@ -513,7 +513,7 @@ static void test_hp_open_flow() {
     REQUIRE(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);
     openrar_archive_close(h);
 
-    // The fixture (WinRAR-made hello5_hp.rar) extracts with its known password.
+    // The fixture (hello5_hp.rar) extracts with its known password.
     h = openrar_archive_open_file(fixture.u8string().c_str(), "secret", nullptr, nullptr, nullptr);
     REQUIRE(h != 0);
     REQUIRE(openrar_archive_handle_test(h, 0, nullptr, nullptr, nullptr) == RAR_OK);

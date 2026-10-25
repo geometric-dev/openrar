@@ -37,8 +37,12 @@ RAR_ERR_ENCRYPTED = -12
 RAR_ERR_MISSING_VOLUME = -13
 RAR_ERR_BUSY = -14
 RAR_ERR_LIMIT_EXCEEDED = -15
+RAR_ERR_PASSWORD_TIMEOUT = -16
+RAR_ERR_CONTAINMENT_BREACH = -17
+RAR_ERR_DECRYPT = -18
+RAR_ERR_RESOURCE_EXHAUSTION = -19
 # Not a RAR error code: raised when the shared library itself cannot be
-# loaded. Kept out of the -1..-15 range so it can never be confused with an
+# loaded. Kept out of the -1..-19 range so it can never be confused with an
 # archive-format failure ("NOT_RAR" sent people hunting a corrupt archive).
 RAR_ERR_LIB_NOT_FOUND = -100
 
@@ -58,6 +62,10 @@ _ERRORS = {
     RAR_ERR_MISSING_VOLUME: "MISSING_VOLUME",
     RAR_ERR_BUSY: "BUSY",
     RAR_ERR_LIMIT_EXCEEDED: "LIMIT_EXCEEDED",
+    RAR_ERR_PASSWORD_TIMEOUT: "PASSWORD_TIMEOUT",
+    RAR_ERR_CONTAINMENT_BREACH: "CONTAINMENT_BREACH",
+    RAR_ERR_DECRYPT: "DECRYPT",
+    RAR_ERR_RESOURCE_EXHAUSTION: "RESOURCE_EXHAUSTION",
     RAR_ERR_LIB_NOT_FOUND: "LIB_NOT_FOUND",
 }
 

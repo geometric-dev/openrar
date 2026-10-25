@@ -79,11 +79,16 @@ export const RarErrorCode = Object.freeze({
   // Contract parity with src/archive/buffer_archive.hpp: returned only by the
   // native DLL _ex listing exports; the wasm surface never emits it (yet).
   ENCRYPTED: 'ENCRYPTED',
-  // Contract parity with src/archive/rar_errors.hpp (-13/-14/-15): a volume of a
-  // multi-volume set is absent, the handle/worker is busy, or resource limit exceeded.
+  // Contract parity with src/archive/rar_errors.hpp (-13 to -19): a volume of a
+  // multi-volume set is absent, the handle/worker is busy, resource limit exceeded,
+  // PBKDF2 timeout, worker containment breach, decrypt failure, or resource exhaustion.
   MISSING_VOLUME: 'MISSING_VOLUME',
   BUSY: 'BUSY',
   LIMIT_EXCEEDED: 'LIMIT_EXCEEDED',
+  PASSWORD_TIMEOUT: 'PASSWORD_TIMEOUT',
+  CONTAINMENT_BREACH: 'CONTAINMENT_BREACH',
+  DECRYPT: 'DECRYPT',
+  RESOURCE_EXHAUSTION: 'RESOURCE_EXHAUSTION',
 });
 
 const CODE_MAP = Object.freeze({
@@ -100,6 +105,10 @@ const CODE_MAP = Object.freeze({
   [-13]: 'MISSING_VOLUME',
   [-14]: 'BUSY',
   [-15]: 'LIMIT_EXCEEDED',
+  [-16]: 'PASSWORD_TIMEOUT',
+  [-17]: 'CONTAINMENT_BREACH',
+  [-18]: 'DECRYPT',
+  [-19]: 'RESOURCE_EXHAUSTION',
 });
 
 export class RarError extends Error {

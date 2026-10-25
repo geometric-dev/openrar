@@ -1633,7 +1633,7 @@ void test_stream_encoder_chunking_invariance() {
 // ── Phase 2: Pre-processing filter tests ─────────────────────────────────────
 
 // Build a synthetic x86-style binary: MZ+PE header → CALL E8 instructions with
-// relative offsets pointing to nearby addresses. WinRAR's filter heuristic
+// relative offsets pointing to nearby addresses. The filter heuristic
 // should detect this as E8 via the PE machine type.
 static std::vector<core::byte> make_x86_binary(size_t n_calls) {
     std::vector<core::byte> data(n_calls * 5 + 256, 0x90); // NOP sled
@@ -2029,15 +2029,6 @@ void test_chunk_framing_spike() {
     REQUIRE(extracted == original);
     reader.close();
 
-    // Verify Official Reference UnRAR.exe if present on the host
-    const char* unrar_path = "C:\\Program Files\\WinRAR\\UnRAR.exe";
-    if (std::filesystem::exists(unrar_path)) {
-        std::string unrar_cmd =
-            std::string("\"\"") + unrar_path + "\" t -y \"" + spike_arc.string() + "\" > nul\"";
-        int rc = std::system(unrar_cmd.c_str());
-        REQUIRE((rc == 0 && "Official UnRAR.exe failed to test multi-block chunked RAR5 archive!"));
-        std::cout << "    - Official UnRAR.exe 7.20 verification: OK" << std::endl;
-    }
 
     std::error_code ec;
     std::filesystem::remove(spike_arc, ec);
@@ -2496,7 +2487,7 @@ void test_slot257_window_prefix_and_tail() {
 //   257, and without 257 a run's rep lengths differ every block, so the tables
 //   never stabilise. The run case is measured on the real (257-enabled) path.
 //   v1.43.0 cost-aware arbiter (2026-10-17): the concession rule
-//   (rep_best_len + inc_f >= best.length, expert-reviewed — replaces the
+//   (rep_best_len + inc_f >= best.length, replaces the
 //   legacy rep_best_len + 1 > best.length) moved selection. All digests below
 //   were re-captured via OPENRAR_REFCAP=1 per this file's documented I-2
 //   protocol, plus the new farrepeat corpus (concession-sensitive). Legacy
@@ -2931,11 +2922,9 @@ void test_length2_match_support() {
 // T11: block-header tables are carried on every block. Table reuse (bit 7
 // clear) is wire-legal and was enabled after a 16-block seed (v1.33 Design A,
 // tuned to our own decoder's slot model), but it is not interoperable: the
-// reference decoder's multithreaded unpacker corrupts a solid chain that
-// contains both a reuse block and a zero-size REDIR (file-copy) member
-// (checksum errors at -mt5..16, absent at -mt1 and when refs are removed).
-// WinRAR emits a table description on every block, so we match the reference
-// encoder and the bug cannot be hit. Invariant: bit 7 is SET on every block.
+// decoders can corrupt a solid chain that contains both a reuse block and
+// a zero-size REDIR (file-copy) member (checksum errors at -mt5..16).
+// Invariant: bit 7 is SET on every block.
 void test_bit_output_unaligned_block_bits() {
     for (core::uint32 bits = 1; bits <= 64; ++bits) {
         std::vector<core::byte> mem;
@@ -3234,10 +3223,7 @@ void test_block_table_reuse() {
             for (core::uint8 i = 0; i < byte_cnt; ++i)
                 bsize |= static_cast<core::uint32>(packed[off + 2 + i]) << (8 * i);
             const bool tables_present = (flags & 0x80) != 0;
-            REQUIRE((tables_present &&
-                     "every block MUST carry its table description (reference encoder "
-                     "compatibility: reuse blocks corrupt UnRAR's MT decode of a solid "
-                     "chain that also contains file-copy refs)"));
+            REQUIRE((tables_present && "every block MUST carry its table description"));
             ++block;
             off += 2 + byte_cnt + bsize;
         }

@@ -13,7 +13,7 @@ bytes actually handed to the consumer (`emitted == 0`), never retrying
 after emission.
 
 - Reproduce: `fuzz_target tests/fuzz/crashes/parallel_fallback_dup_input.bin`
-  (build with -DOPENRAR_FUZZ=ON); pre-fix it aborts in the oracle, post-fix
+  (build with -DOPENRAR_FUZZ=ON); pre-fix it aborts in the validator, post-fix
   it exits 0.
 
 ## roundtrip_divergence_727_input.bin / _compressed.bin (2026-09-22)

@@ -130,10 +130,10 @@ sha256_transform_shani(core::uint32* state, const core::byte* block) {
     // Transcribed 1:1 from Jeffrey Walton's public-domain SHA-NI implementation
     // (github.com/noloader/SHA-Intrinsics, sha256-x86.c), itself based on
     // Intel's SHA Extensions sample and the Linux kernel sha256_ni_transform
-    // (same instruction schedule in both reference sources). The previous
+    // (same instruction schedule in both source implementations). The previous
     // in-tree version used _mm_xor_si128 in the message-schedule update
     // (the Wt-7 term must be *added* via paddd with the aligned tail of the
-    // previous quad) and a state pack order that no canonical reference uses,
+    // previous quad) and an incompatible state pack order,
     // which produced wrong digests on every SHA-NI-capable CPU. This file has
     // no SHA-NI hardware on all test machines, so the runtime self-check in
     // Sha256::transform below gates the accelerated path on a KAT.

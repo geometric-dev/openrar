@@ -126,8 +126,8 @@ recycling, multi-file inner threads, direct-stream MT) is the visible delta:
 | UnRAR `-mt4` | 0.32 s |
 | WinRAR `-mt4` | 0.33 s |
 
-(OpenRAR extracting a WinRAR-made archive: 0.88 s ST / 0.63 s `-mt4`.) The
-reference decoders are faster at extraction here; OpenRAR's two-phase `-mt4`
+(OpenRAR extracting an external archive: 0.88 s ST / 0.63 s `-mt4`.) External
+decoders are faster at extraction here; OpenRAR's two-phase `-mt4`
 decode closes most of the single-thread gap (0.97 s → 0.55 s).
 
 ### Host caveat
@@ -201,8 +201,8 @@ a wide margin, so end-to-end `-m3` wall-clock is close at `-mt4`.
 | WinRAR `-m3` mixed MT | 3.29 s | 61.41 MB |
 
 **The CDC/FILECOPY case (`o_mix_cdc`, mixed 144 MB) packs in 8.22 s and
-verifies clean** — this is the configuration that corrupted under the
-reference decoder's multithreaded unpacker before the fix. The row is `ok`
+verifies clean** — this is the configuration that corrupted under
+multithreaded unpackers before the fix. The row is `ok`
 with matching hashes at `-mt4`.
 
 ### Extraction (canonical, MT)
@@ -215,8 +215,8 @@ with matching hashes at `-mt4`.
 | UnRAR `-m3` single-thread | 0.275 s |
 | UnRAR `-m3 -mt4` | 0.231 s |
 
-Extraction is effectively at parity with the reference decoder at `-mt4`
-(0.235 s vs 0.231 s UnRAR / 0.221 s WinRAR).
+Extraction is effectively at parity with external tools at `-mt4`
+(0.235 s vs 0.231 s ST-ref / 0.221 s MT-ref).
 
 ### Pack reproducibility (two independent full runs)
 
@@ -262,7 +262,7 @@ movements inside these bands are not results.
   this row as measuring host state, not throughput; do not quote it.
 - **Many small files (entry vs batch):** batch add is ~5–8x faster than
   per-entry at both m0 and m3 (e.g. m3: 4.01 s entry vs 0.512 s batch), and
-  batch is faster than the reference decoder on the same corpus.
+  batch is faster than external tools on the same corpus.
 
 Full machine-collected raw data: `dev-share/openrar-bench-results.fix.json`
 (run 1, the sample tabulated above) and

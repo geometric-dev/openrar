@@ -882,6 +882,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                 if (res == format::HeaderResult::HeaderCrcMismatch) { /* propagate */
                 }
                 if (hcrypt.bad_password) bad_password_ = true;
+                if (hcrypt.active) saw_decrypt_failure_ = true;
                 break;
             }
             core::uint64 head_end = vs.tell();
@@ -907,12 +908,18 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
             if (type == format::HEAD_CRYPT) {
                 format::CryptBlock cb;
                 if (!format::HeaderReader::parse_crypt_header(body.data(), body.size(), cb)) {
+                    saw_corrupt_crypt_header_ = true;
                     break;
                 }
-                if (hcrypt.active) break; // duplicate HEAD_CRYPT: corrupt
+                if (hcrypt.active) {
+                    saw_corrupt_crypt_header_ = true;
+                    break; // duplicate HEAD_CRYPT: corrupt
+                }
                 saw_crypt_header_ = true;
                 if (!hcrypt.init(password_, cb)) {
-                    if (hcrypt.bad_password)
+                    if (hcrypt.password_timeout)
+                        saw_password_timeout_ = true;
+                    else if (hcrypt.bad_password)
                         bad_password_ = true;
                     else
                         crypt_unsupported_ = true; // unknown crypto version
@@ -1111,8 +1118,8 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                         // the cached header must start EXACTLY where
                                         // the previous cached header ended (header +
                                         // data are physically contiguous in the
-                                        // archive). WinRAR 7.20's QO record for
-                                        // -mt4 archives omits middle entries (e.g.
+                                        // archive). A QO record for multi-threaded archives
+                                        // may omit middle entries (e.g.
                                         // zero-compressed files) — a gap means the
                                         // QO cache is a PARTIAL index and the
                                         // authoritative linear scan must run
@@ -1464,7 +1471,12 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
         // map those to the dedicated codes instead of NOT_RAR. On -hp
         // archives structural corruption also presents as BAD_PASSWORD
         // (header CRC / PswCheck failure), per the documented contract.
-        if (saw_crypt_header_) {
+        if (saw_crypt_header_ || saw_corrupt_crypt_header_) {
+            if (saw_password_timeout_)
+                return fail(RAR_ERR_PASSWORD_TIMEOUT,
+                            "password derivation workbound exceeded (PBKDF2 timeout)");
+            if (saw_corrupt_crypt_header_ || saw_decrypt_failure_)
+                return fail(RAR_ERR_DECRYPT, "corrupt encrypted header / decryption failed");
             if (crypt_unsupported_)
                 return fail(RAR_ERR_UNSUPPORTED_FEATURE, "unsupported HEAD_CRYPT crypto version");
             if (bad_password_)
@@ -1565,6 +1577,7 @@ size_t ArchiveReader::solid_run_head(size_t idx) const {
 int ArchiveReader::derive_entry_keys(const ArchiveEntry& entry, crypto::Rar5Keys& keys) {
     if (!entry.header.is_encrypted) return RAR_OK;
     if (password_.empty()) return RAR_ERR_ENCRYPTED;
+    if (entry.header.lg2_count > crypto::MAX_PBKDF2_LG2) return RAR_ERR_PASSWORD_TIMEOUT;
     if (!supported_file_crypt(entry.header)) return RAR_ERR_UNSUPPORTED_FEATURE; // H-15
     crypto::Pbkdf2Rar5::derive_keys(password_, entry.header.salt.data(), 16,
                                     1U << entry.header.lg2_count, keys);

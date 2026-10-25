@@ -46,7 +46,12 @@ bool parse_block_fields(const std::vector<core::byte>& body, core::uint64& out_t
 bool HeaderCryptReader::init(const std::string& password, const CryptBlock& crypt) {
     active = false;
     bad_password = false;
-    if (crypt.crypt_version != 0 || crypt.lg2_count > 24) return false;
+    password_timeout = false;
+    if (crypt.crypt_version != 0) return false;
+    if (crypt.lg2_count > crypto::MAX_PBKDF2_LG2) {
+        password_timeout = true;
+        return false;
+    }
 
     crypto::Pbkdf2Rar5::derive_keys(password, crypt.salt.data(), crypt.salt.size(),
                                     1U << crypt.lg2_count, keys);

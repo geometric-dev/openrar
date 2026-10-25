@@ -7,15 +7,15 @@ Validation suites and conformance test harness for OpenRAR.
 | Layer | Command | Needs |
 |---|---|---|
 | C++ unit suites (ctest) | `ctest --test-dir build -C Release --output-on-failure` | built binaries |
-| Build + ctest + interop in one shot | `powershell -File tools/gate.ps1` | cmake, Python, (WinRAR for interop) |
-| Writer conformance (node) | `node tools/run-tests.cjs` (all) or `node tools/run-tests.cjs format roundtrip parity` (WinRAR-independent subset) | built `openrar` (`OPENRAR_EXE` to override); WinRAR/UnRAR optional oracle (`UNRAR_EXE`) |
-| Interop gate (cross-decode vs WinRAR) | `python tools/interop_gate.py --quick` | local WinRAR strongly recommended (CI degrades to self-roundtrip) |
+| Build + ctest + interop in one shot | `powershell -File tools/gate.ps1` | cmake, Python, (external tool for interop) |
+| Writer conformance (node) | `node tools/run-tests.cjs` (all) or `node tools/run-tests.cjs format roundtrip parity` (self-contained subset) | built `openrar` (`OPENRAR_EXE` to override); external optional tool (`UNRAR_EXE`) |
+| Interop gate (cross-decode) | `python tools/interop_gate.py --quick` | local external tool recommended (CI degrades to self-roundtrip) |
 | Encryption smoke vs goldens | `powershell -File tests/test_crypt.ps1` | built binary + golden archives |
 | Fuzz sweeps | configure with `-DOPENRAR_FUZZ=ON`, then `ctest -R fuzz` | — |
 | Nightly libFuzzer | `.github/workflows/fuzz.yml` (clang, corpus cached) | CI |
 
-Suites that need WinRAR skip their oracle asserts visibly when it is absent;
-the WinRAR-independent checks still run everywhere.
+Suites that use external verification skip those checks visibly when absent;
+the self-contained checks still run everywhere.
 
 ## Files
 

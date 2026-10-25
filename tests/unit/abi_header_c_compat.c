@@ -62,7 +62,7 @@ int abi_c_mode_layout_check(void) {
     if (offsetof(openrar_archive_info_t, comment_len) != 20) ++failures;
 
     /* Enum values are part of the frozen surface (docs/abi-freeze.md); the
-       reserved -8/-10 slots and the next slot -16 are documented. */
+       reserved -8/-10 slots and the next slot -20 are documented. */
     if (RAR_OK != 0) ++failures;
     if (RAR_ERR_PARTIAL_OK != 1) ++failures;
     if (RAR_ERR_NOT_RAR != -1) ++failures;
@@ -78,6 +78,10 @@ int abi_c_mode_layout_check(void) {
     if (RAR_ERR_MISSING_VOLUME != -13) ++failures;
     if (RAR_ERR_BUSY != -14) ++failures;
     if (RAR_ERR_LIMIT_EXCEEDED != -15) ++failures;
+    if (RAR_ERR_PASSWORD_TIMEOUT != -16) ++failures;
+    if (RAR_ERR_CONTAINMENT_BREACH != -17) ++failures;
+    if (RAR_ERR_DECRYPT != -18) ++failures;
+    if (RAR_ERR_RESOURCE_EXHAUSTION != -19) ++failures;
 
     return failures;
 }
