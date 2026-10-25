@@ -382,7 +382,8 @@ target_link_libraries(archive_api_tests PRIVATE
         target_link_libraries(sandbox_worker_e2e_tests PRIVATE ${OPENRAR_THREAD_LIB})
     endif()
     target_compile_definitions(sandbox_worker_e2e_tests PRIVATE
-        OPENRAR_WORKER_EXE="$<TARGET_FILE:openrar_worker>")
+        OPENRAR_WORKER_EXE="$<TARGET_FILE:openrar_worker>"
+        OPENRAR_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     openrar_enable_test_asserts(sandbox_worker_e2e_tests)
     add_test(NAME sandbox_worker_e2e_tests COMMAND sandbox_worker_e2e_tests)
 

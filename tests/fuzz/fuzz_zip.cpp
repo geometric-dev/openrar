@@ -1,4 +1,4 @@
-// ZIP fuzzer (v1.47.0 M1) — foreign ZIP parser robustness and CD-vs-LFH oracle.
+// ZIP fuzzer (v1.47.0 M1) — foreign ZIP parser robustness and CD-vs-LFH validation.
 // Targets ZipReader: EOCD scanning, central directory parsing, ZIP64 extensions,
 // local file header pre-flight consistency checks, and DEFLATE/stored payload decoding.
 // Crash-, hang-, and leak-free is the contract: any ForeignStatus return is fine.

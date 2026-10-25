@@ -24,7 +24,7 @@ tests/fixtures/
 │       ├── mutator_delete_file=action=del.rar.sha256
 │       ├── mutator_lock=action=lock.rar
 │       └── mutator_lock=action=lock.rar.sha256
-└── rar5/                          ← Synthetic and oracle RAR5 feature coverage archives
+└── rar5/                          ← Synthetic and golden RAR5 feature coverage archives
     ├── hello5.rar
     ├── hello5.rar.sha256
     ├── hello5_p.rar

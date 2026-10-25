@@ -386,6 +386,9 @@ private:
     void* duplicate_attached_handle() const;
     bool saw_crypt_header_{false};
     bool crypt_unsupported_{false};
+    bool saw_password_timeout_{false};
+    bool saw_corrupt_crypt_header_{false};
+    bool saw_decrypt_failure_{false};
     bool truncated_data_{false}; // M-12
     core::uint64 sfx_offset_{0};
     unsigned decode_threads_{0}; // 0 = D9 default (2); 1 = sequential

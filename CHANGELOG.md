@@ -5,6 +5,24 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.0] - 2026-10-25
+
+### Added
+
+- **Sandbox Scope Expansion (Encrypted + Multi-Volume Archives).**
+  - **FMM-51 Failure Mode Matrix Implementation & Hardening:**
+    - **FMM-51-1 (Workbound Rejection):** Enforced PBKDF2 iteration count cap `MAX_PBKDF2_LG2 = 24` across `pbkdf2.hpp`, `header_reader.cpp`, and `archive_reader.cpp`. Returns `RAR_ERR_PASSWORD_TIMEOUT` (-16, exit 12) rather than letting hostile inputs monopolize CPU time.
+    - **FMM-51-2 (Volume Descriptor Failure):** Handled missing or corrupted volume descriptors with clean failure reporting `RAR_ERR_MISSING_VOLUME` (-13, exit 6).
+    - **FMM-51-3 (Worker Crash Recovery):** Worker crashes or severed IPC pipes map to `RAR_ERR_CONTAINMENT_BREACH` (-17, exit 2).
+    - **FMM-51-4 (Corrupted Encrypted Header Detection):** Malformed crypt blocks map to `RAR_ERR_DECRYPT` (-18, exit 13).
+    - **FMM-51-5 (Worker Memory Exhaustion):** OOM conditions in workers map to `RAR_ERR_RESOURCE_EXHAUSTION` (-19, exit 8).
+    - **FMM-51-6 (Broker-Side Anti-Forgery CRC Validation):** Broker independently computes CRC-32 and BLAKE2sp over extracted stream and rejects worker-forged or corrupted payloads with `RAR_ERR_CRC_MISMATCH` (-4, exit 3).
+    - **FMM-51-7 (Loud Containment Degradation Reporting):** `ExtractionReport` emits `"sandbox_active":false` in compact JSON summary when degraded mode occurs (V-2).
+  - **ABI & SDK Error Allocations:**
+    - Public C ABI (`include/openrar/openrar_dll.h`): allocated error codes -16 (`OPENRAR_ERR_PASSWORD_TIMEOUT`), -17 (`OPENRAR_ERR_CONTAINMENT_BREACH`), -18 (`OPENRAR_ERR_DECRYPT`), and -19 (`OPENRAR_ERR_RESOURCE_EXHAUSTION`), leaving reserved slots -8 and -10 strictly untouched.
+    - Python, C#, and JS bindings updated to mirror new error definitions.
+    - Updated `docs/abi-freeze.md`.
+
 ## [1.50.0] - 2026-10-25
 
 ### Added

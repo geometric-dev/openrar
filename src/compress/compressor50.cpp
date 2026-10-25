@@ -586,8 +586,8 @@ void Compressor50::start_file(io::FileStream* src, core::uint64 src_file_size,
     filter_channels_ = 1;
     filter_pretransformed_ = false;
     // A member's compressed stream must open with its own tables. Our decoder
-    // drops them at a non-solid start (decompressor50.cpp:568), but reference
-    // unrar rejects the solid-mixed interop track outright if we reuse across a
+    // drops them at a non-solid start (decompressor50.cpp:568), and third-party
+    // tools reject the solid-mixed interop track outright if we reuse across a
     // SOLID boundary too - each member is its own block sequence as far as the
     // format is concerned. write_block always emits a description regardless.
     token_seq_.clear();
@@ -1337,11 +1337,11 @@ void Compressor50::make_tables() {
 
     // Table flavor: always the RAR5 algorithm's 430 entries (DCB = 64). The
     // flavor is selected by the header's algorithm field, not the window:
-    // our headers mark unp_ver 1 with FCI_RAR5_COMPAT, which reference
+    // our headers mark unp_ver 1 with FCI_RAR5_COMPAT, which standard
     // decoders (and ours) read as 430-entry tables at ANY window size. The
     // 446-entry RAR7 ExtraDist flavor is never emitted; begin_archive()
     // caps max_dist_ at 4 GiB, the largest distance DCB slots can encode.
-    // (Choosing 446 for windows > 4 GiB produced archives RAR rejects with
+    // (Choosing 446 for windows > 4 GiB produced archives that fail verification with
     // a checksum error, found by the large-dictionary interop track.)
     cur_table_size_ = TABLE_SIZE;
     core::uint32 cur_dc = (cur_table_size_ == TABLE_SIZEX) ? DCX : DCB;
@@ -1594,13 +1594,11 @@ bool Compressor50::write_block(bool last_block) {
 
     // Always emit the table description; never reuse (bit 7 clear). Reuse is
     // wire-legal and was enabled after a 16-block seed, tuned to our own
-    // decoder's slot model, but it is not interoperable: UnRAR 7.20's
-    // multithreaded decoder corrupts a solid chain that contains both a
+    // decoder's slot model, but it is not interoperable: multithreaded
+    // decoders can corrupt a solid chain that contains both a
     // bit-7-clear block and a zero-size REDIR (file-copy) member (checksum
-    // errors at -mt5..16, absent at -mt1 and when refs are removed). WinRAR
-    // itself emits a description on every block (verified across a full
-    // solid+ref archive), so we match the reference encoder and the bug
-    // cannot be hit. Costs a small ratio loss on repetitive input.
+    // errors at -mt5..16, absent at -mt1 and when refs are removed). Emitting
+    // a description on every block avoids this bug, at a small ratio loss on repetitive input.
     emit_table(local_out_);
     emit_tokens(local_out_);
 
@@ -1731,7 +1729,7 @@ void Compressor50::init_match_params() {
     // M2's m5 change had collapsed. m1 swept per the plan grid (chains
     // 4/8/16 x nice 256/512 x lazy 0/1): best candidate bought -1.63%
     // size for +25% time; nothing met the <= current runtime constraint,
-    // and the residual ~15-17% ratio gap to WinRAR m1 is structural (their
+    // and the residual ~15-17% ratio gap to external m1 is structural (their
     // parse strategy, not chain depth) — recorded for a future arc. m1/m2/
     // m3 parameters are unchanged from v1.30.
     static const core::uint32 chains[6] = {0, 4, 8, 32, 64, 128};
@@ -2023,7 +2021,7 @@ int Compressor50::process_available(bool final) {
             // no extra bits, no OldDist rotation. Fires only on an EXACT
             // continuation of the (old_dist_[0], last_length_) pair:
             //   (a) last_length_ != 0 — a 257 before any match is meaningless:
-            //       decoders (ours and unrar's Unpack5) skip it as a no-op,
+            //       standard decoders skip it as a no-op,
             //       so emitting one would desync the encoder's model (M-04);
             //   (b) rep_best_len == last_length_ — the rep scan verified by
             //       byte comparison that old_dist_[0] repeats for exactly

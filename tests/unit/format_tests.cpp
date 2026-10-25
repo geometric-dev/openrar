@@ -254,7 +254,7 @@ void test_malformed_headers_safe() {
 
 // Table flavor round-trip: unp_ver 1 + FCI_RAR5_COMPAT is RAR7 dictionary
 // sizing over the RAR5 algorithm (430 tables); only unp_ver 1 WITHOUT the
-// compat flag is the RAR7 algorithm (446 tables). Mirrors unrar arcread.cpp.
+// compat flag is the RAR7 algorithm (446 tables).
 void test_extra_dist_flavor_from_comp_info() {
     struct Case {
         core::uint32 unp_ver;

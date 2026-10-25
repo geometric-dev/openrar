@@ -13,10 +13,9 @@ namespace openrar::format {
 //
 // The signature must never appear as a literal byte sequence in compiled
 // binaries: the Default.SFX stub links this header's users, and an SFX module
-// that carries an embedded signature breaks reference tools — UnRAR locates
-// the archive behind an SFX prefix with a naive first-match scan and stops
-// inside the module, reporting the main header as corrupt. (WinRAR's own
-// stubs avoid embedding the signature for the same reason.) The bytes are
+// that carries an embedded signature breaks extractors that locate
+// the archive behind an SFX prefix with a naive first-match scan and stop
+// inside the module, reporting the main header as corrupt. The bytes are
 // stored XOR-masked and assembled at runtime; the volatile loads defeat
 // constant folding back into .rdata.
 inline constexpr std::size_t RAR5_SIGNATURE_SIZE = 8;
@@ -91,7 +90,7 @@ inline constexpr core::uint64 FHFL_UNPUNKNOWN = file_flags::UNP_UNKNOWN;
 
 // Extra Field Types
 // Spec 01-headers/06-encoding: 0x01 Crypt, 0x02 Hash, 0x03 HTime, 0x04 Version, 0x05 Redir, 0x06 Owner, 0x07 SubData,
-//   0x08 Xattr (v1.27 — verified free against unrar headers5.hpp + bitplane rar-research; skipped
+//   0x08 Xattr (v1.27 — standard extension; skipped
 //   without error by readers that do not implement it, per the spec's unknown-record contract)
 // Main extra: 0x01 Locator, 0x02 Metadata
 enum class ExtraType : core::uint8 {
@@ -140,7 +139,7 @@ struct MainBlock {
     // strip QuickOpen on mutation MUST set locator_qo_offset = -1 explicitly
     // — do NOT leave it at 0, which write_main_block interprets as "QO block
     // is located at offset 0 from main_header_pos" (i.e. points into the RAR5
-    // signature, producing a corrupt locator that WinRAR will reject).
+    // signature, producing a corrupt locator).
     core::int64 locator_qo_offset{-1};
     core::int64 locator_rr_offset{-1};
 
@@ -247,8 +246,7 @@ struct FileBlock {
     // RAR7 compression ALGORITHM: unp_ver 1 WITHOUT FCI_RAR5_COMPAT. Only
     // this selects the 446-entry ExtraDist tables (DCX = 80 distance slots);
     // unp_ver 1 WITH the compat flag is RAR7 dictionary sizing over the RAR5
-    // algorithm (430 tables, distances <= 4 GiB) - unrar arcread.cpp sets
-    // VER_PACK5 for it and Unpack sets ExtraDist only for VER_PACK7. The
+    // algorithm (430 tables, distances <= 4 GiB). The
     // table flavor is a property of this flag, never of the window size.
     bool extra_dist{false};
 

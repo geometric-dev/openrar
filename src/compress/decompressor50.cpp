@@ -1083,8 +1083,8 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             fe.block_start = base_at_entry + rel_start;
             if (fe.block_start > static_cast<core::uint64>(SIZE_MAX)) return false;
             // E8/E8E9/ARM transform base is the offset WITHIN the member: the
-            // reference resets it per member even on solid chains
-            // (oracle-verified, v1.36.x — a carried base corrupted every
+            // format resets it per member even on solid chains
+            // (verified in v1.36.x — a carried base corrupted every
             // non-first solid member with E8-filtered content).
             if (base_at_entry < member_start_) return false;
             fe.file_offset = fe.block_start - member_start_;

@@ -27,6 +27,12 @@ struct Rar5Keys {
 
 static_assert(std::is_standard_layout<Rar5Keys>::value, "Rar5Keys must be standard layout");
 
+// Maximum allowed PBKDF2 lg2_count iteration ceiling (v1.51.0 FMM-51-1).
+// 2^24 = 16,777,216 iterations (~1.2s on modern CPU). Values above this are rejected
+// as algorithmic complexity / thread starvation attacks.
+inline constexpr core::uint32 MAX_PBKDF2_LG2 = 24;
+inline constexpr core::uint32 MAX_PBKDF2_COUNT = (1u << MAX_PBKDF2_LG2);
+
 // Clean-room implementation of RAR 5.0 PBKDF2 key derivation
 // Based on RAR 5.0 Encryption Specification (AES-256-CBC + PBKDF2-HMAC-SHA256)
 class Pbkdf2Rar5 {
@@ -43,7 +49,7 @@ public:
     // XOR of every byte pair instead of exiting at the first mismatch, so
     // the comparison time does not leak the offset of the first differing
     // byte. Used for the PswCheck password-verification compare, where an
-    // early-exit memcmp would make header-decode timing a password oracle.
+    // early-exit memcmp would create a timing side-channel leak.
     static inline bool constant_time_equal(const core::byte* a, const core::byte* b, size_t n) {
         core::byte diff = 0;
         for (size_t i = 0; i < n; ++i) {

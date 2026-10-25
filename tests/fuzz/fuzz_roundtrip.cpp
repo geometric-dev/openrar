@@ -99,10 +99,10 @@ void fuzz_one(int iteration) {
     std::vector<core::byte> decompressed;
     // Raw streams carry no dictionary-size header: the decoder window is
     // caller knowledge. compress_buffer() defaults to win_size 0x200000 (the
-    // pow2 clamp only ever shrinks it), so the matching oracle window is
+    // pow2 clamp only ever shrinks it), so the matching decoder window is
     // 0x200000. Passed explicitly — equal to Decompressor50::DEFAULT_WIN_SIZE,
     // but pinned here so a future default change cannot silently desync the
-    // oracle from the contract (the archive/dll layers pass the recorded
+    // verification from the contract (the archive/dll layers pass the recorded
     // window explicitly).
     Decompressor50 dec(0x200000);
 #ifdef OPENRAR_CROSS_VALIDATE

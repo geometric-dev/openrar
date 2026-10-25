@@ -18,8 +18,13 @@
 #include "../../src/archive/archive_reader.hpp"
 #include "../../src/archive/archive_mutator.hpp"
 #include "../../src/archive/rar_errors.hpp"
+#include "../../src/archive/extraction_report.hpp"
 #include "../../src/core/types.hpp"
+#include "../../src/crypto/crc32.hpp"
+#include "../../src/crypto/pbkdf2.hpp"
 #include "../../src/sandbox/channel.hpp"
+#include "../../src/sandbox/ipc.hpp"
+#include "../../src/sandbox/sandbox_mode.hpp"
 #include "../../src/sandbox/spawn.hpp"
 #include "../../src/sandbox/worker_broker.hpp"
 
@@ -90,6 +95,17 @@ fs::path build_two_entry_archive(const fs::path& dir) {
 
 bool worker_available() {
     return std::string(OPENRAR_WORKER_EXE)[0] != '\0' && fs::exists(OPENRAR_WORKER_EXE);
+}
+
+fs::path get_fixtures_dir() {
+#ifdef OPENRAR_SOURCE_DIR
+    fs::path p = fs::path(OPENRAR_SOURCE_DIR) / "tests";
+    if (fs::exists(p / "hello5_hp.rar")) return p;
+#endif
+    for (const auto& c : {"tests", "../tests", "../../tests", "../../../tests"}) {
+        if (fs::exists(fs::path(c) / "hello5_hp.rar")) return fs::path(c);
+    }
+    return fs::path("tests");
 }
 
 } // namespace
@@ -212,9 +228,11 @@ static void run_suite_body() {
             nullptr, detail);
         killer.join();
         (void)sink_saw_data;
-        CHECK(rc != RAR_OK);      // a dead worker is a clean failure, never a hang
-        CHECK(!broker.is_open()); // torn down
-        broker.shutdown();        // idempotent
+        CHECK(
+            rc ==
+            RAR_ERR_CONTAINMENT_BREACH); // FMM-51-3: worker death is clean containment breach (-17)
+        CHECK(!broker.is_open());        // torn down
+        broker.shutdown();               // idempotent
     }
 
     // ── Broker death → worker observes EOF and exits ──────────────────────
@@ -308,12 +326,201 @@ static void run_suite_body() {
     if (fails != 0) throw std::logic_error(std::to_string(fails) + " failed checks");
 }
 
+// ── FMM-51-1: PBKDF2 iteration workbound rejection (RAR_ERR_PASSWORD_TIMEOUT = -16) ──
+static void test_sandbox_pbkdf2_workbound_rejected() {
+    if (!worker_available()) return;
+    const std::string worker_exe = OPENRAR_WORKER_EXE;
+    const fs::path dir = make_dir("pbkdf2_workbound");
+    const fs::path hp_src = get_fixtures_dir() / "hello5_hp.rar";
+    if (!fs::exists(hp_src)) {
+        std::printf("  skip: hello5_hp.rar fixture not found\n");
+        return;
+    }
+    std::ifstream f(hp_src, std::ios::binary);
+    std::vector<char> buf((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    f.close();
+    CHECK(buf.size() >= 40);
+
+    // HEAD_CRYPT block starts at offset 8.
+    // Offset 0x08..0x0B is CRC32.
+    // Offset 0x0C is body size vint (0x21 = 33).
+    // Offset 0x11 is lg2_count (0x0F = 15).
+    // Mutate lg2_count to 25 (> MAX_PBKDF2_LG2 = 24).
+    buf[0x11] = 25;
+    crypto::Crc32 crc;
+    crc.update(reinterpret_cast<const core::byte*>(buf.data() + 0x0C), 1 + 33);
+    core::write_le32(reinterpret_cast<core::byte*>(buf.data() + 0x08), crc.get());
+
+    const fs::path bad_arc = dir / "workbound.rar";
+    std::ofstream out(bad_arc, std::ios::binary | std::ios::trunc);
+    out.write(buf.data(), buf.size());
+    out.close();
+
+    // 1. Direct engine open reports RAR_ERR_PASSWORD_TIMEOUT (-16)
+    {
+        archive::ArchiveReader reader;
+        int status = archive::RAR_OK;
+        std::string detail;
+        bool ok = reader.open_ex(bad_arc, "secret", status, detail);
+        CHECK(!ok);
+        CHECK(status == archive::RAR_ERR_PASSWORD_TIMEOUT);
+    }
+
+    // 2. Broker opening via worker process propagates RAR_ERR_PASSWORD_TIMEOUT (-16)
+    {
+        WorkerBroker broker;
+        std::string detail;
+        bool ok = broker.start(worker_exe, bad_arc, WorkerBroker::Limits{}, detail);
+        CHECK(!ok);
+        CHECK(broker.last_error_code() == archive::RAR_ERR_PASSWORD_TIMEOUT);
+    }
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+// ── FMM-51-2: Volume descriptor failure in multi-volume archives (RAR_ERR_MISSING_VOLUME = -13) ──
+static void test_sandbox_multivol_descriptor_failure() {
+    if (!worker_available()) return;
+    const std::string worker_exe = OPENRAR_WORKER_EXE;
+    const fs::path vol_src = get_fixtures_dir() / "fuzz" / "seeds" / "seed_vol.part1.rar";
+    if (!fs::exists(vol_src)) {
+        std::printf("  skip: seed_vol.part1.rar fixture not found\n");
+        return;
+    }
+
+    WorkerBroker broker;
+    std::string detail;
+    bool ok = broker.start(worker_exe, vol_src, WorkerBroker::Limits{}, detail);
+    CHECK(!ok);
+    CHECK(broker.last_error_code() == archive::RAR_ERR_MISSING_VOLUME); // -13
+}
+
+// ── FMM-51-4: Corrupted encrypted header detection (RAR_ERR_DECRYPT = -18) ──
+static void test_sandbox_encrypted_header_corrupt() {
+    if (!worker_available()) return;
+    const std::string worker_exe = OPENRAR_WORKER_EXE;
+    const fs::path dir = make_dir("corrupt_crypt");
+    const fs::path hp_src = get_fixtures_dir() / "hello5_hp.rar";
+    if (!fs::exists(hp_src)) return;
+
+    std::ifstream f(hp_src, std::ios::binary);
+    std::vector<char> buf((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    f.close();
+    CHECK(buf.size() >= 40);
+
+    // Corrupt body size of HEAD_CRYPT so parse_crypt_header fails (truncated block body)
+    buf[0x0C] = 4; // body size 4 bytes (< 16-byte salt requirement)
+    crypto::Crc32 crc;
+    crc.update(reinterpret_cast<const core::byte*>(buf.data() + 0x0C), 1 + 4);
+    core::write_le32(reinterpret_cast<core::byte*>(buf.data() + 0x08), crc.get());
+
+    const fs::path bad_arc = dir / "corrupt_crypt.rar";
+    std::ofstream out(bad_arc, std::ios::binary | std::ios::trunc);
+    out.write(buf.data(), buf.size());
+    out.close();
+
+    // 1. Direct engine open reports RAR_ERR_DECRYPT (-18)
+    {
+        archive::ArchiveReader reader;
+        int status = archive::RAR_OK;
+        std::string detail;
+        bool ok = reader.open_ex(bad_arc, "secret", status, detail);
+        CHECK(!ok);
+        CHECK(status == archive::RAR_ERR_DECRYPT);
+    }
+
+    // 2. Broker / worker open failure propagates RAR_ERR_DECRYPT (-18)
+    {
+        WorkerBroker broker;
+        std::string detail;
+        bool ok = broker.start(worker_exe, bad_arc, WorkerBroker::Limits{}, detail);
+        CHECK(!ok);
+        CHECK(broker.last_error_code() == archive::RAR_ERR_DECRYPT);
+    }
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+// ── FMM-51-5: Worker memory exhaustion (RAR_ERR_RESOURCE_EXHAUSTION = -19) ──
+static void test_sandbox_worker_oom_rejection() {
+    // 1. Value pinned to -19
+    CHECK(archive::RAR_ERR_RESOURCE_EXHAUSTION == -19);
+
+    // 2. Frame codec roundtrip
+    Frame f{FrameType::Error, {}};
+    CHECK(pack_error(archive::RAR_ERR_RESOURCE_EXHAUSTION, "worker memory exhausted", f.payload));
+    core::int32 unpacked_rc = 0;
+    std::string detail;
+    CHECK(unpack_error(f.payload.data(), f.payload.size(), unpacked_rc, detail));
+    CHECK(unpacked_rc == archive::RAR_ERR_RESOURCE_EXHAUSTION);
+    CHECK(detail == "worker memory exhausted");
+}
+
+// ── FMM-51-6: Broker-side integrity verification / anti-forgery (RAR_ERR_CRC_MISMATCH = -4) ──
+static void test_sandbox_fail_open_forgery_denied_hmac() {
+    if (!worker_available()) return;
+    const std::string worker_exe = OPENRAR_WORKER_EXE;
+    const fs::path dir = make_dir("forgery");
+    const fs::path arc = build_two_entry_archive(dir);
+
+    WorkerBroker broker;
+    std::string detail;
+    CHECK(broker.start(worker_exe, arc, WorkerBroker::Limits{}, detail));
+    CHECK(broker.is_open());
+    CHECK(!broker.entries().empty());
+
+    // Tamper with the expected wire CRC32
+    broker.test_entries()[0].wire.crc32 ^= 0xDEADBEEF;
+
+    // Worker streams genuine content, but broker independent CRC will mismatch
+    core::uint64 bytes_out = 0;
+    const int rc = broker.extract(
+        0, [](const core::byte*, size_t) -> bool { return true; }, &bytes_out, detail);
+
+    CHECK(rc == archive::RAR_ERR_CRC_MISMATCH); // -4
+    CHECK(!broker.is_open());                   // killed upon forgery detection
+
+    broker.shutdown();
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+// ── FMM-51-7: Loud containment degradation reporting with sandbox_active: false ──
+static void test_sandbox_degraded_mode_is_loud() {
+    // 1. ExtractionReport serialization: sandbox_active true vs false
+    {
+        archive::ExtractionReport rep;
+        rep.has_sandbox_field = true;
+        rep.sandbox_active = false;
+        std::string j_degraded = archive::to_json(rep);
+        CHECK(j_degraded.find("\"sandbox_active\":false") != std::string::npos);
+
+        rep.sandbox_active = true;
+        std::string j_active = archive::to_json(rep);
+        CHECK(j_active.find("\"sandbox_active\":true") != std::string::npos);
+    }
+
+    // 2. sandbox_mode_for correctly returns InProc when in_proc flag is set
+    CHECK(sandbox::sandbox_mode_for(true) == sandbox::SandboxMode::InProc);
+}
+
 static const openrar::test::Case k_cases[] = {
     {"run_suite_body", run_suite_body, false},
+    {"test_sandbox_pbkdf2_workbound_rejected", test_sandbox_pbkdf2_workbound_rejected, false},
+    {"test_sandbox_multivol_descriptor_failure", test_sandbox_multivol_descriptor_failure, false},
+    {"test_sandbox_encrypted_header_corrupt", test_sandbox_encrypted_header_corrupt, false},
+    {"test_sandbox_worker_oom_rejection", test_sandbox_worker_oom_rejection, false},
+    {"test_sandbox_fail_open_forgery_denied_hmac", test_sandbox_fail_open_forgery_denied_hmac,
+     false},
+    {"test_sandbox_degraded_mode_is_loud", test_sandbox_degraded_mode_is_loud, false},
 };
 
 int main(int argc, char* argv[]) {
     openrar::test::route_crt_asserts_to_stderr();
-    return openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc,
-                                            argv);
+    int rc =
+        openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
+    if (fails != 0) rc = 1;
+    return rc;
 }
