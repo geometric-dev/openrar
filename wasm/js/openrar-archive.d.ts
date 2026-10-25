@@ -80,7 +80,17 @@ export interface CreateArchiveOptions {
   signal?: AbortSignal;
 }
 
+export interface CreateArchiveStreamOptions extends CreateArchiveOptions {
+  /** Output chunk size in bytes (default: 65536). */
+  chunkSize?: number;
+}
+
 export function createArchive(files: CreateArchiveInput[], opts?: CreateArchiveOptions): Promise<Uint8Array>;
+
+export function createArchiveStream(
+  files: CreateArchiveInput[] | Iterable<CreateArchiveInput> | AsyncIterable<CreateArchiveInput>,
+  opts?: CreateArchiveStreamOptions
+): ReadableStream<Uint8Array>;
 
 /** Buffer inputs: Blob/Response must be converted with blobToBytes() first. */
 export type ArchiveBytes = Uint8Array | ArrayBuffer | ArrayBufferView | string;
