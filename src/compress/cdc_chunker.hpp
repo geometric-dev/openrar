@@ -33,10 +33,11 @@ public:
     // CDC_-prefixed deliberately: compressor50.hpp also defines MIN_CHUNK
     // (1 MiB) and MAX_CHUNK (4 MiB) as *unqualified* names, and reuses that
     // same pair for two different things in one file -- a chunk-size clamp
-    // (:663-667) and a per-thread-count clamp (:672). The halo a parallel
-    // fingerprint pass must overlap is exactly this MAX_CHUNK (256 KiB),
-    // because pending_size_ is capped by it; picking up the other constant
-    // would silently size the overlap wrong. See roadmap-v143.merged.md 8.3.
+    // (:663-667) and a per-thread-count clamp (:672).
+    // Note (S-15 correction): A fixed restart halo of CDC_MAX_CHUNK (256 KiB)
+    // is insufficient for cut-set identity on constant/periodic runs because
+    // cut phase is unbounded. Parallel CDC chunking uses the exact
+    // candidate-then-stitch mechanism (§8.3) with a 63-byte window overlap.
     static constexpr core::uint32 CDC_MIN_CHUNK = 16u * 1024u;
     static constexpr core::uint32 CDC_MAX_CHUNK = 256u * 1024u;
     static constexpr core::uint32 CDC_AVG_CHUNK = 64u * 1024u;
@@ -48,13 +49,28 @@ public:
     // Delegate of CdcStreamChunker — the cut rules live there only.
     void chunk(const core::byte* data, size_t size, std::vector<CdcChunk>& out) const;
 
+    // Parallel content-defined chunking (v1.50 §7.8, §8.3):
+    // Phase 1: parallel candidate scanning with 63-byte window overlap.
+    // Phase 2: serial candidate-then-stitch replay of cut rules.
+    // Guaranteed 100% byte-for-byte, offset-for-offset, hash-for-hash identical
+    // to sequential chunk() (Invariant G-3, cdc_parallel_cutset_equals_sequential).
+    void chunk_parallel(const core::byte* data, size_t size, std::vector<CdcChunk>& out,
+                        unsigned threads = 0, struct CdcParallelDiag* diag = nullptr) const;
+
     // 64-bit Gear hash of an arbitrary byte range (table-driven, no seed).
     core::uint64 hash_range(const core::byte* data, size_t n) const;
 
 private:
     friend class CdcStreamChunker;
     core::uint64 table_[256] = {};
-    core::uint64 mask_ = 0;
+    core::uint64 mask_strict_ = 0xFFFF800000000000ULL;
+    core::uint64 mask_light_ = 0xFFFE000000000000ULL;
+};
+
+struct CdcParallelDiag {
+    bool fell_back{false};
+    std::string fallback_reason;
+    size_t candidate_intervals{0};
 };
 
 // Stateful streaming front-end over the same cut rules as CdcChunker::chunk.

@@ -514,6 +514,20 @@ Standing gates: 24-stage interop (UnRAR 7.20 + WinRAR 7.20) where bytes change �
 - **Proof the restart approach is wrong (kept as a negative test):** a deliberately restart-halo implementation of 256 KiB, test-only, **must fail** on the constant-run inputs. If it passes, the corpus is too soft.
 - **M3:** M2's identity suite green on the new rules · ratio A/B published per change · cap coverage re-derived.
 
+**§7.8 Implementation record — v1.50.0 (2026-10-25).**
+- **M0 / OPT-P01 (Encoder `prev_` Uninitialised Allocation):** Created shared `core::default_init_allocator` in `src/core/default_init_allocator.hpp`. Converted `prev_` and `prev64_` in `Compressor50` to use default-init allocator with `.resize(win_size_)` instead of `.assign(win_size_, -1)`. Eliminated redundant memory memset writes across all window sizes up to 1 GiB.
+- **M1 (Candidate-then-Stitch CDC Chunker):** Implemented `CdcChunker::chunk_parallel` in `src/compress/cdc_chunker.hpp` and `.cpp`. Phase 1 overlaps workers by 63 bytes (matching 64-byte rolling Gear hash window warmup) and coalesces candidate matches into `CandidateInterval` intervals `(start_off, count, flags)` capped at `range_len / 1024`. Phase 2 performs deterministic serial stitching.
+- **M2 (Cut-Set Identity & Negative Restart-Halo Proof):** Verified `cdc_parallel_cutset_equals_sequential` in `tests/unit/cdc_chunker_tests.cpp` across 5 named corpora (constant run failing masks, dense candidate pattern, 2-byte periodic, pseudo-random, structured sparse), 4 thread counts (2, 3, 4, 8), and all 16 residues mod 16 KiB. Added negative test proving that a fixed 256 KiB restart halo fails on constant runs, confirming the S-15 unbounded cut phase flaw.
+- **M3 / OPT-K02 (FastCDC Normalisation Correction):** Replaced no-op identical 16-bit popcount masks with distinct-popcount masks: strict (17-bit: `0xFFFF800000000000ULL`) between MIN and AVG, and light (15-bit: `0xFFFE000000000000ULL`) between AVG and MAX.
+- **Step 4 (CLI Integration):** Wired `chunk_parallel` into `src/cli/main.cpp` (`fingerprint_file_cdc`) for files >= 512 KiB and <= 256 MiB under MT.
+- **Verification Gates:**
+  - 49/49 CTest suites passing (100%).
+  - 49/49 WASM tests passing (0 skipped).
+  - Verification ledger regenerated (`tools/genledger.py`): 4,436 checks.
+  - Anchor lint clean (`tools/anchor_lint.py`): 0 violations.
+  - Layer check clean (`tools/layer_check.py`): 0 new violations.
+  - Version stamps bumped to 1.50.0 in lockstep across all 5 project files.
+
 ### 7.9 v1.51 — Sandbox Scope Expansion (Encrypted + Multi-Volume) · *High*
 
 **Contract:** new codes ≥ **−16**, **−8/−10 never assigned** (I-4); process-exit projection **measured** against `main.cpp:107-119` and pinned by test — not invented (Appendix A). PBKDF2 bounded on **iteration count** (deterministic), wall-clock demoted to a watchdog with its own code. **Verification strictly precedes delivery** (G-4); the MAC key is **broker-held** — a compromised worker holds any key it was given, so token-trust alone is not a defense, and the broker's recompute cost is **budgeted explicitly**.
