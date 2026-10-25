@@ -458,6 +458,20 @@ Standing gates: 24-stage interop (UnRAR 7.20 + WinRAR 7.20) where bytes change �
 
 **Gates:** budgets hold · byte-identity · extractable by native CLI + WinRAR · stress loops clean · **no cleanly-closed partial stream in any abort/OOM test** · and per **G-9**, the Node-only mock (§2 V-1) lands **here**, before this gate is trusted · **M5:** the boundary test is green on the ILP32 leg and the scoped narrowing warning is clean.
 
+**§7.7 Implementation record — v1.49.0 (2026-10-25).**
+- **M0 (WASM Limitations & Memory Accounting):** Documented formal 3-class memory accounting table in `docs/wasm-limitations.md` §4.3.1 (Static, Dynamic — caller, Dynamic — engine). Added permanent audit-clean disposition for bespoke `Archive` class in §4.3 (`deferred: post-v1.52`, owner: `geometric-dev`).
+- **M1/M2 (Archive Streaming Encode `createArchiveStream`):** Implemented `createArchiveStream` in `wasm/js/openrar-archive.js` and TypeScript definitions in `openrar-archive.d.ts`. Yields `ReadableStream<Uint8Array>` and async iterables (`[Symbol.asyncIterator]`). Preserved 100% byte-identity parity (Invariant I-3) with one-shot `createArchive`. Enforced fail-closed abort/error stream termination (`controller.error(err)`), clean OOM to `RAR_ERR_NOMEM` (-5) mapping, and decoupled chunk ownership.
+- **M3 (Vacuous-Pass Vector 1 Mock Harness):** Defeated V-1 per Invariant G-9 by implementing `wasm/js/mock_module.js`. Simulates Emscripten heap memory arena, codec dynamic function tables, and archive serialization in native Node environments. Enabled 49/49 WASM tests across 4 suites to execute and assert correctness without requiring `wasm/js/dist/` build artifacts.
+- **M5 (Bit-Position Width Widening):** Widened bit-position quantities (`BitReader::consumed_`, `size_`, `fetched_`, `bit_pos()`, `byte_pos()`, `bits_remaining()`, callback constructor `size`) to `core::uint64` in `src/compress/decompressor50.hpp` and `.cpp`. Fixed narrowing of block boundary calculations to `size_t`. Added zero-allocation unit test in `tests/unit/bitreader_stream_tests.cpp` asserting exact bit width across $2^{29}-1, 2^{29}, 2^{29}+1$ bytes.
+- **Verification Gates:**
+  - 49/49 CTest suites passing (100%).
+  - 49/49 WASM JS tests passing (0 skipped).
+  - WASM export check passing (21 openrar exports, 26 openrar-archive exports).
+  - Verification ledger regenerated (`tools/genledger.py`).
+  - Anchor lint clean (`tools/anchor_lint.py`): 0 violations.
+  - Layer check clean (`tools/layer_check.py`): 0 new violations.
+  - Version stamps bumped to 1.49.0 in lockstep across all 5 project files.
+
 ### 7.8 v1.50 — Parallel CDC Fingerprint Pass · *Low*
 
 **M0 — profiling gate (blocks M1):** ≥10 GB heterogeneous corpus; **fingerprinting must be ≥15% of pack wall-clock.** *Pivot if below:* window adaptive tuning + async read prefetch, each with its own Gate-0 record.

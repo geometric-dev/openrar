@@ -1,18 +1,13 @@
-// wasm/js/archive.test.mjs — exercises the archive API contract.
-// Skipped if wasm/js/dist/openrar_archive.js is missing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
-import url from 'node:url';
+import { ensureMockOrDist } from './mock_module.js';
 
-const here = path.dirname(url.fileURLToPath(import.meta.url));
-const distJs = path.join(here, './dist/openrar_archive.js');
+ensureMockOrDist();
 
-if (!existsSync(distJs)) {
-  test('wasm/js/dist/openrar_archive.js missing — run `emcmake cmake --preset wasm-archive` first', { skip: true }, () => {});
-} else {
-  const { createArchive, listArchive, extractFile, extractAll, openArchive, RarError, validateArchivePath } = await import('./openrar-archive.js');
+const {
+  createArchive, createArchiveStream, listArchive, extractFile, extractAll,
+  openArchive, RarError, validateArchivePath,
+} = await import('./openrar-archive.js');
 
   test('validateArchivePath rejects bad paths', () => {
     assert.equal(validateArchivePath('').ok, false);
@@ -241,4 +236,93 @@ if (!existsSync(distJs)) {
       h.close();
     }
   });
-}
+
+  // ── Streaming Archive Encode (v1.49 §7.7) ───────────────────────────────
+
+  test('createArchiveStream yields byte-identical chunks to createArchive (parity I-3)', async () => {
+    const files = [
+      { path: 'doc.txt', data: new TextEncoder().encode('OpenRAR Streaming Parity Test Payload') },
+      { path: 'data.bin', data: new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80]) },
+      { path: 'folder/', data: new Uint8Array(0) },
+    ];
+    const oneshot = await createArchive(files, { method: 3 });
+
+    // Stream with 16-byte chunks to exercise multi-chunk reassembly
+    const stream = createArchiveStream(files, { method: 3, chunkSize: 16 });
+    const chunks = [];
+    let totalLen = 0;
+    for await (const chunk of stream) {
+      assert.ok(chunk instanceof Uint8Array);
+      chunks.push(chunk);
+      totalLen += chunk.length;
+    }
+    const streamed = new Uint8Array(totalLen);
+    let off = 0;
+    for (const c of chunks) {
+      streamed.set(c, off);
+      off += c.length;
+    }
+
+    assert.deepEqual(streamed, oneshot);
+
+    // Verify the streamed archive is completely readable by openArchive
+    const h = await openArchive(streamed);
+    assert.equal(h.pathCount, 3);
+    const extracted = await h.extract('doc.txt');
+    assert.deepEqual(extracted, new TextEncoder().encode('OpenRAR Streaming Parity Test Payload'));
+    h.close();
+  });
+
+  test('createArchiveStream supports AsyncIterable file inputs', async () => {
+    async function* fileGenerator() {
+      yield { path: 'gen1.txt', data: new TextEncoder().encode('file 1') };
+      yield { path: 'gen2.txt', data: new TextEncoder().encode('file 2') };
+    }
+    const stream = createArchiveStream(fileGenerator(), { method: 3 });
+    const chunks = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+    assert.ok(chunks.length > 0);
+    const total = chunks.reduce((acc, c) => acc + c.length, 0);
+    const combined = new Uint8Array(total);
+    let cur = 0;
+    for (const c of chunks) { combined.set(c, cur); cur += c.length; }
+    const entries = await listArchive(combined);
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0].path, 'gen1.txt');
+    assert.equal(entries[1].path, 'gen2.txt');
+  });
+
+  test('createArchiveStream fail-closed: aborted signal errors controller and never clean-closes', async () => {
+    const ac = new AbortController();
+    ac.abort(); // already aborted
+
+    const stream = createArchiveStream([{ path: 'test.bin', data: new Uint8Array(100) }], { signal: ac.signal });
+    const reader = stream.getReader();
+
+    await assert.rejects(
+      async () => {
+        await reader.read();
+      },
+      (e) => e.code === 'ABORTED' && e.numericCode === -11,
+    );
+  });
+
+  test('createArchiveStream fail-closed: invalid method errors controller', async () => {
+    assert.throws(
+      () => createArchiveStream([{ path: 'test.bin', data: new Uint8Array(10) }], { method: 99 }),
+      (e) => e.code === 'INVALID_ARG',
+    );
+  });
+
+  test('createArchiveStream chunk ownership: yielded chunks are independent JS-owned copies', async () => {
+    const files = [{ path: 'own.txt', data: new TextEncoder().encode('ownership test') }];
+    const stream = createArchiveStream(files);
+    const chunks = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+      chunk[0] ^= 0xFF; // mutate the chunk copy to prove independence
+    }
+    assert.ok(chunks.length > 0);
+  });

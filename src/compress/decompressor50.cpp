@@ -31,7 +31,7 @@ BitReader::BitReader(const core::byte* data, size_t size)
     if (data) end_ = data + size;
 }
 
-BitReader::BitReader(InputCallback cb, size_t size)
+BitReader::BitReader(InputCallback cb, core::uint64 size)
     : cb_(cb), buf_(65536), p_(buf_.data()), end_(buf_.data()), acc_(0), n_(0), consumed_(0),
       size_(size), fetched_(0) {}
 
@@ -40,7 +40,7 @@ BitReader::BitReader(InputCallback cb, size_t size)
 // stream or when the callback is starved.
 bool BitReader::fetch_chunk() {
     if (!cb_ || fetched_ >= size_) return false;
-    size_t to_read = std::min<size_t>(buf_.size(), size_ - fetched_);
+    size_t to_read = static_cast<size_t>(std::min<core::uint64>(buf_.size(), size_ - fetched_));
     size_t n = cb_(buf_.data(), to_read);
     // InputCallback is a PUBLIC std::function API owned by the embedding
     // (DLL / wasm / host), so its return value cannot be trusted to fit the
@@ -101,9 +101,9 @@ void BitReader::refill() {
     }
 }
 
-size_t BitReader::bits_remaining() const {
-    size_t rem_bytes = (end_ - p_) + (size_ - fetched_);
-    return rem_bytes * 8 + n_;
+core::uint64 BitReader::bits_remaining() const {
+    core::uint64 rem_bytes = static_cast<core::uint64>(end_ - p_) + (size_ - fetched_);
+    return rem_bytes * 8ULL + n_;
 }
 
 core::uint32 BitReader::peek_bits(unsigned int count) {
@@ -976,8 +976,8 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
         return (static_cast<core::uint64>(h.block_start + h.block_size - 1)) * 8 +
                static_cast<core::uint64>(h.block_bit_size);
     };
-    size_t end_bit = block_end_bit(header);
-    auto cur_bit = [&]() -> size_t {
+    core::uint64 end_bit = block_end_bit(header);
+    auto cur_bit = [&]() -> core::uint64 {
         return reader.bit_pos();
     };
 
@@ -1003,13 +1003,13 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     // decoder's verdict identical to decode_span()/prescan_member(), which
     // restart every block at its exact byte boundary instead of aligning
     // from wherever the over-read left the reader.
-    auto overran_block = [&](size_t bit) {
+    auto overran_block = [&](core::uint64 bit) {
         return header.block_size > 0 && bit > end_bit;
     };
     if (overran_block(cur_bit())) return false;
 
     while (total_written < dest_size) {
-        size_t cb = cur_bit();
+        core::uint64 cb = cur_bit();
         if (cb >= end_bit) {
             if (overran_block(cb)) return false;
             if (single_block) break;
@@ -1457,7 +1457,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
                 last_error_str_ = "span token-bit skip hit end of input";
                 return false;
             }
-            size_t remain = expect.token_bits - reader.bit_pos();
+            core::uint64 remain = expect.token_bits - reader.bit_pos();
             reader.consume_bits(static_cast<unsigned>(remain > 57 ? 57 : remain));
         }
         if (reader.bit_pos() != expect.token_bits) {
@@ -1471,7 +1471,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
             return (static_cast<core::uint64>(h.block_start + h.block_size - 1)) * 8 +
                    static_cast<core::uint64>(h.block_bit_size);
         };
-        const size_t end_bit = block_end_bit(header);
+        const core::uint64 end_bit = block_end_bit(header);
 
         while (reader.bit_pos() < end_bit && reader.bits_remaining() >= 1) {
             if (rec_bytes_now > rec_cap) {
