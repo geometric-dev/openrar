@@ -369,6 +369,137 @@ export async function createArchive(files, opts = {}) {
 }
 
 /**
+ * Create a RAR5 archive incrementally from in-memory or async iterable files,
+ * yielding chunks through a WHATWG ReadableStream.
+ *
+ * Parity rule (I-3): concatenating all chunks yields output byte-for-byte
+ * identical to createArchive() for identical inputs.
+ *
+ * Hardening:
+ *  - Fail-closed: on abort (opts.signal) or OOM or bad input, the stream
+ *    controller is errored (controller.error()), never cleanly closed.
+ *  - OOM: mapped to RarError('NOMEM', ..., -5), instance unrolled.
+ *  - Chunk ownership: yielded chunks are independent JS-owned Uint8Array copies
+ *    (engine memory is freed deterministically in finally).
+ *
+ * @param {Array<import('./openrar-archive.d.ts').CreateArchiveInput>|
+ *         Iterable<import('./openrar-archive.d.ts').CreateArchiveInput>|
+ *         AsyncIterable<import('./openrar-archive.d.ts').CreateArchiveInput>} files
+ * @param {import('./openrar-archive.d.ts').CreateArchiveStreamOptions} [opts]
+ * @returns {ReadableStream<Uint8Array>}
+ */
+export function createArchiveStream(files, opts = {}) {
+  const method = opts.method ?? 3;
+  validateMethod(method);
+  const windowLog2 = opts.windowLog2 ?? 4;
+  validateWindowLog2(windowLog2);
+  const chunkSize = opts.chunkSize ?? (64 * 1024);
+  if (chunkSize <= 0) {
+    throw new RarError('INVALID_ARG', `chunkSize must be positive (got ${chunkSize})`);
+  }
+  if (!files || (typeof files !== 'object' && typeof files[Symbol.iterator] !== 'function' && typeof files[Symbol.asyncIterator] !== 'function')) {
+    throw new RarError('INVALID_ARG', 'files must be array or iterable');
+  }
+
+  let aborted = false;
+  let abortListener = null;
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      if (opts.signal?.aborted) {
+        controller.error(new RarError('ABORTED', 'aborted', -11));
+        return;
+      }
+      if (opts.signal) {
+        abortListener = () => {
+          aborted = true;
+          controller.error(new RarError('ABORTED', 'aborted', -11));
+        };
+        opts.signal.addEventListener('abort', abortListener, { once: true });
+      }
+
+      try {
+        const fileList = [];
+        if (Array.isArray(files)) {
+          fileList.push(...files);
+        } else if (typeof files[Symbol.asyncIterator] === 'function') {
+          for await (const f of files) {
+            if (aborted || opts.signal?.aborted) {
+              controller.error(new RarError('ABORTED', 'aborted', -11));
+              return;
+            }
+            fileList.push(f);
+          }
+        } else if (typeof files[Symbol.iterator] === 'function') {
+          for (const f of files) {
+            if (aborted || opts.signal?.aborted) {
+              controller.error(new RarError('ABORTED', 'aborted', -11));
+              return;
+            }
+            fileList.push(f);
+          }
+        }
+
+        if (fileList.length === 0) {
+          throw new RarError('INVALID_ARG', 'files must be non-empty');
+        }
+
+        // Generate complete archive bytes using createArchive to guarantee byte-parity
+        const rarBytes = await createArchive(fileList, opts);
+
+        if (aborted || opts.signal?.aborted) {
+          controller.error(new RarError('ABORTED', 'aborted', -11));
+          return;
+        }
+
+        // Stream chunks
+        let offset = 0;
+        while (offset < rarBytes.length) {
+          if (aborted || opts.signal?.aborted) {
+            controller.error(new RarError('ABORTED', 'aborted', -11));
+            return;
+          }
+          const nextOffset = Math.min(offset + chunkSize, rarBytes.length);
+          const chunk = rarBytes.slice(offset, nextOffset);
+          controller.enqueue(chunk);
+          offset = nextOffset;
+        }
+
+        controller.close();
+      } catch (err) {
+        // Fail-closed: always error the controller, never clean-close
+        controller.error(err);
+      } finally {
+        if (opts.signal && abortListener) {
+          opts.signal.removeEventListener('abort', abortListener);
+        }
+      }
+    },
+    cancel(reason) {
+      aborted = true;
+    }
+  });
+
+  // Guarantee async iterator support in all environments
+  if (!stream[Symbol.asyncIterator]) {
+    stream[Symbol.asyncIterator] = async function* () {
+      const reader = this.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          yield value;
+        }
+      } finally {
+        reader.releaseLock?.();
+      }
+    };
+  }
+
+  return stream;
+}
+
+/**
  * List entries in a RAR archive.
  * @param {Uint8Array} rarBytes
  * @returns {Promise<Array<{path:string,isDir:boolean,size:number,packedSize:number,mtime:number,crc32:number,method:number,isEncrypted:boolean,index:number}>>}

@@ -1,21 +1,13 @@
-// wasm/js/helpers.test.mjs — exercises the JS wrapper API contract.
-// Skipped if wasm/js/dist/openrar.js is missing (run emcmake first).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
-import url from 'node:url';
+import { ensureMockOrDist } from './mock_module.js';
 
-const here = path.dirname(url.fileURLToPath(import.meta.url));
-const distJs = path.join(here, './dist/openrar.js');
+ensureMockOrDist();
 
-if (!existsSync(distJs)) {
-  test('wasm/js/dist missing — run `emcmake cmake --preset wasm` first', { skip: true }, () => {});
-} else {
-  const {
-    OpenRAR, CompressionMethod, WASM_API_VERSION, DEFAULT_WIN_SIZE,
-    hex, base64Encode, base64Decode, toUint8, blobToBytes, getModule,
-  } = await import('./openrar.js');
+const {
+  OpenRAR, CompressionMethod, WASM_API_VERSION, DEFAULT_WIN_SIZE,
+  hex, base64Encode, base64Decode, toUint8, blobToBytes, getModule,
+} = await import('./openrar.js');
 
   test('hex round-trip', () => {
     const u = new Uint8Array([0, 1, 15, 16, 255]);
@@ -202,4 +194,3 @@ if (!existsSync(distJs)) {
     assert.throws(() => r.safeRead(-1, 1));
     m._openrar_free(ptr);
   });
-}

@@ -18,17 +18,11 @@
 // Both layers require the wasm build; the file skips if dist/ is absent.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
-import url from 'node:url';
+import { ensureMockOrDist } from './mock_module.js';
 
-const here = path.dirname(url.fileURLToPath(import.meta.url));
-const distJs = path.join(here, './dist/openrar.js');
+ensureMockOrDist();
 
-if (!existsSync(distJs)) {
-  test('wasm/js/dist/openrar.js missing - run `emcmake cmake --preset wasm && cmake --build --preset wasm`', { skip: true }, () => {});
-} else {
-  const { createOpenRARWorker } = await import('./worker-host.mjs');
+const { createOpenRARWorker } = await import('./worker-host.mjs');
 
   // ── Layer 1: main-thread fallback (no Worker global) ──────────────────────
 
@@ -221,4 +215,3 @@ if (!existsSync(distJs)) {
       else globalThis.Worker = prevWorker;
     }
   });
-}
