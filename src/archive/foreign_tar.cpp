@@ -348,6 +348,12 @@ ForeignStatus TarReader::open(const std::filesystem::path& path, const Extractio
                 raw_gname = kv.second;
             else if (kv.first == "mtime") {
                 parse_pax_time(kv.second, m.meta.mtime_sec, m.meta.mtime_nsec);
+            } else if (kv.first == "atime") {
+                int32_t dummy_nsec = 0;
+                parse_pax_time(kv.second, m.meta.atime_sec, dummy_nsec);
+            } else if (kv.first == "ctime") {
+                int32_t dummy_nsec = 0;
+                parse_pax_time(kv.second, m.meta.ctime_sec, dummy_nsec);
             } else if (kv.first.rfind("GNU.sparse.", 0) == 0) {
                 sparse = true;
             }
@@ -381,9 +387,13 @@ ForeignStatus TarReader::open(const std::filesystem::path& path, const Extractio
         e.name = translate_foreign_name(
             effective, binary_names ? ForeignNameEncoding::Raw : ForeignNameEncoding::Utf8,
             e.name_escaped);
-        e.link_target = translate_foreign_name(
-            effective_link, binary_names ? ForeignNameEncoding::Raw : ForeignNameEncoding::Utf8,
-            e.name_escaped);
+        if (typeflag == '2') {
+            e.link_target = effective_link;
+        } else {
+            e.link_target = translate_foreign_name(
+                effective_link, binary_names ? ForeignNameEncoding::Raw : ForeignNameEncoding::Utf8,
+                e.name_escaped);
+        }
 
         switch (typeflag) {
         case '0':

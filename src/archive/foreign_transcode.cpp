@@ -273,6 +273,17 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
     // master did not migrate (skipped/refused) cannot resolve and is skipped
     // with a report instead of emitting a dangling record.
     std::set<std::string> migrated_names;
+
+    // v1.48.0 M2: Hash-to-master map for duplicate detection (FILECOPY materialization).
+    struct Blake2spHash {
+        size_t operator()(const std::array<core::byte, 32>& d) const noexcept {
+            size_t h;
+            std::memcpy(&h, d.data(), sizeof(h));
+            return h; // first 8 bytes of a 256-bit cryptographic hash
+        }
+    };
+    std::unordered_map<std::array<core::byte, 32>, std::string, Blake2spHash> hash_to_master;
+
     // Cumulative-output accounting spans the WHOLE session, so it lives
     // outside the per-entry loop. Declared inside, total_out reset for every
     // entry and max_total_output_bytes degraded to a per-entry cap - contrary
@@ -293,26 +304,41 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
             ++result.skipped;
             continue;
         }
-        // Links (v1.36.0, Gate 0 in docs/v1.36.0-pre-analysis.md): targets
-        // migrate verbatim; extraction-time safety (absolute/escaping target
-        // refusal, symlink-parent scan, spec-07 skip semantics) is enforced
-        // by ArchiveReader at extraction. Symlink dir-target-ness is not
-        // carried by foreign metadata reliably; the conservative file-target
-        // default only affects Windows directory-symlink creation.
+        // Links (v1.36.0, Gate 0 in docs/v1.36.0-pre-analysis.md):
+        // v1.48.0 M0: symlink targets are validated on entry; illegal targets
+        // are dropped with symlink_dropped report status and counted as skipped.
         if (e.type == ForeignType::Symlink) {
             ArchiveMutator::PreparedAdd pa;
-            if (!ArchiveMutator::prepare_add_symlink_from_memory(e.name, e.link_target, false,
-                                                                 e.mtime_sec, pa)) {
-                add_report_entry(e, ForeignStatus::IoError, {});
-                ++result.failed;
-                result.status = ForeignStatus::IoError;
-                result.detail = "prepare_add_symlink_from_memory failed";
-                return result.status;
+            std::string rejection_reason;
+            if (!ArchiveMutator::prepare_add_symlink_from_memory(
+                    e.name, e.link_target, false, e.mtime_sec, pa, options.times_mask,
+                    /*default_group=*/"", /*default_user=*/"", &rejection_reason, e.ctime_sec,
+                    e.atime_sec)) {
+                ExtractionReportEntry r;
+                r.name = e.name;
+                r.status = "symlink_dropped";
+                r.reason = rejection_reason.empty() ? "symlink target rejected" : rejection_reason;
+                if (!rejection_reason.empty()) {
+                    r.security_flags.push_back(rejection_reason);
+                }
+                if (e.name_escaped) r.security_flags.push_back("name_escaped");
+                if (e.timestamp_clamped) r.security_flags.push_back("timestamp_clamped");
+                if (!e.comment.empty()) r.security_flags.push_back("comment_skipped");
+                report.entries.push_back(std::move(r));
+                ++result.skipped;
+                continue;
             }
             batch.push_back(std::move(pa));
             migrated_names.insert(e.name);
             ++result.migrated_links;
-            add_report_entry(e, ForeignStatus::Ok, {});
+            std::vector<std::string> report_flags;
+            if ((options.times_mask & time_flags::CTIME) && e.ctime_sec == 0) {
+                report_flags.push_back("ctime_unavailable");
+            }
+            if ((options.times_mask & time_flags::ATIME) && e.atime_sec == 0) {
+                report_flags.push_back("atime_unavailable");
+            }
+            add_report_entry(e, ForeignStatus::Ok, report_flags);
             continue;
         }
         if (e.type == ForeignType::Hardlink) {
@@ -322,8 +348,9 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
                 continue;
             }
             ArchiveMutator::PreparedAdd pa;
-            if (!ArchiveMutator::prepare_add_hardlink_from_memory(e.name, e.link_target,
-                                                                  e.mtime_sec, pa)) {
+            if (!ArchiveMutator::prepare_add_hardlink_from_memory(
+                    e.name, e.link_target, e.mtime_sec, pa, options.times_mask,
+                    /*default_group=*/"", /*default_user=*/"", e.ctime_sec, e.atime_sec)) {
                 add_report_entry(e, ForeignStatus::IoError, {});
                 ++result.failed;
                 result.status = ForeignStatus::IoError;
@@ -333,7 +360,14 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
             batch.push_back(std::move(pa));
             migrated_names.insert(e.name);
             ++result.migrated_links;
-            add_report_entry(e, ForeignStatus::Ok, {});
+            std::vector<std::string> report_flags;
+            if ((options.times_mask & time_flags::CTIME) && e.ctime_sec == 0) {
+                report_flags.push_back("ctime_unavailable");
+            }
+            if ((options.times_mask & time_flags::ATIME) && e.atime_sec == 0) {
+                report_flags.push_back("atime_unavailable");
+            }
+            add_report_entry(e, ForeignStatus::Ok, report_flags);
             continue;
         }
         if (e.type == ForeignType::Other) {
@@ -366,17 +400,42 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
             }
             set_staging_mtime(sub, e.mtime_sec, e.mtime_nsec);
             ArchiveMutator::PreparedAdd pa;
-            if (!ArchiveMutator::prepare_add_dir(sub, e.name, pa)) {
+            if (!ArchiveMutator::prepare_add_dir(sub, e.name, pa, options.times_mask)) {
                 add_report_entry(e, ForeignStatus::IoError, {});
                 ++result.failed;
                 result.status = ForeignStatus::IoError;
                 result.detail = "prepare_add_dir failed";
                 return result.status;
             }
+            std::vector<std::string> report_flags;
+            if (options.times_mask & time_flags::CTIME) {
+                if (e.ctime_sec > 0) {
+                    pa.fb.htime_ctime_unix = static_cast<core::uint32>(e.ctime_sec);
+                    pa.fb.htime_is_unix = true;
+                } else {
+                    pa.fb.htime_ctime_unix = 0;
+#ifdef _WIN32
+                    pa.fb.ctime_win = 0;
+#endif
+                    report_flags.push_back("ctime_unavailable");
+                }
+            }
+            if (options.times_mask & time_flags::ATIME) {
+                if (e.atime_sec > 0) {
+                    pa.fb.htime_atime_unix = static_cast<core::uint32>(e.atime_sec);
+                    pa.fb.htime_is_unix = true;
+                } else {
+                    pa.fb.htime_atime_unix = 0;
+#ifdef _WIN32
+                    pa.fb.atime_win = 0;
+#endif
+                    report_flags.push_back("atime_unavailable");
+                }
+            }
             batch.push_back(std::move(pa));
             migrated_names.insert(e.name);
             ++result.migrated_dirs;
-            add_report_entry(e, ForeignStatus::Ok, {});
+            add_report_entry(e, ForeignStatus::Ok, report_flags);
             continue;
         }
 
@@ -419,10 +478,64 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
         }
         std::array<core::byte, 32> digest{};
         hash.finish(digest.data());
+
+        // M2.1: Duplicate detection for FILECOPY materialization
+        auto it_dup = hash_to_master.find(digest);
+        if (it_dup != hash_to_master.end()) {
+            ArchiveMutator::PreparedAdd pa;
+            if (!ArchiveMutator::prepare_add_filecopy_from_memory(
+                    e.name, it_dup->second, e.mtime_sec, e.unpacked_size, pa, options.times_mask,
+                    /*default_group=*/"", /*default_user=*/"", e.ctime_sec, e.atime_sec)) {
+                std::error_code rm_ec;
+                std::filesystem::remove(staging_file, rm_ec);
+                add_report_entry(e, ForeignStatus::IoError, {});
+                ++result.failed;
+                result.status = ForeignStatus::IoError;
+                result.detail = "prepare_add_filecopy_from_memory failed";
+                return result.status;
+            }
+            std::vector<std::string> report_flags;
+            if (options.times_mask & time_flags::CTIME) {
+                if (e.ctime_sec > 0) {
+                    pa.fb.htime_ctime_unix = static_cast<core::uint32>(e.ctime_sec);
+                    pa.fb.htime_is_unix = true;
+                } else {
+                    pa.fb.htime_ctime_unix = 0;
+#ifdef _WIN32
+                    pa.fb.ctime_win = 0;
+#endif
+                    report_flags.push_back("ctime_unavailable");
+                }
+            }
+            if (options.times_mask & time_flags::ATIME) {
+                if (e.atime_sec > 0) {
+                    pa.fb.htime_atime_unix = static_cast<core::uint32>(e.atime_sec);
+                    pa.fb.htime_is_unix = true;
+                } else {
+                    pa.fb.htime_atime_unix = 0;
+#ifdef _WIN32
+                    pa.fb.atime_win = 0;
+#endif
+                    report_flags.push_back("atime_unavailable");
+                }
+            }
+            std::error_code rm_ec;
+            std::filesystem::remove(staging_file, rm_ec);
+            batch.push_back(std::move(pa));
+            migrated_names.insert(e.name);
+            source_hashes.push_back(digest);
+            migrated_entries.push_back(&e);
+            ++result.migrated_files;
+            add_report_entry(e, ForeignStatus::Ok, report_flags);
+            continue;
+        }
+        hash_to_master[digest] = e.name;
+
         set_staging_mtime(staging_file, e.mtime_sec, e.mtime_nsec);
 
         ArchiveMutator::PreparedAdd pa;
-        if (!ArchiveMutator::prepare_add_file(staging_file, e.name, options.method, "", pa)) {
+        if (!ArchiveMutator::prepare_add_file(staging_file, e.name, options.method, "", pa,
+                                              options.times_mask)) {
             std::error_code ec;
             std::filesystem::remove(staging_file, ec);
             add_report_entry(e, ForeignStatus::IoError, {});
@@ -431,6 +544,31 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
             result.detail = "prepare_add_file failed";
             return result.status;
         }
+        std::vector<std::string> report_flags;
+        if (options.times_mask & time_flags::CTIME) {
+            if (e.ctime_sec > 0) {
+                pa.fb.htime_ctime_unix = static_cast<core::uint32>(e.ctime_sec);
+                pa.fb.htime_is_unix = true;
+            } else {
+                pa.fb.htime_ctime_unix = 0;
+#ifdef _WIN32
+                pa.fb.ctime_win = 0;
+#endif
+                report_flags.push_back("ctime_unavailable");
+            }
+        }
+        if (options.times_mask & time_flags::ATIME) {
+            if (e.atime_sec > 0) {
+                pa.fb.htime_atime_unix = static_cast<core::uint32>(e.atime_sec);
+                pa.fb.htime_is_unix = true;
+            } else {
+                pa.fb.htime_atime_unix = 0;
+#ifdef _WIN32
+                pa.fb.atime_win = 0;
+#endif
+                report_flags.push_back("atime_unavailable");
+            }
+        }
         std::error_code rm_ec;
         std::filesystem::remove(staging_file, rm_ec);
         batch.push_back(std::move(pa));
@@ -438,7 +576,7 @@ ForeignStatus transcode(const std::filesystem::path& source, const std::filesyst
         source_hashes.push_back(digest);
         migrated_entries.push_back(&e);
         ++result.migrated_files;
-        add_report_entry(e, ForeignStatus::Ok, {});
+        add_report_entry(e, ForeignStatus::Ok, report_flags);
     }
 
     if (batch.empty()) {
