@@ -1,5 +1,8 @@
 # 🗺️ OpenRAR Engineering Roadmap: v1.21.x → v1.41 (Tight Base → Enterprise → Compression-Performance Era)
 
+> [!NOTE]
+> This roadmap documents the v1.21.x → v1.41 era. For current and future planning (v1.43 → v1.52), see [roadmap-v143.merged.md](ROADMAP.md).
+
 > **Provenance & Supersession.** Third revision. The first revision inserted
 > the v1.21.1 stabilization gate after the v1.6.0 → v1.21.0 architect audit;
 > the second folded in the residual P2 front-load (shipped as v1.21.2). This
