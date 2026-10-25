@@ -241,3 +241,10 @@ No encoding transformation is applied to symlink targets.
 - Multiple `ArchiveReader` instances on separate threads are independent (no shared mutable state).
 - DLL handle-table operations (`pin`, `insert`, `erase`) are mutex-protected and safe to call
   concurrently from multiple threads. Callbacks are invoked with the table lock released.
+
+---
+
+## 11. Symlink Containment & macOS Non-Equivalence Contract (v1.48)
+
+When Seatbelt symlink containment is unavailable (macOS builds prior to v1.47, or sandbox_init failure at runtime), symlink entries are dropped with `symlink_dropped` status. Extraction equivalence is not claimed on this code path.
+

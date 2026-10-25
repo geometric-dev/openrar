@@ -1878,6 +1878,16 @@ int ArchiveReader::extract_entry_sink(
     const ArchiveEntry& entry = entries_[entry_index];
 
     // Directory and link entries carry no payload.
+    // v1.48: FILECOPY (redir_type 5) resolves to master entry's payload in memory.
+    if (entry.header.redir_type == 5) {
+        for (size_t mi = 0; mi < entries_.size(); ++mi) {
+            if (mi != entry_index && entries_[mi].header.file_name == entry.header.redir_target &&
+                entries_[mi].header.redir_type == 0) {
+                return extract_entry_sink(mi, out_sink, hooks, limits, state);
+            }
+        }
+        return RAR_ERR_CRC_MISMATCH;
+    }
     if ((entry.header.file_flags & format::FHFL_DIRECTORY) || entry.header.redir_type != 0)
         return RAR_OK;
 
@@ -1951,6 +1961,16 @@ int ArchiveReader::extract_entry_to_memory(size_t entry_index, std::vector<core:
     bad_password_ = false;
     if (entry_index >= entries_.size()) return RAR_ERR_INVALID_ARG;
     const ArchiveEntry& entry = entries_[entry_index];
+    // v1.48: FILECOPY (redir_type 5) resolves to master entry's payload in memory.
+    if (entry.header.redir_type == 5) {
+        for (size_t mi = 0; mi < entries_.size(); ++mi) {
+            if (mi != entry_index && entries_[mi].header.file_name == entry.header.redir_target &&
+                entries_[mi].header.redir_type == 0) {
+                return extract_entry_to_memory(mi, out, max_bytes, hooks, limits, state);
+            }
+        }
+        return RAR_ERR_CRC_MISMATCH;
+    }
     if (entry.header.unp_size > max_bytes) return RAR_ERR_NOMEM;
 
     LimitState local_state;
@@ -2019,6 +2039,16 @@ int ArchiveReader::test_entry_stream(size_t entry_index, const ReaderHooks& hook
     const ArchiveEntry& entry = entries_[entry_index];
     // Directory and link entries carry no verifiable payload (and links must
     // not be followed — the target may not exist yet).
+    // v1.48: FILECOPY (redir_type 5) resolves to master entry in memory.
+    if (entry.header.redir_type == 5) {
+        for (size_t mi = 0; mi < entries_.size(); ++mi) {
+            if (mi != entry_index && entries_[mi].header.file_name == entry.header.redir_target &&
+                entries_[mi].header.redir_type == 0) {
+                return test_entry_stream(mi, hooks, limits, state);
+            }
+        }
+        return RAR_ERR_CRC_MISMATCH;
+    }
     if ((entry.header.file_flags & format::FHFL_DIRECTORY) || entry.header.redir_type != 0)
         return RAR_OK;
 

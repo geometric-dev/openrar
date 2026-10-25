@@ -552,6 +552,298 @@ static void test_transcode_tar_links_migrate() {
     std::cout << "    - tar links -> REDIR records: 2 migrated, dangling skipped" << std::endl;
 }
 
+// v1.48.0 M0: Symlink Read-Link Legality & Link Matrix
+static void test_symlink_legality_matrix() {
+    std::cout << "[+] test_symlink_legality_matrix" << std::endl;
+
+    // Check 1: Empty
+    auto r = ArchiveMutator::validate_symlink_target("arc", "");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "empty_target");
+
+    // Check 2: Null byte
+    std::string null_tgt = "foo";
+    null_tgt.push_back('\0');
+    null_tgt += "bar";
+    r = ArchiveMutator::validate_symlink_target("arc", null_tgt);
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "null_byte");
+
+    // Check 3: Absolute (POSIX)
+    r = ArchiveMutator::validate_symlink_target("arc", "/etc/passwd");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "absolute_path");
+
+    // Check 4: Absolute (Win)
+    r = ArchiveMutator::validate_symlink_target("arc", "C:\\Windows");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "absolute_path");
+
+    r = ArchiveMutator::validate_symlink_target("arc", "d:/foo");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "absolute_path");
+
+    // Check 5: UNC
+    r = ArchiveMutator::validate_symlink_target("arc", "\\\\server\\share");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "unc_path");
+
+    r = ArchiveMutator::validate_symlink_target("arc", "//server/share");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "unc_path");
+
+    // Check 6: Traversal
+    r = ArchiveMutator::validate_symlink_target("arc", "../../etc/shadow");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "traversal");
+
+    r = ArchiveMutator::validate_symlink_target("arc", "foo/../../bar");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "traversal");
+
+    r = ArchiveMutator::validate_symlink_target("arc", "../sibling");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "traversal");
+
+    r = ArchiveMutator::validate_symlink_target("arc", "a/b/../../../c");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "traversal");
+
+    r = ArchiveMutator::validate_symlink_target("arc", "a/../../c");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "traversal");
+
+    // Accepted relatives
+    r = ArchiveMutator::validate_symlink_target("arc", "subdir/../sibling");
+    REQUIRE(r.valid);
+
+    r = ArchiveMutator::validate_symlink_target("arc", "subdir/file");
+    REQUIRE(r.valid);
+
+    r = ArchiveMutator::validate_symlink_target("arc", "file.txt");
+    REQUIRE(r.valid);
+
+    r = ArchiveMutator::validate_symlink_target("arc", "dir\\file");
+    REQUIRE(r.valid);
+
+#ifdef _WIN32
+    // Check 7: ADS (Windows only)
+    r = ArchiveMutator::validate_symlink_target("arc", "file:stream");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "ads_stream");
+
+    // Check 8: Reserved DOS names (Windows only)
+    r = ArchiveMutator::validate_symlink_target("arc", "CON");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "reserved_name");
+
+    r = ArchiveMutator::validate_symlink_target("arc", "com1.txt");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "reserved_name");
+
+    r = ArchiveMutator::validate_symlink_target("arc", "AUX.tar.gz");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "reserved_name");
+
+    r = ArchiveMutator::validate_symlink_target("arc", "LPT1");
+    REQUIRE(!r.valid);
+    REQUIRE(r.reason == "reserved_name");
+#else
+    r = ArchiveMutator::validate_symlink_target("arc", "file:stream");
+    REQUIRE(r.valid);
+
+    r = ArchiveMutator::validate_symlink_target("arc", "CON");
+    REQUIRE(r.valid);
+#endif
+
+    // Test dropping illegal symlinks in transcode
+    const auto dir = openrar::test::scratch_dir("symlink_matrix");
+    std::vector<TarMember> members;
+    TarMember valid_file;
+    valid_file.name = "real.txt";
+    valid_file.data = std::vector<core::byte>(10, core::byte('z'));
+    members.push_back(valid_file);
+
+    TarMember bad_sym;
+    bad_sym.name = "bad_link.txt";
+    bad_sym.typeflag = '2';                // symlink
+    bad_sym.linkname = "../../etc/shadow"; // traversal
+    members.push_back(bad_sym);
+
+    const auto tar_src = dir / "bad_sym.tar";
+    write_bytes(tar_src, build_tar(members));
+
+    TranscodeOptions opts = base_opts();
+    TranscodeResult result;
+    ExtractionReport report;
+    const ForeignStatus st =
+        transcode(tar_src, dir / "bad_sym_out.rar", opts, result, report, ReaderHooks{});
+    REQUIRE(st == ForeignStatus::Ok);
+    REQUIRE(result.migrated_files == 1);
+    REQUIRE(result.migrated_links == 0);
+    REQUIRE(result.skipped == 1);
+
+    bool saw_dropped = false;
+    for (const auto& entry : report.entries) {
+        if (entry.name == "bad_link.txt") {
+            REQUIRE(entry.status == "symlink_dropped");
+            REQUIRE(entry.reason == "traversal");
+            saw_dropped = true;
+        }
+    }
+    REQUIRE(saw_dropped);
+    std::cout << "    - symlink legality matrix: 18 rules verified, transcode drop confirmed"
+              << std::endl;
+}
+
+// v1.48.0 M1: solid (-s) and timestamps (-ts) on cv
+static void test_cv_solid_and_timestamps() {
+    std::cout << "[+] test_cv_solid_and_timestamps" << std::endl;
+    const auto dir = openrar::test::scratch_dir("cv_m1");
+
+    // Build ZIP with 2 files
+    std::vector<ZipMember> members;
+    core::uint32 c1 = 0, c2 = 0;
+    const auto d1 = stored_payload(std::string(2048, 'A'), c1);
+    const auto d2 = stored_payload(std::string(2048, 'B'), c2);
+
+    ZipMember m1;
+    m1.name = "m1.txt";
+    m1.packed = d1;
+    m1.unp_size = d1.size();
+    m1.crc = c1;
+    members.push_back(m1);
+
+    ZipMember m2;
+    m2.name = "m2.txt";
+    m2.packed = d2;
+    m2.unp_size = d2.size();
+    m2.crc = c2;
+    members.push_back(m2);
+
+    const auto zip_src = dir / "solid_test.zip";
+    write_bytes(zip_src, build_zip(members));
+
+    // 1. Transcode with solid = true
+    TranscodeOptions opts = base_opts();
+    opts.solid = true;
+    opts.method = 3;
+    TranscodeResult result;
+    ExtractionReport report;
+    const auto rar_out = dir / "solid_out.rar";
+    ForeignStatus st = transcode(zip_src, rar_out, opts, result, report, ReaderHooks{});
+    REQUIRE(st == ForeignStatus::Ok);
+    REQUIRE(result.migrated_files == 2);
+
+    ArchiveReader reader;
+    REQUIRE(reader.open(rar_out));
+    REQUIRE((reader.main_block().arc_flags & format::MHFL_SOLID) != 0);
+    REQUIRE(reader.entries().size() >= 2);
+    REQUIRE(reader.entries()[1].header.is_solid);
+
+#ifdef OPENRAR_CLI_EXE
+    const std::filesystem::path devnull =
+        std::filesystem::temp_directory_path() / "openrar_cv_devnull_m1.txt";
+    const std::string nul = ">" + devnull.string() + " 2>&1";
+
+    // 2. CLI cv -s verification
+    const auto cli_rar = dir / "cli_solid.rar";
+    int rc = run_cli("cv -s " + zip_src.string() + " " + cli_rar.string(), nul);
+    REQUIRE(rc == 0);
+    ArchiveReader cli_reader;
+    REQUIRE(cli_reader.open(cli_rar));
+    REQUIRE((cli_reader.main_block().arc_flags & format::MHFL_SOLID) != 0);
+
+    // 3. CLI cv -v refusal verification
+    rc = run_cli("cv -v1m " + zip_src.string() + " " + (dir / "vol.rar").string(), nul);
+    REQUIRE(rc == 7);
+#endif
+
+    std::cout << "    - solid transcode & CLI -s/-v verified" << std::endl;
+}
+
+// v1.48.0 M2: FILECOPY default-materialization on cv
+static void test_cv_filecopy_deduplication() {
+    std::cout << "[+] test_cv_filecopy_deduplication" << std::endl;
+    const auto dir = openrar::test::scratch_dir("cv_filecopy");
+
+    // Create a ZIP with two identical files and one distinct file
+    std::vector<core::byte> shared_data(5000, core::byte('D'));
+    core::uint32 shared_crc = 0;
+    {
+        crypto::Crc32 c;
+        c.update(shared_data.data(), shared_data.size());
+        shared_crc = c.get();
+    }
+    std::vector<core::byte> other_data(2000, core::byte('O'));
+    core::uint32 other_crc = 0;
+    {
+        crypto::Crc32 c;
+        c.update(other_data.data(), other_data.size());
+        other_crc = c.get();
+    }
+
+    std::vector<ZipMember> members;
+    ZipMember z1;
+    z1.name = "first.bin";
+    z1.packed = shared_data;
+    z1.unp_size = shared_data.size();
+    z1.crc = shared_crc;
+    members.push_back(z1);
+
+    ZipMember z2;
+    z2.name = "distinct.bin";
+    z2.packed = other_data;
+    z2.unp_size = other_data.size();
+    z2.crc = other_crc;
+    members.push_back(z2);
+
+    ZipMember z3;
+    z3.name = "second_dup.bin";
+    z3.packed = shared_data;
+    z3.unp_size = shared_data.size();
+    z3.crc = shared_crc;
+    members.push_back(z3);
+
+    const auto zip_src = dir / "dup.zip";
+    write_bytes(zip_src, build_zip(members));
+
+    TranscodeOptions opts = base_opts();
+    TranscodeResult result;
+    ExtractionReport report;
+    const auto rar_out = dir / "dup_out.rar";
+    ForeignStatus st = transcode(zip_src, rar_out, opts, result, report, ReaderHooks{});
+    REQUIRE(st == ForeignStatus::Ok);
+    REQUIRE(result.verified);
+    REQUIRE(result.migrated_files == 3);
+
+    ArchiveReader reader;
+    REQUIRE(reader.open(rar_out));
+    REQUIRE(reader.entries().size() == 3);
+
+    // first.bin: master (redir_type == 0)
+    REQUIRE(reader.entries()[0].header.file_name == "first.bin");
+    REQUIRE(reader.entries()[0].header.redir_type == 0);
+
+    // distinct.bin: master (redir_type == 0)
+    REQUIRE(reader.entries()[1].header.file_name == "distinct.bin");
+    REQUIRE(reader.entries()[1].header.redir_type == 0);
+
+    // second_dup.bin: FILECOPY reference to first.bin (redir_type == 5)
+    REQUIRE(reader.entries()[2].header.file_name == "second_dup.bin");
+    REQUIRE(reader.entries()[2].header.redir_type == 5);
+    REQUIRE(reader.entries()[2].header.redir_target == "first.bin");
+
+    // Verify in-memory extraction of FILECOPY entry
+    std::vector<core::byte> extracted_dup;
+    int rc = reader.extract_entry_to_memory(2, extracted_dup, 1024 * 1024, ReaderHooks{});
+    REQUIRE(rc == 0);
+    REQUIRE(extracted_dup == shared_data);
+
+    std::cout << "    - FILECOPY duplicate detection and memory materialization verified"
+              << std::endl;
+}
+
 static const openrar::test::Case k_cases[] = {
     {"test_transcode_zip_identity", test_transcode_zip_identity, false},
     {"test_transcode_tar_gzip_identity", test_transcode_tar_gzip_identity, false},
@@ -561,6 +853,9 @@ static const openrar::test::Case k_cases[] = {
 #ifdef OPENRAR_CLI_EXE
     {"test_cv_cli_contracts", test_cv_cli_contracts, false},
 #endif
+    {"test_symlink_legality_matrix", test_symlink_legality_matrix, false},
+    {"test_cv_solid_and_timestamps", test_cv_solid_and_timestamps, false},
+    {"test_cv_filecopy_deduplication", test_cv_filecopy_deduplication, false},
 };
 
 int main(int argc, char* argv[]) {
@@ -568,6 +863,6 @@ int main(int argc, char* argv[]) {
     int rc =
         openrar::test::openrar_test_main(k_cases, sizeof(k_cases) / sizeof(k_cases[0]), argc, argv);
     if (rc == 0 && !openrar::test::last_run_was_filtered())
-        std::cout << "All Transcode (v1.29 M5) tests PASSED!" << std::endl;
+        std::cout << "All Transcode (v1.29 M5 / v1.48) tests PASSED!" << std::endl;
     return rc;
 }

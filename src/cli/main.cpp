@@ -1928,6 +1928,14 @@ int add_to_archive(
                                                         .generic_string();
                             if (rel.rfind("./", 0) == 0) rel.erase(0, 2);
                             if (!rel.empty() && should_include(rel, dir_entry.path())) {
+                                auto leg = archive::ArchiveMutator::validate_symlink_target(
+                                    rel, target_str);
+                                if (!leg.valid) {
+                                    std::cerr << "W: symlink " << sanitize_for_display(rel)
+                                              << " target rejected: " << leg.reason
+                                              << ", skipping\n";
+                                    return;
+                                }
                                 PendingFile pf;
                                 pf.src_path = dir_entry.path();
                                 pf.entry_name = rel;
@@ -1994,6 +2002,13 @@ int add_to_archive(
                                                           p.parent_path().generic_string(), ep_mode)
                                 : p.filename().generic_string();
                         if (should_include(entry, p)) {
+                            auto leg =
+                                archive::ArchiveMutator::validate_symlink_target(entry, target_str);
+                            if (!leg.valid) {
+                                std::cerr << "W: symlink " << sanitize_for_display(entry)
+                                          << " target rejected: " << leg.reason << ", skipping\n";
+                                continue;
+                            }
                             PendingFile pf;
                             pf.src_path = p;
                             pf.entry_name = entry;
@@ -3284,7 +3299,8 @@ int extract_archive(
 int convert_archive(const std::string& source_str, const std::string& dest_arg, int method,
                     core::uint64 dict_size, const std::string& password, bool encrypt_headers,
                     bool want_rr, core::uint32 rr_percent, bool delete_source,
-                    OverwriteMode overwrite_mode) {
+                    OverwriteMode overwrite_mode, bool solid = false,
+                    core::uint32 times_mask = openrar::archive::time_flags::MTIME) {
     if (g_json_stdout_only) set_prog_out(std::cerr);
     archive::ExtractionReport report;
     auto emit = [&](int code) -> int {
@@ -3327,6 +3343,8 @@ int convert_archive(const std::string& source_str, const std::string& dest_arg, 
     openrar::archive::foreign::TranscodeOptions opts;
     opts.method = method;
     opts.dict_size = dict_size;
+    opts.solid = solid;
+    opts.times_mask = times_mask;
     opts.password = password;
     opts.encrypt_headers = encrypt_headers;
     opts.want_rr = want_rr;
@@ -4299,12 +4317,8 @@ static int cli_main(int argc, char* argv[]) {
         }
         // Output-shaping switches are explicit usage refusals (plan D7):
         // refused beats silently-ignored for migration correctness.
-        if (want_solid || cdc_enabled) {
-            std::cerr << "Error: cv does not support -s/-cdc in Phase 1\n";
-            return EXIT_USAGE;
-        }
-        if (times_mask != openrar::archive::time_flags::MTIME) {
-            std::cerr << "Error: cv migrates mtime only (-ts refused)\n";
+        if (cdc_enabled) {
+            std::cerr << "Error: cv does not support -cdc\n";
             return EXIT_USAGE;
         }
         if (vol_size != 0) {
@@ -4334,7 +4348,7 @@ static int cli_main(int argc, char* argv[]) {
         }
         return convert_archive(arc_path, files.empty() ? std::string() : files[0], method,
                                opt_dict_size, password, want_header_encryption, want_rr, rr_percent,
-                               want_df, overwrite_mode);
+                               want_df, overwrite_mode, want_solid, times_mask);
     } else if (cmd == "r") {
         return openrar::cli::repair_archive(arc_path);
     } else if (cmd == "rr" || (cmd.rfind("rr", 0) == 0 && cmd.size() > 2 &&

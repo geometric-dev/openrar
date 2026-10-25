@@ -204,7 +204,8 @@ public:
                                     bool is_dir_target, PreparedAdd& out,
                                     core::uint32 times_mask = time_flags::MTIME,
                                     bool want_acl = false, const std::string& default_group = "",
-                                    const std::string& default_user = "");
+                                    const std::string& default_user = "",
+                                    std::string* rejection_reason = nullptr);
 
     // Stage 1 variant for a hard link: emits a hardlink record (FHEXTRA_REDIR,
     // redir_type = 4, no data area) pointing to target_entry_name.
@@ -215,6 +216,15 @@ public:
                                      bool want_acl = false, const std::string& default_group = "",
                                      const std::string& default_user = "");
 
+    // v1.48.0 (cv Phase 2, M0): Symlink legality result and matrix validator.
+    struct SymlinkLegality {
+        bool valid{false};
+        std::string reason; // empty when valid
+    };
+
+    static SymlinkLegality validate_symlink_target(const std::string& arc_entry_name,
+                                                   const std::string& target);
+
     // v1.36.0 (cv link migration, Gate 0): stage symlink/hardlink records
     // WITHOUT a filesystem object — the caller supplies the link target and
     // the entry times directly (foreign-archive metadata; mtime seconds only,
@@ -222,18 +232,19 @@ public:
     // Targets migrate verbatim: extraction-time safety (absolute/escaping
     // target refusal, symlink-parent scan, spec-07 skip semantics) is
     // enforced by ArchiveReader, per docs/v1.36.0-pre-analysis.md.
-    static bool prepare_add_symlink_from_memory(const std::string& arc_entry_name,
-                                                const std::string& target, bool is_dir_target,
-                                                int64_t mtime_sec, PreparedAdd& out,
-                                                core::uint32 times_mask = time_flags::MTIME,
-                                                const std::string& default_group = "",
-                                                const std::string& default_user = "");
+    // v1.48.0 M0/M1: target validated via validate_symlink_target; ctime/atime supported.
+    static bool prepare_add_symlink_from_memory(
+        const std::string& arc_entry_name, const std::string& target, bool is_dir_target,
+        int64_t mtime_sec, PreparedAdd& out, core::uint32 times_mask = time_flags::MTIME,
+        const std::string& default_group = "", const std::string& default_user = "",
+        std::string* rejection_reason = nullptr, int64_t ctime_sec = 0, int64_t atime_sec = 0);
     static bool prepare_add_hardlink_from_memory(const std::string& arc_entry_name,
                                                  const std::string& target_entry_name,
                                                  int64_t mtime_sec, PreparedAdd& out,
                                                  core::uint32 times_mask = time_flags::MTIME,
                                                  const std::string& default_group = "",
-                                                 const std::string& default_user = "");
+                                                 const std::string& default_user = "",
+                                                 int64_t ctime_sec = 0, int64_t atime_sec = 0);
 
     // Stage 1 variant for an identical-file reference (-oi): emits a FILECOPY
     // record (FHEXTRA_REDIR, redir_type = 5, no data area) pointing to
@@ -248,6 +259,14 @@ public:
                                      core::uint32 times_mask = time_flags::MTIME,
                                      const std::string& default_group = "",
                                      const std::string& default_user = "", bool want_xattr = false);
+
+    // v1.48.0 (cv Phase 2, M2): stage identical-file reference (FILECOPY)
+    // from foreign-entry metadata in memory without requiring a disk file.
+    static bool prepare_add_filecopy_from_memory(
+        const std::string& arc_entry_name, const std::string& target_entry_name, int64_t mtime_sec,
+        core::uint64 logical_size, PreparedAdd& out, core::uint32 times_mask = time_flags::MTIME,
+        const std::string& default_group = "", const std::string& default_user = "",
+        int64_t ctime_sec = 0, int64_t atime_sec = 0);
 
     // Query disk file last-modification time as unix epoch seconds.
     static bool get_file_mtime(const std::filesystem::path& path, core::uint64& mtime_out);

@@ -189,8 +189,9 @@ void decode_differential(const char* lane, const uint8_t* d, size_t n, size_t wi
     if (seq_ok && par_ok && seq_out != par_out)
         oracle_fail(lane, "sequential and two-phase decoders disagree", seq_out.size(),
                     par_out.size());
-    if (exact && !par_ok && seq_ok && !diag.fell_back)
+    if (exact && !par_ok && seq_ok && !diag.fell_back) {
         oracle_fail(lane, "two-phase refused after emission a stream sequential accepts");
+    }
 }
 
 #if defined(OPENRAR_FUZZ_HAVE_INFLATE)
@@ -329,6 +330,10 @@ void lane_roundtrip(const uint8_t* d, size_t n, Config& cfg, bool reduced) {
     if (!ok) roundtrip_fail("decoder rejected the encoder's own stream", src, back);
     if (back != src) roundtrip_fail("decompressed != original", src, back);
 
+    // Two-phase parallel decode of the clean stream with exact dest_size must agree.
+    if (!reduced)
+        decode_differential("roundtrip-diff", comp.data(), comp.size(), win, src.size(), true);
+
     // Streaming decode of the same stream with random chunking must agree.
     if (!reduced || (c3 & 0x10)) {
         StreamDecoder sd(win, method);
@@ -363,13 +368,15 @@ void lane_roundtrip(const uint8_t* d, size_t n, Config& cfg, bool reduced) {
     }
 
     // Bit-flip oracle: no crash, bounded output, and the two decoders agree.
+    // On a corrupted stream, divergence in early vs late block boundary detection
+    // is expected; exact=false enforces identical output only when both accept.
     {
         std::vector<core::byte> bad = comp;
         const int flips = 1 + static_cast<int>(rng.below(4));
         for (int i = 0; i < flips; ++i)
             bad[rng.below(bad.size())] ^= static_cast<core::byte>(1u << rng.below(8));
         if (!reduced)
-            decode_differential("bitflip-diff", bad.data(), bad.size(), win, src.size(), true);
+            decode_differential("bitflip-diff", bad.data(), bad.size(), win, src.size(), false);
         else
             decode_sequential(bad.data(), bad.size(), win, src.size());
     }

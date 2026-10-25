@@ -264,6 +264,8 @@ ForeignStatus ZipReader::walk_central_directory(const ExtractionLimits& limits, 
         // NTFS FILETIME = 100 ns since 1601-01-01.
         int64_t mtime_sec = -1;
         int32_t mtime_nsec = 0;
+        int64_t ctime_sec = 0;
+        int64_t atime_sec = 0;
         {
             const core::byte* p = rest.data() + name_len;
             size_t n = extra_len;
@@ -274,9 +276,22 @@ ForeignStatus ZipReader::walk_central_directory(const ExtractionLimits& limits, 
                 if (id == 0x5455 && sz >= 5) {
                     const core::uint8 flags = p[4];
                     const core::byte* t = p + 5;
-                    if ((flags & 0x01) && sz >= 5 + 4) {
+                    size_t rem = sz - 1;
+                    if ((flags & 0x01) && rem >= 4) {
                         mtime_sec = static_cast<int64_t>(rd32(t));
                         mtime_nsec = 0;
+                        t += 4;
+                        rem -= 4;
+                    }
+                    if ((flags & 0x02) && rem >= 4) {
+                        atime_sec = static_cast<int64_t>(rd32(t));
+                        t += 4;
+                        rem -= 4;
+                    }
+                    if ((flags & 0x04) && rem >= 4) {
+                        ctime_sec = static_cast<int64_t>(rd32(t));
+                        t += 4;
+                        rem -= 4;
                     }
                 } else if (id == 0x000A && sz >= 32) {
                     // Reserved(4) then tag(2)/size(2) pairs; tag 1 = times
@@ -300,6 +315,17 @@ ForeignStatus ZipReader::walk_central_directory(const ExtractionLimits& limits, 
                             mtime_sec = -1;
                             mtime_nsec = 0;
                         }
+                        auto filetime_to_epoch = [](core::uint64 ft_val) -> int64_t {
+                            constexpr core::uint64 EPOCH_DIFF = 116444736000000000ULL;
+                            if (ft_val >= EPOCH_DIFF) {
+                                return static_cast<int64_t>((ft_val - EPOCH_DIFF) / 10000000ULL);
+                            }
+                            return 0;
+                        };
+                        const core::uint64 ft_atime = rd64(q + 16);
+                        const core::uint64 ft_ctime = rd64(q + 24);
+                        if (atime_sec == 0) atime_sec = filetime_to_epoch(ft_atime);
+                        if (ctime_sec == 0) ctime_sec = filetime_to_epoch(ft_ctime);
                     }
                 }
                 p += 4 + sz;
@@ -317,6 +343,8 @@ ForeignStatus ZipReader::walk_central_directory(const ExtractionLimits& limits, 
         }
         e.meta.mtime_sec = mtime_sec;
         e.meta.mtime_nsec = mtime_nsec;
+        e.meta.ctime_sec = ctime_sec;
+        e.meta.atime_sec = atime_sec;
 
         // Entry shape.
         if (e.meta.dos_attrs & 0x10 ||
