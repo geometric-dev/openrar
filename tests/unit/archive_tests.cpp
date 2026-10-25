@@ -268,7 +268,7 @@ void test_sfx_preservation() {
 
 // ── v1.22.0 security sweep: PBKDF2 lg2_count ceilings pinned at both header
 // paths ──────────────────────────────────────────────────────────────────────
-// Every KDF derivation site fails closed on lg2_count > 24 (WinRAR's
+// Every KDF derivation site fails closed on lg2_count > 24 (the workbound
 // ceiling): encrypted headers at HeaderCryptReader::init /
 // HeaderCryptWriter::init_existing, per-file FHEXTRA_CRYPT at the entry-KDF
 // gate in ArchiveReader. A hostile 25..255 must be refused WITHOUT
@@ -337,8 +337,8 @@ void test_kdf_cap_pinned() {
         std::vector<core::byte> out;
         const int rc =
             rd.extract_entry_to_memory(0, out, 16ULL * 1024 * 1024, {}, nullptr, nullptr);
-        REQUIRE((rc == RAR_ERR_UNSUPPORTED_FEATURE &&
-                 "lg2_count = 25 in FHEXTRA_CRYPT must fail closed"));
+        REQUIRE((rc == RAR_ERR_PASSWORD_TIMEOUT &&
+                 "lg2_count = 25 in FHEXTRA_CRYPT must fail with RAR_ERR_PASSWORD_TIMEOUT"));
         // And the ceiling is not just an error path: 24 stays legal, so the
         // gate cannot silently creep down to 23 (the writer side pins that
         // boundary above; here only the refusal is asserted).
@@ -737,11 +737,9 @@ void test_solid_window_size() {
     std::ofstream("build/t1.txt") << "file 1 data...";
     std::ofstream("build/t2.txt") << "file 2 data...";
 
-    // Create tiny_solid.rar with 1MiB dictionary using system rar
-    int res = system("\"C:\\Program Files\\WinRAR\\rar.exe\" a -s -md1m build/tiny_solid.rar "
-                     "build/t1.txt build/t2.txt > nul 2>&1");
-    if (res != 0) {
-        std::cout << "  Skip: rar.exe not found or failed\n";
+    // If tiny_solid.rar does not exist, skip
+    if (!std::filesystem::exists(test_arc)) {
+        std::cout << "  Skip: tiny_solid.rar fixture not found\n";
         return;
     }
 

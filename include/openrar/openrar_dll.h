@@ -159,8 +159,15 @@ enum RarError {
     // output cap, cumulative total-output cap, or header count/byte cap.
     // Value is explicit so C consumers can safely compare without including
     // src/archive/rar_errors.hpp. Gaps at -8 and -10 are documented above.
-    // Next available slot: -16.
-    RAR_ERR_LIMIT_EXCEEDED = -15
+    RAR_ERR_LIMIT_EXCEEDED = -15,
+    // PBKDF2 iteration count exceeded the work bound (MAX_PBKDF2_LG2 = 24).
+    RAR_ERR_PASSWORD_TIMEOUT = -16,
+    // Sandboxed worker terminated unexpectedly / containment breach (crash isolation).
+    RAR_ERR_CONTAINMENT_BREACH = -17,
+    // Malformed encrypted header / decrypt failure.
+    RAR_ERR_DECRYPT = -18,
+    // Resource exhaustion / sandboxed worker out of memory. Next slot: -20.
+    RAR_ERR_RESOURCE_EXHAUSTION = -19
 };
 
 // Error details are thread_local state: openrar_last_error and

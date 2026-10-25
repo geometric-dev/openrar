@@ -33,7 +33,7 @@ private:
 // but init 0 and no final XOR. This is the per-data-chunk checksum carried
 // in the inline recovery-record shard-header state region (v1.35.0; probe
 // record docs/v1.35.0-rr-probe.md §5). Init 0 makes the checksum GF(2)-
-// linear (all-zero input folds to 0), which the reference repairer relies
+// linear (all-zero input folds to 0), which recovery repair tools rely
 // on; the unpadded chunk length is the canonical input.
 class RawCrc64 {
 public:

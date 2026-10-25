@@ -429,7 +429,7 @@ void test_recovery_writer_damage_roundtrip() {
     archive::ArchiveReader reader;
     REQUIRE(reader.open(arc));
     // entries() surfaces service headers too (the RR block sits in the
-    // archive like the QO service in oracle-produced goldens); assert on
+    // archive like the QO service in goldens); assert on
     // the single real file entry.
     size_t file_entries = 0;
     for (const auto& e : reader.entries()) {
@@ -1128,8 +1128,8 @@ std::vector<core::byte> extract_payload(const fs::path& arc, const std::string& 
 // T-UNIT-1 (plan M1.4): the emitted state region carries the per-chunk raw
 // CRC-64 entries and chunk_data_extent with a fixed zero seed. The expected
 // values below were derived with the independent probe model
-// (tools/scan_rr.py's CRC-64, init 0 / no final XOR, unpadded tail) against a
-// reference-model build of the exact same deterministic payload.
+// (tools/scan_rr.py's CRC-64, init 0 / no final XOR, unpadded tail) against an
+// independent build of the exact same deterministic payload.
 void test_entry_emission() {
     namespace fs = std::filesystem;
     fs::path dir = openrar::test::scratch_dir("recovery");

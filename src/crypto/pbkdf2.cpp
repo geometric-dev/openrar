@@ -49,7 +49,7 @@ bool Pbkdf2Rar5::derive_keys(const void* password, size_t password_len, const co
     // count - 1, so count == 0 wraps to 0xFFFFFFFF (~4.3 billion HMAC
     // iterations). All current callers validate lg2_count, but this is
     // public API: fail cleanly instead, leaving the keys zeroed.
-    if (count == 0) {
+    if (count == 0 || count > MAX_PBKDF2_COUNT) {
         out_keys.wipe();
         return false;
     }

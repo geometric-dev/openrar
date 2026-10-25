@@ -1572,7 +1572,7 @@ def test_track19_large_dictionary(openrar, unrar, rar):
                 if rc != 0:
                     print(f"  FAIL: openrar a {' '.join(sw)} ({kind}) rc={rc}\n{out}{err}")
                     return False
-                # Reference decoders (the opt-in only matters above 4 GiB).
+                # Decoders (the opt-in only matters above 4 GiB).
                 if not _ld_check_x(unrar, ["x", "-y", "-mdx64g"], arc, srcs, td,
                                    f"unrar_{kind}_{md}", reference=True):
                     return False

@@ -75,6 +75,7 @@ public:
     bool is_open() const { return phase_ == Phase::Ready; }
 
     const std::vector<BrokerEntry>& entries() const { return entries_; }
+    std::vector<BrokerEntry>& test_entries() { return entries_; }
 
     // Streams entry `index`'s decoded bytes into `sink`. Caps are enforced
     // HERE: a chunk that would cross a cap is NOT delivered; the operation
@@ -83,6 +84,8 @@ public:
     // engine rc relayed in EntryResult, or the broker-side failure code.
     int extract(core::uint32 index, const std::function<bool(const core::byte*, size_t)>& sink,
                 core::uint64* bytes_out, std::string& detail);
+
+    int last_error_code() const { return last_error_code_; }
 
 private:
     enum class Phase { Closed, Ready };
@@ -100,6 +103,7 @@ private:
     Limits limits_{};
     core::uint64 total_emitted_ = 0;
     std::vector<BrokerEntry> entries_;
+    int last_error_code_ = 0;
 };
 
 } // namespace openrar::sandbox

@@ -79,7 +79,7 @@ std::filesystem::path out_dir() {
     return d;
 }
 
-// Structural assertions. Oracle-produced goldens carry a QuickOpen
+// Structural assertions. Goldens carry a QuickOpen
 // service header that entries() surfaces (the CLI filters services), so
 // the expected service count is a parameter.
 struct Expected {
@@ -185,7 +185,7 @@ void test_golden_hello5() {
 void test_golden_hello5_p() {
     std::filesystem::path arc = FIXTURES_DIR / "hello5_p.rar";
 
-    // Headers are in the clear: listable without a password. The oracle
+    // Headers are in the clear: listable without a password. The
     // golden carries a QO service header.
     {
         archive::ArchiveReader reader;

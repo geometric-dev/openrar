@@ -104,7 +104,11 @@ flag clear. `redir_type`: 0 none / 1 unixsymlink / 2 winsymlink / 3 junction
 | −13 | `RAR_ERR_MISSING_VOLUME` | v1.3.0 |
 | −14 | `RAR_ERR_BUSY` (open file-mode handle holds the archive; mutation exports refuse up front) | v1.4.0 |
 | −15 | `RAR_ERR_LIMIT_EXCEEDED` (caller-imposed cap hit) | v1.21.x |
-| −16 | **next available slot** | |
+| −16 | `RAR_ERR_PASSWORD_TIMEOUT` (PBKDF2 iteration workbound exceeded) | v1.51.0 |
+| −17 | `RAR_ERR_CONTAINMENT_BREACH` (sandboxed worker crash / isolation fault) | v1.51.0 |
+| −18 | `RAR_ERR_DECRYPT` (corrupt encrypted header / decrypt failure) | v1.51.0 |
+| −19 | `RAR_ERR_RESOURCE_EXHAUSTION` (worker memory exhaustion / OOM) | v1.51.0 |
+| −20 | **next available slot** | |
 
 Numeric values are pinned by `static_assert` in `src/dll/dll_api.cpp:58-80,
 943-945` and `src/api/abi_contract.hpp:59-60`, and by the C-mode runtime

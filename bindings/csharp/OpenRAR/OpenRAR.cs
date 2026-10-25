@@ -40,6 +40,10 @@ namespace OpenRAR
             -13 => "MISSING_VOLUME",
             -14 => "BUSY",
             -15 => "LIMIT_EXCEEDED",
+            -16 => "PASSWORD_TIMEOUT",
+            -17 => "CONTAINMENT_BREACH",
+            -18 => "DECRYPT",
+            -19 => "RESOURCE_EXHAUSTION",
             _ => $"UNKNOWN_{code}",
         };
     }

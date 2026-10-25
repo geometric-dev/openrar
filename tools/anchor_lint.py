@@ -34,9 +34,9 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-ROADMAP = REPO / "docs" / "roadmap-v143.merged.md"
+ROADMAP = REPO / "docs" / "ROADMAP.md"
 if not ROADMAP.exists():
-    ROADMAP = REPO / "roadmap-v143.merged.md"
+    ROADMAP = REPO / "docs" / "roadmap-v143.merged.md"
 ALLOWLIST = REPO / "tools" / "anchor_allowlist.txt"
 UNIT_DIR = REPO / "tests" / "unit"
 LEDGER = REPO / "docs" / "v1.44-verification-ledger.md"
