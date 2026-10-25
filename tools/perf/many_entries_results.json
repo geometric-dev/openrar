@@ -212,7 +212,7 @@
  {
   "label": "ab_baseline_vs_opt1",
   "arm": "A",
-  "binary": "C:\Temp\openrar_variants\openrar_baseline.exe",
+  "binary": "C:\\Temp\\openrar_variants\\openrar_baseline.exe",
   "config": "m0_entry",
   "runs": [
    13.84880959999282,
@@ -227,7 +227,7 @@
  {
   "label": "ab_baseline_vs_opt1",
   "arm": "B",
-  "binary": "C:\Temp\openrar_variants\openrar_opt1.exe",
+  "binary": "C:\\Temp\\openrar_variants\\openrar_opt1.exe",
   "config": "m0_entry",
   "runs": [
    14.368031300022267,
@@ -242,7 +242,7 @@
  {
   "label": "ab_baseline_vs_opt1",
   "arm": "A",
-  "binary": "C:\Temp\openrar_variants\openrar_baseline.exe",
+  "binary": "C:\\Temp\\openrar_variants\\openrar_baseline.exe",
   "config": "m0_batch",
   "runs": [
    1.8919076999882236,
@@ -257,7 +257,7 @@
  {
   "label": "ab_baseline_vs_opt1",
   "arm": "B",
-  "binary": "C:\Temp\openrar_variants\openrar_opt1.exe",
+  "binary": "C:\\Temp\\openrar_variants\\openrar_opt1.exe",
   "config": "m0_batch",
   "runs": [
    1.7747823999961838,
@@ -272,7 +272,7 @@
  {
   "label": "ab_baseline_vs_opt1",
   "arm": "A",
-  "binary": "C:\Temp\openrar_variants\openrar_baseline.exe",
+  "binary": "C:\\Temp\\openrar_variants\\openrar_baseline.exe",
   "config": "m3_entry",
   "runs": [
    14.60920669999905,
@@ -287,7 +287,7 @@
  {
   "label": "ab_baseline_vs_opt1",
   "arm": "B",
-  "binary": "C:\Temp\openrar_variants\openrar_opt1.exe",
+  "binary": "C:\\Temp\\openrar_variants\\openrar_opt1.exe",
   "config": "m3_entry",
   "runs": [
    14.339556599967182,
@@ -302,7 +302,7 @@
  {
   "label": "ab_baseline_vs_opt1",
   "arm": "A",
-  "binary": "C:\Temp\openrar_variants\openrar_baseline.exe",
+  "binary": "C:\\Temp\\openrar_variants\\openrar_baseline.exe",
   "config": "m3_batch",
   "runs": [
    1.7167666000314057,
@@ -317,7 +317,7 @@
  {
   "label": "ab_baseline_vs_opt1",
   "arm": "B",
-  "binary": "C:\Temp\openrar_variants\openrar_opt1.exe",
+  "binary": "C:\\Temp\\openrar_variants\\openrar_opt1.exe",
   "config": "m3_batch",
   "runs": [
    1.7192320000613108,

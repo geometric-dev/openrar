@@ -2456,10 +2456,9 @@ inaccurate historical changelog claims (see "Corrected claims" below).
 
 ### Changed
 
-- **Architect skills relocated out of the repository**: the `architect-challenge` and
+- **Architect review workflows relocated out of the repository**: the `architect-challenge` and
   `architect-walkthrough` review workflows (bundled into the repo in 1.8.0) now live at
-  the user level (`~/skills/`) where they apply across all workspaces; `.agents/`
-  is untracked and gitignored. Historical releases retain their copies.
+  the user configuration level where they apply across all workspaces. Historical releases retain their copies.
 - **Parallel filter parity**: the chunk-parallel pipeline cannot honor
   pre-processing transforms (chunk-relative offsets would corrupt the
   position-dependent E8/E8E9/ARM transforms, and regions must not cross chunk
@@ -2867,8 +2866,8 @@ inaccurate historical changelog claims (see "Corrected claims" below).
     file arguments.
   - Case-insensitive acceptance of WinRAR switches (`-qo`, `-qo+`, `-qo-`,
     `-am`, `-ams`).
-- **Architect Skills**: Bundled `architect-challenge` and `architect-walkthrough`
-  principal solution architect auditing workflows in `skills/`.
+- **Architect Review Workflows**: Bundled `architect-challenge` and `architect-walkthrough`
+  principal solution architect auditing workflows.
 
 ### Fixed
 
