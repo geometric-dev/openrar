@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const OPENRAR = path.resolve('build/openrar64/Release/openrar.exe');
-const UNRAR = path.resolve('C:/Program Files/WinRAR/UnRAR.exe');
+const UNRAR = process.env.UNRAR_EXE || (fs.existsSync('C:/Program Files/WinRAR/UnRAR.exe') ? 'C:/Program Files/WinRAR/UnRAR.exe' : 'UnRAR.exe');
 const SCRATCH = path.resolve('scratch_dict_tests');
 
 function setup() {
