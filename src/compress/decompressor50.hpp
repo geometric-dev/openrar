@@ -16,7 +16,7 @@ class BitReader {
 public:
     using InputCallback = std::function<size_t(core::byte* buf, size_t max_size)>;
     BitReader(const core::byte* data, size_t size);
-    BitReader(InputCallback cb, size_t size);
+    BitReader(InputCallback cb, core::uint64 size);
 
     core::uint32 peek_bits(unsigned int count);
     core::uint64 peek_bits64(unsigned int count);
@@ -25,13 +25,13 @@ public:
     void consume_bits(unsigned int count);
     void align_byte();
 
-    size_t bits_remaining() const;
+    core::uint64 bits_remaining() const;
     // H-07: sticky flag, set once any get/consume had to zero-pad past the
     // true end of input. Decoders check it before emitting a token so a
     // truncated stream cannot fabricate symbols from the padding.
     bool truncated() const { return truncated_; }
-    size_t bit_pos() const { return consumed_; }
-    size_t byte_pos() const { return consumed_ / 8; }
+    core::uint64 bit_pos() const { return consumed_; }
+    core::uint64 byte_pos() const { return consumed_ / 8; }
 
 private:
     void refill();
@@ -44,9 +44,9 @@ private:
     const core::byte* end_;
     core::uint64 acc_{0};
     unsigned int n_{0};
-    size_t consumed_{0};
-    size_t size_{0};
-    size_t fetched_{0};
+    core::uint64 consumed_{0};
+    core::uint64 size_{0};
+    core::uint64 fetched_{0};
     bool truncated_{false};
 };
 
