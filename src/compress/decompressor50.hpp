@@ -1,6 +1,7 @@
 #ifndef OPENRAR_COMPRESS_DECOMPRESSOR50_HPP
 #define OPENRAR_COMPRESS_DECOMPRESSOR50_HPP
 
+#include "../core/default_init_allocator.hpp"
 #include "../core/types.hpp"
 #include "filters50.hpp"
 #include <array>
@@ -77,23 +78,7 @@ private:
     unsigned int quick_bits_{QUICK_BITS};
 };
 
-// C++17 default-initialising allocator: leaves primitive types uninitialised
-// on resize/allocation (OPT-D01), eliminating redundant page zeroing.
-template <typename T, typename A = std::allocator<T>> struct default_init_allocator : A {
-    using A::A;
-    template <typename U> struct rebind {
-        using other =
-            default_init_allocator<U, typename std::allocator_traits<A>::template rebind_alloc<U>>;
-    };
-    template <typename U>
-    void construct(U* ptr) noexcept(std::is_nothrow_default_constructible<U>::value) {
-        ::new (static_cast<void*>(ptr)) U;
-    }
-    template <typename U, typename... Args> void construct(U* ptr, Args&&... args) {
-        std::allocator_traits<A>::construct(static_cast<A&>(*this), ptr,
-                                            std::forward<Args>(args)...);
-    }
-};
+using core::default_init_allocator;
 
 // Dictionary storage that grows IN PLACE. On 64-bit native builds a large
 // window reserves address space for the whole declared size up front (no

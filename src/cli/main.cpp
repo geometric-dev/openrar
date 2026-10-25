@@ -1247,9 +1247,37 @@ enum class CdcFingerprintResult {
 static CdcFingerprintResult fingerprint_file_cdc(const std::filesystem::path& p,
                                                  compress::CdcChunker& chunker,
                                                  std::vector<core::uint64>& hashes_out,
-                                                 size_t max_chunks, core::uint64& chunk_count) {
+                                                 size_t max_chunks, core::uint64& chunk_count,
+                                                 unsigned threads = 1) {
     hashes_out.clear();
     chunk_count = 0;
+    std::error_code ec;
+    const auto sz = std::filesystem::file_size(p, ec);
+    if (!ec && sz >= 2 * compress::CdcChunker::CDC_MAX_CHUNK && threads > 1 &&
+        sz <= 256 * 1024 * 1024) {
+        io::FileStream f;
+        if (!f.open(p, io::FileMode::ReadOnly)) return CdcFingerprintResult::Unreadable;
+        std::vector<core::byte> file_data(static_cast<size_t>(sz));
+        size_t total_read = 0;
+        while (total_read < sz) {
+            size_t got =
+                f.read(file_data.data() + total_read, static_cast<size_t>(sz) - total_read);
+            if (got == 0) break;
+            total_read += got;
+        }
+        if (total_read == sz) {
+            std::vector<compress::CdcChunk> chunks;
+            chunker.chunk_parallel(file_data.data(), file_data.size(), chunks, threads);
+            if (chunks.size() > max_chunks) {
+                return CdcFingerprintResult::OverCap;
+            }
+            hashes_out.reserve(chunks.size());
+            for (const auto& c : chunks) hashes_out.push_back(c.hash);
+            chunk_count = hashes_out.size();
+            return CdcFingerprintResult::Ok;
+        }
+    }
+
     io::FileStream f;
     if (!f.open(p, io::FileMode::ReadOnly)) return CdcFingerprintResult::Unreadable;
     compress::CdcStreamChunker stream(chunker);
@@ -2272,7 +2300,7 @@ int add_to_archive(
             }
             core::uint64 file_chunks = 0;
             const CdcFingerprintResult fp_result = fingerprint_file_cdc(
-                item.src_path, chunker, hashes[i], fp_cap - total_chunks, file_chunks);
+                item.src_path, chunker, hashes[i], fp_cap - total_chunks, file_chunks, threads);
             if (fp_result == CdcFingerprintResult::OverCap) {
                 // Index full: this file and the tail keep original order.
                 cdc_cap_hit = true;
