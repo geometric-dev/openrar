@@ -226,7 +226,7 @@ public:
     // `flush_first` (v1.39.0): default true = today's behavior (temp data
     // fsynced before the rename). The session's durability policy is the
     // single decision point: batch mode always elides the flush (data
-    // durability is the OS writeback's — the reference-tool class), entry
+    // durability is the OS writeback's — standard tool class), entry
     // mode flushes unless the caller explicitly passes flush_first=false.
     bool commit(CommitMode mode = CommitMode::ReplaceExisting, bool flush_first = true);
 

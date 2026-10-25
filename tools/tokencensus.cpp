@@ -7,13 +7,13 @@
 //     member (the "ours" stream).
 //   * --ingest <file.rar>: open an EXTERNALLY produced archive with
 //     ArchiveReader, read each compressed member's packed stream, and analyze
-//     it with the SAME census (the "oracle" stream). This is how a WinRAR
+//     it with the SAME census (the "external" stream). This is how an external
 //     archive and one of ours go through identical code.
 //
 // Per member the analyzer walks the phase-1 OpRecord stream and emits one
 // statistic vector: coverage (bytes carried by matches/rep vs literals),
 // match-length distribution, distance histogram, rep/257 frequency, and
-// filter usage (so a filter-bearing oracle member is reported, never silently
+// filter usage (so a filter-bearing external member is reported, never silently
 // mixed in). Per-block table entropy is NOT emitted — OpRecord does not carry
 // the Huffman tables; that axis needs a deeper decode hook (recorded as owed).
 #include "../src/archive/archive_entry.hpp"
@@ -154,7 +154,7 @@ void print_stats(const char* label, const StatVector& sv, int method) {
 }
 
 // ---------------------------------------------------------------------------
-// v1.43 M1: ingest an EXTERNALLY produced archive (the oracle stream).
+// v1.43 M1: ingest an EXTERNALLY produced archive (the external stream).
 // ---------------------------------------------------------------------------
 void ingest(const char* path) {
     archive::ArchiveReader r;
@@ -201,8 +201,9 @@ void ingest(const char* path) {
     std::printf("   skipped: store=%zu service=%zu dir=%zu   failed-members=%zu\n", skipped_store,
                 skipped_service, skipped_dir, failed);
     if (all.filter_used)
-        std::printf("   NOTE: filter-bearing member(s) present — oracle uses features our "
-                    "token-level compare must account for (declared restriction).\n");
+        std::printf(
+            "   NOTE: filter-bearing member(s) present — external archive uses features our "
+            "token-level compare must account for (declared restriction).\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -319,7 +320,7 @@ void run(const char* name, const std::vector<core::byte>& data, int method, size
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc >= 3 && std::string(argv[1]) == "--ingest") {
-        std::printf("=== v1.43 M1: oracle-side census (ingesting %s) ===\n", argv[2]);
+        std::printf("=== v1.43 M1: external-side census (ingesting %s) ===\n", argv[2]);
         ingest(argv[2]);
         return 0;
     }

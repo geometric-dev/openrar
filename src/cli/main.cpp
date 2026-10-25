@@ -99,8 +99,8 @@ bool g_assume_yes = false;
 bool g_json_stdout_only = false;
 std::string g_json_summary_path;
 
-// WinRAR/unrar exit-code taxonomy (unrar errors.hpp RAR_EXIT; v1.21.2).
-// Previously every failure collapsed to 1 — which in WinRAR semantics means
+// Standard CLI exit-code taxonomy (v1.21.2).
+// Previously every failure collapsed to 1 — which in standard archive semantics means
 // "warning, operation succeeded" — so scripts could not distinguish corrupt
 // archives from password failures from open failures. Handlers map the
 // diagnosable causes; unknown failures are fatal (2).
@@ -115,7 +115,8 @@ std::string g_json_summary_path;
 [[maybe_unused]] constexpr int EXIT_MEMORY = 8;    // not enough memory
 [[maybe_unused]] constexpr int EXIT_NO_FILES = 10; // no files matched
 [[maybe_unused]] constexpr int EXIT_BAD_PASSWORD = 11;
-[[maybe_unused]] constexpr int EXIT_BAD_ARCHIVE = 13; // unrar EXIT_BADARC_CODE: unrecognized archive
+[[maybe_unused]] constexpr int EXIT_PASSWORD_TIMEOUT = 12; // PBKDF2 iteration workbound exceeded
+[[maybe_unused]] constexpr int EXIT_BAD_ARCHIVE = 13;      // unrecognized or corrupted archive
 [[maybe_unused]] constexpr int EXIT_USER_BREAK = 255;
 
 enum class OverwriteMode { Prompt, Overwrite, SkipExisting };
@@ -285,11 +286,32 @@ int print_archive_to_stdout(const std::string& arc_path, const std::vector<std::
     int open_status = archive::RAR_OK;
     std::string open_detail;
     if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
-        // Oracle-mapped taxonomy (unrar errors.hpp): missing archive =
-        // 10 (NO_FILES), unrecognized = 13 (BADARC), password = 11.
+        // Standard exit taxonomy: missing archive =
+        // 10 (NO_FILES), unrecognized = 13 (BAD_ARCHIVE), password = 11.
         if (!std::filesystem::exists(arc_path)) {
             std::cerr << "Cannot open " << arc_path << "\n";
             return EXIT_NO_FILES;
+        }
+        if (open_status == archive::RAR_ERR_PASSWORD_TIMEOUT) {
+            std::cerr << "Password derivation timeout (iteration count exceeded workbound)\n";
+            return EXIT_PASSWORD_TIMEOUT;
+        }
+        if (open_status == archive::RAR_ERR_CONTAINMENT_BREACH) {
+            std::cerr << "Sandboxed worker containment breach\n";
+            return EXIT_FATAL;
+        }
+        if (open_status == archive::RAR_ERR_DECRYPT) {
+            std::cerr << "Corrupt encrypted header: " << arc_path << "\n";
+            return EXIT_BAD_ARCHIVE;
+        }
+        if (open_status == archive::RAR_ERR_RESOURCE_EXHAUSTION ||
+            open_status == archive::RAR_ERR_NOMEM) {
+            std::cerr << "Resource exhaustion\n";
+            return EXIT_MEMORY;
+        }
+        if (open_status == archive::RAR_ERR_MISSING_VOLUME) {
+            std::cerr << "Cannot open volume: " << open_detail << "\n";
+            return EXIT_OPEN;
         }
         if (open_status == archive::RAR_ERR_ENCRYPTED ||
             open_status == archive::RAR_ERR_BAD_PASSWORD) {
@@ -334,6 +356,26 @@ int print_archive_to_stdout(const std::string& arc_path, const std::vector<std::
             std::fflush(stdout);
             // v1.28 §7.1: the name in the error lines is archive-controlled.
             const std::string safe_name = sanitize_for_display(name);
+            if (rc == archive::RAR_ERR_PASSWORD_TIMEOUT) {
+                std::cerr << "Password derivation timeout for " << safe_name << "\n";
+                return EXIT_PASSWORD_TIMEOUT;
+            }
+            if (rc == archive::RAR_ERR_CONTAINMENT_BREACH) {
+                std::cerr << "Worker containment breach for " << safe_name << "\n";
+                return EXIT_FATAL;
+            }
+            if (rc == archive::RAR_ERR_DECRYPT) {
+                std::cerr << "Corrupt encrypted header or decrypt failed for " << safe_name << "\n";
+                return EXIT_BAD_ARCHIVE;
+            }
+            if (rc == archive::RAR_ERR_RESOURCE_EXHAUSTION || rc == archive::RAR_ERR_NOMEM) {
+                std::cerr << "Resource exhaustion for " << safe_name << "\n";
+                return EXIT_MEMORY;
+            }
+            if (rc == archive::RAR_ERR_MISSING_VOLUME) {
+                std::cerr << "Missing volume for " << safe_name << "\n";
+                return EXIT_OPEN;
+            }
             if (reader.has_bad_password() || rc == archive::RAR_ERR_BAD_PASSWORD) {
                 std::cerr << "Cannot decrypt: BADPSW (bad password) for " << safe_name << "\n";
                 return EXIT_BAD_PASSWORD;
@@ -453,11 +495,32 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
     int open_status = archive::RAR_OK;
     std::string open_detail;
     if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
-        // Oracle-mapped taxonomy (unrar errors.hpp): missing archive =
-        // 10 (NO_FILES), unrecognized = 13 (BADARC), password = 11.
+        // Standard exit taxonomy: missing archive =
+        // 10 (NO_FILES), unrecognized = 13 (BAD_ARCHIVE), password = 11.
         if (!std::filesystem::exists(arc_path)) {
             std::cerr << "Cannot open " << arc_path << "\n";
             return EXIT_NO_FILES;
+        }
+        if (open_status == archive::RAR_ERR_PASSWORD_TIMEOUT) {
+            std::cerr << "Password derivation timeout (iteration count exceeded workbound)\n";
+            return EXIT_PASSWORD_TIMEOUT;
+        }
+        if (open_status == archive::RAR_ERR_CONTAINMENT_BREACH) {
+            std::cerr << "Sandboxed worker containment breach\n";
+            return EXIT_FATAL;
+        }
+        if (open_status == archive::RAR_ERR_DECRYPT) {
+            std::cerr << "Corrupt encrypted header: " << arc_path << "\n";
+            return EXIT_BAD_ARCHIVE;
+        }
+        if (open_status == archive::RAR_ERR_RESOURCE_EXHAUSTION ||
+            open_status == archive::RAR_ERR_NOMEM) {
+            std::cerr << "Resource exhaustion\n";
+            return EXIT_MEMORY;
+        }
+        if (open_status == archive::RAR_ERR_MISSING_VOLUME) {
+            std::cerr << "Cannot open volume: " << open_detail << "\n";
+            return EXIT_OPEN;
         }
         if (open_status == archive::RAR_ERR_ENCRYPTED ||
             open_status == archive::RAR_ERR_BAD_PASSWORD) {
@@ -800,6 +863,18 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
     sandbox::WorkerBroker broker;
     sandbox::WorkerBroker::Limits limits; // engine floors are non-disableable regardless
     if (!broker.start(worker.string(), arc_path, limits, werr)) {
+        if (broker.last_error_code() == archive::RAR_ERR_PASSWORD_TIMEOUT) {
+            std::cerr << "Cannot decrypt: password workbound exceeded\n";
+            return EXIT_PASSWORD_TIMEOUT;
+        }
+        if (broker.last_error_code() == archive::RAR_ERR_DECRYPT) {
+            std::cerr << "Corrupt encrypted header: " << arc_path << "\n";
+            return EXIT_BAD_ARCHIVE;
+        }
+        if (broker.last_error_code() == archive::RAR_ERR_RESOURCE_EXHAUSTION) {
+            std::cerr << "Resource exhaustion: worker out of memory\n";
+            return EXIT_MEMORY;
+        }
         return -1; // loud in-proc fallback (multi-volume, -hp, spawn failure...)
     }
 
@@ -871,6 +946,7 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
 
     size_t error_count = 0;
     size_t skipped_count = 0;
+    int last_worker_rc = 0;
     size_t idx = 0;
     for (const auto& job : jobs) {
         idx++;
@@ -896,13 +972,28 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
             [](const core::byte*, size_t) -> bool { return true; }, // verify-only sink
             nullptr, edetail);
         const bool okv = rc == archive::RAR_OK;
-        if (!okv) error_count++;
+        if (!okv) {
+            error_count++;
+            if (rc == archive::RAR_ERR_CONTAINMENT_BREACH) {
+                last_worker_rc = rc;
+            } else if (rc == archive::RAR_ERR_PASSWORD_TIMEOUT &&
+                       last_worker_rc != archive::RAR_ERR_CONTAINMENT_BREACH) {
+                last_worker_rc = rc;
+            } else if (last_worker_rc == 0) {
+                last_worker_rc = rc;
+            }
+        }
         if (!g_quiet_mode && !is_vt_supported()) std::cout << (okv ? "OK" : "FAILED") << "\n";
         g_prog.update_bytes(job.entry->wire.size);
     }
     g_prog.done(jobs.size(), "tested", "", total_bytes, 0,
                 error_count == 0 ? "all OK" : (std::to_string(error_count) + " errors"));
     if (error_count == 0) return EXIT_OK;
+    if (last_worker_rc == archive::RAR_ERR_CONTAINMENT_BREACH) return EXIT_FATAL;
+    if (last_worker_rc == archive::RAR_ERR_PASSWORD_TIMEOUT) return EXIT_PASSWORD_TIMEOUT;
+    if (last_worker_rc == archive::RAR_ERR_DECRYPT) return EXIT_BAD_ARCHIVE;
+    if (last_worker_rc == archive::RAR_ERR_RESOURCE_EXHAUSTION) return EXIT_MEMORY;
+    if (last_worker_rc == archive::RAR_ERR_MISSING_VOLUME) return EXIT_OPEN;
     return skipped_count > 0 ? EXIT_BAD_PASSWORD : EXIT_CRC;
 }
 
@@ -926,11 +1017,32 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
     int open_status = archive::RAR_OK;
     std::string open_detail;
     if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
-        // Oracle-mapped taxonomy (unrar errors.hpp): missing archive =
-        // 10 (NO_FILES), unrecognized = 13 (BADARC), password = 11.
+        // Standard exit taxonomy: missing archive =
+        // 10 (NO_FILES), unrecognized = 13 (BAD_ARCHIVE), password = 11.
         if (!std::filesystem::exists(arc_path)) {
             std::cerr << "Cannot open " << arc_path << "\n";
             return EXIT_NO_FILES;
+        }
+        if (open_status == archive::RAR_ERR_PASSWORD_TIMEOUT) {
+            std::cerr << "Password derivation timeout (iteration count exceeded workbound)\n";
+            return EXIT_PASSWORD_TIMEOUT;
+        }
+        if (open_status == archive::RAR_ERR_CONTAINMENT_BREACH) {
+            std::cerr << "Sandboxed worker containment breach\n";
+            return EXIT_FATAL;
+        }
+        if (open_status == archive::RAR_ERR_DECRYPT) {
+            std::cerr << "Corrupt encrypted header: " << arc_path << "\n";
+            return EXIT_BAD_ARCHIVE;
+        }
+        if (open_status == archive::RAR_ERR_RESOURCE_EXHAUSTION ||
+            open_status == archive::RAR_ERR_NOMEM) {
+            std::cerr << "Resource exhaustion\n";
+            return EXIT_MEMORY;
+        }
+        if (open_status == archive::RAR_ERR_MISSING_VOLUME) {
+            std::cerr << "Cannot open volume: " << open_detail << "\n";
+            return EXIT_OPEN;
         }
         if (open_status == archive::RAR_ERR_ENCRYPTED ||
             open_status == archive::RAR_ERR_BAD_PASSWORD) {
@@ -1061,7 +1173,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
     };
 
     if (jobs.empty()) {
-        // Oracle semantics: a command that matched no files exits 10.
+        // Standard semantics: a command that matched no files exits 10.
         return EXIT_NO_FILES;
     }
 
@@ -1140,7 +1252,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
     if (error_count == 0) return EXIT_OK;
     // Taxonomy: unverified encrypted entries / BADPSW are password
     // failures (11); other verification failures are checksum- or
-    // structure-level (3, matching WinRAR t on damaged archives).
+    // structure-level (3, on damaged archives).
     return skipped_count.load(std::memory_order_relaxed) > 0 ? EXIT_BAD_PASSWORD : EXIT_CRC;
 }
 
@@ -2420,6 +2532,9 @@ int add_to_archive(
 int emit_report_json(archive::ExtractionReport& report, int exit_code) {
     report.exit_code = exit_code;
     report.finalize_pending();
+    report.has_sandbox_field = true;
+    report.sandbox_active =
+        (sandbox::sandbox_mode_for(g_in_proc_flag) == sandbox::SandboxMode::Worker);
     const std::string json = archive::to_json(report);
     if (!g_json_summary_path.empty()) {
         std::ofstream f(g_json_summary_path, std::ios::binary | std::ios::trunc);
@@ -2468,13 +2583,39 @@ int extract_archive(
     int open_status = archive::RAR_OK;
     std::string open_detail;
     if (!reader.open_ex(arc_path, password, open_status, open_detail)) {
-        // Oracle-mapped taxonomy (unrar errors.hpp): missing archive =
-        // 10 (NO_FILES), unrecognized = 13 (BADARC), password = 11.
+        // Standard exit taxonomy: missing archive =
+        // 10 (NO_FILES), unrecognized = 13 (BAD_ARCHIVE), password = 11.
         report.aborted = true;
         if (!std::filesystem::exists(arc_path)) {
             std::cerr << "Cannot open " << arc_path << "\n";
             report.abort_reason = "cannot open archive (missing)";
             return emit_json(EXIT_NO_FILES);
+        }
+        if (open_status == archive::RAR_ERR_PASSWORD_TIMEOUT) {
+            std::cerr << "Password derivation timeout (iteration count exceeded workbound)\n";
+            report.abort_reason = "password derivation timeout";
+            return emit_json(EXIT_PASSWORD_TIMEOUT);
+        }
+        if (open_status == archive::RAR_ERR_CONTAINMENT_BREACH) {
+            std::cerr << "Sandboxed worker containment breach\n";
+            report.abort_reason = "sandboxed worker containment breach";
+            return emit_json(EXIT_FATAL);
+        }
+        if (open_status == archive::RAR_ERR_DECRYPT) {
+            std::cerr << "Corrupt encrypted header: " << arc_path << "\n";
+            report.abort_reason = "corrupt encrypted header";
+            return emit_json(EXIT_BAD_ARCHIVE);
+        }
+        if (open_status == archive::RAR_ERR_RESOURCE_EXHAUSTION ||
+            open_status == archive::RAR_ERR_NOMEM) {
+            std::cerr << "Resource exhaustion\n";
+            report.abort_reason = "resource exhaustion";
+            return emit_json(EXIT_MEMORY);
+        }
+        if (open_status == archive::RAR_ERR_MISSING_VOLUME) {
+            std::cerr << "Cannot open volume: " << open_detail << "\n";
+            report.abort_reason = "missing volume: " + open_detail;
+            return emit_json(EXIT_OPEN);
         }
         if (open_status == archive::RAR_ERR_ENCRYPTED ||
             open_status == archive::RAR_ERR_BAD_PASSWORD) {
@@ -2757,7 +2898,7 @@ int extract_archive(
     }
 
     if (extract_jobs.empty()) {
-        // Oracle semantics: a command that MATCHED NO FILES exits 10. This
+        // Standard semantics: a command that MATCHED NO FILES exits 10. This
         // must run BEFORE the -o- pre-filter — a run whose every target was
         // skipped (-o-) exits 0 with each entry reported as skipped.
         // (v1.24 M4: this return was accidentally commented out by a mangled
@@ -2857,7 +2998,7 @@ int extract_archive(
                 std::string sname(child->header.sub_data.begin(), child->header.sub_data.end());
                 // v1.27 M4 (SECURITY_ARCHITECTURE 4.3): archive-provided zone
                 // content is never written to disk — skip BEFORE reading the
-                // payload. WinRAR -os archives store real zone streams; our
+                // payload. Legacy -os archives store real zone streams; our
                 // -os no longer stores them, and we never restore them from
                 // any producer.
                 if (io::is_zone_stream_name(sname)) {
@@ -3915,7 +4056,7 @@ static int cli_main(int argc, char* argv[]) {
                 }
                 if (!has_unit) {
                     // If no modifier is present, megabytes are assumed for -md
-                    // and gigabytes for -mdx switch (matching WinRAR spec).
+                    // and gigabytes for -mdx switch.
                     mult = is_mdx ? (1024ULL * 1024ULL * 1024ULL) : (1024ULL * 1024ULL);
                 }
                 uint64_t val = 0;
@@ -4100,7 +4241,7 @@ static int cli_main(int argc, char* argv[]) {
             propagate_motw = true;
         } else if (sw_eq(s, "-oz-")) {
             // v1.27: disable MotW propagation (fail-safe direction stays ON
-            // by default; WinRAR 6.23+ parity).
+            // by default).
             propagate_motw = false;
         } else if (sw_eq(s, "-ox")) {
             // v1.27: capture POSIX/macOS extended attributes (allow-listed

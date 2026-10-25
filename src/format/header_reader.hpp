@@ -19,6 +19,7 @@ enum class HeaderResult { Ok, Eof, Error, HeaderCrcMismatch };
 struct HeaderCryptReader {
     bool active{false};
     bool bad_password{false};
+    bool password_timeout{false};
     crypto::Rar5Keys keys{};
 
     // Derive keys from the HEAD_CRYPT parameters. Fails (without setting

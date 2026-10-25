@@ -369,8 +369,7 @@ void Blake2sp::finish(void* out_digest) {
     for (size_t i = 0; i < PARALLELISM; ++i) {
         // INTENDED: the `buflen_ - i * BLOCK_SIZE` subtraction below looks
         // like it can underflow, but the guard makes it safe; the shape
-        // (including the BLOCK_SIZE clamp) mirrors the RFC 7693 blake2sp
-        // reference implementation. The guard IS the fix — keep both.
+        // (including the BLOCK_SIZE clamp) follows RFC 7693 blake2sp. The guard IS the fix — keep both.
         if (buflen_ > i * BLOCK_SIZE) {
             size_t left = buflen_ - i * BLOCK_SIZE;
             if (left > BLOCK_SIZE) left = BLOCK_SIZE;

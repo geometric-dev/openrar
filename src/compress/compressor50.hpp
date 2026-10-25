@@ -346,8 +346,7 @@ public:
     // decodes against an EMPTY table set: symbol lookup degenerates, the
     // block is exhausted after a few tokens, and the member silently comes
     // out short. The model is behavioral, confirmed by black-box experiment
-    // against the extraction oracles (docs/question-log.md); no reference
-    // implementation source informs it.
+    // (docs/question-log.md).
     //
     // Two obligations follow for the encoder, and both are cheap:
     //   1. Cover every slot before the first reuse. The slot count follows
@@ -455,8 +454,8 @@ private:
     size_t min_match_{MIN_MATCH};
 
     // Block-header table reuse (v1.33 Design A) is DISABLED: write_block()
-    // always emits the table description (bit 7 clear) to match the reference
-    // encoder — see the note in write_block. The shadow tables, the "tables
+    // always emits the table description (bit 7 clear) for maximal compatibility
+    // — see the note in write_block. The shadow tables, the "tables
     // still valid" flag, the table size and the re-seed counter that would
     // drive reuse were consequently write-only state and have been removed
     // (v1.41.1). REUSE_SEED_BLOCKS is retained as the documented constant

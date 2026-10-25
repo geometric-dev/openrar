@@ -40,7 +40,15 @@ export type RarErrorCode =
   /** C ABI -14 (RAR_ERR_BUSY): the handle/worker is busy with another operation. */
   | 'BUSY'
   /** C ABI -15 (RAR_ERR_LIMIT_EXCEEDED): caller-imposed resource limit exceeded. */
-  | 'LIMIT_EXCEEDED';
+  | 'LIMIT_EXCEEDED'
+  /** C ABI -16 (RAR_ERR_PASSWORD_TIMEOUT): PBKDF2 iteration workbound exceeded. */
+  | 'PASSWORD_TIMEOUT'
+  /** C ABI -17 (RAR_ERR_CONTAINMENT_BREACH): sandboxed worker crash or containment breach. */
+  | 'CONTAINMENT_BREACH'
+  /** C ABI -18 (RAR_ERR_DECRYPT): corrupt encrypted header or decryption failure. */
+  | 'DECRYPT'
+  /** C ABI -19 (RAR_ERR_RESOURCE_EXHAUSTION): worker memory exhaustion. */
+  | 'RESOURCE_EXHAUSTION';
 
 export class RarError extends Error {
   readonly code: RarErrorCode;

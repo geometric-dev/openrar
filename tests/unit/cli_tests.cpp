@@ -998,9 +998,7 @@ static void test_oi_creation_side_emitted() {
 
 // Plan test 5 (v1.26 §6, layout revised in v1.40.0): in a solid archive,
 // FILECOPY redirs sit INSIDE the solid run — the window persists across them
-// and the reference header itself carries the solid bit, matching the
-// reference encoder's layout (UnRAR's multithreaded unpacker corrupts
-// chain-member decodes when runs break around refs). Identical content is
+// and the reference header itself carries the solid bit. Identical content is
 // never double-packed and the archive stays decodable.
 static void test_cdc_filecopy_precedence() {
     namespace fs = std::filesystem;
@@ -1961,8 +1959,8 @@ static void test_motw_propagation_cli() {
 }
 
 // plan test 7: archive-provided zone content is never written to disk. The
-// archive carries a real Zone.Identifier STM child (the WinRAR -os shape,
-// also the hostile-crafter shape); extraction skips it before even reading
+// archive carries a real Zone.Identifier STM child;
+// extraction skips it before even reading
 // the payload and reports it.
 static void test_zone_stream_never_restored() {
 #ifdef _WIN32
@@ -1979,7 +1977,7 @@ static void test_zone_stream_never_restored() {
     }
 
     // Craft an archive with an STM child named :Zone.Identifier — exactly
-    // what WinRAR's -os stores and what a hostile archive would craft.
+    // what a hostile archive would craft.
     fsx::path arc = temp_dir / "zonestream.rar";
     const char* zone_payload = "[ZoneTransfer]\r\nZoneId=1\r\n"; // downgrade attempt
     openrar::archive::ArchiveMutator::PreparedAdd p;
@@ -2040,7 +2038,7 @@ static void test_zone_stream_never_restored() {
     REQUIRE(file_bytes_equal(src, out / "a.txt"));
 
     fsx::remove_all(temp_dir, ec);
-    std::cout << "[PASS] zone_stream_never_restored (plan test 7, WinRAR-shaped)\n";
+    std::cout << "[PASS] zone_stream_never_restored (plan test 7)\n";
 #endif
 }
 
