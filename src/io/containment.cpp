@@ -163,8 +163,12 @@ std::wstring to_wide(const std::string& utf8) {
 #endif
 #if defined(SYS_openat2)
 #define OPENRAR_HAS_OPENAT2 1
-constexpr uint64_t RESOLVE_BENEATH = 0x02;
-constexpr uint64_t RESOLVE_NO_SYMLINKS = 0x04;
+#ifndef RESOLVE_BENEATH
+#define RESOLVE_BENEATH 0x08ULL
+#endif
+#ifndef RESOLVE_NO_SYMLINKS
+#define RESOLVE_NO_SYMLINKS 0x04ULL
+#endif
 struct OpenHow {
     uint64_t flags;
     uint64_t mode;

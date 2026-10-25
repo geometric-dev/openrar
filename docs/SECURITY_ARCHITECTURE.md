@@ -249,6 +249,21 @@ containment is enforced at the OS syscall level:
   exhaustion limits; decompressor dictionary/window sizes capped
   independently of output size. (Baseline: caps shipped v1.9.3/v1.12/v1.13;
   FD limits are new.)
+  
+### 5.5. Weak Cryptography Posture (v1.48)
+* **ZipCrypto (PKZIP traditional encryption):** deliberately not implemented.
+  ZipCrypto is a known-plaintext-vulnerable stream cipher with a 96-bit
+  effective key space that can be brute-forced in hours on commodity hardware.
+  Foreign archives (ZIP) containing ZipCrypto-encrypted entries are transcoded
+  with those entries skipped (`encrypted_refused` status in the per-entry
+  report, `foreign_reader.hpp:43`) and the conversion exit code elevated to
+  11 (bad-password class) when at least one such entry is present.
+* **AES-ZIP (WinZip AES):** not implemented in cv Phase 1. Same per-entry
+  skip semantics. Unencrypted entries in the same archive migrate normally.
+* **Design rationale:** implementing either cipher extends the attack surface
+  with primitives that provide no meaningful confidentiality (ZipCrypto) or
+  that require key management infrastructure the cv pipeline deliberately
+  avoids (AES-ZIP). This is a considered posture, not a missing feature.
 
 ## 6. Execution & SFX Malware Delivery
 
