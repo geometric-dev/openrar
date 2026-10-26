@@ -5,6 +5,27 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.52.0] - 2026-10-26
+
+### Added
+
+- **Competitive Multi-Engine Audit (M0):**
+  - Executed full 28-row benchmark matrix comparing OpenRAR against WinRAR 7.20 x64 and UnRAR 7.20 x64 across canonical (129.4 MB), mixed (148.4 MB, 36 files), zeros (512 MB), and 1.0 GB corpora across methods m0, m1, m3, m5 in both single-threaded and multi-threaded modes.
+  - Published host hardware manifest in `tools/perf/results.json` (Intel Core i7-7500U @ 2.70GHz, 4 cores, 15.9 GB RAM, Windows 11).
+  - OpenRAR leads: `-m3` single-thread is **1.90x faster** than WinRAR (12.59 s vs 23.89 s; size within 2.7%); `-m5` is **1.19x faster** (47.63 s vs 56.71 s; size within 2.97%); `-m3 -mt4` is **1.39x faster** (6.17 s vs 8.55 s); `-cdc` deduplication delivers a **33% smaller archive** than WinRAR (40.68 MB vs 60.64 MB); zeros512 is **4.83x faster** (1.22 s vs 5.91 s); extraction `-mt4` delivers **1.67x MT scaling**.
+- **OpenRAR v2.0 Charter & Architecture Strategy (M3):**
+  - Authored and published `docs/v2.0-charter.md`, formally establishing the executive vision, cost-aware forward-arrival DAG parser, modern SIMD kernels (AVX-512, ARM NEON, GFNI RS16), streamable zero-allocation memory model, universal default-deny sandboxing, and the v2.0 frozen ABI.
+- **5-Axis Ratio Attribution Synthesis (M1):**
+  - Completely rewritten `PERFORMANCE.md` articulating empirical mechanisms across five orthogonal axes: (1) Window selection & FCI grid clamping (`-md=auto`), (2) Candidate source & hash chain pruning (`RAT-F`), (3) Greedy length arbiter vs cost-aware symbol pricing (`RAT-D`), (4) Multi-threaded candidate-then-stitch CDC, and (5) Content-defined chunking deduplication.
+- **Section 10 Audit Intake & U-12 Dispositions (M5):**
+  - **U-12 Resolved with Numbers:** Profiled extraction under BLAKE2sp data hashing with the AVX2 8-lane vertical vector kernel (`src/crypto/blake2sp.cpp:180-350`), measuring BLAKE2sp at **9.8% of extraction wall time** on canonical corpora (strictly below the 15% threshold), closing OPT-C01.
+  - Formal binding dispositions assigned across all unslotted §10 audit rows (Bit-writer flush -> v2.2; Lazy re-walk -> Closed/Refuted A-7; Quick-table shape -> Closed A-1/A-2; MSB accumulator -> Closed R-M1; Inflate stored tables -> Out of Scope; GFNI half-width -> v2.3; NEON CBC -> v2.1; Thread-pool runners -> Closed v1.30/v1.50).
+- **Fuzzing Triage & Sanitizer Dispositions (M2):**
+  - 48h continuous fuzzing verified clean across `fuzz_decompress`, `fuzz_archive_reader`, `fuzz_filters`, and `fuzz_inflate` (0 open crashes, 0 timeouts, 0 CVE-eligible issues).
+  - Confirmed MSan viability disposition (U-8): MemorySanitizer requires instrumented `libc++` runtime, maintained as containerized Linux/Clang capability; native platforms verified via ASan, UBSan, and TSan.
+- **Repo-Root-Relative Path Discipline & Governance:**
+  - Added Ground Rule 7 to `CONTRIBUTING.md`, Rule 3 to `architect_workflow.md`, and Standing Item 9 to Definition of Done in `docs/ROADMAP.md` §8.2, strictly prohibiting host-specific absolute paths.
+
 ## [1.51.0] - 2026-10-25
 
 ### Added
