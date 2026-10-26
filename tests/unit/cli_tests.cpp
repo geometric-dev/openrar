@@ -853,7 +853,7 @@ void test_cli_dict_size_flag() {
     fs::path cv_out = temp_dir / "cv_out.rar";
     cmd = exe + " cv -md=auto " + arc_auto.string() + " " + cv_out.string() + " > " DEVNULL " 2>&1";
     res = std::system(cmd.c_str());
-    REQUIRE(res == 7); // EXIT_USAGE
+    REQUIRE(system_exit_code(res) == 7); // EXIT_USAGE
 
     fs::remove_all(temp_dir, ec);
     std::cout << "[PASS] CLI -md<size> dictionary configuration\n";
