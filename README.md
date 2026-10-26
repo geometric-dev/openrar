@@ -312,6 +312,21 @@ The `wasm_api_tests` ctest target runs the C ABI surface (`openrar_compress2`/`o
 
 ---
 
+## Documentation
+
+Comprehensive architecture, wire-format specifications, security models, and developer guides are published in the **[OpenRAR Documentation Hub](docs/README.md)**:
+
+- **[Architecture & Invariants](docs/invariants.md):** Non-negotiable system contracts (G-1..G-8) and RAM ceiling guarantees.
+- **[Security Architecture](docs/SECURITY_ARCHITECTURE.md):** Process sandboxing (AppContainer / seccomp-BPF) and syscall broker architecture.
+- **[Atomic Extraction Contract](docs/EXTRACTION_CONTRACT.md):** Directory traversal containment, journal manifests, and rollback behavior.
+- **[Frozen C ABI](docs/abi-freeze.md):** Machine-checked binary layout for native C, Python, and C# SDKs.
+- **[RAR 5.0 Format Specification](docs/spec/00-overview.md):** Complete 12-chapter clean-room wire-format documentation.
+- **[WebAssembly Guide](docs/wasm-archive-spec.md):** In-memory archive creation, inspection, and extraction inside browsers and Node.js.
+- **[OpenRAR v2.0 Charter](docs/v2.0-charter.md):** Next-generation architecture vision, cost-aware DAG parsing, and modern SIMD kernels.
+- **[Master Roadmap](docs/ROADMAP.md):** Complete milestone scorecard across the Classic, Modern, and v2.0 arcs.
+
+---
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the clean-room ground rules, code
