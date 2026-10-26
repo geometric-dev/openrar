@@ -67,7 +67,7 @@ def build_file_index():
 
 def resolve_anchor(index, rel):
     rel = rel.replace("\\", "/")
-    for cand in (rel, "docs/" + rel, "tests/" + rel, "src/" + rel, "tools/" + rel):
+    for cand in (rel, "docs/" + rel, "docs/milestones/" + rel, "docs/reviews/" + rel, "tests/" + rel, "src/" + rel, "tools/" + rel):
         if (REPO / cand).is_file():
             return REPO / cand
     candidates = index.get(rel.rsplit("/", 1)[-1], [])
