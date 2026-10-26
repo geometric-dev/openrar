@@ -1,0 +1,10 @@
+openrar (1.53.0-0ubuntu1) noble; urgency=medium
+
+  * Initial Launchpad / Debian package release for v1.53.0.
+  * Multi-binary package split: openrar (CLI), libopenrar1 (shared library),
+    libopenrar-dev (headers, pkg-config, CMake exports).
+  * Debian-compliant openrar(1) manual page.
+  * Pkg-config openrar.pc metadata installation.
+  * Hardening flags (+all) and multi-arch support.
+
+ -- OpenRAR Project <geometric-dev@users.noreply.github.com>  Mon, 26 Oct 2026 14:00:00 +0000

@@ -1,9 +1,9 @@
 # 🗺️ OpenRAR Engineering Roadmap: v1.21 → v2.0 (Consolidated Master)
 
 **Status:** Sole roadmap of record  
-**Current Shipped Release:** v1.52.0 (2026-10-26)  
-**Active Milestone:** Complete — Modern Arc Fully Shipped (10/10, 100%)  
-**Consolidates:** Foundational baseline (v1.21.x → v1.42.x) and modern engineering arcs (v1.43 → v1.52 / v2.0 Charter).
+**Current Shipped Release:** v1.53.0 (2026-10-26)  
+**Active Milestone:** Complete — Modern Arc Fully Shipped (10/10, 100%) & Packaging Arc Underway  
+**Consolidates:** Foundational baseline (v1.21.x → v1.42.x), modern engineering arcs (v1.43 → v1.52 / v2.0 Charter), and distribution milestones (v1.53 Launchpad/deb).
 
 ---
 
@@ -23,8 +23,9 @@
 | **v1.50** | ✅ **SHIPPED** | Parallel CDC fingerprint pass + FastCDC mask correction | Low | Cut-set identity **before** ratio identity, env pinned | Shipped v1.50.0. Candidate-then-stitch CDC; OPT-P01 prev_ uninit; OPT-K02 masks |
 | **v1.51** | ✅ **SHIPPED** | Sandbox scope expansion (encrypted + multi-volume) + FMM-51 failure matrix | High | 6/6 negative suites × 3 OSes, with containment degradation **loud** | Shipped v1.51.0. PBKDF2 bound (2^24); codes -16..-19; HMAC verification |
 | **v1.52** | ✅ **SHIPPED** | Competitive audit & v2.0 charter · Final milestone of Modern Arc | Low | v1.34 §3 adherence; every regression carries a disposition | Shipped v1.52.0. 28-row matrix; PERFORMANCE.md 5-axis rewrite; v2.0 Charter published |
+| **v1.53** | ✅ **SHIPPED** | Launchpad (deb) packaging & distribution tooling | Low | Debian source package formatting + multi-binary split + PPA upload automation | Shipped v1.53.0. debian/ tree, openrar(1) manpage, pkg-config, CPack deb, launchpad.yml |
 
-**Milestone Scorecard:** 10 / 10 Modern Milestones Completed (100%). Modern Arc Fully Delivered.
+**Milestone Scorecard:** Modern Arc Fully Delivered (10/10, 100%). Distribution Milestone v1.53.0 Completed.
 
 **Four rules that override any release-level convenience:**
 
@@ -597,6 +598,40 @@ Standing gates: 24-stage interop (UnRAR 7.20 + WinRAR 7.20) where bytes change �
   - Anchor lint clean (`tools/anchor_lint.py`): 0 violations.
   - Layer check clean (`tools/layer_check.py`): 0 new violations.
   - Version stamps bumped to 1.52.0 in lockstep across all 5 project files.
+
+### 7.11 v1.53 — Launchpad (deb) Packaging & Distribution Tooling [✅ SHIPPED v1.53.0]
+
+#### §7.11 Target Charter & Execution Scope (v1.53.0)
+
+**Charter:** Packaging and distribution milestone. Provides all tooling, Debian source package layout, and CI infrastructure required for native Canonical Launchpad Personal Package Archive (PPA) publishing and `.deb` distribution.
+
+- **Debian Packaging Tree (`debian/`):** Full compliance with Debian Policy (§8 Shared Libraries) and Ubuntu packaging standards.
+  - Multi-binary package split:
+    - `openrar`: CLI archiver binary (`/usr/bin/openrar`) and manual page (`/usr/share/man/man1/openrar.1.gz`).
+    - `libopenrar1`: Shared library (`/usr/lib/<triplet>/libopenrar.so.1*`) implementing the frozen C ABI (`SOVERSION 1`).
+    - `libopenrar-dev`: Development headers (`/usr/include/openrar/*`), pkg-config (`openrar.pc`), static archive (`libopenrar_core.a`), and CMake package configs (`openrarConfig.cmake`).
+  - `debian/rules`: Hardened (`hardening=+all`) makefile driving `dh $@ --buildsystem=cmake` with test validation.
+  - `debian/copyright`: Machine-readable DEP-5 specification covering OpenRAR (MIT) and third-party test dependencies.
+  - `debian/changelog`: RFC 2822 changelog targeting Ubuntu release series (`noble`, `jammy`).
+  - `debian/openrar.1` & `docs/man/openrar.1`: Complete troff UNIX manual page documenting all commands, switches, and exit codes.
+  - `debian/watch`: UScan watchfile for tracking upstream releases.
+- **CMake & Pkg-Config Tooling:**
+  - `cmake/openrar.pc.in`: Installed to `${CMAKE_INSTALL_LIBDIR}/pkgconfig`.
+  - `cmake/openrar_cpack.cmake`: Integrated `cpack -G DEB` generator configuration.
+  - `OPENRAR_BUILD_TESTS`: Configurable CMake option (default `ON`) for downstream distributions.
+- **Automated Packaging Tooling (`tools/packaging/`):**
+  - `tools/packaging/build_deb_source.sh`: Prepares pristine upstream orig tarballs (`openrar_<ver>.orig.tar.gz`) and source packages (`debuild -S`).
+  - `tools/packaging/launchpad_release.py`: Cross-platform orchestrator validating version synchrony, verifying Debian packaging tree integrity, generating series changelogs, and driving `dput` uploads.
+- **Continuous Delivery (.github/workflows/launchpad.yml):**
+  - Automated GitHub Actions workflow triggered on release tags (`v*`) or manual dispatch.
+  - Builds source packages across multiple Ubuntu distributions (`noble`, `jammy`).
+  - Performs lintian static analysis and automated GPG signing via repository secret `LAUNCHPAD_GPG_KEY`.
+- **Documentation & User Guides:**
+  - Published `docs/launchpad-packaging.md` containing end-to-end instructions for local building, GPG setup, PPA creation, and apt installation (`sudo add-apt-repository ppa:geometric-dev/openrar && sudo apt install openrar libopenrar-dev`).
+- **Verification Gates:**
+  - `python tools/packaging/launchpad_release.py --verify-only` clean (100%).
+  - Version stamps bumped to 1.53.0 in lockstep across all 5 project files.
+  - Full CTest suite clean.
 
 ---
 
@@ -1628,7 +1663,8 @@ C# NuGet (`OpenRAR.NET`).
 | **v1.49.0** | WASM streaming encode & memory accounting | `createArchiveStream`; mock module defeating V-1; 64-bit bit positions | Streaming byte-identical to one-shot ✅ |
 | **v1.50.0** | Parallel CDC candidate-then-stitch & FastCDC masks | Gear hash 63-byte overlap; OPT-P01 prev_ uninit; distinct popcount masks | Cut-set identity across 5 corpora & 16 residues ✅ |
 | **v1.51.0** | Sandbox scope expansion (encrypted + multi-volume) | PBKDF2 bound (2^24); broker HMAC validation; FMM-51-1..7 error matrix | 6/6 negative suites × 3 OSes; degraded mode loud ✅ |
-| **v1.52.0** | Competitive audit & v2.0 charter | Multi-engine comparative matrix (WinRAR, UnRAR, 7-Zip); v2.0 Charter | Final Modern Arc milestone 🟡 PENDING |
+| **v1.52.0** | Competitive audit & v2.0 charter | Multi-engine comparative matrix (WinRAR, UnRAR, 7-Zip); v2.0 Charter | Final Modern Arc milestone ✅ |
+| **v1.53.0** | Launchpad (deb) packaging & distribution | Debian source format, multi-binary split, pkg-config, CPack, PPA CI | Complete Launchpad deb tooling ✅ |
 
 ## ⚠️ Risk Register (top items)
 
