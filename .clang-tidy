@@ -57,12 +57,12 @@ CheckOptions:
     value: lower_case
   # The frozen ABI enum is handled by leaving EnumConstantCase unset (see the
   # EnumCase block above); no EnumConstantIgnoredRegexp is needed.
-  # System-convention macros (e.g. WIN32_LEAN_AND_MEAN before windows.h).
+  # System-convention macros (e.g. WIN32_LEAN_AND_MEAN before windows.h, Linux RESOLVE_/SYS_/RENAME_ fallback definitions).
   - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
-    value: '^WIN32_'
-  # Windows system-struct replica in win32_meta.cpp.
+    value: '^(WIN32_|RESOLVE_|SYS_|RENAME_)'
+  # Windows system-struct replica in win32_meta.cpp, STL-conforming allocator structs in default_init_allocator.hpp.
   - key: readability-identifier-naming.StructIgnoredRegexp
-    value: '^_REPARSE'
+    value: '^(_REPARSE|default_init_allocator|rebind)'
   # Note: function-local `const` deliberately stays lower_snake (unpoliced);
   # scope/class-scope constants are UPPER via GlobalConstantCase +
   # ConstexprVariableCase below.
