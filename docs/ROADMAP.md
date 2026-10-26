@@ -616,7 +616,7 @@ Paired deltas, min-of-N with spread · alternating order · wiped cache/configur
 6. **No fail-open:** any skipped check is user-visible in output **and** exit; no partial result delivered as a clean close.
 7. **Anchors + kill honesty:** every claim anchored; pre-registered kills evaluated **with numbers**; killed directions recorded as §3 rows with their class.
 8. **No vacuous passes (G-9):** every gate asserts the check **executed**.
-9. **Path discipline:** all links, file references, test scripts, and doc anchors must be repo-root-relative or relative to the containing document. Host-specific absolute paths (`file:///C:/Users/...`, `C:\Users\...`, `/home/...`) and personal usernames are strictly prohibited.
+9. **Path discipline:** all links, file references, test scripts, and doc anchors must be repo-root-relative or relative to the containing document. Host-specific absolute paths (`file:///path/...`, `C:\...`, `/home/...`, `/Users/...`) and personal usernames are strictly prohibited.
 
 ### 8.3 The `MAX_CHUNK` collision — resolve before v1.50
 
