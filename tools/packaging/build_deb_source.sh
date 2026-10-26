@@ -93,9 +93,9 @@ EOF
 # 5. Build source package
 echo "==> Running dpkg-source / dpkg-buildpackage -S..."
 if [[ "${DO_SIGN}" = true && -n "${KEY_ID}" ]]; then
-    dpkg-buildpackage -S -sa -k"${KEY_ID}"
+    dpkg-buildpackage -S -sa -d -k"${KEY_ID}"
 else
-    dpkg-buildpackage -S -sa -us -uc
+    dpkg-buildpackage -S -sa -d -us -uc
 fi
 
 cd "${REPO_ROOT}"
