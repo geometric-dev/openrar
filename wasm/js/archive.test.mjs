@@ -241,9 +241,9 @@ const {
 
   test('createArchiveStream yields byte-identical chunks to createArchive (parity I-3)', async () => {
     const files = [
-      { path: 'doc.txt', data: new TextEncoder().encode('OpenRAR Streaming Parity Test Payload') },
-      { path: 'data.bin', data: new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80]) },
-      { path: 'folder/', data: new Uint8Array(0) },
+      { path: 'doc.txt', data: new TextEncoder().encode('OpenRAR Streaming Parity Test Payload'), mtime: 1700000000 },
+      { path: 'data.bin', data: new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80]), mtime: 1700000000 },
+      { path: 'folder/', data: new Uint8Array(0), mtime: 1700000000 },
     ];
     const oneshot = await createArchive(files, { method: 3 });
 

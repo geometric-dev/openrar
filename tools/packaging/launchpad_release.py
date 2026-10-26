@@ -175,7 +175,7 @@ def build_source_package(repo_root: Path, version: str, series: str, output_dir:
     generate_series_changelog(repo_root, version, series, staging_dir / "debian" / "changelog")
 
     # Run dpkg-buildpackage -S
-    cmd = ["dpkg-buildpackage", "-S", "-sa"]
+    cmd = ["dpkg-buildpackage", "-S", "-sa", "-d"]
     if key_id:
         cmd.extend(["-k" + key_id])
     else:

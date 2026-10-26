@@ -43,6 +43,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
             debhelper \
             devscripts \
             dpkg-dev \
