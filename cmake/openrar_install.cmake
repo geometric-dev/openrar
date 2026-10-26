@@ -38,5 +38,19 @@ if(NOT EMSCRIPTEN)
             FILE openrarTargets.cmake
             NAMESPACE openrar::
             DESTINATION "${OPENRAR_INSTALL_CMAKEDIR}")
+
+    # pkg-config metadata (openrar.pc)
+    configure_file(
+        cmake/openrar.pc.in
+        "${CMAKE_CURRENT_BINARY_DIR}/openrar.pc"
+        @ONLY)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/openrar.pc"
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+
+    # Manpage documentation (openrar.1)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/docs/man/openrar.1")
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/man/openrar.1"
+                DESTINATION "${CMAKE_INSTALL_MANDIR}/man1")
+    endif()
 endif()
 

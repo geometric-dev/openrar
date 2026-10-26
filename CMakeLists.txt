@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.16)
 # wasm/js/package.json and CHANGELOG.md are synced at release time.
 # C is enabled for tests/unit/abi_header_c_compat.c — the C-mode compile proof
 # of the frozen public C ABI (docs/abi-freeze.md); no production source is C.
-project(openrar VERSION 1.52.0 LANGUAGES C CXX)
+project(openrar VERSION 1.53.0 LANGUAGES C CXX)
 
 # Where the Windows CLI/SFX/worker binaries are written.
 #
@@ -66,8 +66,12 @@ endif()
 
 include(cmake/openrar_dll.cmake)
 
-include(cmake/openrar_tests.cmake)
+option(OPENRAR_BUILD_TESTS "Build OpenRAR test suites" ON)
+if(OPENRAR_BUILD_TESTS)
+    include(cmake/openrar_tests.cmake)
+endif()
 
 include(cmake/openrar_install.cmake)
+include(cmake/openrar_cpack.cmake)
 
 
