@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: openrar
+Description: Modern C++17 RAR 5.0 archiver and frozen C ABI library
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lopenrar
+Cflags: -I${includedir}

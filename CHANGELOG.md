@@ -5,6 +5,37 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.53.0] - 2026-10-26
+
+### Added
+
+- **Canonical Launchpad (PPA) Debian Packaging (`debian/`):**
+  - Full compliance with Debian Policy (§8 Shared Libraries) and Ubuntu packaging standards, structuring source package format `3.0 (quilt)` for automated builds on the Canonical Launchpad build farm (Soyuz) across all architectures (`amd64`, `arm64`, `armhf`, `riscv64`, `ppc64el`, `s390x`).
+  - **Multi-Binary Package Split:**
+    - `openrar`: CLI archiver executable (`/usr/bin/openrar`) and manpage (`/usr/share/man/man1/openrar.1.gz`).
+    - `libopenrar1`: Shared runtime library (`/usr/lib/<triplet>/libopenrar.so.1*`) implementing the frozen C ABI (`SOVERSION 1`).
+    - `libopenrar-dev`: Development headers (`/usr/include/openrar/*`), pkg-config metadata (`openrar.pc`), static archive (`libopenrar_core.a`), and CMake package configurations (`openrarConfig.cmake`).
+  - **Debian Metadata Suite:**
+    - `debian/control`: Defining source package `openrar` and binary packages `openrar`, `libopenrar1`, `libopenrar-dev` with standard dependencies and multi-arch declarations.
+    - `debian/rules`: Hardened (`hardening=+all`) makefile driving `dh $@ --buildsystem=cmake` with automated test suite validation.
+    - `debian/copyright`: Machine-readable DEP-5 specification covering OpenRAR (MIT) and third-party dependencies.
+    - `debian/changelog`: RFC 2822 changelog targeting Ubuntu release series (`noble`, `jammy`).
+    - `debian/openrar.install`, `debian/libopenrar1.install`, `debian/libopenrar-dev.install`: Precise package component manifests.
+    - `debian/watch`: UScan watchfile tracking upstream GitHub release tags.
+- **UNIX Manual Page (`debian/openrar.1`, `docs/man/openrar.1`):**
+  - Complete troff/groff manual page for `openrar(1)`, fully documenting commands (`a`, `x`, `e`, `t`, `l`, `lt`, `v`, `p`, `d`, `u`, `f`, `m`, `k`, `r`, `cv`, `ch`), compression options (`-m0`..`-m5`, `-md`), encryption (`-p`, `-hp`), recovery records (`-rr`, `-rv`), multi-volume slicing (`-v`), sandboxing (`-in-proc`), and standardized exit codes.
+- **Pkg-Config & CPack Integration:**
+  - `cmake/openrar.pc.in`: Installed into `${CMAKE_INSTALL_LIBDIR}/pkgconfig` providing standard downstream discovery via `pkg-config --cflags --libs openrar`.
+  - `cmake/openrar_cpack.cmake`: Configured CPack DEB generator (`cpack -G DEB`) for direct binary `.deb` package generation.
+  - `OPENRAR_BUILD_TESTS`: Configurable CMake option (default `ON`) allowing downstream package maintainers to disable test binary generation during packaging.
+- **Packaging & Release Automation (`tools/packaging/`):**
+  - `tools/packaging/build_deb_source.sh`: Bash script to generate clean upstream orig tarballs (`openrar_<ver>.orig.tar.gz`) and signed/unsigned source packages via `dpkg-buildpackage -S -sa`.
+  - `tools/packaging/launchpad_release.py`: Cross-platform Python manager for packaging verification, version synchrony auditing, multi-series changelog generation, and automated `dput` upload orchestration.
+- **Continuous Delivery (`.github/workflows/launchpad.yml`):**
+  - Automated GitHub Actions workflow triggered on release tags (`v*`) or manual dispatch, generating Debian source packages, executing lintian static analysis, signing with repository secret `LAUNCHPAD_GPG_KEY`, and uploading to `ppa:geometric-dev/openrar`.
+- **Documentation & User Guides:**
+  - Published `docs/launchpad-packaging.md` detailing Launchpad PPA setup, Debian source packaging architecture, GPG registration, and end-user apt installation (`sudo add-apt-repository ppa:geometric-dev/openrar && sudo apt install openrar libopenrar-dev`).
+
 ## [1.52.0] - 2026-10-26
 
 ### Added

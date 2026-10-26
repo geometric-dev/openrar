@@ -69,6 +69,7 @@ Guides for integrating OpenRAR into applications, web environments, and native p
 - **[WASM Deployment Guide](wasm-deployment.md):** Packaging, NPM distribution, CDN hosting, and cross-origin isolation (COOP/COEP).
 - **[WASM Technical Limitations](wasm-limitations.md):** Browser memory ceilings (2 GiB Emscripten cap), single-thread fallback behavior, and performance profiles.
 - **[Streaming Decode Considerations](streaming-considerations.md):** Architecture of zero-allocation pipe streaming, circular window decoupling, and two-phase parallel decompression.
+- **[Debian & Launchpad Packaging Guide](launchpad-packaging.md):** Canonical Launchpad PPA distribution, Debian multi-binary package split, GPG signing, and automated CI publishing.
 
 ---
 
@@ -107,7 +108,8 @@ docs/
 │   ├── wasm-deployment.md        # WASM NPM distribution & web worker hosting
 │   ├── wasm-examples.md          # Browser & Node.js code recipes
 │   ├── wasm-limitations.md       # Browser memory ceilings & threading models
-│   └── streaming-considerations.md # Streaming decode pipeline architecture
+│   ├── streaming-considerations.md # Streaming decode pipeline architecture
+│   └── launchpad-packaging.md    # Debian/Ubuntu Launchpad PPA packaging architecture
 │
 ├── spec/                         # 12-Chapter RAR 5.0 Format Specification Suite
 │   ├── 00-overview.md            # Framing, VINT, CRC, and encryption flags
