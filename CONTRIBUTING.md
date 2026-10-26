@@ -44,8 +44,8 @@ that keeps the history coherent.
    verification.
 7. **Repo-root-relative paths only.** All documentation, test scripts, benchmarks,
    plans, walkthroughs, and error messages must use repository-root-relative or
-   relative paths. Never embed host-specific absolute paths (e.g. `file:///C:/...`,
-   `C:\Users\...`, `/home/...`). Markdown links in `docs/` must use relative targets
+   relative paths. Never embed host-specific absolute paths (e.g. `file:///path/...`,
+   `C:\...`, `/home/...`, `/Users/...`). Markdown links in `docs/` must use relative targets
    (e.g. `../src/...` or `../include/...`).
 
 ## Repository layout
