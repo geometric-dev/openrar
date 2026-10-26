@@ -1,0 +1,251 @@
+.TH OPENRAR 1 "October 2026" "OpenRAR 1.53.0" "User Commands"
+.SH NAME
+openrar \- fast, memory-safe RAR 5.0 archive manager and extraction tool
+.SH SYNOPSIS
+.B openrar
+\fIcommand\fR
+[\fIoptions\fR...]
+\fIarchive\fR
+[\fIfiles\fR...]
+[\fI@listfiles\fR...]
+[\fIpath_to_extract\fR]
+.SH DESCRIPTION
+.B OpenRAR
+is a modern, high-performance C++17 implementation of the RAR 5.0 archive format specification.
+It provides complete archive creation (store and LZ/Huffman compression), decompression,
+modification, recovery, and inspection capabilities.
+.PP
+OpenRAR features native multi-volume support, Reed-Solomon GF(2\(bv16) recovery records,
+AES-256 encryption, filesystem metadata preservation (POSIX permissions, extended attributes,
+NTFS streams and ACLs), Content-Defined Chunking (CDC) deduplication, and sandboxed worker execution.
+
+.SH COMMANDS
+.TP
+.B a
+Add specified files and directories to the archive. Creates a new archive if it does not exist.
+.TP
+.B x
+Extract files with their full directory path hierarchy preserved.
+.TP
+.B e
+Extract files to the current or specified directory, discarding all archive path hierarchies.
+.TP
+.B t
+Test integrity of archived files by calculating checksums without writing files to disk.
+.TP
+.B l
+List archive contents in standard table format.
+.TP
+.B lt
+List technical archive details, including compression ratios, dictionary sizes, and attributes.
+.TP
+.B v
+Verbose archive listing showing full paths, file attributes, OS types, and host metadata.
+.TP
+.B p
+Print extracted file contents directly to standard output (pipe).
+.TP
+.B d
+Delete specified files from an existing archive.
+.TP
+.B u
+Update existing files in the archive if source files are newer, or add newly matched files.
+.TP
+.B f
+Freshen existing files in the archive (only updates existing files if source is newer; does not add new files).
+.TP
+.B m
+Move files to archive (archives files and deletes original source files upon successful completion).
+.TP
+.B k
+Lock archive to prevent further modifications.
+.TP
+.B r
+Repair damaged archive using recovery records or external recovery volumes (.rev).
+.TP
+.B cv
+Convert and migrate foreign archive formats (ZIP, TAR, GZIP) into RAR 5.0 archives with verified BLAKE2sp integrity.
+.TP
+.B ch
+Change archive parameters (e.g. comment, lock status).
+
+.SH OPTIONS
+.TP
+.BI \-m <0..5>
+Set compression method:
+.B 0
+(store without compression),
+.B 1
+(fastest compression),
+.B 2
+(fast),
+.B 3
+(normal compression, default),
+.B 4
+(good compression),
+.B 5
+(best compression).
+.TP
+.BI \-md <size>
+Set sliding dictionary window size (e.g.
+.BR \-md4m ", " \-md64m ", " \-md1g ).
+Quantized between 128 KiB and 4 GiB.
+.TP
+.B \-s
+Create a solid archive. Shares sliding dictionary across consecutive files to maximize compression.
+.TP
+.B \-s\-
+Disable solid archive mode.
+.TP
+.BI \-p [password]
+Set password for file data encryption (AES-256 CBC with PBKDF2 key derivation).
+If password is omitted, openrar prompts interactively.
+.TP
+.BI \-hp [password]
+Encrypt both file data and archive headers. Hides file names and directory trees from unauthorized listing.
+.TP
+.BI \-rr [N[%]]
+Add Reed-Solomon GF(2\(bv16) recovery record to the archive. Protects against bit rot and sector corruption.
+Default is 3% of archive size when N is omitted.
+.TP
+.BI \-rv [N]
+Generate N external recovery volumes (\fI.partNN.rev\fR) for multi-volume archives.
+.TP
+.BI \-v <size>
+Create a multi-volume archive split into slices of specified size (e.g.
+.BR \-v100m ", " \-v1g ).
+.TP
+.B \-r
+Recurse into subdirectories (default for command \fBa\fR).
+.TP
+.B \-r0
+Recurse only for wildcard file specifications.
+.TP
+.B \-r\-
+Disable subdirectory recursion.
+.TP
+.B \-o+
+Overwrite existing destination files without prompting.
+.TP
+.B \-o\-
+Do not overwrite existing destination files.
+.TP
+.B \-ep
+Exclude paths from file names; store base names only.
+.TP
+.B \-ep1
+Exclude the base input directory from stored paths.
+.TP
+.B \-ed
+Do not create or store empty directory records.
+.TP
+.B \-df
+Delete source files after successful archiving.
+.TP
+.B \-dr
+Delete source files to the Recycle Bin or Trash after successful archiving.
+.TP
+.B \-dw
+Wipe source files (overwrite with zeroes and unlink) after successful archiving.
+.TP
+.BI \-z <file>
+Read archive comment from the specified UTF-8 text file.
+.TP
+.B \-y
+Assume Yes to all interactive confirmation prompts.
+.TP
+.B \-in\-proc
+Force decompression inside the main process, bypassing the sandboxed worker process.
+.TP
+.BI \-\-json\-summary [=FILE]
+Emit structured JSON extraction summary to stdout or to the specified output file.
+
+.SH EXIT STATUS
+.TP
+.B 0
+Success. Operation completed without errors or warnings.
+.TP
+.B 1
+Warning. Non-fatal warnings encountered; operation succeeded.
+.TP
+.B 2
+Fatal error. An unrecoverable internal error occurred.
+.TP
+.B 3
+CRC / checksum mismatch. Archived data failed integrity verification.
+.TP
+.B 4
+Locked archive. Attempted modification of an archive locked with command \fBk\fR.
+.TP
+.B 5
+Write error. Failed to write output file to storage.
+.TP
+.B 6
+Open error. Failed to open input archive or target file.
+.TP
+.B 7
+Command-line error. Invalid syntax, unrecognized options, or missing arguments.
+.TP
+.B 8
+Out of memory. System memory allocation failed.
+.TP
+.B 10
+No files found. Pattern did not match any source or archive files.
+.TP
+.B 11
+Bad password. Incorrect decryption key supplied.
+.TP
+.B 12
+Password timeout. PBKDF2 workbound calculation threshold exceeded.
+.TP
+.B 13
+Corrupted or unrecognized archive format.
+.TP
+.B 255
+User abort. Operation cancelled via signal, Ctrl+C, or Escape.
+
+.SH ENVIRONMENT
+.TP
+.B OPENRAR_IN_PROC
+When set to \fB1\fR, forces OpenRAR to run all parsing and decompression within the main process instead of spawning a sandboxed worker.
+.TP
+.B OPENRAR_NO_MMAP
+When set to \fB1\fR, disables memory-mapped file access and forces buffered I/O streams.
+
+.SH EXAMPLES
+.PP
+Create a solid RAR archive with normal compression:
+.RS 4
+.B openrar a \-s backup.rar /path/to/docs/
+.RE
+.PP
+Extract an archive preserving the full directory structure:
+.RS 4
+.B openrar x archive.rar /destination/directory/
+.RE
+.PP
+Test archive integrity without unpacking files:
+.RS 4
+.B openrar t archive.rar
+.RE
+.PP
+Create an encrypted archive with hidden file names and a 5% recovery record:
+.RS 4
+.B openrar a \-hpSecretPass \-rr5% secure.rar ./confidential/
+.RE
+.PP
+Migrate a legacy ZIP archive to a modern RAR 5.0 archive:
+.RS 4
+.B openrar cv legacy.zip modern.rar
+.RE
+
+.SH CONFORMS TO
+RAR 5.0 Archive Specification. POSIX.1-2017.
+
+.SH AUTHORS
+OpenRAR Project (https://github.com/geometric-dev/openrar).
+
+.SH SEE ALSO
+.BR unrar (1),
+.BR rar (1),
+.BR tar (1)

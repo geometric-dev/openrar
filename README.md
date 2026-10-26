@@ -47,7 +47,18 @@
 
 ## How to create a RAR from the command line
 
-### Build
+### Installation & Build
+
+#### Ubuntu & Debian (Launchpad PPA)
+
+```bash
+# Add official OpenRAR PPA
+sudo add-apt-repository ppa:geometric-dev/openrar
+sudo apt update
+
+# Install CLI & manpage (or C/C++ development package libopenrar-dev)
+sudo apt install openrar libopenrar-dev
+```
 
 #### Standard CMake (Windows, Linux, macOS with GCC, Clang, or MSVC)
 

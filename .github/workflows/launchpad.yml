@@ -1,0 +1,115 @@
+name: Launchpad PPA (deb)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ppa_target:
+        description: 'Launchpad PPA target (e.g. ppa:geometric-dev/openrar)'
+        required: true
+        default: 'ppa:geometric-dev/openrar'
+      distributions:
+        description: 'Target Ubuntu release series (comma separated)'
+        required: true
+        default: 'noble,jammy'
+      dry_run:
+        description: 'Build source package and lint without uploading'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  launchpad-publish:
+    name: Build & Publish Debian Source Package
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debhelper \
+            devscripts \
+            dpkg-dev \
+            dput \
+            gnupg \
+            lintian
+
+      - name: Verify packaging metadata & version lockstep
+        run: |
+          python tools/packaging/launchpad_release.py --verify-only
+
+      - name: Import GPG signing key
+        if: ${{ env.LAUNCHPAD_GPG_KEY != '' }}
+        env:
+          LAUNCHPAD_GPG_KEY: ${{ secrets.LAUNCHPAD_GPG_KEY }}
+        run: |
+          echo "${LAUNCHPAD_GPG_KEY}" | gpg --batch --import
+          KEY_ID=$(gpg --list-secret-keys --with-colons | grep '^sec' | cut -d':' -f5)
+          echo "GPG_KEY_ID=${KEY_ID}" >> $GITHUB_ENV
+          echo "Imported signing key ID: ${KEY_ID}"
+
+      - name: Build Debian source packages
+        id: build_source
+        env:
+          DISTROS: ${{ github.event.inputs.distributions || 'noble,jammy' }}
+        run: |
+          mkdir -p build/debian-source
+          IFS=',' read -ra ADDR <<< "${DISTROS}"
+          for series in "${ADDR[@]}"; do
+            series=$(echo "${series}" | xargs)
+            echo "::group::Building source package for ${series}"
+            if [ -n "${GPG_KEY_ID}" ]; then
+              ./tools/packaging/build_deb_source.sh --distro "${series}" --output-dir build/debian-source --sign "${GPG_KEY_ID}"
+            else
+              ./tools/packaging/build_deb_source.sh --distro "${series}" --output-dir build/debian-source
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Lintian check
+        run: |
+          echo "::group::Lintian report"
+          lintian -I -E --pedantic build/debian-source/*.dsc || true
+          echo "::endgroup::"
+
+      - name: Upload to Launchpad PPA
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true') }}
+        env:
+          PPA_TARGET: ${{ github.event.inputs.ppa_target || 'ppa:geometric-dev/openrar' }}
+        run: |
+          if [ -z "${GPG_KEY_ID}" ]; then
+            echo "Warning: No GPG signing key configured (LAUNCHPAD_GPG_KEY secret not found)."
+            echo "Launchpad requires GPG-signed source packages for PPA uploads."
+            echo "Skipping dput upload in unsigned environment."
+          else
+            for cf in build/debian-source/*_source.changes; do
+              echo "Uploading ${cf} to ${PPA_TARGET}..."
+              dput "${PPA_TARGET}" "${cf}"
+            done
+          fi
+
+      - name: Archive source package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-source-packages
+          path: |
+            build/debian-source/*.dsc
+            build/debian-source/*.orig.tar.gz
+            build/debian-source/*.debian.tar.xz
+            build/debian-source/*_source.changes
