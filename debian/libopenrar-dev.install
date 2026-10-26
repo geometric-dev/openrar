@@ -1,0 +1,5 @@
+usr/include/openrar/*
+usr/lib/*/libopenrar.so
+usr/lib/*/libopenrar*.a
+usr/lib/*/pkgconfig/openrar.pc
+usr/lib/*/cmake/openrar/*

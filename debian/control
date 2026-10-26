@@ -1,0 +1,49 @@
+Source: openrar
+Section: utils
+Priority: optional
+Maintainer: OpenRAR Project <geometric-dev@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.16),
+               g++ (>= 9) | clang (>= 10),
+               pkg-config
+Standards-Version: 4.6.2
+Homepage: https://github.com/geometric-dev/openrar
+Vcs-Browser: https://github.com/geometric-dev/openrar
+Vcs-Git: https://github.com/geometric-dev/openrar.git
+Rules-Requires-Root: no
+
+Package: openrar
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Section: utils
+Description: Modern C++17 RAR 5.0 archiver CLI
+ OpenRAR is a modern, high-performance, memory-safe C++17 implementation
+ of the RAR 5.0 archive format specification.
+ .
+ This package provides the command-line utility 'openrar' for extracting,
+ testing, listing, creating, and repairing RAR 5.0 archives, with full
+ support for encryption, recovery records, and archive migration.
+
+Package: libopenrar1
+Architecture: any
+Multi-Arch: same
+Section: libs
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Modern C++17 RAR 5.0 frozen C ABI shared library
+ OpenRAR is a modern, high-performance C++17 RAR 5.0 archive engine.
+ .
+ This package provides the frozen C ABI shared library (libopenrar.so.1)
+ used by native applications, language bindings (Python ctypes, C# P/Invoke,
+ WASM/Node.js), and third-party tools.
+
+Package: libopenrar-dev
+Architecture: any
+Multi-Arch: same
+Section: libdevel
+Depends: libopenrar1 (= ${binary:Version}), ${misc:Depends}
+Description: Development files for OpenRAR (headers, pkg-config, CMake)
+ OpenRAR is a modern, high-performance C++17 RAR 5.0 archive engine.
+ .
+ This package contains C/C++ header files (openrar_dll.h, openrar.hpp,
+ version.h), the unversioned shared library symlink, static archive,
+ pkg-config metadata (openrar.pc), and CMake export modules.

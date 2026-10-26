@@ -1,0 +1,4 @@
+version=4
+opts="filenamemangle=s%(?:.*?)?(?:v|run-|Release[_-])?(\d[\d.]*)\.tar\.gz%openrar-$1.tar.gz%" \
+  https://github.com/geometric-dev/openrar/tags \
+  (?:.*?/)?(?:v)?(\d[\d.]*)\.tar\.gz debian uupdate
