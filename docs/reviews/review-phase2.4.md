@@ -5,7 +5,7 @@
 ### `[CRITICAL]`
 
 #### 1. Integer Overflow & Unbounded Header Expansion in `RecoveryWriter::repair()` Multi-Physical Shard Reassembly
-* **Location:** [`src/recovery/recovery_writer.cpp:1784-2000, 2031`](../src/recovery/recovery_writer.cpp#L1865-L1999)
+* **Location:** [`src/recovery/recovery_writer.cpp:1784-2000, 2031`](../../src/recovery/recovery_writer.cpp#L1865-L1999)
 * **Finding:** In `RecoveryWriter::repair()`, the multi-physical recovery record reassembly block (lines 1784–2000) executes **before** the geometry sanity cap `if (d > 200 || nr > 10u * 200) return false;` at line 2031:
   ```cpp
   core::uint32 d0 =
@@ -25,7 +25,7 @@
 ---
 
 #### 2. Unsigned 64-Bit Addition Wrap in `ZipReader` Bypasses Pre-Flight Extent Bounds Checks & Causes Mis-Parsed ZIP64 Headers
-* **Location:** [`src/archive/foreign_zip.cpp:121, 151-183, 236-239, 409-410, 429-433, 480-481`](../src/archive/foreign_zip.cpp#L151-L183)
+* **Location:** [`src/archive/foreign_zip.cpp:121, 151-183, 236-239, 409-410, 429-433, 480-481`](../../src/archive/foreign_zip.cpp#L151-L183)
 * **Finding:**
   1. **Addition wrap on `e.data_offset + e.packed_size` (line 430) and `eocd64_off + EOCD64_FIXED` (line 121):** In `ZipReader::preflight_cd_vs_lfh()`, `e.packed_size` can be any 64-bit value from a ZIP64 extra record. Line 430 checks:
      ```cpp
@@ -42,7 +42,7 @@
 ---
 
 #### 3. PAX `"size"` Override in `TarReader::open()` Fails to Update `padded`, Mis-Framing the Stream Into Member Data
-* **Location:** [`src/archive/foreign_tar.cpp:222, 299-322, 348, 439`](../src/archive/foreign_tar.cpp#L222)
+* **Location:** [`src/archive/foreign_tar.cpp:222, 299-322, 348, 439`](../../src/archive/foreign_tar.cpp#L222)
 * **Finding:** In `TarReader::open()`, line 222 computes the 512-byte block-aligned payload advance from the ustar header's 12-byte octal `size` field:
   ```cpp
   const core::uint64 padded = (size + BLOCK - 1) / BLOCK * BLOCK;
@@ -59,7 +59,7 @@
 ### `[HIGH]`
 
 #### 1. Truncated or Malformed `FHEXTRA_CRYPT` File Extra Record Silently Uses Zero Salt/IV & Bypasses `crypt_version` Validation
-* **Location:** [`src/format/header_reader.cpp:600-634`](../src/format/header_reader.cpp#L600-L634), [`src/archive/archive_reader.cpp:1538-1550, 3071-3094`](../src/archive/archive_reader.cpp#L1538-L1550)
+* **Location:** [`src/format/header_reader.cpp:600-634`](../../src/format/header_reader.cpp#L600-L634), [`src/archive/archive_reader.cpp:1538-1550, 3071-3094`](../../src/archive/archive_reader.cpp#L1538-L1550)
 * **Finding:**
   1. In `HeaderReader::parse_file_header()` (lines 600–634), when `rec_type == FHEXTRA_CRYPT`:
      * The return values of `core::read_vint()` for `cver` and `cflags` (lines 603, 605) are ignored.
@@ -70,7 +70,7 @@
 ---
 
 #### 2. `RecoveryWriter::repair_rev_volumes()` Destructively Renames Corrupt Volumes to `.bad` Before Validating `.rev` Set Sufficiency
-* **Location:** [`src/recovery/recovery_writer.cpp:1548-1664`](../src/recovery/recovery_writer.cpp#L1548-L1664)
+* **Location:** [`src/recovery/recovery_writer.cpp:1548-1664`](../../src/recovery/recovery_writer.cpp#L1548-L1664)
 * **Finding:** In `RecoveryWriter::repair_rev_volumes()`:
   1. Line 1550 counts `valid_revs` without deduplicating `r.rec_num`. If two `.rev` files in the directory carry the same `rec_num` (e.g., a backup copy of a `.rev` file), `missing <= valid_revs` passes at line 1551, and lines 1565–1572 **delete any existing `.bad` file and rename the user's corrupt volume(s) to `.bad`**.
   2. Immediately afterward, `rs.init(nd, nr, valid.data())` at line 1580 sees fewer distinct `valid[r.rec_num]` slots than `missing` and returns `false` (or opening a source/output volume at lines 1630–1663 fails and returns `false`), leaving the user's original volume renamed away with no replacement volume written.
@@ -79,7 +79,7 @@
 ---
 
 #### 3. Unbounded Output Accumulation in `StreamDecoder` When `flush_cb_ == nullptr` (Decompression Bomb Vector on WASM/DLL)
-* **Location:** [`src/compress/stream_decoder.cpp:36-49, 100-110`](../src/compress/stream_decoder.cpp#L100-L110)
+* **Location:** [`src/compress/stream_decoder.cpp:36-49, 100-110`](../../src/compress/stream_decoder.cpp#L100-L110)
 * **Finding:** While `Decompressor50::decompress_to_vector()` enforces `MAX_STREAM_OUTPUT` (`2 GiB` on WASM/32-bit, `64 GiB` on 64-bit), `StreamDecoder` (exposed via `openrar_stream_decompress_feed` in `wasm_api.cpp` with `flush_cb_ == nullptr`) appends decoded chunks into `output_` without any upper bound check on `output_.size()` or `total_out_`. A small decompression bomb fed through the streaming decoder API can exhaust the WASM or host heap.
 * **Remediation:** Enforce `if (output_.size() + size > Decompressor50::MAX_STREAM_OUTPUT) { aborted_ = true; return false; }` inside `StreamDecoder::feed()` (method 0) and `StreamDecoder::process_blocks()`'s `sink` lambda when `flush_cb_ == nullptr`.
 
@@ -88,7 +88,7 @@
 ### `[MEDIUM]`
 
 #### 1. Unvalidated `HFL_EXTRA` `extra_size` Overrun in `HeaderReader::parse_main_header()` & `parse_file_header()`
-* **Location:** [`src/format/header_reader.cpp:28-33, 273-279, 325-331, 565-571`](../src/format/header_reader.cpp#L325-L331)
+* **Location:** [`src/format/header_reader.cpp:28-33, 273-279, 325-331, 565-571`](../../src/format/header_reader.cpp#L325-L331)
 * **Finding:** When `flags & HFL_EXTRA` is set, `parse_main_header()` and `parse_file_header()` compute:
   ```cpp
   if (flags & HFL_EXTRA && extra_size > 0 && offset < body_size) {
@@ -105,14 +105,14 @@
 ---
 
 #### 2. `ArchiveReader::scan_archive()` Silently Admits Truncated File Extents on Non-Final / Single Volumes Without Failing the Header Walk
-* **Location:** [`src/archive/archive_reader.cpp:1186-1195, 1238-1244`](../src/archive/archive_reader.cpp#L1238-L1244)
-* **Finding:** During `ArchiveReader::scan_archive()`, when a `HEAD_FILE` or `HEAD_SERVICE` block declares a `data_size` that extends past the end of the volume (`data_size > avail`), lines 1239–1243 clamp `admit = avail`, push the truncated `ArchiveEntry` into `raw_out` (`entries_`), and `break` out of the volume scan loop, returning `true` from `process_volume()` and `scan_archive()`. As a result, `open()` / `open_ex()` succeeds on a truncated archive and lists the truncated entry with `packed_size = admit < header.pack_size`, deferring failure until extraction time (whereas `BufferArchive::list()` at [`buffer_archive.cpp:262, 507`](../src/archive/buffer_archive.cpp#L262) immediately returns `RAR_ERR_TRUNCATED`).
+* **Location:** [`src/archive/archive_reader.cpp:1186-1195, 1238-1244`](../../src/archive/archive_reader.cpp#L1238-L1244)
+* **Finding:** During `ArchiveReader::scan_archive()`, when a `HEAD_FILE` or `HEAD_SERVICE` block declares a `data_size` that extends past the end of the volume (`data_size > avail`), lines 1239–1243 clamp `admit = avail`, push the truncated `ArchiveEntry` into `raw_out` (`entries_`), and `break` out of the volume scan loop, returning `true` from `process_volume()` and `scan_archive()`. As a result, `open()` / `open_ex()` succeeds on a truncated archive and lists the truncated entry with `packed_size = admit < header.pack_size`, deferring failure until extraction time (whereas `BufferArchive::list()` at [`buffer_archive.cpp:262, 507`](../../src/archive/buffer_archive.cpp#L262) immediately returns `RAR_ERR_TRUNCATED`).
 * **Remediation:** Record a truncation flag when `data_size > avail` (or when `HEAD_ENDARC` is missing under `strict_volumes`), so `open_ex()` can fail fast on truncated archives consistently with `BufferArchive::list()`.
 
 ---
 
 #### 3. Silent Coercion of Invalid Octal / Base-256 `mode`, `uid`, `gid`, and `mtime` Fields in `TarReader::open()`
-* **Location:** [`src/archive/foreign_tar.cpp:180-194, 294-345, 394-398`](../src/archive/foreign_tar.cpp#L180-L194)
+* **Location:** [`src/archive/foreign_tar.cpp:180-194, 294-345, 394-398`](../../src/archive/foreign_tar.cpp#L180-L194)
 * **Finding:**
   1. In `TarReader::open()`, `parse_tar_num()` returns `false` on empty or all-NUL/space fields (`return any;`). While empty `uid`/`gid`/`mtime` fields legitimately default to `0`, a field containing non-octal garbage characters also returns `false` and is silently coerced to `0`.
   2. In the PAX `uid`/`gid` parser (lines 323–335), non-digit characters `break` out of the loop without error and without an overflow guard on `pax_uid = pax_uid * 10 + (c - '0')`.
@@ -123,6 +123,6 @@
 ### `[LOW]`
 
 #### 1. Misleading Comment on `SHARD_MAGIC` in `RecoveryWriter::find_rr()`
-* **Location:** [`src/recovery/recovery_writer.cpp:392`](../src/recovery/recovery_writer.cpp#L392)
+* **Location:** [`src/recovery/recovery_writer.cpp:392`](../../src/recovery/recovery_writer.cpp#L392)
 * **Finding:** Line 392 comments `// Fallback 2: Search backwards for SHARD_MAGIC ("RAR_RR\0\0")`, whereas `SHARD_MAGIC` is actually the 4-byte sequence `{'{', 'R', 'B', '}'}` (`0x7B 0x52 0x42 0x7D`, line 131).
 * **Remediation:** Update the comment to match `SHARD_MAGIC` (`"{RB}"`).
