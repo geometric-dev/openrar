@@ -2,6 +2,7 @@
 build/
 build-linux/
 build_fuzz/
+build-fuzz/
 Testing/
 bin/
 lib/
@@ -66,6 +67,9 @@ tools/testrun/
 # Scratch, benchmark, and temporary test outputs
 *.bin
 !tests/fuzz/crashes/parallel_fallback_dup_input.bin
+!tests/fuzz/crashes/roundtrip_divergence_727_input.bin
+!tests/fuzz/crashes/roundtrip_divergence_727_compressed.bin
+!tests/fuzz/crashes/stream_filter_stale_window_input.bin
 scratch/
 bench_out/
 debug_ext/

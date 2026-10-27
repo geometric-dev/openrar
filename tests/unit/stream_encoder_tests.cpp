@@ -501,6 +501,49 @@ void test_stream_decoder_71653_variant() {
     }
 }
 
+void test_stream_decoder_spanning_filter_small_window() {
+    // Coverage test for small-window (64 KiB) streams with delta filters, where
+    // a filter region spans block boundaries and completes in a later block.
+    //
+    // This case alone does NOT prove the prompt-flush fix: it passes on the
+    // pre-fix tree, because the region happens to complete close enough to a
+    // cadence flush that the stale-region guard never trips. The falsifiable
+    // regression lives in tests/fuzz/crashes/stream_filter_stale_window_input.bin
+    // (replayed by the nightly fuzz workflow). Keep both: this one pins the
+    // general spanning-filter path, the fixture pins the exact failure.
+    const size_t win = 64 * 1024;
+    const std::vector<uint8_t> src = pattern_payload(128 * 1024, 42);
+
+    openrar::compress::FilterConfig fc;
+    fc.delta_override = 1;
+    fc.delta_channels = 1;
+
+    for (int method : {1, 3, 5}) {
+        std::vector<openrar::core::byte> comp;
+        CHECK(openrar::compress::Compressor50::compress_buffer(src.data(), src.size(), comp, method,
+                                                               win, fc));
+        CHECK(!comp.empty());
+
+        for (size_t chunk : {1024, 4096, 8192, 16384, 32768, 65536}) {
+            openrar::compress::StreamDecoder dec(win, method);
+            for (size_t off = 0; off < comp.size(); off += chunk) {
+                size_t n = std::min(chunk, comp.size() - off);
+                if (!dec.feed(comp.data() + off, n)) {
+                    FAIL("decoder feed failed (spanning filter small window)");
+                    return;
+                }
+            }
+            std::vector<openrar::core::byte> restored;
+            if (!dec.finish(restored)) {
+                FAIL("decoder finish failed (spanning filter small window)");
+                return;
+            }
+            CHECK(restored.size() == src.size());
+            CHECK(std::memcmp(restored.data(), src.data(), src.size()) == 0);
+        }
+    }
+}
+
 } // namespace
 
 static void run_suite_body() {
@@ -531,6 +574,7 @@ static void run_suite_body() {
     test_stream_decoder_store();
     test_stream_decoder_multi_block_single_feed_and_trailing_garbage();
     test_stream_decoder_71653_variant();
+    test_stream_decoder_spanning_filter_small_window();
 
     std::fprintf(stderr, "stream_encoder_tests OK\n");
     return;
