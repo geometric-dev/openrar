@@ -7,16 +7,18 @@
     <LangVersion>8.0</LangVersion>
     <AssemblyName>OpenRAR.NET</AssemblyName>
     <RootNamespace>OpenRAR</RootNamespace>
-    <Version>1.53.0</Version>
+    <Version>1.55.0</Version>
     <PackageId>OpenRAR.NET</PackageId>
     <Description>OpenRAR C# SDK — P/Invoke binding over the frozen OpenRAR C ABI (RAR 5.0 read/create/mutate)</Description>
     <Authors>OpenRAR Project</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/geometric-dev/openrar</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- Native assets: the release workflow places the per-RID built
          openrar shared libraries in runtimes/<rid>/native (plan M4). -->
   </PropertyGroup>
   <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
     <!-- ConformanceTests.cs calls Native.CreateFile_ (internal static);
          without this attribute the test assembly cannot compile. -->
     <InternalsVisibleTo Include="OpenRAR.Tests" />
