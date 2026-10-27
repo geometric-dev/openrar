@@ -546,6 +546,10 @@ jobs:
             echo "FAIL: archive wasm exceeds 1.5 MiB budget"
             exit 1
           fi
+      - name: Pack npm tarball
+        run: |
+          npm pack wasm/js/ --pack-destination wasm/js/dist/
+          ls -la wasm/js/dist/*.tgz
       - name: Upload WASM artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -713,17 +717,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
-  # bindings/csharp previously had NO automated verification of any kind:
-  # neither workflow had a dotnet step, and the library did not even compile
-  # (a C# 8 switch expression against the netstandard2.0 default of C# 7.3).
-  # Uses the .NET SDK preinstalled on ubuntu-latest - no new action pin.
-  #
-  # Runs on every push/PR so problems surface immediately. NOT yet in
-  # release-assets.needs: it has never had a green run, and gating releases on
-  # an unproven job is its own failure mode. Promote it into `needs` once it
-  # has passed on master.
+  # C# / .NET SDK binding: builds native library, verifies against xUnit
+  # conformance suite, and packs NuGet package.
   csharp:
-    name: C# binding (build + xUnit conformance)
+    name: C# binding (build, test & pack)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -742,6 +739,41 @@ jobs:
           # [DllImport("openrar")] resolves libopenrar.so from here.
           LD_LIBRARY_PATH: ${{ github.workspace }}/build
         run: dotnet test bindings/csharp/OpenRAR.Tests/OpenRAR.Tests.csproj -c Release
+      - name: Pack NuGet package
+        run: dotnet pack bindings/csharp/OpenRAR/OpenRAR.NET.csproj -c Release -o bin/pkg
+      - name: Upload NuGet package artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: openrar-nuget
+          path: bin/pkg/*.nupkg
+          if-no-files-found: error
+          retention-days: 7
+
+  # Python SDK binding: builds pure Python wheel and source distribution (sdist).
+  python-sdk:
+    name: Python SDK (build & package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.11'
+      - name: Install packaging tools
+        run: pip install --upgrade build
+      - name: Build sdist and wheel
+        run: |
+          python -m build bindings/python -o dist/
+          ls -la dist/
+      - name: Upload Python package artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: openrar-python-pkg
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
 
   release-assets:
     name: Attach release artifacts
@@ -749,7 +781,7 @@ jobs:
     # attaches it to the GitHub release named after the tag (creating the
     # release with generated notes if it does not exist yet).
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-and-test, linux-arm64-qemu, writer-conformance, wasm, sanitizers, tsan, simd-validation]
+    needs: [build-and-test, linux-arm64-qemu, writer-conformance, wasm, sanitizers, tsan, simd-validation, csharp, python-sdk]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -770,13 +802,20 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VER="${TAG#v}"
 
-          # Extract any .deb packages from native artifacts to attach directly
-          # to the release. globstar's `**/` also matches zero directories, so
-          # this single pattern covers both `openrar-native-*/x.deb` and
-          # `openrar-native-*/build/x.deb`.
+          # Extract packages and deb files from artifacts to attach directly
+          # to the release. globstar's `**/` also matches zero directories.
           shopt -s globstar nullglob
           for deb in openrar-native-*/**/*.deb; do
             mv "$deb" .
+          done
+          for nupkg in openrar-nuget*/**/*.nupkg; do
+            mv "$nupkg" .
+          done
+          for py in openrar-python-pkg*/*; do
+            mv "$py" .
+          done
+          for tgz in openrar-wasm*/**/*.tgz; do
+            mv "$tgz" .
           done
 
           # Release zips carry the platform shared library (.dll / .so / .dylib),
@@ -808,22 +847,18 @@ jobs:
             exit 1
           fi
 
-          gh release view "$TAG" >/dev/null 2>&1             || gh release create "$TAG" --title "OpenRAR ${VER}" --generate-notes
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "OpenRAR ${VER}" --generate-notes
           gh release upload "$TAG" --clobber openrar-${VER}-*.zip
-          deb_files=(*.deb)
-          if [ ${#deb_files[@]} -gt 0 ]; then
-            gh release upload "$TAG" --clobber "${deb_files[@]}"
+          extra_files=(*.deb *.nupkg *.whl *.tar.gz *.tgz)
+          if [ ${#extra_files[@]} -gt 0 ]; then
+            gh release upload "$TAG" --clobber "${extra_files[@]}"
           fi
 
           # Supply chain (v1.30 M6; freeze prereq 5): checksums + SBOM.
-          sha256sum openrar-${VER}-*.zip "${deb_files[@]}" > SHA256SUMS
+          sha256sum openrar-${VER}-*.zip "${extra_files[@]}" > SHA256SUMS
           gh release upload "$TAG" --clobber SHA256SUMS
           # SBOM tool. Pinned to an exact release AND checksum-verified.
-          # This used to be `curl .../anchore/syft/main/install.sh | sh`: a
-          # floating branch piped into a root shell, in the one job holding
-          # contents/id-token/attestations: write, immediately before the
-          # provenance attestation. Anyone able to push to anchore/syft would
-          # have had code execution here. Bump both values together.
           SYFT_VERSION=1.54.1
           SYFT_SHA256=c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47
           curl -sSfL -o /tmp/syft.tar.gz \
@@ -839,15 +874,13 @@ jobs:
           # Every subject is a workspace-ROOT file: the zips are created by
           # `zip -qr` in the job root (NOT inside the downloaded artifact
           # directories), and SHA256SUMS + the SBOM are written there too.
-          # The previous `openrar-*/openrar-*.zip` pattern matched zero files
-          # since this job switched to root-level zips, so releases attested
-          # only SHA256SUMS while SECURITY.md promises "each artifact"
-          # (confirmed broken on v1.45.0: `gh attestation verify` on a zip
-          # 404s). This list must stay equal to what `gh release upload`
-          # publishes above.
           subject-path: |
             openrar-*.zip
             *.deb
+            *.nupkg
+            *.whl
+            *.tar.gz
+            *.tgz
             SHA256SUMS
             openrar-*-sbom.json
 
