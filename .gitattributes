@@ -8,6 +8,9 @@
 *.sh text eol=lf
 *.py text eol=lf
 .githooks/** text eol=lf
+# The tracked pre-commit hook has no extension, so `* text=auto` alone would
+# check it out with CRLF on Windows and break its `#!/bin/sh` shebang.
+tools/git_hooks/** text eol=lf
 
 # Windows-only artifacts
 *.bat text eol=crlf

@@ -145,29 +145,7 @@ jobs:
         if: matrix.format_check == true
         shell: bash
         run: |
-          CMAKE_VER=$(grep -E 'project\(openrar VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | sed -E 's/.*VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
-          PKG_VER=$(node -e "console.log(require('./wasm/js/package.json').version)")
-          PY_VER=$(grep -E '^version[[:space:]]*=' bindings/python/pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          CS_VER=$(grep -E '<Version>' bindings/csharp/OpenRAR/OpenRAR.NET.csproj | sed -E 's/.*<Version>([^<]+)<.*/\1/')
-          PYI_VER=$(grep -E '^__version__[[:space:]]*=' bindings/python/openrar/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "CMake=$CMAKE_VER  wasm/js=$PKG_VER  bindings/python=$PY_VER  bindings/python/__init__=$PYI_VER  bindings/csharp=$CS_VER"
-          # Every copy of the version must move with the project. They had all
-          # drifted to 1.31.0/1.30.0 against a 1.40.5 project because this gate
-          # only compared CMake and the npm package.
-          for pair in "wasm/js/package.json:$PKG_VER" \
-                      "bindings/python/pyproject.toml:$PY_VER" \
-                      "bindings/python/openrar/__init__.py:$PYI_VER" \
-                      "bindings/csharp/OpenRAR/OpenRAR.NET.csproj:$CS_VER"; do
-            path="${pair%%:*}"; ver="${pair##*:}"
-            if [ -z "$ver" ]; then
-              echo "ERROR: could not parse a version out of $path"
-              exit 1
-            fi
-            if [ "$CMAKE_VER" != "$ver" ]; then
-              echo "ERROR: CMake project version ($CMAKE_VER) does not match $path ($ver)"
-              exit 1
-            fi
-          done
+          python tools/bump_version.py --check
 
 
 
@@ -222,6 +200,7 @@ jobs:
           name: junit-${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.build_type }}
           path: build/junit-report.xml
           if-no-files-found: error
+          retention-days: 3
 
       - name: Kernel throughput report (native x86-64, informational)
         # Real AVX2/SSE2 hardware numbers for the v1.22.0 SIMD arc. Native
@@ -276,6 +255,12 @@ jobs:
           diff -u ci_test_data/hello.txt ci_out/ci_test_data/hello.txt
           echo "Cross-platform CLI smoke test PASSED!"
 
+      - name: Build CPack Debian package (Linux gcc Release)
+        if: startsWith(matrix.os, 'ubuntu') && matrix.compiler == 'gcc'
+        run: |
+          cpack --config build/CPackConfig.cmake -G DEB -B build
+          ls -la build/*.deb
+
       - name: Upload native shared-library artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -293,10 +278,12 @@ jobs:
             build/openrar64/Release/openrar.exe
             build/openrar64/openrar.exe
             build/openrar
+            build/*.deb
           # error, not warn: the release-assets job zips whatever lands in the
           # artifact, so a silently-empty artifact would publish an empty
           # release zip with a green build (R1 silent-degradation class).
           if-no-files-found: error
+          retention-days: 7
 
   linux-arm64-qemu:
     name: linux-arm64 (gcc cross, QEMU run)
@@ -313,8 +300,17 @@ jobs:
       - name: Install aarch64 cross toolchain + QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++-aarch64-linux-gnu qemu-user-static || \
-          sudo apt-get install -y --no-install-recommends g++-aarch64-linux-gnu qemu-user-binfmt
+          # The runner uses /usr/bin/qemu-aarch64-static, which only
+          # qemu-user-static provides. The old fallback installed
+          # qemu-user-binfmt (dynamic qemu-user + binfmt registrations), which
+          # does NOT ship that path, so it could never satisfy the dependency
+          # it was meant to rescue. Fall back to the dynamic emulator and give
+          # it the static name the rest of the job expects, then verify.
+          if ! sudo apt-get install -y --no-install-recommends g++-aarch64-linux-gnu qemu-user-static; then
+            sudo apt-get install -y --no-install-recommends g++-aarch64-linux-gnu qemu-user
+            sudo ln -sf "$(command -v qemu-aarch64)" /usr/bin/qemu-aarch64-static
+          fi
+          command -v qemu-aarch64-static || { echo "::error::qemu-aarch64-static is not installed"; exit 1; }
 
       - name: Set up Ninja
         uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
@@ -352,6 +348,7 @@ jobs:
           name: junit-qemu-aarch64
           path: build/junit-report.xml
           if-no-files-found: error
+          retention-days: 3
 
       - name: Assert NEON RS16 kernel activated (not the scalar fallback)
         # Same R1 silent-degradation guard as the SDE GFNI gate: a build
@@ -387,6 +384,7 @@ jobs:
             build/libopenrar*.so
             build/openrar
           if-no-files-found: error
+          retention-days: 7
 
 
   writer-conformance:
@@ -553,6 +551,7 @@ jobs:
         with:
           name: openrar-wasm
           path: wasm/js/dist/
+          retention-days: 7
 
       - name: SIMD128 variant — configure & build (OPENRAR_WASM_SIMD=ON)
         # Opt-in kernel build: same sources with -msimd128, so the SIMD128
@@ -599,18 +598,13 @@ jobs:
       #     which is incompatible with the child ASan shadow. A sanitizer
       #     spawn limitation, not a finding.
       #   python_conformance - loads the DLL from non-instrumented python.
-      #   transcode_tests / archive_tests - excluded on wall-clock budget,
-      #     not because they are known-dirty.
-      #
-      # KNOWN GAP: archive_tests exercises the in-memory archive engine, which
-      # parses untrusted headers, and it is therefore not covered by the
-      # primary sanitizer leg. It IS covered by the normal matrix legs. Do not
-      # widen this list without adding the justification above.
+      #   transcode_tests - excluded on wall-clock budget.
+      #   (archive_tests re-admitted: decoupled 16.7M PBKDF2 cycle allows <1s execution).
       - name: Unit suite under sanitizers
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|archive_tests|sfx_tests|sfx_pipeline_tests|sfx_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance'
+        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|sfx_tests|sfx_pipeline_tests|sfx_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance'
 
       - name: Aggregate JUnit report (v1.45 M0 gate)
         if: always()
@@ -623,6 +617,7 @@ jobs:
           name: junit-sanitizers
           path: build/junit-report.xml
           if-no-files-found: error
+          retention-days: 3
 
   tsan:
     # v1.30 M5: ThreadSanitizer on the threaded suites (parallel pipeline,
@@ -664,6 +659,7 @@ jobs:
           name: junit-tsan
           path: build/junit-report.xml
           if-no-files-found: error
+          retention-days: 3
 
   msan:
     # v1.30 M5: MSan is BEST-EFFORT on the Linux/clang leg (§7.2 revised):
@@ -699,8 +695,14 @@ jobs:
           else
             echo "MSan leg completed clean (best-effort leg, non-gating)"
           fi
-          python tools/ctest_to_junit.py --log build/Testing/Temporary/LastTest.log --out build/junit-report.xml --min-tests 1 || true
-          echo "junit-report.xml written (MSan leg)"
+          # Non-gating leg, but the conversion result must not be reported as
+          # success when it failed: `|| true` plus an unconditional "written"
+          # echo made a missing/empty report look like a clean conversion.
+          if python tools/ctest_to_junit.py --log build/Testing/Temporary/LastTest.log --out build/junit-report.xml --min-tests 1; then
+            echo "junit-report.xml written (MSan leg)"
+          else
+            echo "::warning::MSan leg: JUnit conversion failed; no report uploaded"
+          fi
 
       - name: Upload JUnit report (msan)
         if: always()
@@ -709,6 +711,7 @@ jobs:
           name: junit-msan
           path: build/junit-report.xml
           if-no-files-found: warn
+          retention-days: 3
 
   # bindings/csharp previously had NO automated verification of any kind:
   # neither workflow had a dotnet step, and the library did not even compile
@@ -767,6 +770,15 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VER="${TAG#v}"
 
+          # Extract any .deb packages from native artifacts to attach directly
+          # to the release. globstar's `**/` also matches zero directories, so
+          # this single pattern covers both `openrar-native-*/x.deb` and
+          # `openrar-native-*/build/x.deb`.
+          shopt -s globstar nullglob
+          for deb in openrar-native-*/**/*.deb; do
+            mv "$deb" .
+          done
+
           # Release zips carry the platform shared library (.dll / .so / .dylib),
           # its import library where the platform has one, and the CLI
           # executable — test-target static libs (openrar_core.lib,
@@ -787,11 +799,24 @@ jobs:
             zip -qr "openrar-${VER}-${short}.zip" "$d"
           done
 
+          # nullglob turns an unmatched glob into zero words, so a missing
+          # artifact would otherwise fall through to `sha256sum` with no file
+          # operands and publish an empty SHA256SUMS (R1 silent degradation).
+          zips=(openrar-${VER}-*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "::error::no release zips were produced; refusing to publish empty assets"
+            exit 1
+          fi
+
           gh release view "$TAG" >/dev/null 2>&1             || gh release create "$TAG" --title "OpenRAR ${VER}" --generate-notes
           gh release upload "$TAG" --clobber openrar-${VER}-*.zip
+          deb_files=(*.deb)
+          if [ ${#deb_files[@]} -gt 0 ]; then
+            gh release upload "$TAG" --clobber "${deb_files[@]}"
+          fi
 
           # Supply chain (v1.30 M6; freeze prereq 5): checksums + SBOM.
-          sha256sum openrar-${VER}-*.zip > SHA256SUMS
+          sha256sum openrar-${VER}-*.zip "${deb_files[@]}" > SHA256SUMS
           gh release upload "$TAG" --clobber SHA256SUMS
           # SBOM tool. Pinned to an exact release AND checksum-verified.
           # This used to be `curl .../anchore/syft/main/install.sh | sh`: a
@@ -822,6 +847,8 @@ jobs:
           # publishes above.
           subject-path: |
             openrar-*.zip
+            *.deb
             SHA256SUMS
             openrar-*-sbom.json
+
 
