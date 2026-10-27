@@ -1,0 +1,77 @@
+#!/bin/sh
+# OpenRAR git pre-commit hook
+# Validates anchor lint, version synchrony, and clang-format on staged C/C++ files.
+
+set -e
+
+# Resolve repository root
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$REPO_ROOT"
+
+# Detect Python interpreter
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON="python3"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON="python"
+elif command -v py >/dev/null 2>&1; then
+    PYTHON="py"
+else
+    echo "[pre-commit] WARNING: Python not found in PATH; skipping Python-based lints."
+    PYTHON=""
+fi
+
+# 1. Version consistency check
+if [ -n "$PYTHON" ] && [ -f "tools/bump_version.py" ]; then
+    if ! "$PYTHON" tools/bump_version.py --check >/dev/null 2>&1; then
+        echo "[pre-commit] ERROR: Version consistency check failed across project files!"
+        echo "             Run 'python tools/bump_version.py --check' to see details,"
+        echo "             or 'python tools/bump_version.py <version>' to synchronize."
+        exit 1
+    fi
+fi
+
+# 2. Anchor lint check
+if [ -n "$PYTHON" ] && [ -f "tools/anchor_lint.py" ]; then
+    if ! "$PYTHON" tools/anchor_lint.py >/dev/null 2>&1; then
+        echo "[pre-commit] ERROR: anchor_lint reported violations (assert count or anchor mismatch)!"
+        echo "             Run 'python tools/anchor_lint.py' to inspect,"
+        echo "             and 'python tools/genledger.py' to reconcile the verification ledger."
+        exit 1
+    fi
+fi
+
+# 3. Clang-format check on staged C/C++ files
+STAGED_CPP=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(cpp|hpp|h|c)$' || true)
+
+if [ -n "$STAGED_CPP" ]; then
+    CF=""
+    if command -v clang-format-18 >/dev/null 2>&1; then
+        CF="clang-format-18"
+    elif command -v clang-format >/dev/null 2>&1; then
+        CF="clang-format"
+    elif command -v clang-format.exe >/dev/null 2>&1; then
+        CF="clang-format.exe"
+    fi
+
+    if [ -n "$CF" ]; then
+        UNFORMATTED=""
+        for file in $STAGED_CPP; do
+            if [ -f "$file" ]; then
+                if ! "$CF" --dry-run --Werror "$file" >/dev/null 2>&1; then
+                    UNFORMATTED="$UNFORMATTED\n  - $file"
+                fi
+            fi
+        done
+
+        if [ -n "$UNFORMATTED" ]; then
+            echo "[pre-commit] ERROR: Staged files do not conform to .clang-format style:"
+            printf "%b\n" "$UNFORMATTED"
+            echo "             Format them with: clang-format -i <file>"
+            exit 1
+        fi
+    else
+        echo "[pre-commit] Note: clang-format not found in PATH; skipping formatting check."
+    fi
+fi
+
+exit 0

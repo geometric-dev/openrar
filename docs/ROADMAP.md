@@ -24,8 +24,10 @@
 | **v1.51** | ✅ **SHIPPED** | Sandbox scope expansion (encrypted + multi-volume) + FMM-51 failure matrix | High | 6/6 negative suites × 3 OSes, with containment degradation **loud** | Shipped v1.51.0. PBKDF2 bound (2^24); codes -16..-19; HMAC verification |
 | **v1.52** | ✅ **SHIPPED** | Competitive audit & v2.0 charter · Final milestone of Modern Arc | Low | v1.34 §3 adherence; every regression carries a disposition | Shipped v1.52.0. 28-row matrix; PERFORMANCE.md 5-axis rewrite; v2.0 Charter published |
 | **v1.53** | ✅ **SHIPPED** | Launchpad (deb) packaging & distribution tooling | Low | Debian source package formatting + multi-binary split + PPA upload automation | Shipped v1.53.0. debian/ tree, openrar(1) manpage, pkg-config, CPack deb, launchpad.yml |
+| **v1.54** | 🟡 **PLANNED** | **Assurance & Fuzzing Substrate Hardening** (foreign-format fuzzing, dedup fix, archive_tests sanitizer re-admission, GPG action pinning) | Low | All 8 fuzz harnesses executed in nightly CI; `archive_tests` active under ASan/UBSan | Slotted: v1.54.0 |
+| **v1.55** | 🟡 **PLANNED** | **Multi-Ecosystem SDK Packaging & Distribution** (NuGet .nupkg, Python wheel/sdist, NPM .tgz) | Low | Package bundles produced and attached to release tags | Slotted: v1.55.0 |
 
-**Milestone Scorecard:** Modern Arc Fully Delivered (10/10, 100%). Distribution Milestone v1.53.0 Completed.
+**Milestone Scorecard:** Modern Arc Fully Delivered (10/10, 100%). Distribution Milestone v1.53.0 Completed. Infrastructure Hardening & SDK Release Arcs (v1.54 – v1.55) Active.
 
 **Four rules that override any release-level convenience:**
 
@@ -632,6 +634,49 @@ Standing gates: 24-stage interop (UnRAR 7.20 + WinRAR 7.20) where bytes change �
   - `python tools/packaging/launchpad_release.py --verify-only` clean (100%).
   - Version stamps bumped to 1.53.0 in lockstep across all 5 project files.
   - Full CTest suite clean.
+
+### 7.12 v1.54 — Assurance & Fuzzing Substrate Hardening [🟡 PLANNED v1.54.0]
+
+#### §7.12 Target Charter & Execution Scope (v1.54.0)
+
+**Charter:** Quality assurance, continuous fuzzing, and sanitizer gate expansion milestone. Closes foreign format attack-surface fuzzing gaps, resolves silent CI crash artifact omission, re-admits in-memory archive parsing to the primary ASan+UBSan gate, and hardens release workflow supply chains.
+
+- **Foreign Format Fuzzing Integration:**
+  - Wire `fuzz_zip` and `fuzz_tar` into `.github/workflows/fuzz.yml` (libFuzzer assertion loop and continuous execution steps).
+  - Continuous nightly exploration of ZIP central directory and PAX/tar header parsers against untrusted payloads.
+- **Crash Artifact Dedup Fix:**
+  - Update `tools/dedup_crashes.py` to search both the workspace root (`REPO.glob("crash-*")`) and `tests/fuzz/`, ensuring all CI crashes are bucketed and deduplicated into `tests/fuzz/crash-buckets.json`.
+- **Archive Engine Sanitizer Re-Admission:**
+  - Decouple the $2 \times 2^{24}$ PBKDF2 boundary derivation in `test_kdf_cap_pinned` into a dedicated crypto stress target so `archive_tests` completes in < 2 seconds.
+  - Remove `archive_tests` from the `--exclude-regex` filter in `.github/workflows/build.yml`, restoring full ASan + UBSan memory-safety coverage over the in-memory archive parsing engine.
+- **Supply Chain Hardening for Launchpad PPA:**
+  - Pin all GitHub Action references in `.github/workflows/launchpad.yml` to immutable commit SHAs with semantic version comments.
+- **Verification Gates:**
+  - All 8 fuzzer harnesses validated under libFuzzer build assertions.
+  - `archive_tests` passes cleanly under ASan + UBSan in < 5 seconds.
+  - `python tools/dedup_crashes.py` accurately buckets root and subfolder crashes.
+  - `anchor_lint.py` clean.
+
+### 7.13 v1.55 — Multi-Ecosystem SDK Packaging & Distribution [🟡 PLANNED v1.55.0]
+
+#### §7.13 Target Charter & Execution Scope (v1.55.0)
+
+**Charter:** Ecosystem distribution milestone. Automates compilation, packaging, and release attachment for .NET (NuGet), Python (PyPI wheels/sdist), and WebAssembly (NPM tarball), enabling direct consumption across all supported language runtimes.
+
+- **.NET / C# NuGet Package Automation:**
+  - Add `dotnet pack` for `bindings/csharp/OpenRAR/OpenRAR.NET.csproj` producing `OpenRAR.NET.<ver>.nupkg`.
+  - Promote `csharp` into `release-assets.needs` and attach `.nupkg` to GitHub Releases.
+- **Python Wheel & Sdist Distribution:**
+  - Execute `python -m build bindings/python` to generate platform wheels (`.whl`) bundling native libraries alongside the pure Python ctypes wrapper, plus source distributions (`.tar.gz`).
+  - Attach wheel and sdist assets to GitHub Releases.
+- **WASM / NPM Package Distribution:**
+  - Run `npm pack` in `wasm/js/` to generate `openrar-wasm-<ver>.tgz` containing complete JavaScript/TypeScript loader modules, TypeScript declaration files, and Emscripten WebAssembly binaries.
+  - Attach `.tgz` package to GitHub Releases.
+- **Verification Gates:**
+  - `OpenRAR.NET.<ver>.nupkg` verified via `dotnet nuget verify`.
+  - Python wheel verified with `twine check` and test installation in a clean venv.
+  - NPM tarball verified via `npm test` from unpacked archive.
+  - Release assets checksums (`SHA256SUMS`) and Sigstore build provenance attest all emitted SDK packages.
 
 ---
 
@@ -1665,6 +1710,8 @@ C# NuGet (`OpenRAR.NET`).
 | **v1.51.0** | Sandbox scope expansion (encrypted + multi-volume) | PBKDF2 bound (2^24); broker HMAC validation; FMM-51-1..7 error matrix | 6/6 negative suites × 3 OSes; degraded mode loud ✅ |
 | **v1.52.0** | Competitive audit & v2.0 charter | Multi-engine comparative matrix (WinRAR, UnRAR, 7-Zip); v2.0 Charter | Final Modern Arc milestone ✅ |
 | **v1.53.0** | Launchpad (deb) packaging & distribution | Debian source format, multi-binary split, pkg-config, CPack, PPA CI | Complete Launchpad deb tooling ✅ |
+| **v1.54.0** | Assurance & fuzzing substrate hardening | Foreign fuzzers in CI, crash dedup fix, archive_tests sanitizer re-admission, GPG action pinning | Planned 🟡 |
+| **v1.55.0** | Multi-ecosystem SDK packaging & distribution | NuGet (.nupkg), Python wheel/sdist, NPM (.tgz) release automation | Planned 🟡 |
 
 ## ⚠️ Risk Register (top items)
 
