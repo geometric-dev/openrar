@@ -984,6 +984,12 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     size_t total_written = 0;
     engine_.begin_call(); // call-local flush cursor (was a local last_flushed)
     const size_t flush_cadence = engine_.flush_cadence();
+    auto cadence = [&]() -> bool {
+        if (total_written - engine_.last_flushed_ < flush_cadence &&
+            !engine_.has_completed_filter(base_at_entry, total_written))
+            return true;
+        return engine_.flush_pending(false, base_at_entry, total_written, dest_size, flush_cb);
+    };
     // Aggregate filter budget for this decode (report M7).
     size_t filters_total_len = 0;
     // Pending regions are recorded in ABSOLUTE file coordinates (block_start
@@ -1037,11 +1043,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
         if (slot < 256) {
             if (!engine_.write_literal(slot)) return window_alloc_failed();
             ++total_written;
-            if (total_written - engine_.last_flushed_ >= flush_cadence) {
-                if (!engine_.flush_pending(false, base_at_entry, total_written, dest_size,
-                                           flush_cb))
-                    return false;
-            }
+            if (!cadence()) return false;
             continue;
         }
         if (slot == 256) {
@@ -1145,11 +1147,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
                     len = static_cast<core::uint32>(dest_size - total_written);
                 if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
                 total_written += len;
-                if (total_written - engine_.last_flushed_ >= flush_cadence) {
-                    if (!engine_.flush_pending(false, base_at_entry, total_written, dest_size,
-                                               flush_cb))
-                        return false;
-                }
+                if (!cadence()) return false;
             }
             continue;
         }
@@ -1183,11 +1181,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
                 len = static_cast<core::uint32>(dest_size - total_written);
             if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
             total_written += len;
-            if (total_written - engine_.last_flushed_ >= flush_cadence) {
-                if (!engine_.flush_pending(false, base_at_entry, total_written, dest_size,
-                                           flush_cb))
-                    return false;
-            }
+            if (!cadence()) return false;
             continue;
         }
         if (slot < 262) {
@@ -1208,11 +1202,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
                 len = static_cast<core::uint32>(dest_size - total_written);
             if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
             total_written += len;
-            if (total_written - engine_.last_flushed_ >= flush_cadence) {
-                if (!engine_.flush_pending(false, base_at_entry, total_written, dest_size,
-                                           flush_cb))
-                    return false;
-            }
+            if (!cadence()) return false;
             continue;
         }
     }
@@ -1644,7 +1634,9 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
     // exactly like the sequential filter-token branch.
     const size_t flush_cadence = engine_.flush_cadence();
     auto cadence = [&]() -> bool {
-        if (total_written - engine_.last_flushed_ < flush_cadence) return true;
+        if (total_written - engine_.last_flushed_ < flush_cadence &&
+            !engine_.has_completed_filter(0, total_written))
+            return true;
         return engine_.flush_pending(false, 0, total_written, dest_size, flush_cb);
     };
 
@@ -1698,10 +1690,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
                 srcp += stretch;
                 total_written += stretch;
                 remaining -= stretch;
-                if (total_written - engine_.last_flushed_ >= flush_cadence) {
-                    if (!engine_.flush_pending(false, 0, total_written, dest_size, flush_cb))
-                        return false;
-                }
+                if (!cadence()) return false;
             }
             continue;
         }

@@ -147,7 +147,7 @@ struct FilterEntry {
 enum class DecompressErrorCode {
     Ok = 0,
     DictionaryTooLarge =
-        1, // spec max exceeded or > alloc limit 1 GiB – spec says fail not truncate
+        1,                // spec max exceeded or > alloc limit 1 GiB – spec says fail not truncate
     AllocationFailed = 2, // valid size but OOM (bad_alloc)
     InvalidInput = 3
 };
@@ -544,6 +544,13 @@ private:
                                OutputCallback cb);
         bool flush_pending(bool flush_all, core::uint64 base_at_entry, size_t total_written,
                            size_t dest_size, OutputCallback cb);
+        inline bool has_completed_filter(core::uint64 base_at_entry, size_t total_written) const {
+            if (filters_head_ >= filters_.size()) return false;
+            const auto& f = filters_[filters_head_];
+            const core::uint64 abs = base_at_entry + static_cast<core::uint64>(total_written);
+            return f.block_start <= abs &&
+                   static_cast<core::uint64>(f.block_length) <= abs - f.block_start;
+        }
     };
 
     ApplyEngine engine_;
