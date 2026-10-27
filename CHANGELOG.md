@@ -5,6 +5,52 @@ All notable changes to OpenRAR are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.55.0] - 2026-10-27
+
+### Added
+
+- **Nightly fuzzing replays retained crash reproducers** (`tests/fuzz/crashes/*.bin`)
+  before any timed run, so a fixed defect cannot silently regress between fuzz
+  campaigns. The 2026-10-27 StreamDecoder divergence sat committed but
+  unexercised until the fuzzer rediscovered it.
+- **`fuzz_zip` and `fuzz_tar` execute in CI** (assertion list + timed run); all
+  eight harnesses are now covered.
+- **Multi-ecosystem SDK packaging in release pipeline:**
+  - Automated .NET / C# NuGet package generation (`OpenRAR.NET.<ver>.nupkg`) via `dotnet pack` with package readme integration.
+  - Automated Python wheel (`openrar-<ver>-py3-none-any.whl`) and sdist (`openrar-<ver>.tar.gz`) packaging via `python -m build`.
+  - Automated WebAssembly npm package tarball generation (`openrar-wasm-<ver>.tgz`) via `npm pack`.
+  - All ecosystem packages are attached to GitHub releases, integrated into `SHA256SUMS`, and attested with Sigstore keyless build provenance.
+- **`README.md` Status section cleaned:** Refactored historical version markers (`v1.23:` through `v1.35.0:`) into a cohesive capability matrix; eliminated the ambiguous "Not yet" row in favor of an explicit architectural non-goals definition (reaffirming permanent out-of-scope status for legacy RAR 1.5–4.0 archive creation and foreign-format archive emission).
+- **`archive_tests` is back under ASan+UBSan.** The 2^24-round PBKDF2 boundary
+  derivation now runs only with `OPENRAR_SLOW_CRYPTO_TESTS=1`, cutting the
+  suite from minutes to 0.4 s.
+- **Version gate covers all eight stamped locations** via
+  `tools/bump_version.py --check` (was five, which is how the Python
+  `__init__.py` stamp drifted in v1.53.0). A local pre-commit hook runs the
+  gate, anchor lint, and clang-format.
+
+### Fixed
+
+- **StreamDecoder dropped output when a filter region crossed a block boundary
+  (bug #2, closed).** A delta-filter region that starts in one block and
+  completes in the next was only flushed on the `flush_cadence()` schedule. By
+  the next tick the region's start had fallen out of the circular window, so
+  the apply engine rejected it as stale and the decoder emitted nothing —
+  observed as `ORACLE FAILURE [roundtrip]: StreamDecoder disagrees with
+  one-shot decode (a=0 b=0, input=55158 bytes)` in the 2026-10-27 nightly. Both
+  cadence paths now flush as soon as the head region completes
+  (`ApplyEngine::has_completed_filter()`). The defensive `process_blocks()`
+  call added to `StreamDecoder::feed()` in v1.45.7 was a no-op and is removed.
+  Reproducer: `tests/fuzz/crashes/stream_filter_stale_window_input.bin`.
+- **Oracle crash artifacts are deduplicated.** `tools/dedup_crashes.py` never
+  matched `fuzz_target_failure.bin`, so oracle failures went unbucketed.
+- **MSan leg no longer reports a JUnit conversion failure as success.**
+- **aarch64 QEMU fallback fixed.** The fallback installed `qemu-user-binfmt`,
+  which does not provide `/usr/bin/qemu-aarch64-static`; it now falls back to
+  the dynamic `qemu-user` with the expected alias and verifies the path.
+
 ## [1.53.0] - 2026-10-26
 
 ### Added

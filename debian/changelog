@@ -1,3 +1,9 @@
+openrar (1.55.0-0ubuntu1) noble; urgency=medium
+
+  * Release v1.55.0.
+
+ -- OpenRAR Project <geometric-dev@users.noreply.github.com>  Tue, 27 Oct 2026 16:58:02 +0000
+
 openrar (1.53.0-0ubuntu1) noble; urgency=medium
 
   * Initial Launchpad / Debian package release for v1.53.0.
