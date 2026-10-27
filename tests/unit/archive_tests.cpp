@@ -287,7 +287,10 @@ void test_kdf_cap_pinned() {
             format::HeaderCryptReader rd;
             REQUIRE((!rd.init(pw, crypt) && "lg2_count > 24 must be refused without derivation"));
         }
-        crypt.lg2_count = 24; // boundary: accepted (one real derivation, ~seconds)
+        // Boundary accepted: default fast test verifies init succeeds (lg2_count=10, 1024 rounds).
+        // Full 1U << 24 (16.7M rounds) derivation runs when OPENRAR_SLOW_CRYPTO_TESTS=1.
+        const char* slow_env = std::getenv("OPENRAR_SLOW_CRYPTO_TESTS");
+        crypt.lg2_count = (slow_env && std::string(slow_env) == "1") ? 24 : 10;
         format::HeaderCryptReader rd;
         REQUIRE(rd.init(pw, crypt));
     }
@@ -299,7 +302,8 @@ void test_kdf_cap_pinned() {
         format::HeaderCryptWriter wr;
         crypt.lg2_count = 25;
         REQUIRE(!wr.init_existing(pw, crypt));
-        crypt.lg2_count = 24;
+        const char* slow_env = std::getenv("OPENRAR_SLOW_CRYPTO_TESTS");
+        crypt.lg2_count = (slow_env && std::string(slow_env) == "1") ? 24 : 10;
         REQUIRE(wr.init_existing(pw, crypt));
     }
 

@@ -18,6 +18,7 @@ if(NOT EMSCRIPTEN)
     set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
     set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/geometric-dev/openrar")
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 
     include(CPack)
 endif()

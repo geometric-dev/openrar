@@ -20,7 +20,7 @@ concurrency:
 jobs:
   fuzz:
     name: Continuous Fuzzing
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The harnesses are wall-clock bounded (-max_total_time, validated above)
     # and -timeout caps any single input, but a wedged harness or a stuck
     # setup step would otherwise burn the full 6 h default ceiling.
@@ -120,7 +120,7 @@ jobs:
         # SIGPIPEs strings and returns 141 — so the assertion failed even when
         # libFuzzer was linked. `grep -c` consumes all input, so no SIGPIPE.
         run: |
-          for f in fuzz_decompress fuzz_archive fuzz_file_handle fuzz_inflate fuzz_target; do
+          for f in fuzz_decompress fuzz_archive fuzz_file_handle fuzz_inflate fuzz_target fuzz_zip fuzz_tar; do
             if [ ! -x "./build_fuzz/$f" ]; then
               echo "::error::$f was not built"
               exit 1
@@ -130,6 +130,21 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Replay retained crash reproducers
+        # tests/fuzz/crashes/ holds inputs that previously failed an oracle.
+        # libFuzzer treats file arguments as one-shot runs, so this gate fails
+        # the nightly if any retained reproducer regresses. Without it the
+        # fixtures were documentation only: the 2026-10-27 StreamDecoder
+        # divergence sat in the tree unexercised until fuzzing rediscovered it.
+        run: |
+          shopt -s nullglob
+          repros=(tests/fuzz/crashes/*.bin)
+          if [ ${#repros[@]} -eq 0 ]; then
+            echo "::error::no retained crash reproducers found"
+            exit 1
+          fi
+          ./build_fuzz/fuzz_target "${repros[@]}"
 
       - name: Run Roundtrip Fuzzer (Deterministic Sweep)
         # fuzz_roundtrip keeps its own main(): a fixed deterministic sweep,
@@ -176,6 +191,16 @@ jobs:
         # naming variants per input (see tests/fuzz/fuzz_file_handle.cpp).
         run: ./build_fuzz/fuzz_file_handle -max_total_time="$FUZZ_TIME" -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
 
+      - name: Fuzz ZIP (foreign format decoder)
+        # Foreign ZIP central directory, local file headers, and metadata parsing
+        # (see tests/fuzz/fuzz_zip.cpp).
+        run: ./build_fuzz/fuzz_zip -max_total_time="$FUZZ_TIME" -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
+
+      - name: Fuzz TAR (foreign format decoder)
+        # Foreign TAR header blocks, PAX extensions, and symlink validation
+        # (see tests/fuzz/fuzz_tar.cpp).
+        run: ./build_fuzz/fuzz_tar -max_total_time="$FUZZ_TIME" -timeout=60 tests/fuzz/seeds/ tests/fuzz/extra_seeds/
+
       - name: Dedup crashes (stack-signature buckets; new buckets survive)
         if: always()
         run: python3 tools/dedup_crashes.py
@@ -186,6 +211,7 @@ jobs:
         with:
           name: fuzzer-corpus
           path: tests/fuzz/seeds/
+          retention-days: 7
 
       - name: Upload crash artifacts
         # libFuzzer writes ./crash-<sha1> and the roundtrip oracle writes
@@ -200,3 +226,4 @@ jobs:
             crash-*
             fuzz_target_failure.bin
           if-no-files-found: ignore
+          retention-days: 14
