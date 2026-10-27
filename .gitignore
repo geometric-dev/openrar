@@ -63,6 +63,7 @@ tools/testrun/
 *.rev
 !tests/fuzz/seeds/*.rev
 *.bad
+tests/fuzz/crash-buckets.json
 
 # Scratch, benchmark, and temporary test outputs
 *.bin
