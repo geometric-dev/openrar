@@ -57,11 +57,16 @@ bool StreamDecoder::feed(const core::byte* src, size_t n) {
         size_t consumed = 0;
         if (!process_buffer(src, n, consumed)) return false;
         if (consumed < n) {
+            // Everything process_buffer() left behind is by definition an
+            // incomplete block (it only stops on a short header/body or on
+            // finished_), so a second process_blocks() pass here would consume
+            // zero bytes. Bug #2 (stream stall at 32768) was NOT a queueing
+            // problem: a filter region completing right after a block boundary
+            // was held until the next flush cadence, by which point the apply
+            // engine rejected it as stale. Fixed in Decompressor50's cadence
+            // path via has_completed_filter(); see the retained reproducer
+            // tests/fuzz/crashes/stream_filter_stale_window_input.bin.
             in_queue_.insert(in_queue_.end(), src + consumed, src + n);
-            // Defensive: process any queued complete blocks immediately;
-            // without this a queued tail could stall (bug #2, stream stall
-            // at 32768 bytes, nightly divergence a=32768).
-            process_blocks();
         }
         return true;
     }
