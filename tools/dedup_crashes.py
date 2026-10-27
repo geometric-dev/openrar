@@ -25,9 +25,12 @@ BUCKETS = REPO / "tests" / "fuzz" / "crash-buckets.json"
 
 def signature(artifact: Path) -> str:
     data = artifact.read_bytes()
-    # Harness name from the libFuzzer artifact prefix (crash-<harness>-...).
-    m = re.match(r"crash-([a-zA-Z0-9_]+)", artifact.name)
-    harness = m.group(1) if m else "unknown"
+    # Harness name from the libFuzzer artifact prefix (crash-<harness>-...) or oracle failure.
+    if artifact.name.startswith("fuzz_target_failure"):
+        harness = "fuzz_target_oracle"
+    else:
+        m = re.match(r"crash-([a-zA-Z0-9_]+)", artifact.name)
+        harness = m.group(1) if m else "unknown"
     # Content signature: the first 64 bytes (header shapes dominate) + size class.
     content = hashlib.sha256(data[:64]).hexdigest()[:16]
     size_class = f"{len(data) // 1024}K" if len(data) >= 1024 else str(len(data))
@@ -35,7 +38,18 @@ def signature(artifact: Path) -> str:
 
 
 def main() -> int:
-    artifacts = sorted(CRASH_DIR.glob("crash-*"))
+    search_dirs = [REPO, CRASH_DIR, CRASH_DIR / "crashes"]
+    artifacts = []
+    seen_paths = set()
+    for d in search_dirs:
+        if not d.is_dir():
+            continue
+        for pattern in ["crash-*", "fuzz_target_failure.bin"]:
+            for p in sorted(d.glob(pattern)):
+                if p.is_file() and p.resolve() not in seen_paths:
+                    seen_paths.add(p.resolve())
+                    artifacts.append(p)
+
     if not artifacts:
         print("[dedup] no crash artifacts")
         return 0
