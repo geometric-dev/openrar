@@ -492,6 +492,50 @@ private:
 
     std::vector<core::byte>* mem_out_{nullptr};
 
+    // ── v2.1.0 Cost-Aware Forward-Arrival Graph Parser & Symbol Arbiter ─────
+    // Fixed-point Shannon entropy price model (bits * 256).
+    struct PriceModel {
+        core::uint32 lit_cost[256];
+        core::uint32 len_cost[44];
+        core::uint32 dist_cost[DCX];
+        core::uint32 rep_cost[4][RC];
+        core::uint32 slot257_cost{3u << 8};
+        bool initialized{false};
+    };
+    PriceModel price_model_{};
+
+    void init_price_model();
+    void update_price_model();
+    core::uint32 price_literal(core::byte b) const;
+    core::uint32 price_match(size_t len, size_t dist) const;
+    core::uint32 price_rep(core::uint32 rep_idx, size_t len) const;
+    core::uint32 price_slot257() const;
+
+    // ── v2.1.0 Forward-Arrival Horizon Engine (H = 16 bytes, stack-allocated) ─────
+    struct ArrivalNode {
+        core::uint32 cost{0xFFFFFFFFu};        // Cumulative fixed-point cost (DP_INF if unreachable)
+        core::uint8 from_offset{0};            // Predecessor index in [0, H]
+        core::uint8 token_type{0};             // Literal, Match, Rep0..3, Slot257
+        core::uint16 token_len{0};             // Bytes covered
+        core::uint32 token_dist{0};            // Distance or rep index
+        size_t old_dist[4];                    // Rep-state captured AT WRITE TIME
+        size_t last_len{0};                    // Shadow last_length_ captured AT WRITE TIME
+    };
+    // 17 elements (offsets 0..H where H=16), ~952 bytes total, zero heap allocation
+    ArrivalNode arrival_[17];
+
+    // Forward-arrival engine
+    struct ForwardArrivalDecision {
+        core::uint32 token_type;    // 0=Literal, 1=Match, 2=Rep0, 3=Rep1, 4=Rep2, 5=Rep3, 6=LastLen
+        core::uint16 token_len;
+        core::uint32 token_dist;
+        core::uint32 cost;
+    };
+    ForwardArrivalDecision evaluate_forward_arrival(
+        core::uint64 cur, size_t match_len, core::int64 match_candidate,
+        size_t rep_best_len, int rep_idx, size_t cur_max_lz);
+    void commit_arrival_token(const ForwardArrivalDecision& decision);
+
     void init_freq();
     void reset_old_dist() {
         for (core::uint32 i = 0; i < 4; i++) old_dist_[i] = static_cast<size_t>(-1);
