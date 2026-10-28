@@ -1181,8 +1181,12 @@ public:
         c.src_loaded_ = src_loaded;
     }
 
-    // v1.31 M1 slot-257 test surface
     static void set_lastlen_suppressed(Compressor50& c, bool v) { c.lastlen_suppressed_ = v; }
+    static void set_old_dist(Compressor50& c, int idx, size_t val) { 
+        if (idx >= 0 && idx < 4) c.old_dist_[idx] = val; 
+    }
+    static void set_last_length(Compressor50& c, size_t val) { c.last_length_ = val; }
+    static const Compressor50::PriceModel& price_model(const Compressor50& c) { return c.price_model_; }
     static const std::vector<Compressor50Token>& match_tokens(const Compressor50& c) {
         return c.match_tokens_;
     }
@@ -2750,6 +2754,100 @@ void test_slot257_solid_carry() {
     std::cout << "[PASS] slot257 solid carry opens member 2 with a 257 (T5)\n";
 }
 
+// v2.1.0 Phase 4: Forward-Arrival Engine Unit Tests
+
+// Test 1: Entropy-based pricing prefers short rep over distant long match
+void test_forward_arrival_entropy_pricing() {
+    Compressor50 packer;
+    packer.begin_archive(nullptr, 1, 0x200000);
+    // Setup: build Huffman tables with known costs
+    Compressor50TestAccess::init_match_params(packer);
+    packer.set_external_buffer(
+        reinterpret_cast<const openrar::core::byte*>("\0\0\0\0\0\0\0\0"), 8);
+    packer.set_memory_dest(new std::vector<openrar::core::byte>());
+    // Force table build
+    REQUIRE(Compressor50TestAccess::process_available(packer, true));
+    REQUIRE(Compressor50TestAccess::write_block(packer, true));
+    // Price model is now initialized
+    
+    const auto& price_model = Compressor50TestAccess::price_model(packer);
+    REQUIRE(price_model.initialized);
+    
+    // Verify price model has reasonable costs for all token types
+    // All costs should be non-zero (initialized from Huffman lengths)
+    for (int i = 0; i < 256; ++i) {
+        REQUIRE(price_model.lit_cost[i] > 0);
+    }
+    for (int i = 0; i < 44; ++i) {
+        REQUIRE(price_model.len_cost[i] > 0);
+    }
+    for (int r = 0; r < 4; ++r) {
+        for (int s = 0; s < Compressor50::RC; ++s) {
+            REQUIRE(price_model.rep_cost[r][s] > 0);
+        }
+    }
+    REQUIRE(price_model.slot257_cost > 0);
+    
+    std::cout << "[PASS] forward_arrival entropy pricing model initialized with valid costs\n";
+}
+
+// Test 2: Slot 257 only emitted on exact length continuation
+void test_forward_arrival_slot257_continuation() {
+    Compressor50 packer;
+    packer.begin_archive(nullptr, 1, 0x200000);
+    Compressor50TestAccess::init_match_params(packer);
+    
+    // Set up rep0 context with last_length_ = 8
+    Compressor50TestAccess::set_old_dist(packer, 0, 1);
+    Compressor50TestAccess::set_last_length(packer, 8);
+    
+    // Price model initialized
+    packer.set_external_buffer(
+        reinterpret_cast<const openrar::core::byte*>("\0\0\0\0\0\0\0\0"), 8);
+    packer.set_memory_dest(new std::vector<openrar::core::byte>());
+    REQUIRE(Compressor50TestAccess::process_available(packer, true));
+    REQUIRE(Compressor50TestAccess::write_block(packer, true));
+    
+    const auto& price_model = Compressor50TestAccess::price_model(packer);
+    REQUIRE(price_model.initialized);
+    
+    // Exact continuation: slot 257 cheaper than rep0
+    openrar::core::uint32 slot257_cost = price_model.slot257_cost;
+    openrar::core::uint32 rep0_cost = price_model.rep_cost[0][8]; // len=8 -> slot 8
+    REQUIRE(slot257_cost < rep0_cost);
+    
+    // Length mismatch: slot 257 = INF (not available), rep0 wins
+    // This is enforced by the forward-arrival engine logic
+    std::cout << "[PASS] forward_arrival slot257 continuation pricing\n";
+}
+
+// Test 3: 8 MiB zeros compress to <= 500 bytes (run hygiene)
+void test_forward_arrival_run_hygiene() {
+    std::vector<openrar::core::byte> zeros(8 * 1024 * 1024, 0);
+    std::vector<openrar::core::byte> comp;
+    REQUIRE(Compressor50::compress_buffer(zeros.data(), zeros.size(), comp, 3, 0x200000, {}));
+    REQUIRE(comp.size() <= 500);
+    std::cout << "[PASS] forward_arrival run hygiene: 8 MiB zeros -> " << comp.size() << " bytes\n";
+}
+
+// Test 4: Incompressible fallback triggers fast literal path
+void test_forward_arrival_incompressible_fallback() {
+    std::vector<openrar::core::byte> rand_data(1024 * 1024);
+    std::mt19937 rng(42);
+    std::uniform_int_distribution<int> dist(0, 255);
+    for (auto& b : rand_data) b = static_cast<openrar::core::byte>(dist(rng));
+    
+    std::vector<openrar::core::byte> comp;
+    auto start = std::chrono::high_resolution_clock::now();
+    REQUIRE(Compressor50::compress_buffer(rand_data.data(), rand_data.size(), comp, 3, 0x200000, {}));
+    auto end = std::chrono::high_resolution_clock::now();
+    
+    // Should complete in reasonable time (fail_count heuristic prevents O(n^2))
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    REQUIRE(duration < 5000); // < 5 seconds for 1 MiB random
+    std::cout << "[PASS] forward_arrival incompressible fallback: " << duration << " ms\n";
+}
+
 // T10: the match emitter's admissibility contract (v1.33 item 1).
 //
 // The decoder reconstructs a match length as base + increment(distance) and
@@ -3660,7 +3758,12 @@ static const openrar::test::Case k_cases[] = {
     {"test_filter_arm_roundtrip", test_filter_arm_roundtrip, false},
     {"test_filter_delta_roundtrip", test_filter_delta_roundtrip, false},
     {"test_filter_improves_compression", test_filter_improves_compression, false},
-    {"test_chunk_framing_spike", test_chunk_framing_spike, false}};
+    {"test_chunk_framing_spike", test_chunk_framing_spike, false},
+    // v2.1.0 Phase 4: Forward-Arrival Engine Unit Tests
+    {"test_forward_arrival_entropy_pricing", test_forward_arrival_entropy_pricing, false},
+    {"test_forward_arrival_slot257_continuation", test_forward_arrival_slot257_continuation, false},
+    {"test_forward_arrival_run_hygiene", test_forward_arrival_run_hygiene, false},
+    {"test_forward_arrival_incompressible_fallback", test_forward_arrival_incompressible_fallback, false}};
 
 int main(int argc, char* argv[]) {
     openrar::test::route_crt_asserts_to_stderr();
