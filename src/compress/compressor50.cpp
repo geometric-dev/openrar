@@ -817,16 +817,17 @@ Compressor50::ForwardArrivalDecision Compressor50::evaluate_forward_arrival(
         }
     }
 
-    // Select best arrival at offset 0 (minimum cost per byte heuristic)
+    // Select best arrival at offset 0: minimum total cost with tie-breaker for longer tokens
+    // This is more accurate than cost-per-byte since PriceModel costs already account for
+    // token overhead. Prefer longer tokens when costs are close (advances further).
     core::uint32 best_cost = DP_INF;
     int best_offset = -1;
     for (int t = 1; t <= H; ++t) {
         if (arrival[t].cost < DP_INF) {
-            // Use cost per byte as heuristic for multi-byte tokens
-            // Use actual token_len, not array index (which is clamped to H for long tokens)
             size_t token_len = arrival[t].token_len > 0 ? arrival[t].token_len : t;
-            core::uint32 cost_per_byte = arrival[t].cost / static_cast<core::uint32>(token_len);
-            if (cost_per_byte < best_cost / (best_offset > 0 ? best_offset : 1)) {
+            if (arrival[t].cost < best_cost ||
+                (arrival[t].cost == best_cost && token_len > 
+                 (best_offset > 0 ? (arrival[best_offset].token_len > 0 ? arrival[best_offset].token_len : best_offset) : 0))) {
                 best_cost = arrival[t].cost;
                 best_offset = t;
             }
