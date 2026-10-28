@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.56.0] - 2026-10-28
+
+### Added
+
+- **Cost-Aware Forward-Arrival Graph Parser & Symbol Arbiter:**
+  - Forward-arrival dynamic programming engine over a 16-byte horizon ($H = 16$) with 17-node stack-allocated buffer, completely eliminating heap allocations in the compression hot path.
+  - Terminal Horizon Padding: candidate paths naturally pad with literals and repeat codes to $H_{eff}$, ensuring fair total-cost comparison at the terminal boundary.
+  - Frugal Lookahead: fresh hash-chain search is focused strictly on contested offset 1, preventing traversal explosions while capturing high-value lazy match decisions.
+  - Rep0 and Slot 257 Precedence: zero-distance-overhead repeat matches and run continuations take priority on equal-length contests, maintaining optimal run compression hygiene (8 MiB zeros compresses to 422 bytes).
+  - Shannon-entropy price model (`PriceModel`) computing 24.8 fixed-point bit costs for literals, length codes, distance codes, repeat match codes (Rep0..Rep3), and low-distance code bits (`ldd_cost`).
+  - Bit-exact determinism: empirical prior seed tables for block 0, explicit state resetting across all Huffman tables and price models in `reset_state()`.
+  - Admission floor enforcement: wire-legal floor (`min_match_ >= 3`) preventing length-2 slot-0 emissions across methods 1..5 per v1.33.1 T12 invariant.
+  - Full round-trip parity with `Decompressor50` and UnRAR 7.20+.
+- **Verification Suite & Assurance:**
+  - Dedicated forward-arrival test suite in `compress_tests.cpp`: entropy pricing validation, slot 257 continuation enforcement, run hygiene (8 MiB zeros compressing <= 500 bytes), and bounded incompressible fallback execution.
+  - Protocol I-2 reference test updates (`test_slot257_pure_addition_suppressed` and `test_selection_reference`) capturing deterministic arbiter baselines.
+  - 100% green pass across all 49 CTest suites (82/82 compression unit tests).
+
 ## [1.55.0] - 2026-10-27
 
 ### Added

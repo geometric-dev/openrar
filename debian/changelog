@@ -1,3 +1,9 @@
+openrar (1.56.0-0ubuntu1) noble; urgency=medium
+
+  * Release v1.56.0.
+
+ -- OpenRAR Project <geometric-dev@users.noreply.github.com>  Wed, 28 Oct 2026 22:30:00 +0000
+
 openrar (1.55.0-0ubuntu1) noble; urgency=medium
 
   * Release v1.55.0.
@@ -11,6 +17,6 @@ openrar (1.53.0-0ubuntu1) noble; urgency=medium
     libopenrar-dev (headers, pkg-config, CMake exports).
   * Debian-compliant openrar(1) manual page.
   * Pkg-config openrar.pc metadata installation.
-  * Hardening flags (+all) and multi-arch support.
+  * Upstream verification ledger and CMake integration tests.
 
- -- OpenRAR Project <geometric-dev@users.noreply.github.com>  Mon, 26 Oct 2026 14:00:00 +0000
+ -- OpenRAR Project <geometric-dev@users.noreply.github.com>  Tue, 27 Oct 2026 10:45:00 +0000
