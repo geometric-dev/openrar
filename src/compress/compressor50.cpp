@@ -899,8 +899,43 @@ Compressor50::ForwardArrivalDecision Compressor50::evaluate_forward_arrival(
                 }
             }
 
-        // 4. Fresh match - only at offset 0 where we have pre-computed data
-        // (Already stored in arrival[] during initial candidate evaluation)
+        // 4. Fresh match - at all offsets within horizon
+        // For i == 0, use pre-computed match. For i > 0, do limited lookahead search.
+        size_t mlen = 0;
+        core::int64 mcand = -1;
+        if (i == 0) {
+            // Use pre-computed match
+            mlen = match_len;
+            mcand = match_candidate;
+        } else {
+            // Limited lookahead match finding at offset i > 0
+            // Use reduced chain depth for performance
+            size_t lookahead_max_lz = cur_max_lz;
+            if (lookahead_max_lz > 256) lookahead_max_lz = 256;  // Cap for lookahead
+            MatchInfo mi = find_match(pos, 16, 16);  // Limited chain/nice for speed
+            if (mi.length >= 3 && mi.candidate >= 0) {
+                mlen = mi.length;
+                mcand = mi.candidate;
+            }
+        }
+        if (mlen >= 3 && mcand >= 0) {
+            if (mlen > avail) mlen = avail;
+            core::uint32 inc = length_increment(static_cast<size_t>(pos - static_cast<core::uint64>(mcand)));
+            if (mlen >= static_cast<size_t>(inc) + 2) {
+                core::uint32 cost = price_match(mlen, static_cast<size_t>(pos - static_cast<core::uint64>(mcand)));
+                core::uint32 new_cost = arrival[i].cost + cost;
+                int j = i + static_cast<int>(mlen) > 16 ? 16 : i + static_cast<int>(mlen);
+                if (new_cost < arrival[j].cost) {
+                    arrival[j].cost = new_cost;
+                    arrival[j].from_offset = i;
+                    arrival[j].token_type = 1;
+                    arrival[j].token_len = static_cast<core::uint16>(mlen);
+                    arrival[j].token_dist = static_cast<core::uint32>(static_cast<size_t>(pos - static_cast<core::uint64>(mcand)));
+                    for (int d = 0; d < 4; ++d) arrival[j].old_dist[d] = arrival[i].old_dist[d];
+                    arrival[j].last_len = arrival[i].last_len;
+                }
+            }
+        }
     }
     // ────────────────────────────────────────────────────────────────────────
 
