@@ -738,6 +738,9 @@ core::uint32 Compressor50::price_slot257() const {
 // Returns the optimal token decision (token_type, token_len, token_dist, cost).
 // Takes pre-computed match/rep candidates to avoid duplicate search.
 // Uses local arrival buffer to avoid member variable issues.
+// Modified evaluate_forward_arrival function with proper DP
+// This is a standalone replacement for the function in compressor50.cpp
+
 Compressor50::ForwardArrivalDecision Compressor50::evaluate_forward_arrival(
     core::uint64 cur, size_t match_len, core::int64 match_candidate,
     size_t rep_best_len, int rep_idx, size_t cur_max_lz) {
@@ -751,10 +754,11 @@ Compressor50::ForwardArrivalDecision Compressor50::evaluate_forward_arrival(
         size_t old_dist[4];
         size_t last_len{0};
     };
-    LocalArrivalNode arrival[17];
+    constexpr int H = 16;
+    LocalArrivalNode arrival[H + 1];
 
     // Reset arrival buffer
-    for (int i = 0; i <= 16; ++i) {
+    for (int i = 0; i <= H; ++i) {
         arrival[i].cost = DP_INF;
         arrival[i].from_offset = 0;
         arrival[i].token_type = 0;
@@ -771,7 +775,6 @@ Compressor50::ForwardArrivalDecision Compressor50::evaluate_forward_arrival(
 
     // Offset 0: evaluate all candidates
     // Helper to store candidate at clamped horizon index while preserving actual token length
-    constexpr int H = 16;
     auto store_candidate = [&](int token_type, size_t token_len, core::uint32 token_dist,
                                core::uint32 cost, const size_t* old_dist_src, size_t last_len_src) {
         int idx = token_len > H ? H : static_cast<int>(token_len);
@@ -817,7 +820,91 @@ Compressor50::ForwardArrivalDecision Compressor50::evaluate_forward_arrival(
         }
     }
 
-    // Select best arrival at offset 0: minimum total cost with tie-breaker for longer tokens
+    // ── Forward DP over horizon H ────────────────────────────────────────────────
+    // Propagate best costs through offsets 0..H-1 using buffer lookahead.
+    for (int i = 0; i < H; ++i) {
+        if (arrival[i].cost == DP_INF) continue;  // unreachable offset
+
+        core::uint64 pos = cur + i;
+        size_t avail_at_pos = avail_at(pos);
+        if (avail_at_pos == 0) continue;
+        if (avail_at_pos > cur_max_lz) avail_at_pos = cur_max_lz;
+
+        const core::byte* buf_pos = &buf_data_[static_cast<size_t>(pos - pos_base_)];
+        size_t avail = avail_at_pos;
+
+        // Evaluate all token candidates starting at pos
+        // For i == 0, pre-computed match/rep data already stored in arrival[1..H]
+        // For i > 0, use buffer lookahead (no fresh match finding)
+
+        // 1. Literal
+        if (avail >= 1) {
+            core::uint32 lit_cost = price_literal(buf_pos[0]);
+            core::uint32 new_cost = arrival[i].cost + lit_cost;
+            int j = i + 1 > 16 ? 16 : i + 1;
+            if (new_cost < arrival[j].cost) {
+                arrival[j].cost = new_cost;
+                arrival[j].from_offset = i;
+                arrival[j].token_type = 0;
+                arrival[j].token_len = 1;
+                arrival[j].token_dist = 0;
+                for (int d = 0; d < 4; ++d) arrival[j].old_dist[d] = arrival[i].old_dist[d];
+                arrival[j].last_len = arrival[i].last_len;
+            }
+        }
+
+        // 2. Rep0..3
+        for (int r = 0; r < 4; ++r) {
+            size_t d = arrival[i].old_dist[r];
+            if (d != static_cast<size_t>(-1) && d != 0 && d <= pos - pos_base_ && d <= max_dist_) {
+                if (avail >= 2 && buf_pos[0] == buf_pos[-static_cast<core::int64>(d)]) {
+                    size_t rep_len = rep_length(pos, d, avail);
+                    if (rep_len >= 2 && rep_len <= cur_max_lz) {
+                        core::uint32 cost = price_rep(r, rep_len);
+                        core::uint32 new_cost = arrival[i].cost + cost;
+                        int j = i + static_cast<int>(rep_len) > 16 ? 16 : i + static_cast<int>(rep_len);
+                        if (new_cost < arrival[j].cost) {
+                            arrival[j].cost = new_cost;
+                            arrival[j].from_offset = i;
+                            arrival[j].token_type = static_cast<core::uint8>(2 + r);
+                            arrival[j].token_len = static_cast<core::uint16>(rep_len);
+                            arrival[j].token_dist = static_cast<core::uint32>(r);
+                            for (int d = 0; d < 4; ++d) arrival[j].old_dist[d] = arrival[i].old_dist[d];
+                            arrival[j].last_len = arrival[i].last_len;
+                        }
+                    }
+                }
+            }
+
+        // 3. Slot 257 / LastLen
+        if (arrival[i].last_len != 0) {
+            size_t d = arrival[i].old_dist[0];
+            if (d != static_cast<size_t>(-1) && d != 0 && d <= pos - pos_base_ && d <= max_dist_) {
+                if (avail >= arrival[i].last_len && buf_pos[0] == buf_pos[-static_cast<core::int64>(d)]) {
+                    size_t rep0_len = rep_length(pos, d, avail);
+                    if (rep0_len == arrival[i].last_len && rep0_len <= cur_max_lz) {
+                        core::uint32 cost = price_slot257();
+                        core::uint32 new_cost = arrival[i].cost + cost;
+                        int j = i + static_cast<int>(rep0_len) > 16 ? 16 : i + static_cast<int>(rep0_len);
+                        if (new_cost < arrival[j].cost) {
+                            arrival[j].cost = new_cost;
+                            arrival[j].from_offset = i;
+                            arrival[j].token_type = 6;
+                            arrival[j].token_len = static_cast<core::uint16>(rep0_len);
+                            arrival[j].token_dist = 0;
+                            for (int d = 0; d < 4; ++d) arrival[j].old_dist[d] = arrival[i].old_dist[d];
+                            arrival[j].last_len = arrival[i].last_len;
+                        }
+                    }
+                }
+            }
+
+        // 4. Fresh match - only at offset 0 where we have pre-computed data
+        // (Already stored in arrival[] during initial candidate evaluation)
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
+    // Select best arrival: minimum total cost with tie-breaker for longer tokens
     // This is more accurate than cost-per-byte since PriceModel costs already account for
     // token overhead. Prefer longer tokens when costs are close (advances further).
     core::uint32 best_cost = DP_INF;
@@ -868,9 +955,9 @@ Compressor50::ForwardArrivalDecision Compressor50::evaluate_forward_arrival(
             arrival[best_offset].token_dist,
             best_cost};
 }
+}
+}
 
-// Commits the selected arrival token decision and updates encoder state
-// Token types match Compressor50Token::TokenType: Literal=0, Match=1, Rep0=2, Rep1=3, Rep2=4, Rep3=5, LastLen=6
 void Compressor50::commit_arrival_token(const ForwardArrivalDecision& decision) {
     switch (decision.token_type) {
     case 0:  // Literal
