@@ -39,3 +39,5 @@ For active project roadmaps and living specifications, refer back to the [OpenRA
 | **v1.50** | Parallel CDC Candidate-then-Stitch Deduplication | [Pre-Analysis](v1.50.0-pre-analysis.md) · [Design Review](v1.50.0-design-review.md) · [Plan](v1.50.0-implementation-plan.md) · [Walkthrough](v1.50.0-walkthrough.md) |
 | **v1.51** | Multi-Volume Sandboxing & Encrypted Parsing Scope | [Pre-Analysis](v1.51.0-pre-analysis.md) · [Design Review](v1.51.0-design-review.md) · [Plan](v1.51.0-implementation-plan.md) · [Walkthrough](v1.51.0-walkthrough.md) |
 | **v1.52** | Competitive Multi-Engine Audit & v2.0 Charter | Delivered in [PERFORMANCE.md](../../PERFORMANCE.md) and [v2.0-charter.md](../v2.0-charter.md) |
+| **v1.56** | Cost-Aware Forward-Arrival DAG Parser & Symbol Arbiter | [Implementation Plan](v1.56.0-implementation-plan.md) |
+| **v1.57** | Forward-Arrival Throughput Optimization & Fast Literal Bypass | [Implementation Plan](v1.57.0-implementation-plan.md) · [Walkthrough](v1.57.0-walkthrough.md) |
