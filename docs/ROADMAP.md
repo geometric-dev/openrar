@@ -1,7 +1,7 @@
 # 🗺️ OpenRAR Engineering Roadmap: v1.21 → v2.0 (Consolidated Master)
 
 **Status:** Sole roadmap of record  
-**Current Shipped Release:** v1.53.0 (2026-10-26)  
+**Current Shipped Release:** v1.57.0 (2026-10-29)  
 **Active Milestone:** Complete — Modern Arc Fully Shipped (10/10, 100%) & Packaging Arc Underway  
 **Consolidates:** Foundational baseline (v1.21.x → v1.42.x), modern engineering arcs (v1.43 → v1.52 / v2.0 Charter), and distribution milestones (v1.53 Launchpad/deb).
 
@@ -26,6 +26,8 @@
 | **v1.53** | ✅ **SHIPPED** | Launchpad (deb) packaging & distribution tooling | Low | Debian source package formatting + multi-binary split + PPA upload automation | Shipped v1.53.0. debian/ tree, openrar(1) manpage, pkg-config, CPack deb, launchpad.yml |
 | **v1.54** | ✅ **SHIPPED** | Assurance & fuzzing substrate hardening (foreign fuzzing, dedup fix, archive_tests sanitizer re-admission, GPG action pinning) | Low | All 8 fuzz harnesses executed in nightly CI; `archive_tests` active under ASan/UBSan | Shipped v1.54.0. Fuzzing coverage expanded; dedup root scanner; PBKDF2 cycle decoupled; hook installed |
 | **v1.55** | ✅ **SHIPPED** | Multi-ecosystem SDK packaging & distribution (NuGet .nupkg, Python wheel/sdist, NPM .tgz) | Low | Package bundles produced and attached to release tags | Shipped v1.55.0. .NET NuGet package (.nupkg), Python wheel/sdist (.whl, .tar.gz), WASM npm tarball (.tgz), Sigstore provenance attestations |
+| **v1.56** | ✅ **SHIPPED** | Cost-aware forward-arrival DAG parser & symbol arbiter (Pillar 1) | Medium | Shannon entropy bit costs, 0% zero-run regression | Shipped v1.56.0. 16-byte arrival graph, fixed price model, wire floors |
+| **v1.57** | ✅ **SHIPPED** | Forward-arrival parser throughput optimization (fast literal bypass) | Low | Incompressible throughput >= 15 MB/s, 100% bit-exact bitstream invariance | Shipped v1.57.0. O(1) uncontested literal bypass, >7x random speedup, 49/49 ctest |
 
 **Milestone Scorecard:** Modern Arc Fully Delivered (10/10, 100%). Packaging & Assurance Arcs (v1.53 – v1.55) Completed. Next: v2.0 Architecture Arc.
 
@@ -1712,7 +1714,9 @@ C# NuGet (`OpenRAR.NET`).
 | **v1.52.0** | Competitive audit & v2.0 charter | Multi-engine comparative matrix (WinRAR, UnRAR, 7-Zip); v2.0 Charter | Final Modern Arc milestone ✅ |
 | **v1.53.0** | Launchpad (deb) packaging & distribution | Debian source format, multi-binary split, pkg-config, CPack, PPA CI | Complete Launchpad deb tooling ✅ |
 | **v1.54.0** | Assurance & fuzzing substrate hardening | Foreign fuzzers in CI, crash dedup fix, archive_tests sanitizer re-admission, GPG action pinning | Planned 🟡 |
-| **v1.55.0** | Multi-ecosystem SDK packaging & distribution | NuGet (.nupkg), Python wheel/sdist, NPM (.tgz) release automation | Planned 🟡 |
+| **v1.55.0** | Multi-ecosystem SDK packaging & distribution | NuGet (.nupkg), Python wheel/sdist, NPM (.tgz) release automation | Shipped v1.55.0 ✅ |
+| **v1.56.0** | Forward-arrival DAG parser & symbol arbiter | 16-byte horizon arrival graph, 24.8 Shannon PriceModel, slot 257 | Shipped v1.56.0 ✅ |
+| **v1.57.0** | Forward-arrival throughput optimization & bypass | Fast uncontested literal bypass (>7x throughput on random data) | Shipped v1.57.0 ✅ |
 
 ## ⚠️ Risk Register (top items)
 
