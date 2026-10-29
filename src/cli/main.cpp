@@ -1357,10 +1357,11 @@ enum class CdcFingerprintResult {
     OverCap = 2,
 };
 static CdcFingerprintResult fingerprint_file_cdc(const std::filesystem::path& p,
-                                                 compress::CdcChunker& chunker,
+                                                 const compress::CdcChunker& chunker,
                                                  std::vector<core::uint64>& hashes_out,
                                                  size_t max_chunks, core::uint64& chunk_count,
-                                                 unsigned threads = 1) {
+                                                 unsigned threads = 1,
+                                                 core::ThreadPool* pool = nullptr) {
     hashes_out.clear();
     chunk_count = 0;
     std::error_code ec;
@@ -1379,7 +1380,8 @@ static CdcFingerprintResult fingerprint_file_cdc(const std::filesystem::path& p,
         }
         if (total_read == sz) {
             std::vector<compress::CdcChunk> chunks;
-            chunker.chunk_parallel(file_data.data(), file_data.size(), chunks, threads);
+            chunker.chunk_parallel(file_data.data(), file_data.size(), chunks, threads, nullptr,
+                                   pool);
             if (chunks.size() > max_chunks) {
                 return CdcFingerprintResult::OverCap;
             }
@@ -2402,32 +2404,66 @@ int add_to_archive(
         }
         size_t total_chunks = 0;
         size_t first_unfingerprinted = queue.size();
-        for (size_t i = 0; i < queue.size(); ++i) {
-            const PendingFile& item = queue[i];
-            if (item.is_dir || item.is_symlink || item.is_hardlink || item.is_filecopy) continue;
-            if (total_chunks >= fp_cap) {
-                cdc_cap_hit = true;
-                first_unfingerprinted = i;
-                break;
-            }
-            core::uint64 file_chunks = 0;
-            const CdcFingerprintResult fp_result = fingerprint_file_cdc(
-                item.src_path, chunker, hashes[i], fp_cap - total_chunks, file_chunks, threads);
-            if (fp_result == CdcFingerprintResult::OverCap) {
-                // Index full: this file and the tail keep original order.
-                cdc_cap_hit = true;
-                first_unfingerprinted = i;
-                break;
-            }
-            if (fp_result == CdcFingerprintResult::Unreadable) {
-                std::cerr << "W: cannot read " << sanitize_for_display(item.src_path.string())
-                          << " for CDC fingerprinting; packing it without affinity\n";
-                continue;
-            }
-            total_chunks += file_chunks;
+        std::vector<core::uint64> file_chunk_counts(queue.size(), 0);
+        std::vector<CdcFingerprintResult> fp_results(queue.size(), CdcFingerprintResult::Ok);
+
+        // Multi-file parallel fingerprint dispatch (v1.60):
+        // Worker tasks fingerprint batches of queue entries concurrently.
+        // Cap enforcement (fp_cap) is performed via a deterministic linear prefix
+        // scan in natural queue order 0..N-1 on the main thread (Invariant G-3).
+        const unsigned cdc_threads = (threads > 0) ? threads : 1;
+        std::unique_ptr<core::ThreadPool> cdc_pool;
+        if (cdc_threads > 1) {
+            cdc_pool = std::make_unique<core::ThreadPool>(cdc_threads);
         }
+        constexpr size_t CDC_BATCH_SIZE = 64;
+
+        for (size_t batch_start = 0; batch_start < queue.size(); batch_start += CDC_BATCH_SIZE) {
+            const size_t batch_end = std::min(queue.size(), batch_start + CDC_BATCH_SIZE);
+
+            auto process_item = [&](size_t i) {
+                const PendingFile& item = queue[i];
+                if (item.is_dir || item.is_symlink || item.is_hardlink || item.is_filecopy) {
+                    return;
+                }
+                fp_results[i] = fingerprint_file_cdc(item.src_path, chunker, hashes[i], fp_cap,
+                                                     file_chunk_counts[i], 1);
+            };
+
+            if (cdc_pool) {
+                core::parallel_for(*cdc_pool, batch_start, batch_end, process_item);
+            } else {
+                for (size_t i = batch_start; i < batch_end; ++i) {
+                    process_item(i);
+                }
+            }
+
+            for (size_t i = batch_start; i < batch_end; ++i) {
+                const PendingFile& item = queue[i];
+                if (item.is_dir || item.is_symlink || item.is_hardlink || item.is_filecopy) {
+                    continue;
+                }
+                if (fp_results[i] == CdcFingerprintResult::Unreadable) {
+                    std::cerr << "W: cannot read " << sanitize_for_display(item.src_path.string())
+                              << " for CDC fingerprinting; packing it without affinity\n";
+                    continue;
+                }
+                if (total_chunks >= fp_cap || total_chunks + file_chunk_counts[i] > fp_cap ||
+                    fp_results[i] == CdcFingerprintResult::OverCap) {
+                    cdc_cap_hit = true;
+                    first_unfingerprinted = i;
+                    break;
+                }
+                total_chunks += file_chunk_counts[i];
+            }
+            if (cdc_cap_hit) {
+                break;
+            }
+        }
+
         if (cdc_cap_hit) {
             for (size_t i = first_unfingerprinted; i < queue.size(); ++i) {
+                hashes[i].clear();
                 const PendingFile& item = queue[i];
                 if (!item.is_dir && !item.is_symlink && !item.is_hardlink && !item.is_filecopy)
                     ++cdc_cap_fallback_files;
