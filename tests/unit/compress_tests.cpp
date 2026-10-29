@@ -2597,15 +2597,15 @@ void test_selection_reference() {
         int method;
         const char* sha;
     } expected[] = {
-        // v1.56.0 forward-arrival graph parser re-capture (OPENRAR_REFCAP=1, 2026-10-28).
+        // v1.59.0 Distance-costed candidate pruning & slot 257 horizon expansion re-capture (OPENRAR_REFCAP=1, 2026-10-29).
         {"text64k", 1, "9b7e8b56d545f5820ec283243a1b3d64a9ac6461f02beb77b56359346ff86c97"},
         {"text64k", 3, "82620752bbab7630ebd69dad50a2b36d4d8d27d3d58cb00b21459ff7ba3c4018"},
         {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"zeros1m", 1, "29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d"},
         {"zeros1m", 3, "29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d"},
-        {"mixed", 1, "3506ff26b3a893b75b01a1b1d0b2e303fe07cfa691f3360854034e04e5c38616"},
-        {"mixed", 3, "ef31c62e4c9f2a05f06469ffa750a7d247ee4e0abe985dfbf94128c5b31bc51d"},
+        {"mixed", 1, "232414be1db966916bfed3494fab33599550e4efe426797a37b45b031c2dc67b"},
+        {"mixed", 3, "3b8441f0a16dd37378cec1595dfaf0050054868ab816cddbe41774b0b951f9fb"},
         {"farrepeat", 1, "b1bffbe2c04024826cdb803e8621ffd93550d27a98a5124a04309170e3b0fa0e"},
         {"farrepeat", 3, "b1bffbe2c04024826cdb803e8621ffd93550d27a98a5124a04309170e3b0fa0e"},
     };
@@ -2991,19 +2991,12 @@ void test_length2_match_support() {
             const bool is_rep = ty >= Compressor50Token::TokenType::Rep0 &&
                                 ty <= Compressor50Token::TokenType::Rep3;
             if (!is_match && !is_rep) continue;
-            if (is_match) ++matches;
+            if (is_match || is_rep) ++matches;
             if (t.get_len_slot() == 0) ++slot0;
-        }
-        size_t reps = 0;
-        for (const auto& t : Compressor50TestAccess::match_tokens(packer)) {
-            const auto ty = t.get_type();
-            if (ty >= Compressor50Token::TokenType::Rep0 &&
-                ty <= Compressor50Token::TokenType::Rep3)
-                ++reps;
         }
         REQUIRE((slot0 == 0 && "no method may emit a slot-0 length token - the "
                                "admission floor is 3 at every method since v1.33.1"));
-        REQUIRE(matches + reps > 0);
+        REQUIRE(matches > 0);
 
         REQUIRE(Compressor50TestAccess::write_block(packer, true));
         Decompressor50 dec(0x200000);

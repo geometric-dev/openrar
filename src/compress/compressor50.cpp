@@ -705,7 +705,7 @@ core::uint32 Compressor50::price_literal(core::byte b) const {
 core::uint32 Compressor50::price_match(size_t len, size_t dist) const {
     if (!price_model_.initialized) return (len >= 3) ? (14u << 8) : DP_INF;
     core::uint32 inc = length_increment(dist);
-    if (len < static_cast<size_t>(inc) + 2) return DP_INF;
+    if (len < static_cast<size_t>(inc) + min_match_) return DP_INF;
     core::uint32 base = static_cast<core::uint32>(len - inc);
     if (base > MAX_LZ_MATCH) base = MAX_LZ_MATCH;
 
@@ -780,7 +780,7 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
     if (match_len >= nice_len_ && match_candidate >= 0) {
         size_t mdist = static_cast<size_t>(cur - static_cast<core::uint64>(match_candidate));
         core::uint32 inc = length_increment(mdist);
-        if (match_len >= static_cast<size_t>(inc) + 2) {
+        if (match_len >= static_cast<size_t>(inc) + min_match_) {
             return {1, static_cast<core::uint16>(std::min(match_len, avail)),
                     static_cast<core::uint32>(mdist), 0};
         }
@@ -838,11 +838,11 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
     }
 
     // 4. Fresh match at offset 0
-    if (match_len >= 3 && match_candidate >= 0) {
+    if (match_len >= min_match_ && match_candidate >= 0) {
         size_t mlen = std::min(match_len, avail);
         size_t mdist = static_cast<size_t>(cur - static_cast<core::uint64>(match_candidate));
         core::uint32 inc = length_increment(mdist);
-        if (mlen >= 3 && mlen >= static_cast<size_t>(inc) + 2) {
+        if (mlen >= static_cast<size_t>(inc) + min_match_) {
             core::uint32 cost = price_match(mlen, mdist);
             size_t new_dist[4];
             new_dist[0] = mdist;
@@ -888,6 +888,31 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
                     size_t rep_len = rep_length(
                         pos, rep_d, std::min<size_t>(avail_i, static_cast<size_t>(h_eff - i)));
                     if (rep_len >= min_match_) {
+                        // Slot 257 transition at horizon offset i: if r == 0, previous token recorded
+                        // a match/rep length, and current match satisfies that length, slot 257 provides
+                        // zero extra bits and minimum symbol cost. Strict equality per commit 6855518.
+                        if (!lastlen_suppressed_ && r == 0 && arrival[i].last_len >= min_match_ &&
+                            rep_len == arrival[i].last_len) {
+                            size_t slen = arrival[i].last_len;
+                            core::uint32 cost257 = price_slot257();
+                            if (cost257 < DP_INF) {
+                                core::uint32 new_cost = arrival[i].cost + cost257;
+                                int j = i + static_cast<int>(slen) > h_eff
+                                            ? h_eff
+                                            : i + static_cast<int>(slen);
+                                if (new_cost < arrival[j].cost) {
+                                    arrival[j].cost = new_cost;
+                                    arrival[j].from_offset = static_cast<core::uint8>(i);
+                                    arrival[j].token_type = 6; // Slot 257
+                                    arrival[j].token_len = static_cast<core::uint16>(slen);
+                                    arrival[j].token_dist = 0;
+                                    for (int d = 0; d < 4; ++d)
+                                        arrival[j].old_dist[d] = arrival[i].old_dist[d];
+                                    arrival[j].last_len = slen;
+                                }
+                            }
+                        }
+
                         core::uint32 cost = price_rep(static_cast<core::uint32>(r), rep_len);
                         if (cost < DP_INF) {
                             core::uint32 new_cost = arrival[i].cost + cost;
@@ -1243,14 +1268,41 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
 #endif
         }
 
-        if (best.length > 0 && best.length < limit &&
-            buf_cand[best.length] != buf_pos[best.length]) {
+        size_t cand_dist = static_cast<size_t>(pos - static_cast<core::uint64>(cand));
+        core::uint32 inc = length_increment(cand_dist);
+        size_t min_legal_len = static_cast<size_t>(inc) + min_match_;
+
+        // Distance-costed hurdle: for a distant candidate to beat best.length,
+        // it must overcome the higher distance band extra bits overhead.
+        size_t req_len = best.length > 0 ? (best.length + 1) : min_legal_len;
+        if (best.length > 0) {
+            size_t best_dist = static_cast<size_t>(pos - static_cast<core::uint64>(best.candidate));
+            core::uint32 best_inc = length_increment(best_dist);
+            if (inc > best_inc) {
+                size_t hurdle = best.length + static_cast<size_t>(inc - best_inc);
+                if (hurdle > req_len) req_len = hurdle;
+            }
+        }
+        if (req_len < min_legal_len) req_len = min_legal_len;
+
+        if (limit < req_len) {
             cand = next_cand;
             continue;
         }
 
+        if (req_len > 0 && buf_cand[req_len - 1] != buf_pos[req_len - 1]) {
+            cand = next_cand;
+            continue;
+        }
+
+        // Diminishing returns early break: if we already have a long match (>= 32)
+        // and have searched deep into chain, candidates beyond 1 MiB rarely offset distance bits.
+        if (best.length >= 32 && cand_dist > 0x100000 && (max_chain - chain) >= 16) {
+            h1_reason = 4;
+            break;
+        }
+
         size_t len = 0;
-        size_t cand_dist = static_cast<size_t>(pos - static_cast<core::uint64>(cand));
         if (limit >= 4) {
             core::uint32 c4;
             std::memcpy(&c4, buf_cand, 4);
@@ -1271,13 +1323,10 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
             len = match_length(pos, static_cast<core::uint64>(cand), limit);
         }
 
-        // Wire-legal floor: a match must have len >= inc + 2
-        if (best.length > 0) {
-            core::uint32 inc = length_increment(cand_dist);
-            if (len < static_cast<size_t>(inc) + 2) {
-                cand = next_cand;
-                continue;
-            }
+        // Wire-legal admission floor: len >= inc + min_match_
+        if (len < min_legal_len) {
+            cand = next_cand;
+            continue;
         }
 
         if (len > best.length) {
