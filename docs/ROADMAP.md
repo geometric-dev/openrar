@@ -29,6 +29,7 @@
 | **v1.56** | ✅ **SHIPPED** | Cost-aware forward-arrival DAG parser & symbol arbiter (Pillar 1) | Medium | Shannon entropy bit costs, 0% zero-run regression | Shipped v1.56.0. 16-byte arrival graph, fixed price model, wire floors |
 | **v1.57** | ✅ **SHIPPED** | Forward-arrival parser throughput optimization (fast literal bypass) | Low | Incompressible throughput >= 15 MB/s, 100% bit-exact bitstream invariance | Shipped v1.57.0. O(1) uncontested literal bypass, >7x random speedup, 49/49 ctest |
 | **v1.58** | ✅ **SHIPPED** | Modern SIMD vector pipelines & hardware-accelerated BLAKE2sp (Pillar 2) | Low | 100% RFC 7693 KAT bit-exactness, OPT-E01 TU segregation | Shipped v1.58.0. AVX-512 16-lane (32 registers), NEON dual 4-way, unified multi-ISA dispatch, bench integration |
+| **v1.59** | ✅ **SHIPPED** | Distance-costed hash-chain pruning & rep-code horizon expansion (Pillar 1 Completion) | Medium | Slot 257 horizon propagation, distance-band hurdle, A-5 wire admission floor | Shipped v1.59.0. Slot 257 multi-hop DP, distance-cost hurdle, 5.532 text ratio, 49/49 ctest |
 
 **Milestone Scorecard:** Modern Arc Fully Delivered (10/10, 100%). Packaging & Assurance Arcs (v1.53 – v1.55) Completed. Next: v2.0 Architecture Arc.
 
