@@ -225,12 +225,22 @@ AccelerationReport describe_acceleration() {
         else if (f.sse2)
             r.tags.push_back("SSE2 LZ");
     }
+#if defined(OPENRAR_HAS_AVX512_KERNEL)
+    if (f.avx512f)
+        r.tags.push_back("AVX-512 BLAKE2sp");
+    else
+#endif
+        if (f.avx2)
+        r.tags.push_back("AVX2 BLAKE2sp");
     if (f.aes_ni) r.tags.push_back("AES-NI");
     if (f.sha_ni) r.tags.push_back("SHA-NI");
     if (f.pclmulqdq) r.tags.push_back("PCLMUL CRC");
 #elif defined(__aarch64__) || defined(_M_ARM64)
     const CpuFeatures& f = get_cpu_features();
-    if (f.neon) r.tags.push_back("NEON LZ");
+    if (f.neon) {
+        r.tags.push_back("NEON LZ");
+        r.tags.push_back("NEON BLAKE2sp");
+    }
     if (f.arm_aes) r.tags.push_back("AES");
     if (f.arm_sha2) r.tags.push_back("SHA");
     if (f.arm_crc32) r.tags.push_back("CRC");

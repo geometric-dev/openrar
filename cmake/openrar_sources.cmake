@@ -38,6 +38,7 @@ set(OPENRAR_CORE_SOURCES
     src/compress/stream_decoder.cpp
     src/compress/parallel_compressor.cpp
     src/compress/arch/match_avx512.cpp
+    src/crypto/arch/blake2sp_avx512.cpp
     src/archive/archive_reader.cpp
     src/archive/archive_mutator.cpp
     src/archive/collision_detector.cpp

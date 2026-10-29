@@ -19,10 +19,12 @@ public:
 
     void reset();
     void update(const void* data, size_t size);
+    void update_scalar(const void* data, size_t size);
     void finish(void* out_digest);
 
     // Convenience one-shot function
     static void compute(const void* data, size_t size, void* out_digest);
+    static void compute_scalar(const void* data, size_t size, void* out_digest);
 
 private:
     struct Blake2sState {
@@ -42,6 +44,12 @@ private:
     // H-14: 8-way AVX2 bulk leaf update (x86-64 only; defined and called
     // only when the build has the kernel and the CPU reports AVX2).
     void update_bulk_avx2(const core::byte* in, size_t chunks);
+#if defined(OPENRAR_HAS_AVX512_KERNEL)
+    void update_bulk_avx512(const core::byte* in, size_t chunks);
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+    void update_bulk_neon(const core::byte* in, size_t chunks);
+#endif
 
     Blake2sState states_[PARALLELISM];
     Blake2sState root_state_;

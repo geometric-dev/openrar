@@ -1,7 +1,7 @@
 # 🗺️ OpenRAR Engineering Roadmap: v1.21 → v2.0 (Consolidated Master)
 
 **Status:** Sole roadmap of record  
-**Current Shipped Release:** v1.57.0 (2026-10-29)  
+**Current Shipped Release:** v1.58.0 (2026-10-29)  
 **Active Milestone:** Complete — Modern Arc Fully Shipped (10/10, 100%) & Packaging Arc Underway  
 **Consolidates:** Foundational baseline (v1.21.x → v1.42.x), modern engineering arcs (v1.43 → v1.52 / v2.0 Charter), and distribution milestones (v1.53 Launchpad/deb).
 
@@ -28,6 +28,7 @@
 | **v1.55** | ✅ **SHIPPED** | Multi-ecosystem SDK packaging & distribution (NuGet .nupkg, Python wheel/sdist, NPM .tgz) | Low | Package bundles produced and attached to release tags | Shipped v1.55.0. .NET NuGet package (.nupkg), Python wheel/sdist (.whl, .tar.gz), WASM npm tarball (.tgz), Sigstore provenance attestations |
 | **v1.56** | ✅ **SHIPPED** | Cost-aware forward-arrival DAG parser & symbol arbiter (Pillar 1) | Medium | Shannon entropy bit costs, 0% zero-run regression | Shipped v1.56.0. 16-byte arrival graph, fixed price model, wire floors |
 | **v1.57** | ✅ **SHIPPED** | Forward-arrival parser throughput optimization (fast literal bypass) | Low | Incompressible throughput >= 15 MB/s, 100% bit-exact bitstream invariance | Shipped v1.57.0. O(1) uncontested literal bypass, >7x random speedup, 49/49 ctest |
+| **v1.58** | ✅ **SHIPPED** | Modern SIMD vector pipelines & hardware-accelerated BLAKE2sp (Pillar 2) | Low | 100% RFC 7693 KAT bit-exactness, OPT-E01 TU segregation | Shipped v1.58.0. AVX-512 16-lane (32 registers), NEON dual 4-way, unified multi-ISA dispatch, bench integration |
 
 **Milestone Scorecard:** Modern Arc Fully Delivered (10/10, 100%). Packaging & Assurance Arcs (v1.53 – v1.55) Completed. Next: v2.0 Architecture Arc.
 

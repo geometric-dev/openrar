@@ -46,6 +46,7 @@
 #include "../../src/compress/compressor50.hpp"
 #include "../../src/compress/solid_packer.hpp"
 #include "../../src/core/cpu.hpp"
+#include "../../src/crypto/blake2sp.hpp"
 #include "../../src/format/header_writer.hpp"
 #include "../../src/io/file_stream.hpp"
 #include "../../src/io/mapped_file.hpp"
@@ -104,6 +105,7 @@ struct BenchCorpora {
     std::filesystem::path dir;
     std::vector<core::byte> rs16_data;            // 64 KiB noise block
     std::vector<core::byte> match_buf;            // periodic match buffer
+    std::vector<core::byte> blake2sp_buf;         // 16 MiB blake2sp bulk corpus
     std::filesystem::path store_arc;              // 64 MiB stored, 1 entry
     std::filesystem::path m3_arc;                 // 32 MiB m3, 1 entry
     std::filesystem::path m3_src;                 // the m3 corpus file
@@ -129,6 +131,11 @@ struct BenchCorpora {
         match_buf.resize(kMatchBuf);
         for (size_t i = 0; i < kMatchBuf; ++i)
             match_buf[i] = static_cast<core::byte>((i % kMatchDist) ^ 0x5A);
+
+        // blake2sp buffer: 16 MiB pseudo-random block
+        blake2sp_buf.resize(16u * 1024 * 1024);
+        uint32_t b2st = 0xB259;
+        for (auto& b : blake2sp_buf) b = lcg_byte(b2st);
 
         // extract/store corpus: one 64 MiB mixed file (half compressible
         // phrase blocks, half noise), stored into a raw archive.
@@ -315,6 +322,23 @@ private:
 BenchCorpora g_corpora;
 
 // ── one-pass measurement bodies ──────────────────────────────────────────────
+
+double pass_blake2sp(bool dispatched) {
+    core::byte digest[32];
+    const auto t0 = std::chrono::steady_clock::now();
+    if (dispatched) {
+        crypto::Blake2sp::compute(g_corpora.blake2sp_buf.data(), g_corpora.blake2sp_buf.size(),
+                                  digest);
+    } else {
+        crypto::Blake2sp::compute_scalar(g_corpora.blake2sp_buf.data(),
+                                         g_corpora.blake2sp_buf.size(), digest);
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    g_sink += digest[0];
+    const double sec = std::chrono::duration<double>(t1 - t0).count();
+    const double bytes = static_cast<double>(g_corpora.blake2sp_buf.size());
+    return sec > 0 ? bytes / sec / (1024.0 * 1024.0) : 0.0;
+}
 
 double pass_rs16(bool dispatched) {
     recovery::ReedSolomon16 rs;
@@ -740,6 +764,23 @@ int main(int argc, char** argv) {
                       [](int) { return pass_rs16(false); }, true, ""});
     suites.push_back({"rs16_fold_dispatched", rs_kernel, "compute", "MiB/s",
                       [](int) { return pass_rs16(true); }, true, ""});
+
+    std::string b2_kernel = "scalar";
+#if defined(OPENRAR_HAS_X86_SIMD)
+#if defined(OPENRAR_HAS_AVX512_KERNEL)
+    if (cpu.avx512f)
+        b2_kernel = "AVX-512";
+    else
+#endif
+        if (cpu.avx2)
+        b2_kernel = "AVX2";
+#elif defined(__aarch64__) || defined(__ARM_NEON) || defined(_M_ARM64)
+    if (cpu.neon) b2_kernel = "NEON";
+#endif
+    suites.push_back({"blake2sp_scalar", "scalar", "compute", "MiB/s",
+                      [](int) { return pass_blake2sp(false); }, true, ""});
+    suites.push_back({"blake2sp_bulk", b2_kernel, "compute", "MiB/s",
+                      [](int) { return pass_blake2sp(true); }, true, ""});
 
     suites.push_back({"match_length_scalar", "scalar", "compute", "MiB/s",
                       [](int) { return pass_match(arch::match_length_scalar); }, true, ""});
