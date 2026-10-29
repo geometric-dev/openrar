@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Compressor50 Forward-Arrival Match-Finder & Parser Throughput:**
   - **Fast Uncontested Literal Bypass:** Implemented O(1) mathematical bypass in process_available() when neither fresh match nor repeat match meets the wire admission floor (min_match_ >= 3). Bypasses 16-node horizon graph evaluation when no candidate can legally start at offset 0.
-  - **Throughput Step-Change:** Boosted incompressible/high-entropy stream throughput by >7x (2.15 MB/s -> 15.47 MB/s in unit benchmarks, up to 27.7 MB/s in ench_target) and binary stream throughput by 1.7x (2.13 MB/s -> 3.58 MB/s in unit benchmarks, up to 4.3 MB/s in ench_target).
+  - **Throughput Step-Change:** Boosted incompressible/high-entropy stream throughput by >7x (2.15 MB/s -> 15.47 MB/s in unit benchmarks, up to 27.7 MB/s in bench_target) and binary stream throughput by 1.7x (2.13 MB/s -> 3.58 MB/s in unit benchmarks, up to 4.3 MB/s in bench_target).
   - **Suite Execution Acceleration:** Reduced compress_tests execution time from 30.9s to 7.3s (over 4x faster overall suite throughput).
   - **Bit-Exact Bitstream Invariance:** Preserves 100% bit-exact parity with v1.56.0 compressed streams across canonical corpora (Calgary, Silesia, text, binary, random, zero-runs). Zero regression on zero-byte runs (8 MiB zeros compresses to 422 bytes).
   - **Multi-Threaded Validation:** Verified full chunk-parallel scaling (parallel_compress_tests 10/10 passing, -mt=4 scaling cleanly across methods 1..5).
