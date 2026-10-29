@@ -42,3 +42,4 @@ For active project roadmaps and living specifications, refer back to the [OpenRA
 | **v1.56** | Cost-Aware Forward-Arrival DAG Parser & Symbol Arbiter | [Implementation Plan](v1.56.0-implementation-plan.md) |
 | **v1.57** | Forward-Arrival Throughput Optimization & Fast Literal Bypass | [Implementation Plan](v1.57.0-implementation-plan.md) · [Walkthrough](v1.57.0-walkthrough.md) |
 | **v1.58** | Modern SIMD Vector Pipelines & Hardware-Accelerated BLAKE2sp | [Implementation Plan](v1.58.0-implementation-plan.md) · [Walkthrough](v1.58.0-walkthrough.md) |
+| **v1.59** | Distance-Costed Hash-Chain Pruning & Rep-Code Horizon Expansion | [Implementation Plan](v1.59.0-implementation-plan.md) · [Walkthrough](v1.59.0-walkthrough.md) |

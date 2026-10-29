@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.59.0] - 2026-10-29
+
+### Added
+
+- **Distance-Costed Hash-Chain Pruning & Rep-Code Horizon Expansion (Pillar 1 Completion):**
+  - **Slot 257 Multi-Hop Horizon Propagation:** Extended Slot 257 (repeat last length at distance `OldDist[0]`) transitions throughout all forward-arrival lookahead horizon offsets $i \in [1, H_{eff}-1]$ under strict equality (`rep_len == arrival[i].last_len`), enabling optimal run-continuation chains across lookahead horizons with zero length/distance bit penalties.
+  - **Distance-Costed Chain Hurdle:** Introduced distance-band hurdle calculation in `Compressor50::find_match_impl`. A distant candidate must overcome the higher distance-band extra-bit overhead ($inc_{cand} - inc_{best}$) before proceeding to costly SIMD match comparisons.
+  - **Terminal-Byte Match Pre-Screening:** Fast scalar early-rejection check `buf_cand[req_len - 1] != buf_pos[req_len - 1]` rejecting chain candidates that cannot meet the hurdle before invoking SIMD vector match scanning.
+  - **Diminishing Returns Early Break:** Deep chain searches for candidates beyond 1 MiB are early-terminated once a high-quality match ($\ge 32$ bytes) is established and $\ge 16$ candidates have been evaluated, eliminating futile long-distance walks.
+  - **Strict Wire Admission Floor Enforcement:** Consolidated wire admission floor `len >= inc + min_match_` across `price_match()`, `evaluate_forward_arrival()`, and `find_match_impl()`, strictly preventing slot-0 length emissions across methods 1..5 in full compliance with Anti-Finding A-5 and the v1.33.1 T12 invariant.
+  - **Zero-Heap Allocation Invariant:** Retained 100% stack-allocated structures across hot compression and parsing paths.
+  - **Bitstream Verification & Invariant I-2 Re-Capture:** Updated `test_selection_reference` golden digests in `tests/unit/compress_tests.cpp` under `OPENRAR_REFCAP=1` with 100% round-trip decompression verification.
+  - **Comprehensive Quality Gate:** 49/49 CTest test suites passing (100% green, 82/82 compression unit tests).
+
 ## [1.58.0] - 2026-10-29
 
 ### Added
