@@ -2405,6 +2405,15 @@ int Compressor50::process_available(bool final) {
 
         // ── v1.56.0 Forward-Arrival Graph Parser & Symbol Arbiter ──────────
         if (forward_arrival_enable_) {
+            if (best.length < min_match_ && rep_best_len < min_match_) {
+                fail_count_++;
+                add_literal(buf_data_[static_cast<size_t>(cur_ - pos_base_)]);
+                insert_position(cur_);
+                cur_++;
+                input_since_block_++;
+                unhashed_pos_ = cur_;
+                continue;
+            }
             ForwardArrivalDecision dec = evaluate_forward_arrival(
                 cur_, best.length, best.candidate, rep_best_len, rep_idx, cur_max_lz);
 
