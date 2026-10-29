@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.60.0] - 2026-10-29
+
+### Added
+
+- **Parallel CDC Multi-Core Fingerprinting & Chunking Engine (Architecture Arc 2.4):**
+  - **Multi-File Parallel CDC Fingerprint Dispatch:** Upgraded the archive creation CDC fingerprint pass in \src/cli/main.cpp\ from a single-threaded loop to concurrent batch worker dispatch via \core::ThreadPool\ and \core::parallel_for\, fully utilizing multi-core hardware (\-mt=N\) when indexing collections of files.
+  - **Deterministic Index-Cap Linear Prefix Scan:** Implemented deterministic linear prefix scanning in natural queue order  \dots N-1$ on the main thread for \compress::cdc_fingerprint_cap()\ enforcement, guaranteeing 100% bit-exact bitstream invariance across thread counts (Invariant G-3).
+  - **Thread Pool Reuse in \CdcChunker::chunk_parallel\:** Extended \CdcChunker::chunk_parallel\ signature to optionally accept \core::ThreadPool* pool = nullptr\. Submitted phase 1 slicing jobs directly to the existing pool, avoiding thread creation and destruction syscall overhead.
+  - **Bounded Working Set & Zero Heap Allocations:** Maintained 1 MiB per-worker streaming buffers (\CdcStreamChunker\) with zero heap allocations on rolling Gear-hash and cut-set matching inner loops.
+  - **Comprehensive Quality Gate:** 49/49 CTest suites passed (100% green), all 27 interop gate tracks passed (118.60s), and anchor lint clean (0 violations).
+
 ## [1.59.0] - 2026-10-29
 
 ### Added

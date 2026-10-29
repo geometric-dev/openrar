@@ -6,6 +6,7 @@
 // rolling-hash locality property).
 
 #include "../../src/compress/cdc_chunker.hpp"
+#include "../../src/core/thread_pool.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -345,6 +346,23 @@ static void run_suite_body() {
         if (!openrar::test::last_run_was_filtered())
             std::cout
                 << "[PASS] candidate-cap overflow fallback and diagnostic reporting verified\n";
+    }
+
+    // 11. v1.60: ThreadPool reuse in chunk_parallel
+    {
+        std::string test_data = make_random_data(2 * 1024 * 1024, 12345);
+        std::vector<compress::CdcChunk> seq;
+        chunker.chunk(reinterpret_cast<const core::byte*>(test_data.data()), test_data.size(), seq);
+
+        core::ThreadPool pool(4);
+        for (int iter = 0; iter < 3; ++iter) {
+            std::vector<compress::CdcChunk> par;
+            chunker.chunk_parallel(reinterpret_cast<const core::byte*>(test_data.data()),
+                                   test_data.size(), par, 4, nullptr, &pool);
+            REQUIRE(exact_same_chunks(seq, par));
+        }
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] chunk_parallel pool reuse across multiple chunking calls\n";
     }
 
     if (!openrar::test::last_run_was_filtered()) std::cout << "All cdc_chunker_tests passed.\n";
