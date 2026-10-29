@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <memory>
 #include <thread>
 
 namespace openrar::compress {
@@ -118,19 +119,24 @@ void CdcStreamChunker::emit(std::vector<CdcChunk>& out) {
 }
 
 void CdcChunker::chunk_parallel(const core::byte* data, size_t size, std::vector<CdcChunk>& out,
-                                unsigned threads, CdcParallelDiag* diag) const {
+                                unsigned threads, CdcParallelDiag* diag,
+                                core::ThreadPool* pool) const {
     out.clear();
     if (!data || size == 0) return;
 
-    if (size < 2 * CDC_MAX_CHUNK || threads == 1) {
+    if (size < 2 * CDC_MAX_CHUNK || (threads == 1 && !pool)) {
         chunk(data, size, out);
         return;
     }
 
     if (threads == 0) {
-        threads = std::min<unsigned>(std::thread::hardware_concurrency(), 8u);
+        if (pool) {
+            threads = pool->worker_count();
+        } else {
+            threads = std::min<unsigned>(std::thread::hardware_concurrency(), 8u);
+        }
     }
-    if (threads <= 1) {
+    if (threads <= 1 && (!pool || pool->worker_count() <= 1)) {
         chunk(data, size, out);
         return;
     }
@@ -147,47 +153,50 @@ void CdcChunker::chunk_parallel(const core::byte* data, size_t size, std::vector
 
     // Phase 1: Parallel scanning with 63-byte window overlap
     {
-        core::ThreadPool pool(static_cast<unsigned>(num_slices));
-        for (size_t s = 0; s < num_slices; ++s) {
+        std::unique_ptr<core::ThreadPool> local_pool;
+        core::ThreadPool* active_pool = pool;
+        if (!active_pool) {
+            local_pool = std::make_unique<core::ThreadPool>(static_cast<unsigned>(num_slices));
+            active_pool = local_pool.get();
+        }
+
+        core::parallel_for(*active_pool, 0, num_slices, [&](size_t s) {
             size_t s_start = s * slice_size;
             size_t s_end = (s + 1 == num_slices) ? size : (s + 1) * slice_size;
             size_t s_len = s_end - s_start;
             size_t max_intervals = std::max<size_t>(s_len / 1024, 64);
 
-            pool.submit(
-                [this, data, s, s_start, s_end, max_intervals, &slice_candidates, &slice_overflow] {
-                    auto& intervals = slice_candidates[s];
-                    core::uint64 h = 0;
-                    size_t warmup_start = (s == 0 ? 0 : s_start - 63);
-                    for (size_t i = warmup_start; i < s_start; ++i) {
-                        h = (h << 1) + table_[static_cast<unsigned char>(data[i])];
-                    }
-                    const core::uint64 mask_strict = mask_strict_;
-                    const core::uint64 mask_light = mask_light_;
+            auto& intervals = slice_candidates[s];
+            core::uint64 h = 0;
+            size_t warmup_start = (s == 0 ? 0 : s_start - 63);
+            for (size_t i = warmup_start; i < s_start; ++i) {
+                h = (h << 1) + table_[static_cast<unsigned char>(data[i])];
+            }
+            const core::uint64 mask_strict = mask_strict_;
+            const core::uint64 mask_light = mask_light_;
 
-                    for (size_t i = s_start; i < s_end; ++i) {
-                        h = (h << 1) + table_[static_cast<unsigned char>(data[i])];
-                        bool is_strict = ((h & mask_strict) == 0);
-                        bool is_light = ((h & mask_light) == 0);
-                        if (is_strict || is_light) {
-                            core::uint8 flags =
-                                (is_strict ? MATCH_STRICT : 0) | (is_light ? MATCH_LIGHT : 0);
-                            if (!intervals.empty() &&
-                                intervals.back().start_off + intervals.back().count == i &&
-                                intervals.back().flags == flags) {
-                                ++intervals.back().count;
-                            } else {
-                                if (intervals.size() >= max_intervals) {
-                                    slice_overflow[s] = true;
-                                    intervals.clear();
-                                    break;
-                                }
-                                intervals.push_back({i, 1, flags});
-                            }
+            for (size_t i = s_start; i < s_end; ++i) {
+                h = (h << 1) + table_[static_cast<unsigned char>(data[i])];
+                bool is_strict = ((h & mask_strict) == 0);
+                bool is_light = ((h & mask_light) == 0);
+                if (is_strict || is_light) {
+                    core::uint8 flags =
+                        (is_strict ? MATCH_STRICT : 0) | (is_light ? MATCH_LIGHT : 0);
+                    if (!intervals.empty() &&
+                        intervals.back().start_off + intervals.back().count == i &&
+                        intervals.back().flags == flags) {
+                        ++intervals.back().count;
+                    } else {
+                        if (intervals.size() >= max_intervals) {
+                            slice_overflow[s] = true;
+                            intervals.clear();
+                            break;
                         }
+                        intervals.push_back({i, 1, flags});
                     }
-                });
-        }
+                }
+            }
+        });
     }
 
     bool any_overflow = false;

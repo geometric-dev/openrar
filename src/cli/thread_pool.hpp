@@ -8,6 +8,7 @@
 namespace openrar::cli {
 using core::ByteBudget;
 using core::hardware_thread_hint;
+using core::parallel_for;
 using core::ThreadPool;
 } // namespace openrar::cli
 

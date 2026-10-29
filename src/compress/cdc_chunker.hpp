@@ -7,6 +7,10 @@
 #include <string>
 #include <vector>
 
+namespace openrar::core {
+class ThreadPool;
+}
+
 namespace openrar::compress {
 
 // ── Content-defined chunking (v1.26 plan §1, Gate-0-cleared Design A) ───────
@@ -54,8 +58,10 @@ public:
     // Phase 2: serial candidate-then-stitch replay of cut rules.
     // Guaranteed 100% byte-for-byte, offset-for-offset, hash-for-hash identical
     // to sequential chunk() (Invariant G-3, cdc_parallel_cutset_equals_sequential).
+    // An optional existing ThreadPool may be passed via `pool` to avoid pool creation overhead.
     void chunk_parallel(const core::byte* data, size_t size, std::vector<CdcChunk>& out,
-                        unsigned threads = 0, struct CdcParallelDiag* diag = nullptr) const;
+                        unsigned threads = 0, struct CdcParallelDiag* diag = nullptr,
+                        core::ThreadPool* pool = nullptr) const;
 
     // 64-bit Gear hash of an arbitrary byte range (table-driven, no seed).
     core::uint64 hash_range(const core::byte* data, size_t n) const;

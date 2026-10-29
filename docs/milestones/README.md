@@ -43,3 +43,4 @@ For active project roadmaps and living specifications, refer back to the [OpenRA
 | **v1.57** | Forward-Arrival Throughput Optimization & Fast Literal Bypass | [Implementation Plan](v1.57.0-implementation-plan.md) · [Walkthrough](v1.57.0-walkthrough.md) |
 | **v1.58** | Modern SIMD Vector Pipelines & Hardware-Accelerated BLAKE2sp | [Implementation Plan](v1.58.0-implementation-plan.md) · [Walkthrough](v1.58.0-walkthrough.md) |
 | **v1.59** | Distance-Costed Hash-Chain Pruning & Rep-Code Horizon Expansion | [Implementation Plan](v1.59.0-implementation-plan.md) · [Walkthrough](v1.59.0-walkthrough.md) |
+| **v1.60** | Parallel CDC Multi-Core Fingerprinting & Chunking Engine | [Implementation Plan](v1.60.0-implementation-plan.md) · [Walkthrough](v1.60.0-walkthrough.md) |
