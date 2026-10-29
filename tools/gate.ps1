@@ -1,13 +1,26 @@
-# tools/gate.ps1 - build + ctest + interop gate in a single invocation.
+# tools/gate.ps1 - pre-flight lints + build + ctest + interop gate in a single invocation.
 #
-# Purpose: reduce per-check permission prompts by folding the three commands
-# I run after every fix into one script. Exits non-zero on the first failure
+# Purpose: reduce per-check permission prompts by folding the core validation
+# commands after every fix into one script. Exits non-zero on the first failure
 # so callers can rely on the exit code.
 param(
-    [switch]$SkipInterop
+    [switch]$SkipInterop,
+    [switch]$SkipLint
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+
+# 0. Pre-flight Lints ---------------------------------------------------------
+if (-not $SkipLint) {
+    Write-Host '=== pre-flight lints ===' -ForegroundColor Cyan
+    python "$root\tools\bump_version.py" --check
+    if ($LASTEXITCODE -ne 0) { Write-Host 'VERSION CHECK FAILED' -ForegroundColor Red; exit 1 }
+    python "$root\tools\anchor_lint.py"
+    if ($LASTEXITCODE -ne 0) { Write-Host 'ANCHOR LINT FAILED' -ForegroundColor Red; exit 1 }
+    python "$root\tools\layer_check.py"
+    if ($LASTEXITCODE -ne 0) { Write-Host 'LAYER CHECK FAILED' -ForegroundColor Red; exit 1 }
+    Write-Host 'PRE-FLIGHT LINTS OK' -ForegroundColor Green
+}
 
 # 1. Build ---------------------------------------------------------------------
 Write-Host '=== build (Release) ===' -ForegroundColor Cyan

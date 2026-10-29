@@ -113,9 +113,7 @@ void test_cli_lifecycle() {
     std::filesystem::remove(f1);
 
     // Create a file to move
-    {
-        std::ofstream(f1) << "OPENRAR CLI TEST SUITE ITEM";
-    }
+    { std::ofstream(f1) << "OPENRAR CLI TEST SUITE ITEM"; }
     REQUIRE(std::filesystem::exists(f1));
 
     std::string exe = get_cli_path();
@@ -412,9 +410,7 @@ void test_cli_overwrite_modes() {
 
     // The archive is built via the mutator so the stored entry name is exactly
     // "cli_ov_src.txt", independent of CLI path-normalization rules.
-    {
-        std::ofstream(src) << "VERSION-ONE";
-    }
+    { std::ofstream(src) << "VERSION-ONE"; }
     REQUIRE(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "cli_ov_src.txt"));
 
     auto extract = [&](const char* extra_switch) {
@@ -432,9 +428,7 @@ void test_cli_overwrite_modes() {
     REQUIRE(read_target() == "VERSION-ONE");
 
     // Simulate a locally-edited file on disk, then check each mode.
-    {
-        std::ofstream(target, std::ios::binary) << "LOCAL-EDIT";
-    }
+    { std::ofstream(target, std::ios::binary) << "LOCAL-EDIT"; }
 
     // -o-: never overwrite — the on-disk edit must survive.
     res = extract("-o-");
@@ -448,9 +442,7 @@ void test_cli_overwrite_modes() {
 
     // Default with non-interactive stdin: auto-Yes (backward-compatible with
     // the pre-query behavior every scripted caller relies on).
-    {
-        std::ofstream(target, std::ios::binary) << "LOCAL-EDIT";
-    }
+    { std::ofstream(target, std::ios::binary) << "LOCAL-EDIT"; }
     res = extract("");
     REQUIRE(res == 0);
     REQUIRE(read_target() == "VERSION-ONE");
@@ -1486,12 +1478,8 @@ static void test_cdc_degenerate_inputs() {
     write_noise_file(big, 100 * 1024, 60);
     write_noise_file(t1, 1024, 61); // distinct 1 KiB files (no edges)
     write_noise_file(t2, 1024, 62);
-    {
-        std::ofstream(e1, std::ios::binary);
-    }
-    {
-        std::ofstream(e2, std::ios::binary);
-    }
+    { std::ofstream(e1, std::ios::binary); }
+    { std::ofstream(e2, std::ios::binary); }
 
     fs::path arc = temp_dir / "degenerate.rar";
     std::string exe = get_cli_path();
