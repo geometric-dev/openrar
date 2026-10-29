@@ -1,6 +1,15 @@
 #include "blake2sp.hpp"
+#include "../core/cpu.hpp"
 #include <algorithm>
 #include <cstring>
+
+#if defined(OPENRAR_HAS_AVX512_KERNEL)
+#include "arch/blake2sp_avx512.hpp"
+#endif
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include "arch/blake2sp_neon.hpp"
+#endif
 
 // H-14: 8-way AVX2 leaf kernel, x86-64 only, selected at runtime.
 #if (defined(_MSC_VER) && (defined(_M_X64) || defined(_M_AMD64))) ||                               \
@@ -321,6 +330,82 @@ OPENRAR_AVX2_TARGET void Blake2sp::update_bulk_avx2(const core::byte* in, size_t
 }
 #endif // OPENRAR_BLAKE2SP_AVX2
 
+#if defined(OPENRAR_HAS_AVX512_KERNEL)
+void Blake2sp::update_bulk_avx512(const core::byte* in, size_t chunks) {
+    core::uint32 h[8][8];
+    for (int l = 0; l < 8; ++l) {
+        for (int i = 0; i < 8; ++i) h[l][i] = states_[l].h_[i];
+    }
+    core::uint32 t0 = states_[0].t_[0], t1 = states_[0].t_[1];
+    const core::byte* pending0[8];
+    const core::byte* pending1[8];
+    for (int l = 0; l < 8; ++l) {
+        pending0[l] = states_[l].buf_;
+        pending1[l] = states_[l].buf_ + BLOCK_SIZE;
+    }
+    arch::blake2sp_update_bulk_avx512(h, t0, t1, pending0, pending1, in, chunks);
+
+    const core::byte* last2 = in + (chunks - 2) * PARALLELISM * BLOCK_SIZE;
+    const core::byte* last1 = in + (chunks - 1) * PARALLELISM * BLOCK_SIZE;
+    for (int l = 0; l < 8; ++l) {
+        Blake2sState& s = states_[l];
+        for (int i = 0; i < 8; ++i) s.h_[i] = h[l][i];
+        s.t_[0] = t0;
+        s.t_[1] = t1;
+        std::memcpy(s.buf_, last2 + static_cast<size_t>(l) * BLOCK_SIZE, BLOCK_SIZE);
+        std::memcpy(s.buf_ + BLOCK_SIZE, last1 + static_cast<size_t>(l) * BLOCK_SIZE, BLOCK_SIZE);
+        s.buflen_ = 2 * BLOCK_SIZE;
+    }
+}
+#endif
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+void Blake2sp::update_bulk_neon(const core::byte* in, size_t chunks) {
+    uint32x4_t hA[8], hB[8];
+    alignas(16) core::uint32 lanesA[8][4], lanesB[8][4];
+    for (int i = 0; i < 8; ++i) {
+        for (int l = 0; l < 4; ++l) lanesA[i][l] = states_[l].h_[i];
+        for (int l = 0; l < 4; ++l) lanesB[i][l] = states_[l + 4].h_[i];
+        hA[i] = vld1q_u32(lanesA[i]);
+        hB[i] = vld1q_u32(lanesB[i]);
+    }
+
+    core::uint32 t0 = states_[0].t_[0], t1 = states_[0].t_[1];
+    const core::byte* rows[8];
+    for (int l = 0; l < 8; ++l) rows[l] = states_[l].buf_;
+    arch::step8_neon(hA, hB, rows, t0, t1, BLOCK_SIZE); // pending[0]
+    for (int l = 0; l < 8; ++l) rows[l] = states_[l].buf_ + BLOCK_SIZE;
+    arch::step8_neon(hA, hB, rows, t0, t1, BLOCK_SIZE); // pending[1]
+
+    for (size_t c = 0; c + 2 < chunks; ++c) {
+        const core::byte* base = in + c * PARALLELISM * BLOCK_SIZE;
+        for (int l = 0; l < 8; ++l) rows[l] = base + static_cast<size_t>(l) * BLOCK_SIZE;
+        arch::step8_neon(hA, hB, rows, t0, t1, BLOCK_SIZE);
+    }
+
+    for (int i = 0; i < 8; ++i) {
+        vst1q_u32(lanesA[i], hA[i]);
+        vst1q_u32(lanesB[i], hB[i]);
+    }
+
+    const core::byte* last2 = in + (chunks - 2) * PARALLELISM * BLOCK_SIZE;
+    const core::byte* last1 = in + (chunks - 1) * PARALLELISM * BLOCK_SIZE;
+    for (int l = 0; l < 8; ++l) {
+        Blake2sState& s = states_[l];
+        if (l < 4) {
+            for (int i = 0; i < 8; ++i) s.h_[i] = lanesA[i][l];
+        } else {
+            for (int i = 0; i < 8; ++i) s.h_[i] = lanesB[i][l - 4];
+        }
+        s.t_[0] = t0;
+        s.t_[1] = t1;
+        std::memcpy(s.buf_, last2 + static_cast<size_t>(l) * BLOCK_SIZE, BLOCK_SIZE);
+        std::memcpy(s.buf_ + BLOCK_SIZE, last1 + static_cast<size_t>(l) * BLOCK_SIZE, BLOCK_SIZE);
+        s.buflen_ = 2 * BLOCK_SIZE;
+    }
+}
+#endif
+
 void Blake2sp::update(const void* data, size_t size) {
     const auto* in = static_cast<const core::byte*>(data);
     size_t left = buflen_;
@@ -336,18 +421,37 @@ void Blake2sp::update(const void* data, size_t size) {
         left = 0;
     }
 
-#if defined(OPENRAR_BLAKE2SP_AVX2)
-    // H-14: once the leaves reach their steady state (two pending blocks),
-    // batches of >= 2 chunks run 8-way. Smaller inputs and the warm-up use
-    // the scalar per-leaf path below, which yields identical state.
-    if (size >= 2 * sizeof(buf_) && states_[0].buflen_ == 2 * BLOCK_SIZE &&
-        core::get_cpu_features().avx2) {
-        const size_t chunks = size / sizeof(buf_);
-        update_bulk_avx2(in, chunks);
-        in += chunks * sizeof(buf_);
-        size -= chunks * sizeof(buf_);
-    }
+    // Multi-ISA Vector Dispatch: once the leaves reach steady state (two pending blocks),
+    // batches of >= 2 chunks run via the fastest supported vector pipeline.
+    if (size >= 2 * sizeof(buf_) && states_[0].buflen_ == 2 * BLOCK_SIZE) {
+#if defined(OPENRAR_HAS_AVX512_KERNEL)
+        if (core::get_cpu_features().avx512f) {
+            const size_t chunks = size / sizeof(buf_);
+            update_bulk_avx512(in, chunks);
+            in += chunks * sizeof(buf_);
+            size -= chunks * sizeof(buf_);
+        } else
 #endif
+#if defined(OPENRAR_BLAKE2SP_AVX2)
+            if (core::get_cpu_features().avx2) {
+            const size_t chunks = size / sizeof(buf_);
+            update_bulk_avx2(in, chunks);
+            in += chunks * sizeof(buf_);
+            size -= chunks * sizeof(buf_);
+        } else
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+            if (core::get_cpu_features().neon) {
+            const size_t chunks = size / sizeof(buf_);
+            update_bulk_neon(in, chunks);
+            in += chunks * sizeof(buf_);
+            size -= chunks * sizeof(buf_);
+        } else
+#endif
+        {
+            // Scalar fallback
+        }
+    }
 
     while (size >= sizeof(buf_)) {
         for (size_t i = 0; i < PARALLELISM; ++i) {
@@ -384,9 +488,44 @@ void Blake2sp::finish(void* out_digest) {
     root_state_.finish(static_cast<core::byte*>(out_digest));
 }
 
+void Blake2sp::update_scalar(const void* data, size_t size) {
+    const auto* in = static_cast<const core::byte*>(data);
+    size_t left = buflen_;
+    size_t fill = sizeof(buf_) - left;
+
+    if (left > 0 && size >= fill) {
+        std::memcpy(buf_ + left, in, fill);
+        for (size_t i = 0; i < PARALLELISM; ++i) {
+            states_[i].update(buf_ + i * BLOCK_SIZE, BLOCK_SIZE);
+        }
+        in += fill;
+        size -= fill;
+        left = 0;
+    }
+
+    while (size >= sizeof(buf_)) {
+        for (size_t i = 0; i < PARALLELISM; ++i) {
+            states_[i].update(in + i * BLOCK_SIZE, BLOCK_SIZE);
+        }
+        in += sizeof(buf_);
+        size -= sizeof(buf_);
+    }
+
+    if (size > 0) {
+        std::memcpy(buf_ + left, in, size);
+    }
+    buflen_ = left + size;
+}
+
 void Blake2sp::compute(const void* data, size_t size, void* out_digest) {
     Blake2sp hasher;
     hasher.update(data, size);
+    hasher.finish(out_digest);
+}
+
+void Blake2sp::compute_scalar(const void* data, size_t size, void* out_digest) {
+    Blake2sp hasher;
+    hasher.update_scalar(data, size);
     hasher.finish(out_digest);
 }
 

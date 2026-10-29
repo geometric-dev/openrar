@@ -57,7 +57,7 @@ if(NOT EMSCRIPTEN)
         # cross legs: /arch:AVX512 there is meaningless and immintrin.h is
         # x86-family only (v1.22.0 CI fix).
         set(OPENRAR_AVX512_KERNEL ON)
-        set_source_files_properties(src/compress/arch/match_avx512.cpp src/recovery/rs16_gfni.cpp
+        set_source_files_properties(src/compress/arch/match_avx512.cpp src/recovery/rs16_gfni.cpp src/crypto/arch/blake2sp_avx512.cpp
             PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
     elseif((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)")
