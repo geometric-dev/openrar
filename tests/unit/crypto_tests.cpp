@@ -405,20 +405,28 @@ void test_blake2sp_kat() {
 // (< 1 KiB), the first bulk batch, odd tails, and a multi-batch stream whose
 // split lands mid-chunk.
 void test_blake2sp_bulk_matches_scalar() {
-    std::vector<core::byte> data(300000);
+    std::vector<core::byte> data(4 * 1024 * 1024);
     core::uint32 x = 0x12345678u;
     for (auto& b : data) {
         x = x * 1664525u + 1013904223u;
         b = static_cast<core::byte>(x >> 24);
     }
-    const size_t sizes[] = {0, 1, 511, 512, 1023, 1024, 1535, 1536, 2048, 4097, 65536, 300000};
+    const size_t sizes[] = {0,         1,           7,      511,     512,          1023,   1024,
+                            1024 + 13, 1535,        1536,   2048,    2048 + 77,    4096,   4097,
+                            65536,     65536 + 127, 300000, 1048576, 2097152 + 33, 4194304};
     for (size_t n : sizes) {
-        core::byte bulk[32], scalar[32], split[32];
+        core::byte bulk[32], scalar[32], compute_sc[32], split[32];
         crypto::Blake2sp::compute(data.data(), n, bulk);
-        crypto::Blake2sp s;
-        for (size_t i = 0; i < n; ++i) s.update(data.data() + i, 1);
-        s.finish(scalar);
-        REQUIRE(std::memcmp(bulk, scalar, 32) == 0);
+        crypto::Blake2sp::compute_scalar(data.data(), n, compute_sc);
+        REQUIRE(std::memcmp(bulk, compute_sc, 32) == 0);
+
+        if (n <= 300000) {
+            crypto::Blake2sp s;
+            for (size_t i = 0; i < n; ++i) s.update(data.data() + i, 1);
+            s.finish(scalar);
+            REQUIRE(std::memcmp(bulk, scalar, 32) == 0);
+        }
+
         crypto::Blake2sp p; // warm-up, bulk, then a second bulk batch
         const size_t a = n / 3, b = (2 * n) / 3;
         p.update(data.data(), a);
