@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.58.0] - 2026-10-29
+
+### Added
+
+- **Hardware-Accelerated BLAKE2sp SIMD Pipelines (Pillar 2 of v2.0 Charter):**
+  - **AVX-512 16-Lane Vector Pipeline:** Created segregated translation unit `src/crypto/arch/blake2sp_avx512.cpp` compiled strictly with `/arch:AVX512` on MSVC x64 and AVX-512 target attributes on GCC/Clang, fulfilling OPT-E01 by preventing AVX-512 instruction leakage into baseline codegen. Employs 32 EVEX vector registers with 0 stack spills across all 10 mixing rounds and single-cycle native rotations (`_mm256_ror_epi32`).
+  - **ARM NEON Dual-Pipeline Vector Engine:** Created `src/crypto/arch/blake2sp_neon.hpp` implementing dual quadword pipelines computing leaves 0..3 and 4..7 in parallel. Optimized with single-cycle `vrev32q_u16` 16-bit right rotation, 2-instruction shift-insert sequences (`vsliq_n_u32`/`vshrq_n_u32`), and 4x4 matrix transposition via `vtrnq_u32` + `vcombine_u32`.
+  - **Multi-ISA Dynamic Runtime Dispatch:** Integrated automatic dispatch in `crypto::Blake2sp::update` selecting AVX-512, AVX2, NEON, or portable scalar fallback based on runtime CPU feature detection (`core::get_cpu_features()`), maintaining zero heap allocations on all hashing hot paths.
+  - **Acceleration Visibility & Reporting:** Disclosed `"AVX-512 BLAKE2sp"`, `"AVX2 BLAKE2sp"`, or `"NEON BLAKE2sp"` in `core::describe_acceleration()` and CLI startup banner.
+  - **Benchmark Engine Integration:** Added `blake2sp_bulk` and `blake2sp_scalar` suites to `openrar_bench` measuring throughput and spread against a 16 MiB corpus.
+  - **Conformance & Verification:** 100% bit-exact conformance to RFC 7693 KATs. Comprehensive differential testing across buffer sizes from 0B to 4 MiB and unaligned streaming splits. 49/49 CTest test suites passing (100% green).
+
 ## [1.57.0] - 2026-10-29
 
 ### Optimized
