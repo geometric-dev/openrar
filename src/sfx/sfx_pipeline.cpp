@@ -3,6 +3,7 @@
 #include "process_exec.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 namespace fs = std::filesystem;
@@ -180,6 +181,23 @@ std::string resolve_sfx_destination(const SfxConfig& cfg, const PipelineOptions&
                               "Path= outside the user profile refused: " + cfg.path});
             return "";
         }
+
+        // Sensitive persistence directory check (CRIT-03)
+        static const char* const kDeniedSegments[] = {"start menu", "startup", "autostart",
+                                                      ".ssh",       ".bashrc", ".bash_profile",
+                                                      ".profile",   ".zshrc",  ".config/autostart"};
+        std::string lower_abs = abs;
+        std::transform(lower_abs.begin(), lower_abs.end(), lower_abs.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        for (const char* denied : kDeniedSegments) {
+            if (lower_abs.find(denied) != std::string::npos) {
+                report.push_back(
+                    {"path", "refused-sensitive-dir",
+                     "Path= targeting sensitive persistence directory refused: " + cfg.path});
+                return "";
+            }
+        }
+
         std::error_code mk_ec;
         fs::create_directories(abs, mk_ec);
         if (mk_ec) {
