@@ -100,7 +100,9 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
         // remainder, so decrypt the first block, recover the header size and
         // only then read the rest of the ciphertext.
         core::byte iv[16];
-        if (src.read(iv, sizeof(iv)) != sizeof(iv)) return HeaderResult::Eof;
+        size_t iv_read = src.read(iv, sizeof(iv));
+        if (iv_read == 0) return HeaderResult::Eof;
+        if (iv_read != sizeof(iv)) return HeaderResult::Error;
 
         // M-09: fixed-size scratch on the stack and a single heap buffer
         // (out_body) for the rest - this path used to allocate four vectors
@@ -173,9 +175,9 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
 
     // Read 4-byte CRC32
     core::byte crc_buf[4];
-    if (src.read(crc_buf, 4) != 4) {
-        return HeaderResult::Eof;
-    }
+    size_t crc_read = src.read(crc_buf, 4);
+    if (crc_read == 0) return HeaderResult::Eof;
+    if (crc_read != 4) return HeaderResult::Error;
     core::uint32 expected_crc = core::read_le32(crc_buf);
 
     // Read body_size vint. One read call for a 10-byte prefix instead of one
@@ -188,7 +190,7 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
     core::uint64 body_size = 0;
     {
         size_t got = src.read(size_vint_bytes, sizeof(size_vint_bytes));
-        if (got == 0) return HeaderResult::Eof;
+        if (got == 0) return HeaderResult::Error;
         for (size_t i = 0; i < got; ++i) {
             if ((size_vint_bytes[i] & 0x80) == 0) {
                 vint_len = i + 1;
