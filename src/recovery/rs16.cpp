@@ -129,20 +129,13 @@ const GfniCalib& gfni_calib() {
         if (c.valid) {
             // Composite check: full 64-byte fold through the measured encoding
             // vs the scalar table reference, for a non-trivial coefficient.
+            // AND-ing all three variants (full, lo-only, hi-only) into the gate
+            // validates both paths independently and prevents per-word cancellation.
             constexpr core::uint32 COEFF = 0x1234;
-            alignas(64) core::byte ref_ecc[64] = {};
             core::uint16 mul_lo[256], mul_hi[256];
             for (core::uint32 b = 0; b < 256; ++b) {
                 mul_lo[b] = static_cast<core::uint16>(rs.gf_mul(COEFF, b));
                 mul_hi[b] = static_cast<core::uint16>(rs.gf_mul(COEFF, b << 8));
-            }
-            for (core::uint32 w = 0; w < 32; ++w) {
-                const core::uint16 word =
-                    static_cast<core::uint16>((w * 251 + 7) | ((w * 31 + 3) << 8));
-                const core::uint16 folded =
-                    static_cast<core::uint16>(mul_lo[word & 0xFF] ^ mul_hi[(word >> 8) & 0xFF]);
-                ref_ecc[2 * w] = static_cast<core::byte>(folded & 0xFF);
-                ref_ecc[2 * w + 1] = static_cast<core::byte>((folded >> 8) & 0xFF);
             }
             const core::uint32 k1 = rs.gf_mul(COEFF, 0x100u);
             core::uint64 m[4];
@@ -155,23 +148,33 @@ const GfniCalib& gfni_calib() {
             // hi-byte path (m2/m3 + odd de-interleave), so a calibration
             // that validates one half but not the other is diagnosable.
             const bool diag = std::getenv("OPENRAR_GFNI_DIAG") != nullptr;
+            bool all_variants_ok = true;
             for (int variant = 0; variant < 3 && c.valid; ++variant) {
                 alignas(64) core::byte blk[64] = {};
+                alignas(64) core::byte exp_ecc[64] = {};
                 for (core::uint32 w = 0; w < 32; ++w) {
                     const core::uint16 word =
                         static_cast<core::uint16>((w * 251 + 7) | ((w * 31 + 3) << 8));
+                    core::uint16 folded = 0;
                     if (variant == 0) { // full
                         blk[2 * w] = static_cast<core::byte>(word & 0xFF);
                         blk[2 * w + 1] = static_cast<core::byte>((word >> 8) & 0xFF);
+                        folded = static_cast<core::uint16>(mul_lo[word & 0xFF] ^
+                                                           mul_hi[(word >> 8) & 0xFF]);
                     } else if (variant == 1) { // lo bytes only (hi = 0)
                         blk[2 * w] = static_cast<core::byte>(word & 0xFF);
+                        folded = mul_lo[word & 0xFF];
                     } else { // hi bytes only (lo = 0)
                         blk[2 * w + 1] = static_cast<core::byte>((word >> 8) & 0xFF);
+                        folded = mul_hi[(word >> 8) & 0xFF];
                     }
+                    exp_ecc[2 * w] = static_cast<core::byte>(folded & 0xFF);
+                    exp_ecc[2 * w + 1] = static_cast<core::byte>((folded >> 8) & 0xFF);
                 }
                 alignas(64) core::byte ecc[64] = {};
                 rs16_fold_gfni(blk, ecc, sizeof(ecc), m);
-                const bool ok = std::memcmp(ecc, ref_ecc, sizeof(ecc)) == 0;
+                const bool ok = std::memcmp(ecc, exp_ecc, sizeof(ecc)) == 0;
+                if (!ok) all_variants_ok = false;
                 if (diag) {
                     std::cout << "[gfni-diag] composite variant=" << variant
                               << (variant == 0   ? " (full)"
@@ -179,9 +182,9 @@ const GfniCalib& gfni_calib() {
                                                  : " (hi-only)")
                               << " ok=" << ok << "\n";
                     for (int w = 0; w < 4; ++w) {
-                        std::cout << "[gfni-diag]   w" << w << " ref=0x" << std::hex
-                                  << static_cast<unsigned>(ref_ecc[2 * w]) << std::hex
-                                  << static_cast<unsigned>(ref_ecc[2 * w + 1]) << std::dec
+                        std::cout << "[gfni-diag]   w" << w << " exp=0x" << std::hex
+                                  << static_cast<unsigned>(exp_ecc[2 * w]) << std::hex
+                                  << static_cast<unsigned>(exp_ecc[2 * w + 1]) << std::dec
                                   << " got=0x" << std::hex << static_cast<unsigned>(ecc[2 * w])
                                   << std::hex << static_cast<unsigned>(ecc[2 * w + 1]) << std::dec
                                   << " in=0x" << std::hex << static_cast<unsigned>(blk[2 * w])
@@ -189,8 +192,8 @@ const GfniCalib& gfni_calib() {
                                   << "\n";
                     }
                 }
-                if (variant == 0) c.composite_ok = ok;
             }
+            c.composite_ok = all_variants_ok;
         }
         return c;
     }();
@@ -502,33 +505,40 @@ bool ReedSolomon16::init(core::uint32 data_count, core::uint32 rec_count,
         return false;
     }
 
-    decoding_ = (valid_flags != nullptr);
+    const bool decoding = (valid_flags != nullptr);
 
-    if (decoding_) {
-        valid_flags_.assign(valid_flags, valid_flags + nd_ + nr_);
-        for (core::uint32 i = 0; i < nd_; ++i) {
-            if (!valid_flags_[i]) ne_++;
+    try {
+        if (decoding) {
+            valid_flags_.assign(valid_flags, valid_flags + nd_ + nr_);
+            for (core::uint32 i = 0; i < nd_; ++i) {
+                if (!valid_flags_[i]) ne_++;
+            }
+
+            core::uint32 valid_ecc = 0;
+            for (core::uint32 i = nd_; i < nd_ + nr_; ++i) {
+                if (valid_flags_[i]) valid_ecc++;
+            }
+
+            if (ne_ > valid_ecc || ne_ == 0 || valid_ecc == 0) {
+                return false; // Not recoverable
+            }
+
+            if (static_cast<size_t>(ne_) > SIZE_MAX / static_cast<size_t>(nd_)) {
+                return false;
+            }
+            mx_.resize(static_cast<size_t>(ne_) * nd_);
+            derive_recovery_coefficients();
+        } else {
+            if (static_cast<size_t>(nr_) > SIZE_MAX / static_cast<size_t>(nd_)) {
+                return false;
+            }
+            mx_.resize(static_cast<size_t>(nr_) * nd_);
+            fill_parity_coefficients();
         }
-
-        core::uint32 valid_ecc = 0;
-        for (core::uint32 i = nd_; i < nd_ + nr_; ++i) {
-            if (valid_flags_[i]) valid_ecc++;
-        }
-
-        if (ne_ > valid_ecc || ne_ == 0 || valid_ecc == 0) {
-            return false; // Not recoverable
-        }
-
-        // B10-class sizing note: ne_/nd_/nr_ are bounded by init()'s
-        // nd_ + nr_ <= 65535 check, so these products stay far below 2^32
-        // elements — but they ARE archive-controlled (crafted .rev/RR
-        // headers). If that bound is ever loosened, route the product
-        // through an overflow-checked helper first.
-        mx_.resize(static_cast<size_t>(ne_) * nd_);
-        derive_recovery_coefficients();
-    } else {
-        mx_.resize(static_cast<size_t>(nr_) * nd_);
-        fill_parity_coefficients();
+    } catch (const std::bad_alloc&) {
+        mx_.clear();
+        valid_flags_.clear();
+        return false;
     }
 
     return true;

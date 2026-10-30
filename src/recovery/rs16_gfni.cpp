@@ -9,7 +9,7 @@
 //
 // Bit-exactness contract: the fold computed here must equal the scalar
 // table fold byte-for-byte. rs16.cpp probes the instruction's matrix
-// convention once at init (see build_gfni_affines) and falls back to the
+// convention once at init (see gfni_calib) and falls back to the
 // scalar path if no convention matches — worst case is "no speedup",
 // never wrong parity. The cross-path gate in
 // tests/unit/recovery_tests.cpp (test_rs16_gfni_bit_exactness) validates
