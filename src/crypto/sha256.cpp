@@ -526,15 +526,21 @@ void Sha256::compute(const void* data, size_t size, void* out_digest) {
     ctx.finish(out_digest);
 }
 
-// ─── HMAC-SHA256 ─────────────────────────────────────────────────────────────
-
 namespace {
-// File-local wipe for password derivatives stored in HmacSha256.
-void hmac_secure_wipe(void* p, size_t n) noexcept {
+// Secure wipe for sensitive states and password derivatives.
+void secure_wipe(void* p, size_t n) noexcept {
     volatile core::byte* b = static_cast<volatile core::byte*>(p);
     for (size_t i = 0; i < n; ++i) b[i] = 0;
 }
 } // namespace
+
+void Sha256::wipe() noexcept {
+    secure_wipe(state_, sizeof(state_));
+    count_ = 0;
+    secure_wipe(buffer_, sizeof(buffer_));
+}
+
+// ─── HMAC-SHA256 ─────────────────────────────────────────────────────────────
 
 HmacSha256::HmacSha256(const void* key, size_t key_len) {
     core::byte k[Sha256::BLOCK_SIZE];
@@ -554,7 +560,7 @@ HmacSha256::HmacSha256(const void* key, size_t key_len) {
     // Wipe the staging buffer: it holds the (hashed) key, and the destructor
     // already wipes k_ipad_/k_opad_/the midstates - leaving this local copy on
     // the stack was the one gap.
-    hmac_secure_wipe(k, sizeof(k));
+    secure_wipe(k, sizeof(k));
 
     init_midstate();
 }
@@ -574,10 +580,12 @@ void HmacSha256::init_midstate() {
 }
 
 HmacSha256::~HmacSha256() noexcept {
-    hmac_secure_wipe(k_ipad_, sizeof(k_ipad_));
-    hmac_secure_wipe(k_opad_, sizeof(k_opad_));
-    hmac_secure_wipe(ipad_state_, sizeof(ipad_state_));
-    hmac_secure_wipe(opad_state_, sizeof(opad_state_));
+    inner_.wipe();
+    outer_.wipe();
+    secure_wipe(k_ipad_, sizeof(k_ipad_));
+    secure_wipe(k_opad_, sizeof(k_opad_));
+    secure_wipe(ipad_state_, sizeof(ipad_state_));
+    secure_wipe(opad_state_, sizeof(opad_state_));
 }
 
 void HmacSha256::reset() {
