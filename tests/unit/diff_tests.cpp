@@ -1,5 +1,6 @@
 #include "../../src/cli/diff.hpp"
 
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <doctest.h>
@@ -7,10 +8,20 @@
 
 using namespace openrar::cli;
 
+#ifndef OPENRAR_SOURCE_DIR
+#define OPENRAR_SOURCE_DIR "."
+#endif
+
+static std::string fixture_path(const std::string& rel) {
+    if (std::filesystem::exists(rel)) return rel;
+    auto p = std::filesystem::path(OPENRAR_SOURCE_DIR) / rel;
+    return p.string();
+}
+
 void test_diff_identical_archives() {
     DiffOptions opt;
-    opt.arc1_path = "tests/hello5.rar";
-    opt.arc2_path = "tests/hello5.rar";
+    opt.arc1_path = fixture_path("tests/hello5.rar");
+    opt.arc2_path = fixture_path("tests/hello5.rar");
     opt.json = true;
 
     std::streambuf* orig_cout = std::cout.rdbuf();
@@ -31,8 +42,8 @@ void test_diff_identical_archives() {
 
 void test_diff_modified_archives() {
     DiffOptions opt;
-    opt.arc1_path = "tests/hello5.rar";
-    opt.arc2_path = "tests/fixtures/golden/writer/writer_compressed=comp=m3.rar";
+    opt.arc1_path = fixture_path("tests/hello5.rar");
+    opt.arc2_path = fixture_path("tests/fixtures/golden/writer/writer_compressed=comp=m3.rar");
     opt.json = true;
 
     std::streambuf* orig_cout = std::cout.rdbuf();

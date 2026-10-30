@@ -1,5 +1,6 @@
 #include "../../src/cli/inspect.hpp"
 
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <doctest.h>
@@ -7,9 +8,19 @@
 
 using namespace openrar::cli;
 
+#ifndef OPENRAR_SOURCE_DIR
+#define OPENRAR_SOURCE_DIR "."
+#endif
+
+static std::string fixture_path(const std::string& rel) {
+    if (std::filesystem::exists(rel)) return rel;
+    auto p = std::filesystem::path(OPENRAR_SOURCE_DIR) / rel;
+    return p.string();
+}
+
 void test_inspect_plain_archive() {
     InspectOptions opt;
-    opt.arc_path = "tests/hello5.rar";
+    opt.arc_path = fixture_path("tests/hello5.rar");
     opt.json = true;
 
     std::streambuf* orig_cout = std::cout.rdbuf();
@@ -32,7 +43,7 @@ void test_inspect_plain_archive() {
 
 void test_inspect_encrypted_archive_unauthenticated() {
     InspectOptions opt;
-    opt.arc_path = "tests/hello5_hp.rar";
+    opt.arc_path = fixture_path("tests/hello5_hp.rar");
     opt.password = "";
     opt.json = true;
 
