@@ -885,7 +885,7 @@ struct FileArchiveHandle : ArchiveHandleBase {
         out->volume_count = static_cast<uint32_t>(reader->volume_paths().size());
         for (const auto& e : reader->entries()) {
             if (e.header.is_service && e.header.service_type == "RR" && e.data_size > 0) {
-                out->recovery_size = e.data_size;
+                std::memcpy(&out->recovery_size, &e.data_size, sizeof(uint64_t));
                 break;
             }
         }
