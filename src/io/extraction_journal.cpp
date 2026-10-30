@@ -754,10 +754,12 @@ ExtractionSession::~ExtractionSession() {
         }
         static_cast<LockedFile*>(kv.second.file)->close();
         delete static_cast<LockedFile*>(kv.second.file);
-        const auto jp = journal_paths_.find(kv.first);
-        if (jp != journal_paths_.end()) {
-            std::error_code ec;
-            std::filesystem::remove(jp->second, ec);
+        if (kv.second.in_flight == 0) {
+            const auto jp = journal_paths_.find(kv.first);
+            if (jp != journal_paths_.end()) {
+                std::error_code ec;
+                std::filesystem::remove(jp->second, ec);
+            }
         }
     }
 }
