@@ -325,7 +325,7 @@ int WorkerBroker::extract(core::uint32 index,
                 }
                 rc = er.rc;
                 // Anti-forgery verification (FMM-51-6): broker independently confirms CRC
-                if (rc == RAR_OK && entries_[index].wire.crc32 != 0) {
+                if (rc == RAR_OK && entries_[index].has_crc32()) {
                     if (broker_crc.get() != entries_[index].wire.crc32) {
                         detail = "broker CRC mismatch (anti-forgery denial)";
                         kill();
