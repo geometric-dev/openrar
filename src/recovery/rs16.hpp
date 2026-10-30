@@ -32,10 +32,10 @@ public:
     bool init(core::uint32 data_count, core::uint32 rec_count,
               const core::byte* valid_flags = nullptr);
 
-    // Apply a data sector to an ECC sector (block_size must be even).
+    // Apply a data sector to an ECC sector (arbitrary block sizes supported).
     // Dispatches to the GFNI kernel when compiled with it and the CPU
     // supports it (probed once against the scalar path — see
-    // build_gfni_affines); otherwise the scalar table path runs. Both paths
+    // gfni_calib); otherwise the scalar table path runs. Both paths
     // are bit-identical (test_rs16_gfni_bit_exactness).
     void update_ecc(core::uint32 data_num, core::uint32 ecc_num, const core::byte* data,
                     core::byte* ecc, size_t block_size);
@@ -87,7 +87,6 @@ private:
     core::uint32 nd_{0}; // Number of data units
     core::uint32 nr_{0}; // Number of recovery units
     core::uint32 ne_{0}; // Number of missing/erased units
-    bool decoding_{false};
 
     const core::uint16* antilog_{nullptr};
     const core::uint32* logarithm_{nullptr};
