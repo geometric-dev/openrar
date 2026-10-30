@@ -1,4 +1,4 @@
-# OpenRAR ABI Freeze — v1.30.0 (2.0 LTS)
+# OpenRAR ABI Freeze — v1.30.0 / v2.0.0 (2.0 LTS)
 
 > **Status:** Normative freeze inventory for the C ABI surface
 > (`include/openrar/openrar_dll.h` + `include/openrar/openrar.hpp`), the two
@@ -119,7 +119,7 @@ table, minus OK/PARTIAL_OK which are never thrown as errors).
 ## 5. Feature-bit registry (`openrar_abi_features()`, openrar_dll.h:72–112)
 
 Bits are assigned ONLY when the gated exports ship; the next free slot is
-**bit 17**. No speculative reservations. Parity between the registry and
+**bit 19**. No speculative reservations. Parity between the registry and
 `openrar_abi_features()`'s returned mask is machine-checked
 (`abi_layout_tests`, test 3).
 
@@ -142,7 +142,9 @@ Bits are assigned ONLY when the gated exports ship; the next free slot is
 | 14 | REC_VOL | v1.20.0 |
 | 15 | PARALLEL_COMPRESS | (−mt) |
 | 16 | MMAP | v1.25.0 |
-| 17+ | free (next assignment order: 17) | — |
+| 17 | V2_STREAMING | v2.0.0 |
+| 18 | V2_RECOVERY | v2.0.0 |
+| 19+ | free (next assignment order: 19) | — |
 
 Reserve convention (openrar_dll.h:86–88): future open-time options ship as a
 new `_ex` open export behind a new bit — never as signature changes to
