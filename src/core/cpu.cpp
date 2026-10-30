@@ -253,4 +253,39 @@ AccelerationReport describe_acceleration() {
     return r;
 }
 
+std::string get_cpu_brand_string() {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    int info[4] = {0};
+    auto cpuid_call = [](int leaf, int subleaf, int regs[4]) {
+#if defined(_MSC_VER)
+        __cpuidex(regs, leaf, subleaf);
+#elif defined(__GNUC__) || defined(__clang__)
+        __cpuid_count(leaf, subleaf, regs[0], regs[1], regs[2], regs[3]);
+#else
+        regs[0] = regs[1] = regs[2] = regs[3] = 0;
+#endif
+    };
+    cpuid_call(static_cast<int>(0x80000000), 0, info);
+    unsigned int max_ext = static_cast<unsigned int>(info[0]);
+    if (max_ext >= 0x80000004) {
+        char brand[49] = {0};
+        for (unsigned int i = 0; i < 3; ++i) {
+            cpuid_call(static_cast<int>(0x80000002 + i), 0, info);
+            std::memcpy(brand + i * 16, info, 16);
+        }
+        brand[48] = '\0';
+        std::string s(brand);
+        size_t first = s.find_first_not_of(" \t");
+        if (first == std::string::npos) return "Generic x86 Processor";
+        size_t last = s.find_last_not_of(" \t");
+        return s.substr(first, (last - first + 1));
+    }
+    return "Generic x86 Processor";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return "Generic ARM64 Processor";
+#else
+    return "Generic Processor";
+#endif
+}
+
 } // namespace openrar::core
