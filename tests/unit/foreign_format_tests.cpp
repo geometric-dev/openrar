@@ -444,6 +444,50 @@ static void test_zip_comments_and_dirs() {
               << std::endl;
 }
 
+static void test_zip_posix_modes_and_symlinks() {
+    std::cout << "[+] test_zip_posix_modes_and_symlinks" << std::endl;
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+
+    core::uint32 crc1 = 0;
+    const auto data1 = stored_payload("hello world", crc1);
+    ZipMember f;
+    f.name = "regular.txt";
+    f.flags = 0x0800;
+    f.packed = data1;
+    f.crc = crc1;
+    f.unp_size = data1.size();
+    f.unix_mode = 0100644;
+
+    core::uint32 crc2 = 0;
+    const auto data2 = stored_payload("regular.txt", crc2);
+    ZipMember s;
+    s.name = "symlink.txt";
+    s.flags = 0x0800;
+    s.packed = data2;
+    s.crc = crc2;
+    s.unp_size = data2.size();
+    s.unix_mode = 0120777;
+
+    const auto buf = build_zip({f, s});
+    const auto p = dir / "posix_zip.zip";
+    std::ofstream out(p, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+    out.close();
+
+    ZipReader r;
+    REQUIRE(open_zip(p, r) == ForeignStatus::Ok);
+    REQUIRE(r.entry_count() == 2);
+    REQUIRE(r.entry(0).has_posix_mode == true);
+    REQUIRE(r.entry(0).posix_mode == 0100644);
+    REQUIRE(r.entry(0).type == ForeignType::File);
+
+    REQUIRE(r.entry(1).has_posix_mode == true);
+    REQUIRE(r.entry(1).posix_mode == 0120777);
+    REQUIRE(r.entry(1).type == ForeignType::Symlink);
+    REQUIRE(r.entry(1).link_target == "regular.txt");
+    std::cout << "    - ZIP regular POSIX mode and symlink type & target preserved" << std::endl;
+}
+
 // C-08 regression (x64-reachable, not 32-bit specific): the NTFS extra
 // (0x000A) FILETIME is attacker-controlled. Bit-63 / max values previously hit
 // signed overflow; they must now clamp, pre-1970 values fall back to the DOS
@@ -972,6 +1016,7 @@ static const openrar::test::Case k_cases[] = {
     {"test_zip_encrypted_and_methods", test_zip_encrypted_and_methods, false},
     {"test_zip_bomb_cap", test_zip_bomb_cap, false},
     {"test_zip_comments_and_dirs", test_zip_comments_and_dirs, false},
+    {"test_zip_posix_modes_and_symlinks", test_zip_posix_modes_and_symlinks, false},
     {"test_zip_eocd_bounds", test_zip_eocd_bounds, false},
     {"test_tar_ustar_roundtrip", test_tar_ustar_roundtrip, false},
     {"test_tar_longname_and_pax", test_tar_longname_and_pax, false},
