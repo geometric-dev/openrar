@@ -229,14 +229,15 @@ public:
                       << " in\x1b[0m \x1b[1;38;2;231;229;223m" << oss.str() << "s\x1b[0m";
             if (!sfx_name.empty()) {
                 std::cout << " \x1b[38;2;109;114;128mfrom\x1b[0m \x1b[1;38;2;231;229;223m"
-                          << sfx_name << "\x1b[0m";
+                          << openrar::cli::sanitize_for_display(sfx_name) << "\x1b[0m";
             }
             std::cout << extra_str << "\n\n" << std::flush;
         } else {
             std::ostringstream oss;
             oss << std::fixed << std::setprecision(1) << elapsed;
             std::cout << "Done. " << total_files << " files " << verb << " in " << oss.str() << "s";
-            if (!sfx_name.empty()) std::cout << " from " << sfx_name;
+            if (!sfx_name.empty())
+                std::cout << " from " << openrar::cli::sanitize_for_display(sfx_name);
             std::cout << "\n" << std::flush;
         }
     }
