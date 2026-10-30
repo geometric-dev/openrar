@@ -681,14 +681,63 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
 
     const uint8_t* payload = data + e.data_offset;
 
+    if (limits) {
+        if (limits->member_limited() && e.size > limits->max_member_output_bytes) {
+            return RAR_ERR_LIMIT_EXCEEDED;
+        }
+        if (limits->total_limited() && state->total_out + e.size > limits->max_total_output_bytes) {
+            return RAR_ERR_LIMIT_EXCEEDED;
+        }
+    }
+
     if (e.method == 0) {
+        if (limits) {
+            if (limits->member_limited() && e.data_size > limits->max_member_output_bytes) {
+                return RAR_ERR_LIMIT_EXCEEDED;
+            }
+            if (limits->total_limited() &&
+                state->total_out + e.data_size > limits->max_total_output_bytes) {
+                return RAR_ERR_LIMIT_EXCEEDED;
+            }
+        }
         out.assign(payload, payload + e.data_size);
     } else if (e.method >= 1 && e.method <= 5) {
         // Use the window written into the file header. If 0 (which shouldn't happen
         // for valid RAR5 files but might in edge cases), default to 32 MiB.
         size_t win = e.win_size > 0 ? static_cast<size_t>(e.win_size) : 32 * 1024 * 1024;
         compress::Decompressor50 unpacker(win, e.extra_dist);
-        if (!unpacker.decompress_to_vector(payload, static_cast<size_t>(e.data_size), out)) {
+
+        bool limit_exceeded = false;
+        out.clear();
+        if (e.size > 0 && e.size <= 64 * 1024 * 1024) {
+            out.reserve(static_cast<size_t>(e.size));
+        }
+
+        auto chunk_cb = [&](const core::byte* chunk, size_t chunk_sz) -> bool {
+            if (limits) {
+                if (limits->member_limited() &&
+                    out.size() + chunk_sz > limits->max_member_output_bytes) {
+                    limit_exceeded = true;
+                    return false;
+                }
+                if (limits->total_limited() &&
+                    state->total_out + out.size() + chunk_sz > limits->max_total_output_bytes) {
+                    limit_exceeded = true;
+                    return false;
+                }
+            }
+            out.insert(out.end(), chunk, chunk + chunk_sz);
+            return true;
+        };
+
+        size_t dest_sz = static_cast<size_t>(e.size);
+        size_t written = 0;
+        bool finished = false;
+        if (!unpacker.decompress(payload, static_cast<size_t>(e.data_size), dest_sz, false,
+                                 chunk_cb, &written, &finished)) {
+            if (limit_exceeded) {
+                return RAR_ERR_LIMIT_EXCEEDED;
+            }
             if (unpacker.last_error() == compress::DecompressErrorCode::AllocationFailed) {
                 return RAR_ERR_NOMEM;
             }
@@ -696,6 +745,9 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
                 return RAR_ERR_LIMIT_EXCEEDED;
             }
             return RAR_ERR_TRUNCATED;
+        }
+        if (limit_exceeded) {
+            return RAR_ERR_LIMIT_EXCEEDED;
         }
         if (out.size() != e.size) {
             return RAR_ERR_TRUNCATED;
@@ -705,13 +757,6 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
     }
 
     if (limits) {
-        if (limits->member_limited() && out.size() > limits->max_member_output_bytes) {
-            return RAR_ERR_LIMIT_EXCEEDED;
-        }
-        if (limits->total_limited() &&
-            state->total_out + out.size() > limits->max_total_output_bytes) {
-            return RAR_ERR_LIMIT_EXCEEDED;
-        }
         state->member_out = out.size();
         state->total_out += out.size();
     }
