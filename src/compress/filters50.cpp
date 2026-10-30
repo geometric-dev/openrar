@@ -428,7 +428,13 @@ inline size_t delta_plane_base(size_t full, size_t rem, size_t c) {
 // a per-thread buffer instead of allocating and zero-filling one per call.
 core::byte* delta_scratch(size_t size) {
     thread_local std::vector<core::byte> scratch;
-    if (scratch.size() < size) scratch.resize(size);
+    constexpr size_t MAX_CACHED_SCRATCH = 2 * 1024 * 1024;
+    if (scratch.capacity() > MAX_CACHED_SCRATCH && size <= MAX_CACHED_SCRATCH) {
+        scratch.resize(size);
+        scratch.shrink_to_fit();
+    } else if (scratch.size() < size) {
+        scratch.resize(size);
+    }
     return scratch.data();
 }
 
