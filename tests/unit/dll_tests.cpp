@@ -826,6 +826,11 @@ static void test_archive_create() {
     REQUIRE(count == 2);
     openrar_archive_list_free(entries, paths, paths_sz);
 
+    // CRIT-07: Verify entry_owner with nullptr username/groupname doesn't crash
+    openrar_entry_owner_t owner{};
+    rc = openrar_archive_handle_entry_owner(h, 0, &owner, nullptr, nullptr);
+    REQUIRE(rc == RAR_OK);
+
     // Test extracting member 0 to path
     auto ext1 = temp_dir / "extracted1.txt";
     rc = openrar_archive_handle_extract_to_path(h, 0, ext1.string().c_str(), nullptr, nullptr,
