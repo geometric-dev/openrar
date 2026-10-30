@@ -343,6 +343,12 @@ ExecResult spawn_contained(const std::string& command, const std::string& resolv
         rl.rlim_cur = 64;
         rl.rlim_max = 64;
         setrlimit(RLIMIT_NPROC, &rl);
+        // Close inherited file descriptors > 2 to avoid descriptor leakage into child
+        long max_fd = sysconf(_SC_OPEN_MAX);
+        if (max_fd < 0 || max_fd > 4096) max_fd = 4096;
+        for (long fd = 3; fd < max_fd; ++fd) {
+            close(static_cast<int>(fd));
+        }
         if (!working_dir.empty()) {
             if (chdir(working_dir.c_str()) != 0) _exit(126);
         }
