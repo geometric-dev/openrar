@@ -192,7 +192,13 @@ static bool read_listfile(const std::filesystem::path& list_path,
         err_msg = "Cannot open list file: " + list_path.string();
         return false;
     }
-    size_t sz = static_cast<size_t>(f.size());
+    const core::uint64 raw_sz = f.size();
+    constexpr core::uint64 MAX_LISTFILE_SIZE = 32ULL * 1024 * 1024; // 32 MiB cap
+    if (raw_sz > MAX_LISTFILE_SIZE) {
+        err_msg = "List file exceeds maximum size limit (32 MiB): " + list_path.string();
+        return false;
+    }
+    size_t sz = static_cast<size_t>(raw_sz);
     std::string content(sz, '\0');
     if (sz > 0 && f.read(&content[0], sz) != sz) {
         err_msg = "Cannot read list file: " + list_path.string();
