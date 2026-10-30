@@ -3,6 +3,7 @@
 #include "../archive/archive_reader.hpp"
 #include "json_output.hpp"
 #include "progress.hpp"
+#include "tui.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -237,8 +238,7 @@ int diff_archives(const DiffOptions& opt) {
         if (item.kind == DiffKind::Identical && !opt.verbose) continue;
 
         const std::string disp_path = sanitize_for_display(item.path);
-        const std::string path_field =
-            (disp_path.size() > 34 ? disp_path.substr(0, 31) + "..." : disp_path);
+        const std::string path_field = truncate_utf8(disp_path, 34);
 
         if (item.kind == DiffKind::Added) {
             std::cout << "  \033[1;32m+   \033[0m " << std::left << std::setw(34) << path_field
