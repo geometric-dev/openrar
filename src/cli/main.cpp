@@ -83,8 +83,7 @@ static mode_t cached_umask_bits() {
 }
 #endif
 
-bool g_plain_mode = false;
-bool g_quiet_mode = false;
+// g_plain_mode / g_quiet_mode defined inline in progress.hpp
 // v1.30 sandboxed worker (SECURITY_ARCHITECTURE §5.1): --in-proc / the
 // OPENRAR_IN_PROC env force the in-process engine (the OPENRAR_NO_MMAP
 // kill-switch pattern). The WORKER-vs-in-proc decision itself is the ONE
