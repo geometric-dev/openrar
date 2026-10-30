@@ -214,12 +214,19 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
     std::vector<std::unique_ptr<Decompressor50::SpanRecords>> span_data(nspans);
 
     auto set_failed = [&](const std::string& msg) {
-        std::lock_guard<std::mutex> lk(sync.mu);
-        if (!sync.failed) {
-            sync.failed = true;
-            sync.failure = msg;
+        try {
+            std::lock_guard<std::mutex> lk(sync.mu);
+            if (!sync.failed) {
+                sync.failed = true;
+                try {
+                    sync.failure = msg;
+                } catch (...) {
+                    sync.failure = "parallel decode failure";
+                }
+            }
+            sync.cv.notify_all();
+        } catch (...) {
         }
-        sync.cv.notify_all();
     };
 
     // ── Phase-1 workers ────────────────────────────────────────────────────
@@ -230,46 +237,52 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
         }
     };
     auto worker_body = [&](unsigned w) {
-        Decompressor50 wdec(win_size, extra_dist);
-        for (size_t s = w; s < nspans; s += workers) {
-            // Decode freely; publish through the bounded window.
-            const uint32_t first = span_first[s], last = span_last[s];
-            const size_t span_packed = tl.blocks[last].src_byte + tl.blocks[last].header_len +
-                                       tl.blocks[last].block_size - tl.blocks[first].src_byte;
-            const size_t rec_cap =
-                std::max(RECORD_CAP_MIN, RECORD_CAP_PACKED_MULTIPLE * span_packed);
-            auto sr = std::make_unique<Decompressor50::SpanRecords>();
-            const auto t0 = std::chrono::steady_clock::now();
-            if (!wdec.decode_span(tl, src, src_size, dest_size, first, last, rec_cap, *sr)) {
-                set_failed(wdec.last_error_message());
-                return;
+        try {
+            Decompressor50 wdec(win_size, extra_dist);
+            for (size_t s = w; s < nspans; s += workers) {
+                // Decode freely; publish through the bounded window.
+                const uint32_t first = span_first[s], last = span_last[s];
+                const size_t span_packed = tl.blocks[last].src_byte + tl.blocks[last].header_len +
+                                           tl.blocks[last].block_size - tl.blocks[first].src_byte;
+                const size_t rec_cap =
+                    std::max(RECORD_CAP_MIN, RECORD_CAP_PACKED_MULTIPLE * span_packed);
+                auto sr = std::make_unique<Decompressor50::SpanRecords>();
+                const auto t0 = std::chrono::steady_clock::now();
+                if (!wdec.decode_span(tl, src, src_size, dest_size, first, last, rec_cap, *sr)) {
+                    set_failed(wdec.last_error_message());
+                    return;
+                }
+                if (trace)
+                    std::fprintf(stderr, "[pd] w%u span %zu decode %.1fms recs=%zu\n", w, s,
+                                 std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - t0)
+                                     .count(),
+                                 sr->recs.size());
+                std::unique_lock<std::mutex> lk(sync.mu);
+                // Turn-ordered publish: `published` is the next span to publish,
+                // so the applier can never observe a later span before an
+                // earlier one (span_data[s] must be non-null when it consumes).
+                // The in-flight gate bounds published-but-unconsumed spans.
+                if (trace)
+                    std::fprintf(stderr, "[pd] w%u span %zu parked (published=%zu applier=%zu)\n",
+                                 w, s, sync.published, sync.applier_pos);
+                sync.cv.wait(lk, [&] {
+                    return sync.cancelled || sync.failed ||
+                           (s == sync.published && s < sync.applier_pos + MAX_IN_FLIGHT_AHEAD);
+                });
+                if (sync.cancelled || sync.failed) return;
+                span_data[s] = std::move(sr);
+                ++sync.published;
+                if (trace)
+                    std::fprintf(stderr, "[pd] w%u publish %zu (published=%zu)\n", w, s,
+                                 sync.published);
+                lk.unlock();
+                sync.cv.notify_all();
             }
-            if (trace)
-                std::fprintf(
-                    stderr, "[pd] w%u span %zu decode %.1fms recs=%zu\n", w, s,
-                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
-                        .count(),
-                    sr->recs.size());
-            std::unique_lock<std::mutex> lk(sync.mu);
-            // Turn-ordered publish: `published` is the next span to publish,
-            // so the applier can never observe a later span before an
-            // earlier one (span_data[s] must be non-null when it consumes).
-            // The in-flight gate bounds published-but-unconsumed spans.
-            if (trace)
-                std::fprintf(stderr, "[pd] w%u span %zu parked (published=%zu applier=%zu)\n", w, s,
-                             sync.published, sync.applier_pos);
-            sync.cv.wait(lk, [&] {
-                return sync.cancelled || sync.failed ||
-                       (s == sync.published && s < sync.applier_pos + MAX_IN_FLIGHT_AHEAD);
-            });
-            if (sync.cancelled || sync.failed) return;
-            span_data[s] = std::move(sr);
-            ++sync.published;
-            if (trace)
-                std::fprintf(stderr, "[pd] w%u publish %zu (published=%zu)\n", w, s,
-                             sync.published);
-            lk.unlock();
-            sync.cv.notify_all();
+        } catch (const std::exception& e) {
+            set_failed(e.what());
+        } catch (...) {
+            set_failed("unknown exception in parallel decode worker");
         }
     };
 
