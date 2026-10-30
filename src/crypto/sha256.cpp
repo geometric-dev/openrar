@@ -344,15 +344,10 @@ static bool shani_selftest() {
 #ifdef OPENRAR_SHA_ARM
 
 static void sha256_transform_arm(core::uint32* state, const core::byte* block) {
-    uint32x4_t q0 = vld1q_u32(reinterpret_cast<const uint32_t*>(block + 0));
-    uint32x4_t q1 = vld1q_u32(reinterpret_cast<const uint32_t*>(block + 16));
-    uint32x4_t q2 = vld1q_u32(reinterpret_cast<const uint32_t*>(block + 32));
-    uint32x4_t q3 = vld1q_u32(reinterpret_cast<const uint32_t*>(block + 48));
-
-    q0 = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(q0)));
-    q1 = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(q1)));
-    q2 = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(q2)));
-    q3 = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(q3)));
+    uint32x4_t q0 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block + 0)));
+    uint32x4_t q1 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block + 16)));
+    uint32x4_t q2 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block + 32)));
+    uint32x4_t q3 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block + 48)));
 
     uint32x4_t abcd = vld1q_u32(&state[0]);
     uint32x4_t efgh = vld1q_u32(&state[4]);
