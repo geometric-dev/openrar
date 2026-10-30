@@ -190,6 +190,25 @@ std::string resolve_sfx_destination(const SfxConfig& cfg, const PipelineOptions&
     if (cfg.tempmode) return "";
 
     if (!cfg.path.empty()) {
+        // Sensitive persistence directory check (CRIT-03):
+        // Checked upfront on cfg.path so relative or absolute persistence targets
+        // (e.g. Start Menu, Startup, autostart, .ssh, shell profiles) are rejected
+        // deterministically regardless of working directory drive or profile location.
+        static const char* const denied_segments[] = {"start menu", "startup", "autostart",
+                                                      ".ssh",       ".bashrc", ".bash_profile",
+                                                      ".profile",   ".zshrc",  ".config/autostart"};
+        std::string lower_cfg = cfg.path;
+        std::transform(lower_cfg.begin(), lower_cfg.end(), lower_cfg.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        for (const char* denied : denied_segments) {
+            if (lower_cfg.find(denied) != std::string::npos) {
+                report.push_back(
+                    {"path", "refused-sensitive-dir",
+                     "Path= targeting sensitive persistence directory refused: " + cfg.path});
+                return "";
+            }
+        }
+
         // Containment (plan §7): the archive may only propose a directory
         // inside the user profile. This is a refusal check, not a prompt.
         const std::string profile = user_profile_dir();
@@ -201,10 +220,6 @@ std::string resolve_sfx_destination(const SfxConfig& cfg, const PipelineOptions&
             return "";
         }
 
-        // Sensitive persistence directory check (CRIT-03)
-        static const char* const denied_segments[] = {"start menu", "startup", "autostart",
-                                                      ".ssh",       ".bashrc", ".bash_profile",
-                                                      ".profile",   ".zshrc",  ".config/autostart"};
         std::string lower_abs = abs;
         std::transform(lower_abs.begin(), lower_abs.end(), lower_abs.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
