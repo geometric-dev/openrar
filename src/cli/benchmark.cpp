@@ -1,4 +1,5 @@
 #include "benchmark.hpp"
+#include "json_output.hpp"
 
 #include "../compress/compressor50.hpp"
 #include "../compress/decompressor50.hpp"
@@ -247,8 +248,8 @@ int run_benchmark_cli(const BenchmarkOptions& opt) {
                   << "  \"benchmark\": \"openrar_rarmark_v2\",\n"
                   << "  \"version\": \"2.0.0\",\n"
                   << "  \"cpu\": {\n"
-                  << "    \"brand\": \"" << res.cpu_brand << "\",\n"
-                  << "    \"arch\": \"" << res.arch << "\",\n"
+                  << "    \"brand\": \"" << escape_json_string(res.cpu_brand) << "\",\n"
+                  << "    \"arch\": \"" << escape_json_string(res.arch) << "\",\n"
                   << "    \"logical_cores\": " << res.logical_cores << ",\n"
                   << "    \"simd_features\": [";
         for (size_t i = 0; i < res.simd_features.size(); ++i) {
