@@ -332,14 +332,21 @@ mode_t cached_umask() {
 }
 #endif
 
-// Byte-cap debit for hardlink fallback copies (plan §7.2): every copied
-// byte accumulates into state->total_out; a configured cap aborts.
+// Byte-cap debit for extraction operations (plan §7.2): every output
+// byte accumulates into state->total_out and state->member_out; configured caps abort.
 bool debit_bytes(uint64_t n, const ExtractionLimits* limits, LimitState* state) {
     if (state == nullptr) return limits == nullptr; // nothing tracked: allow
     if (n > UINT64_MAX - state->total_out) return false;
+    if (n > UINT64_MAX - state->member_out) return false;
     state->total_out += n;
-    if (limits != nullptr && state->total_out > limits->max_total_output_bytes) {
-        return false;
+    state->member_out += n;
+    if (limits != nullptr) {
+        if (limits->member_limited() && state->member_out > limits->max_member_output_bytes) {
+            return false;
+        }
+        if (limits->total_limited() && state->total_out > limits->max_total_output_bytes) {
+            return false;
+        }
     }
     return true;
 }
@@ -2833,6 +2840,22 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
     last_cancel_requested_ = false;
     disk_progress_done_ = 0;
 
+    LimitState local_state;
+    if (!state) state = &local_state;
+    state->member_out = 0;
+
+    // Fast-path pre-check for known-size entries
+    if (limits && entry.header.unp_size > 0 &&
+        !(entry.header.file_flags & format::FHFL_UNPUNKNOWN)) {
+        if (limits->member_limited() && entry.header.unp_size > limits->max_member_output_bytes) {
+            return false;
+        }
+        if (limits->total_limited() &&
+            state->total_out + entry.header.unp_size > limits->max_total_output_bytes) {
+            return false;
+        }
+    }
+
     // Directory record (FHFL_DIRECTORY, no data area): materialize the
     // directory itself so empty directories survive extraction. Best-effort —
     // failure to create (existing file in the way, permissions) is a skip,
@@ -3125,6 +3148,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > entry.memory_data.size()) write_len = entry.memory_data.size();
             if (disk_poll_cancel()) return fail();
+            if (!debit_bytes(write_len, limits, state)) return fail();
             if (out.write(entry.memory_data.data(), write_len) != write_len) return fail();
             disk_progress_done_ = write_len;
             disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
@@ -3133,6 +3157,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
         } else {
             auto cb = [&](const core::byte* data, size_t size) -> bool {
                 if (disk_poll_cancel()) return false;
+                if (!debit_bytes(size, limits, state)) return false;
                 disk_progress_done_ += size;
                 disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
                 if (m_use_blake) m_b2.update(data, size);
@@ -3222,6 +3247,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > cipher.size()) write_len = cipher.size();
             if (disk_poll_cancel()) return fail();
+            if (!debit_bytes(write_len, limits, state)) return fail();
             if (out.write(cipher.data(), write_len) != write_len) return fail();
             disk_progress_done_ = write_len;
             disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
@@ -3230,6 +3256,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
         } else {
             auto cb = [&](const core::byte* data, size_t size) -> bool {
                 if (disk_poll_cancel()) return false;
+                if (!debit_bytes(size, limits, state)) return false;
                 disk_progress_done_ += size;
                 disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
                 if (v_use_blake) v_b2.update(data, size);
@@ -3278,6 +3305,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
     crypto::Crc32 v_crc;
     auto cb = [&](const core::byte* data, size_t size) -> bool {
         if (disk_poll_cancel()) return false;
+        if (!debit_bytes(size, limits, state)) return false;
         disk_progress_done_ += size;
         disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
         if (v_use_blake) v_b2.update(data, size);
@@ -3325,8 +3353,21 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
     if (entry.header.method != 0) {
         return false;
     }
-    (void)limits;
-    (void)state; // no hardlink fallback on the store path itself
+    LimitState local_state;
+    if (!state) state = &local_state;
+    state->member_out = 0;
+
+    // Fast-path pre-check for known-size entries
+    if (limits && entry.header.unp_size > 0 &&
+        !(entry.header.file_flags & format::FHFL_UNPUNKNOWN)) {
+        if (limits->member_limited() && entry.header.unp_size > limits->max_member_output_bytes) {
+            return false;
+        }
+        if (limits->total_limited() &&
+            state->total_out + entry.header.unp_size > limits->max_total_output_bytes) {
+            return false;
+        }
+    }
 
     // Same containment rationale as the compressed path above; has_symlink_parent
     // keeps the shipped B3/M9 destination policy (see extract_entry) — the
@@ -3372,6 +3413,7 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
                     std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
                 if (vs.read(buf, take) != take) return fail();
                 if (disk_poll_cancel()) return fail();
+                if (!debit_bytes(take, limits, state)) return fail();
                 if (out.write(buf, take) != take) return fail();
                 disk_progress_done_ += take;
                 disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
@@ -3407,6 +3449,7 @@ bool ArchiveReader::extract_store_entry_impl(const ArchiveEntry& entry,
             static_cast<size_t>(std::min(remaining, static_cast<core::uint64>(sizeof(buf))));
         if (vs.read(buf, take) != take) return fail();
         if (disk_poll_cancel()) return fail();
+        if (!debit_bytes(take, limits, state)) return fail();
         if (out.write(buf, take) != take) return fail();
         disk_progress_done_ += take;
         disk_hooks_.emit(disk_progress_done_, entry.header.unp_size);
