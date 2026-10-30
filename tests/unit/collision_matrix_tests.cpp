@@ -100,6 +100,12 @@ void test_detector_matrix() {
     out.clear();
     REQUIRE(CollisionDetector::detect({{"foo/bar", false}, {"foo", false}}, out));
     REQUIRE(has_class(out, "file_vs_dir"));
+    out.clear();
+    REQUIRE(CollisionDetector::detect({{"foo", false}, {"foo/bar", true}}, out));
+    REQUIRE(has_class(out, "file_vs_dir"));
+    out.clear();
+    REQUIRE(CollisionDetector::detect({{"foo/bar", true}, {"foo", false}}, out));
+    REQUIRE(has_class(out, "file_vs_dir"));
 
     // Non-collisions must stay silent:
     //  - normal nesting (dir entry foo + file foo/bar)
