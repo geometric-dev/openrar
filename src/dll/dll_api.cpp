@@ -541,7 +541,10 @@ struct FileArchiveHandle : ArchiveHandleBase {
     ~FileArchiveHandle() override {
         // v1.24 §7.4: flush deferred directory metadata that arrived in the
         // final calls (their children have been extracted by now).
-        if (reader) reader->apply_deferred_dir_metadata();
+        try {
+            if (reader) reader->apply_deferred_dir_metadata();
+        } catch (...) {
+        }
     }
     // DLL-visible entries: file entries only (service headers are internal
     // blocks), mapped to the 64-byte contract shape.
@@ -1388,7 +1391,10 @@ uint32_t OPENRAR_DLL_CALL openrar_archive_open(const uint8_t* data, size_t size)
     }
 }
 void OPENRAR_DLL_CALL openrar_archive_close(uint32_t handle) {
-    g_handles.erase(handle);
+    try {
+        g_handles.erase(handle);
+    } catch (...) {
+    }
 }
 uint32_t OPENRAR_DLL_CALL openrar_archive_open_ex(const uint8_t* data, size_t size,
                                                   openrar_progress_cb progress,
@@ -2477,7 +2483,10 @@ int OPENRAR_DLL_CALL openrar_stream_finish(uint32_t handle, uint8_t** out_ptr, s
     }
 }
 void OPENRAR_DLL_CALL openrar_stream_free(uint32_t handle) {
-    g_stream_handles.erase(handle);
+    try {
+        g_stream_handles.erase(handle);
+    } catch (...) {
+    }
 }
 // openrar_set_progress/openrar_set_cancel removed (L12/I19): they were silent
 // no-ops and there is no per-block hook in the one-shot archive handle API to
