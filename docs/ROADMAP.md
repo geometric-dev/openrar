@@ -893,7 +893,7 @@ M0 derives the final table from current CLI behaviour **and the WinRAR/unrar ora
   function with --no-mmap/OPENRAR_NO_MMAP kill switch, random-read region
   export (OPENRAR_ABI_FEATURE_MMAP bit 16), 50 GB-class listing benchmark.
   Plan: docs/v1.25-implementation-plan.md (architect review:
-  docs/mmap-v1.25-design-review.md — conditional approval, directives
+  docs/milestones/v1.25-mmap-design-review.md — conditional approval, directives
   applied).
 - **v1.24.0:** extraction containment & integrity shipped —
   syscall-level containment with write-through-handle atomic extraction
@@ -1505,7 +1505,7 @@ fault injection (mapped_file_tests), limits-not-bypassable + extraction
 byte identity (mapped_scan_tests), 50 GB listing benchmark
 (openrar_bench — full-scale on the CI ubuntu leg; ReFS dev volumes skip
 via the FSCTL verdict). Plan: docs/v1.25-implementation-plan.md;
-architect review: docs/mmap-v1.25-design-review.md.
+architect review: docs/milestones/v1.25-mmap-design-review.md.
 
 ---
 

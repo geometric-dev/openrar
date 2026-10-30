@@ -760,7 +760,6 @@ bool ContainmentRoot::anchored_unlink_leaf(const VerifiedDir& dir, const std::st
         LONG Status;
         ULONG_PTR Information;
     } iosb{0, 0};
-    BOOLEAN do_delete = TRUE;
     // FileDispositionInformationEx (21) with POSIX semantics: unlinks the
     // object immediately, immune to sharing conflicts on the link object
     // (plain FileDispositionInformation fails with SHARING_VIOLATION for
