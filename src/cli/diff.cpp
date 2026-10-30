@@ -2,6 +2,7 @@
 
 #include "../archive/archive_reader.hpp"
 #include "json_output.hpp"
+#include "progress.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -235,35 +236,34 @@ int diff_archives(const DiffOptions& opt) {
     for (const auto& item : items) {
         if (item.kind == DiffKind::Identical && !opt.verbose) continue;
 
+        const std::string disp_path = sanitize_for_display(item.path);
+        const std::string path_field =
+            (disp_path.size() > 34 ? disp_path.substr(0, 31) + "..." : disp_path);
+
         if (item.kind == DiffKind::Added) {
-            std::cout << "  \033[1;32m+   \033[0m " << std::left << std::setw(34)
-                      << (item.path.size() > 34 ? item.path.substr(0, 31) + "..." : item.path)
+            std::cout << "  \033[1;32m+   \033[0m " << std::left << std::setw(34) << path_field
                       << "  " << std::right << std::setw(20)
                       << ("+ " + std::to_string(item.size2) + " B") << "  " << std::setw(17)
                       << ("+ " + format_hex_crc(item.crc2)) << "\n";
         } else if (item.kind == DiffKind::Deleted) {
-            std::cout << "  \033[1;31m-   \033[0m " << std::left << std::setw(34)
-                      << (item.path.size() > 34 ? item.path.substr(0, 31) + "..." : item.path)
+            std::cout << "  \033[1;31m-   \033[0m " << std::left << std::setw(34) << path_field
                       << "  " << std::right << std::setw(20)
                       << ("- " + std::to_string(item.size1) + " B") << "  " << std::setw(17)
                       << ("- " + format_hex_crc(item.crc1)) << "\n";
         } else if (item.kind == DiffKind::Modified) {
             std::string s_str = std::to_string(item.size1) + " -> " + std::to_string(item.size2);
             std::string c_str = format_hex_crc(item.crc1) + "->" + format_hex_crc(item.crc2);
-            std::cout << "  \033[1;33m~   \033[0m " << std::left << std::setw(34)
-                      << (item.path.size() > 34 ? item.path.substr(0, 31) + "..." : item.path)
+            std::cout << "  \033[1;33m~   \033[0m " << std::left << std::setw(34) << path_field
                       << "  " << std::right << std::setw(20) << s_str << "  " << std::setw(17)
                       << c_str << "\n";
         } else if (item.kind == DiffKind::Metadata) {
-            std::cout << "  \033[1;35m*   \033[0m " << std::left << std::setw(34)
-                      << (item.path.size() > 34 ? item.path.substr(0, 31) + "..." : item.path)
+            std::cout << "  \033[1;35m*   \033[0m " << std::left << std::setw(34) << path_field
                       << "  " << std::right << std::setw(20) << (std::to_string(item.size1) + " B")
                       << "  " << std::setw(17) << "[attr/mtime drift]\n";
         } else if (item.kind == DiffKind::Identical && opt.verbose) {
-            std::cout << "  \033[90m=    " << std::left << std::setw(34)
-                      << (item.path.size() > 34 ? item.path.substr(0, 31) + "..." : item.path)
-                      << "  " << std::right << std::setw(20) << (std::to_string(item.size1) + " B")
-                      << "  " << std::setw(17) << format_hex_crc(item.crc1) << "\033[0m\n";
+            std::cout << "  \033[90m=    " << std::left << std::setw(34) << path_field << "  "
+                      << std::right << std::setw(20) << (std::to_string(item.size1) + " B") << "  "
+                      << std::setw(17) << format_hex_crc(item.crc1) << "\033[0m\n";
         }
     }
 

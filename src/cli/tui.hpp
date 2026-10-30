@@ -421,7 +421,7 @@ public:
                 << " in\x1b[0m \x1b[1;38;2;231;229;223m" << oss.str() << "s\x1b[0m";
             if (!arc_name.empty()) {
                 (*g_prog_out) << " \x1b[38;2;109;114;128m→\x1b[0m \x1b[1;38;2;231;229;223m"
-                              << arc_name << "\x1b[0m";
+                              << sanitize_for_display(arc_name) << "\x1b[0m";
             }
             (*g_prog_out) << ratio_str << "\n\n" << std::flush;
         } else {
@@ -429,7 +429,7 @@ public:
             oss << std::fixed << std::setprecision(1) << elapsed;
             (*g_prog_out) << "Done. " << total_files << " files " << verb << " in " << oss.str()
                           << "s";
-            if (!arc_name.empty()) (*g_prog_out) << " -> " << arc_name;
+            if (!arc_name.empty()) (*g_prog_out) << " -> " << sanitize_for_display(arc_name);
             (*g_prog_out) << "\n" << std::flush;
         }
     }
