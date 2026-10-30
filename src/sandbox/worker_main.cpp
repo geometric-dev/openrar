@@ -344,7 +344,8 @@ int main(int argc, char** argv) {
                             w.mtime = fb.mtime_win >= 116444736000000000ull
                                           ? (fb.mtime_win - 116444736000000000ull) / 10000000ull
                                           : 0ull;
-                            w._pad[0] = fb.is_service ? sandbox::WIRE_FLAG_SERVICE : 0ull;
+                            w._pad[0] = (fb.is_service ? sandbox::WIRE_FLAG_SERVICE : 0ull) |
+                                        (fb.has_crc32 ? sandbox::WIRE_FLAG_HAS_CRC32 : 0ull);
                             view.entries.push_back(w);
                             paths += name;
                         }
