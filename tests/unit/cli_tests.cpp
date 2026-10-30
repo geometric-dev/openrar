@@ -43,8 +43,7 @@
 // cli/main.cpp, which is not linked into this suite); the v1.28 sink tests
 // toggle them directly.
 namespace openrar::cli {
-bool g_plain_mode = false;
-bool g_quiet_mode = false;
+// g_plain_mode / g_quiet_mode defined inline in progress.hpp
 } // namespace openrar::cli
 
 // Null device for output redirection: "nul" is only a device on Windows; on
