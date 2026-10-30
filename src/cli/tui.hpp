@@ -59,6 +59,8 @@ namespace openrar::cli {
 // Cooperative-cancel flag shared by the keyboard thread, the ^C handler and
 // the reader disk hooks. Set once; never cleared mid-run.
 inline std::atomic<int> g_tui_cancel{0};
+static_assert(std::atomic<int>::is_always_lock_free,
+              "std::atomic<int> must be lock-free for signal safety");
 
 // ── pure render core ─────────────────────────────────────────────────────────
 
