@@ -30,6 +30,7 @@
 #include "benchmark.hpp"
 #include "json_output.hpp"
 #include "inspect.hpp"
+#include "diff.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -440,6 +441,7 @@ void print_help() {
         << "  a             Add files to archive\n"
         << "  b             Benchmark system performance\n"
         << "  d             Delete files from archive\n"
+        << "  diff          Structural zero-extraction diff between two archives\n"
         << "  e             Extract files without archived paths\n"
         << "  f             Freshen existing files in archive\n"
         << "  k             Lock archive against changes\n"
@@ -4607,6 +4609,20 @@ static int cli_main(int argc, char* argv[]) {
             }
         }
         return rc;
+    } else if (cmd == "diff" || cmd == "cmp") {
+        if (files.empty()) {
+            std::cerr << "Error: diff requires two archives (openrar diff <arc1> <arc2>)\n";
+            return 2;
+        }
+        DiffOptions dopt;
+        dopt.arc1_path = arc_path;
+        dopt.arc2_path = files[0];
+        dopt.password = password;
+        for (const auto& s : switches) {
+            if (s == "-v" || s == "--verbose") dopt.verbose = true;
+        }
+        dopt.json = g_json_stdout_only;
+        return openrar::cli::diff_archives(dopt);
     } else if (cmd == "inspect") {
         InspectOptions iopt;
         iopt.arc_path = arc_path;
