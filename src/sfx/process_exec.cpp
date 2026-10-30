@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <vector>
 
 #ifdef _WIN32
@@ -97,14 +98,33 @@ std::string resolve_command_executable(const std::string& command, const std::st
     if (absolute && file_present(token)) return token;
 
     if (allow_dest && !dest_dir.empty()) {
-        std::string joined = dest_dir;
+        // Enforce containment: disallow traversal tokens (CRIT-02)
+        if (token.find("..\\") == std::string::npos && token.find("../") == std::string::npos &&
+            token != "..") {
+            namespace fs = std::filesystem;
+            fs::path p_dest(dest_dir);
+            fs::path joined_path = p_dest / token;
+            std::string joined = joined_path.lexically_normal().string();
+            std::string canon_dest = p_dest.lexically_normal().string();
+            if (!canon_dest.empty() && canon_dest.back() != '/' && canon_dest.back() != '\\') {
+                canon_dest += fs::path::preferred_separator;
+            }
+            std::string test_j = joined;
+            std::string test_d = canon_dest;
 #ifdef _WIN32
-        if (joined.back() != '\\' && joined.back() != '/') joined += '\\';
-#else
-        if (joined.back() != '/') joined += '/';
+            std::transform(test_j.begin(), test_j.end(), test_j.begin(), [](unsigned char ch) {
+                return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a')
+                                                : static_cast<char>(ch);
+            });
+            std::transform(test_d.begin(), test_d.end(), test_d.begin(), [](unsigned char ch) {
+                return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a')
+                                                : static_cast<char>(ch);
+            });
 #endif
-        joined += token;
-        if (file_present(joined)) return joined;
+            if (test_j.compare(0, test_d.size(), test_d) == 0 && file_present(joined)) {
+                return joined;
+            }
+        }
     }
 
     // PATH search.
