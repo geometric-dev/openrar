@@ -1652,7 +1652,10 @@ public:
             exts_.push_back({fallback_path, entry.data_offset, entry.data_size});
         else
             exts_ = entry.extents;
-        if (keys_) std::memcpy(iv_, entry.header.init_v.data(), 16);
+        if (keys_) {
+            std::memcpy(iv_, entry.header.init_v.data(), 16);
+            aes_ = std::make_unique<crypto::Aes256>(keys_->aes_key);
+        }
         staging_.resize(STREAM_CHUNK);
     }
 
@@ -1708,7 +1711,7 @@ private:
                 return false;
             }
             size_t plain = take;
-            if (keys_) {
+            if (aes_) {
                 // Encrypted payload length is a multiple of the AES block
                 // size and 64 KiB slices keep every boundary aligned, so a
                 // short tail cannot occur in a well-formed archive.
@@ -1719,8 +1722,7 @@ private:
                     error_ = true;
                     return false;
                 }
-                crypto::Aes256 aes(keys_->aes_key);
-                if (!aes.decrypt_cbc(staging_.data(), plain, iv_)) {
+                if (!aes_->decrypt_cbc(staging_.data(), plain, iv_)) {
                     error_ = true;
                     return false;
                 }
@@ -1738,6 +1740,7 @@ private:
     core::uint64 ext_remain_{0};
     const crypto::Rar5Keys* keys_;
     std::function<bool(const std::filesystem::path&, io::FileStream&)> open_source_;
+    std::unique_ptr<crypto::Aes256> aes_;
     core::byte iv_[16]{};
     std::vector<core::byte> staging_;
     size_t plain_pos_{0};
