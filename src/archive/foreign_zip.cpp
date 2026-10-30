@@ -254,7 +254,7 @@ ForeignStatus ZipReader::walk_central_directory(const ExtractionLimits& limits, 
         // real type bits (§4.3).
         e.meta.dos_attrs = ext_attrs & 0xFF;
         const core::uint32 unix_mode = (ext_attrs >> 16) & 0xFFFF;
-        if ((unix_mode & 0170000) == 0170000 || (unix_mode & 0170000) == 0040000) {
+        if ((unix_mode & 0170000) != 0) {
             e.meta.has_posix_mode = true;
             e.meta.posix_mode = unix_mode;
         }
@@ -351,6 +351,8 @@ ForeignStatus ZipReader::walk_central_directory(const ExtractionLimits& limits, 
             (e.meta.has_posix_mode && (e.meta.posix_mode & 0170000) == 0040000) ||
             (!raw.empty() && raw.back() == '/')) {
             e.meta.type = ForeignType::Dir;
+        } else if (e.meta.has_posix_mode && (e.meta.posix_mode & 0170000) == 0120000) {
+            e.meta.type = ForeignType::Symlink;
         } else {
             e.meta.type = ForeignType::File;
         }
@@ -481,6 +483,42 @@ ForeignStatus ZipReader::preflight_cd_vs_lfh(std::string& detail) {
         if (e.data_offset > fsz || e.packed_size > fsz - e.data_offset) {
             detail = "member data out of range: " + e.meta.name_raw;
             return ForeignStatus::StructuralMismatch;
+        }
+
+        if (e.meta.type == ForeignType::Symlink && e.unpacked_size > 0 && e.unpacked_size <= 4096) {
+            std::string sym_target;
+            if (e.method == 0 && e.packed_size == e.unpacked_size) {
+                std::vector<char> sbuf(static_cast<size_t>(e.unpacked_size));
+                if (file_.seek(static_cast<int64_t>(e.data_offset), io::SeekOrigin::Begin) &&
+                    file_.read(reinterpret_cast<core::byte*>(sbuf.data()), sbuf.size()) ==
+                        sbuf.size()) {
+                    sym_target.assign(sbuf.data(), sbuf.size());
+                }
+            } else if (e.method == 8) {
+                if (file_.seek(static_cast<int64_t>(e.data_offset), io::SeekOrigin::Begin)) {
+                    compress::Inflate inf;
+                    auto in_fn = [&](core::byte* buf, size_t max) -> size_t {
+                        const core::uint64 remaining =
+                            e.packed_size -
+                            (static_cast<core::uint64>(file_.tell()) - e.data_offset);
+                        const size_t take =
+                            static_cast<size_t>(std::min<core::uint64>(remaining, max));
+                        if (take == 0) return 0;
+                        return file_.read(buf, take);
+                    };
+                    auto out_fn = [&](const core::byte* data, size_t size) -> bool {
+                        sym_target.append(reinterpret_cast<const char*>(data), size);
+                        return true;
+                    };
+                    inf.decode(in_fn, out_fn);
+                }
+            }
+            if (!sym_target.empty()) {
+                bool dummy_esc = false;
+                const ForeignNameEncoding enc =
+                    (e.gp_flags & 0x0800) ? ForeignNameEncoding::Utf8 : ForeignNameEncoding::Cp437;
+                e.meta.link_target = translate_foreign_name(sym_target, enc, dummy_esc);
+            }
         }
     }
     return ForeignStatus::Ok;
