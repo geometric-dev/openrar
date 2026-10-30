@@ -384,11 +384,15 @@ int main(int argc, char** argv) {
                 }
                 uint64_t emitted = 0;
                 auto sink = [&](const core::byte* data, size_t n) -> bool {
-                    if (n > sandbox::MAX_FRAME_PAYLOAD) return false;
-                    sandbox::Frame chunk{sandbox::FrameType::DataChunk, {}};
-                    chunk.payload.assign(data, data + n);
-                    if (!send_frame(res, chunk)) return false;
-                    emitted += n;
+                    size_t off = 0;
+                    while (off < n) {
+                        const size_t take = std::min<size_t>(n - off, sandbox::MAX_FRAME_PAYLOAD);
+                        sandbox::Frame chunk{sandbox::FrameType::DataChunk, {}};
+                        chunk.payload.assign(data + off, data + off + take);
+                        if (!send_frame(res, chunk)) return false;
+                        emitted += take;
+                        off += take;
+                    }
                     return true;
                 };
                 try {
