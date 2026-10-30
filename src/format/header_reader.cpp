@@ -682,13 +682,15 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                     offset = rec_end;
                     continue;
                 } // ignore per spec
+                if (rec_end - offset < tlen) {
+                    offset = rec_end;
+                    continue; // reject truncated target string
+                }
                 out_block.redir_type = static_cast<core::uint8>(rtype);
                 out_block.redir_dir_target = (rflags & 0x01) != 0;
-                size_t actual_tlen =
-                    std::min(static_cast<size_t>(tlen), rec_end >= offset ? rec_end - offset : 0);
                 out_block.redir_target.assign(reinterpret_cast<const char*>(body + offset),
-                                              actual_tlen);
-                offset += actual_tlen;
+                                              static_cast<size_t>(tlen));
+                offset += static_cast<size_t>(tlen);
             } else if (rec_type == FHEXTRA_HTIME) {
                 core::uint64 tflags = 0;
                 size_t tf_read = 0;
