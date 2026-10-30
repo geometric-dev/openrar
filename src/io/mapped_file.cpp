@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -61,7 +62,9 @@ bool MappedFile::open(const std::filesystem::path& path) {
                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (impl_->file == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER li;
-    if (!GetFileSizeEx(impl_->file, &li) || li.QuadPart <= 0) {
+    if (!GetFileSizeEx(impl_->file, &li) || li.QuadPart <= 0 ||
+        static_cast<unsigned long long>(li.QuadPart) >
+            static_cast<unsigned long long>(std::numeric_limits<size_t>::max())) {
         close();
         return false; // empty files need no mapping; callers use buffered reads
     }
@@ -149,7 +152,9 @@ bool MappedFile::open(const std::filesystem::path& path) {
     impl_->fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (impl_->fd < 0) return false;
     struct stat st;
-    if (::fstat(impl_->fd, &st) != 0 || st.st_size <= 0) {
+    if (::fstat(impl_->fd, &st) != 0 || st.st_size <= 0 ||
+        static_cast<uintmax_t>(st.st_size) >
+            static_cast<uintmax_t>(std::numeric_limits<size_t>::max())) {
         ::close(impl_->fd);
         impl_->fd = -1;
         return false; // empty files need no mapping; callers use buffered reads
