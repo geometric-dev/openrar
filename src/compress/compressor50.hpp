@@ -140,10 +140,12 @@ public:
         assert(acc_bits_ <= 64);
         if (acc_bits_ >= 32) {
             core::uint32 val = static_cast<core::uint32>(acc_ >> (acc_bits_ - 32));
+#ifndef OPENRAR_BIG_ENDIAN
 #if defined(_MSC_VER)
             val = _byteswap_ulong(val);
 #else
             val = __builtin_bswap32(val);
+#endif
 #endif
             if (static_cast<size_t>(wend_ - wp_) < 4) grow(4);
             std::memcpy(wp_, &val, 4);
