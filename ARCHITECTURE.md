@@ -6,11 +6,11 @@ This document establishes the architecture, design principles, naming convention
 
 ## 1. Architectural Mission & Clean-Room Mandate
 
-OpenRAR is an independent, clean-room C++17 implementation of the RAR 5.0 archive format specification (`RAR5-FORMAT.md`). 
+OpenRAR is an independent C++17 implementation of the RAR 5.0 archive format, developed from the published specification (`RAR5-FORMAT.md` and `docs/spec/`).
 
 ### Core Clean-Room Principles
-1. **Specification-Driven**: Implementation must derive strictly from published technical specifications, RFCs, and external behavior documentation—never from proprietary or reverse-engineered source trees.
-2. **Zero Code Carryover**: No source code, header definitions, preprocessor macros, comment threads, or internal identifier schemes from UnRAR or WinRAR may be copied into OpenRAR.
+1. **Specification-Driven**: Implementation derives from the published format documentation (`docs/spec/`), RFCs, and observed on-the-wire behaviour. Reference binaries may be used as black-box conformance oracles (create an archive, test it, compare bytes); they are never a source of code.
+2. **Zero Code Carryover**: No source code, header definitions, preprocessor macros, comment threads, or internal identifier schemes from another archiver's source tree may be copied into OpenRAR. The only exception is public RAR5 flag names that appear verbatim in the published format documentation (`HFL_*`, `MHFL_*`, `FHFL_*`, `FHEXTRA_*`, `MHEXTRA_*`), which name wire values rather than implementation structure.
 3. **Decoupled Modern Design**: Modern C++17 paradigms (RAII, standard library containers, `<filesystem>`, smart pointers, value semantics, `std::string_view`, explicit error propagation) replace legacy C++98 / DOS idioms (custom dynamic strings, 8.3 filenames, global singletons, raw pointers, direct `#include "*.cpp"` compilation units).
 
 ---

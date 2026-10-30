@@ -18,16 +18,16 @@ Recovery protects against volume loss or damage using Reed-Solomon (RS) codes. I
 ## Service Header `RR`
 
 ```
-File header type 3, Name "RR", HFL_DATA set
+File header type 3, Name "RR", data area present (0x0002)
   Data area: parity bytes (see below)
   File flags: 0 (no CRC32 in header; parity has its own CRCs)
-  PackSize = Data size = parity length
+  Data size = parity length
   SubData (extra 0x07): single vint = recovery percent (informational)
 ```
 
 Locator: main extra `Locator` with `0x0002` flag holds `Recovery offset` (distance from `RR` header to main header). If locator is missing, scanners must scan for `RR` by type.
 
-`.rev` volumes: each `.rev` file is a standalone container (`Rar!\x1aRev` signature, not a RAR5 archive) holding one parity shard plus a volume table. `recvol` vs `recovery_record` handling: RAR4 `recvol` and RAR5 `recovery_record` are distinct; RAR5 uses the `GF(2^16)` codec.
+`.rev` volumes: each `.rev` file is a standalone container (`Rar!\x1aRev` signature, not a RAR5 archive) holding one parity shard plus a volume table. RAR4-era recovery volumes and RAR5 recovery volumes use different fields (GF(2^8) vs GF(2^16)); a reader must select the codec from the container generation and must not mix them.
 
 ### Shard-header state region (v1.35.0, measured against the reference writer)
 
@@ -51,10 +51,10 @@ Repair-side readers must accept both packagings (reassemble multi-physical recor
 ## Reed-Solomon — GF(256) `0x11D` (RAR4-era background)
 
 * Irreducible polynomial: `x^8 + x^4 + x^3 + x^2 + 1` (`0x11D`).
-* Tables: `gfExp[512]` (duplicate wrap), `gfLog[256]`.
 * Generator `g(x) = (x - a)(x - a^2)...(x - a^N)` where `a` is primitive (`2`), `N` = number of recovery volumes / sectors.
-* Encoding: linear feedback shift register with taps `g(x)`. Input `Data[0..DataSize-1]` (sector bytes), output `Dest[0..N-1]` parity.
-* Decoding: syndrome `S[i] = sum_j Data[j] * a^{(i+1)*j}`, error locator via `Erasure` positions, then Vandermonde inversion.
+* Encoding: systematic Reed-Solomon, i.e. the codeword is `Data(x)·x^N mod g(x)`; the `N` remainder coefficients are the parity bytes.
+* Decoding: compute the syndromes of the received word, locate the erasures from the supplied positions, then solve the resulting linear system to recover the missing bytes.
+* Table layout and multiplication technique are implementation choices with no wire footprint; log/antilog tables over GF(256) are the usual approach.
 
 This codec belongs to the RAR4-era scheme and never appears inside RAR5 containers (RAR4 archives are a distinct container this project refuses at dispatch). RAR5 inline records and RAR5 `.rev` volumes are always the `GF(2^16)` codec above — no version-based selection exists on the RAR5 wire (all observed records carry shard version 1.1).
 
@@ -62,13 +62,25 @@ This codec belongs to the RAR4-era scheme and never appears inside RAR5 containe
 
 ## Reed-Solomon — GF(65536) `0x1100B` (current, 16-bit)
 
-* Irreducible: `x^16 + x^12 + x^3 + x + 1` (`0x1100B`, `0x1100B` truncated to 16 bits `0x100B` with high bit implicit).
-* Tables: `gf_exp` size `~262144` (`GF_SIZE+1`), `gf_log` size `GF_SIZE+1` where `GF_SIZE=65535`.
-* Matrix: Cauchy `Mx[i][j] = 1 / ((i + ND) ^ j)` where `ND` = number of data volumes/sectors, `i` in `0..NR-1`, `j` in `0..ND-1` (`^` is XOR, division is `gf` division). `NR` = number of recovery volumes.
-* Encoding: per 512-byte sector, `NR` parity sectors are computed as matrix-vector product over `GF(2^16)` (each `uint16` word is an element). Data is treated as `uint16` little-endian words per sector; odd trailing byte is padded.
-* Decoding: given `valid_flags` per volume (present/missing), select `NE` available parity rows covering the `NE` missing data positions, build `NE×ND` decoder matrix, invert, then reconstruct missing sectors. Opaque `lut_cache` caching of current data block’s log values.
+* Field: `GF(2^16)` with primitive polynomial `x^16 + x^12 + x^3 + x + 1`
+  (`0x1100B`). Reduction only ever needs the low 16 bits (`0x100B`), because the
+  `x^16` term cancels.
+* Units: one element per 16-bit word, stored little-endian inside each 512-byte
+  sector. An odd trailing byte is zero-padded.
+* Generator: systematic Cauchy matrix `M[i][j] = 1 / (x_i ^ y_j)`, with parity
+  coordinates `x_i = ND + i` (`i` in `0..NR-1`) and data coordinates
+  `y_j = j` (`j` in `0..ND-1`). `^` is XOR, `/` is field division, `ND` is the
+  number of data units and `NR` the number of recovery units. Distinct
+  coordinates make every square submatrix invertible, which is the property
+  decoding relies on.
+* Encoding: parity unit `i` is row `i` applied to the data vector.
+* Decoding: with `NE` missing data units and at least `NE` intact parity units,
+  the missing units follow from solving the `NE x NE` system made of the intact
+  parity rows restricted to the missing columns, after removing the contribution
+  of the intact data units. The solution is unique, so which intact parity rows
+  are used does not change the result.
 
-Constants from `recovery_record`:
+Wire constants:
 
 * `DATA_SECTOR = 512`
 * `RR_BLOCK_SIZE` is a multiple of `DATA_SECTOR`.
@@ -98,7 +110,7 @@ Constants from `recovery_record`:
 
 3. Write reconstructed volumes to new files (`*.1`, `*.2` etc.) or in-place if the archive is on a writable filesystem. The reconstructed archive is then `t`/`x` verified via its own header CRCs and file `CRC32`/`BLAKE2sp`.
 
-4. If reconstruction fails (too many erasures `>NR` or header CRC mismatch after correction), return `EXIT_REPAIR_CODE`.
+4. If reconstruction fails (too many erasures `>NR` or header CRC mismatch after correction), return repair error (exit code 3).
 
 Multivolume recovery with `.rev` files: the `r` command reads `*.part01.rar` + `*.rev` and rebuilds any missing `*.partNN.rar` as long as `NE <= NR`.
 
@@ -108,14 +120,16 @@ Multivolume recovery with `.rev` files: the `r` command reads `*.part01.rar` + `
 
 * `RR` service header itself has a header CRC32 (like any block).
 * Each sector’s parity is not individually checksummed; integrity is verified by re-computing the syndromes and by the file header `Data CRC32` / `BLAKE2sp` after reconstruction.
-* `rs16` codec verifies `gf_log`/`gf_exp` consistency and matrix invertibility before decoding; non-invertible (e.g., duplicate valid flags) is a hard error.
+* The decoder rejects geometries it cannot solve — more erasures than intact
+  parity units, or contradictory validity flags — as a hard error rather than
+  producing partial output.
 
 ---
 
 ## Implementation Notes
 
 * RAR5 writers always emit the `GF(2^16)` `0x1100B` codec; the RAR4 `0x11D` codec exists only in the separate RAR4 container (out of scope — legacy RAR is refused at dispatch).
-* Performance: `GF(2^16)` multiplication is `gf_exp[gf_log[a]+gf_log[b]]`; use `gf_exp` duplication to avoid modulo. Cauchy matrix inversion is `O(NE^3)` per stripe — cache the inverted matrix per `valid_flags` pattern (only one inversion per repair, not per sector).
+* Performance: cost is dominated by the `GF(2^16)` matrix-vector product over the protected bytes. The linear system only has to be inverted once per damage pattern, not once per sector.
 * Threading: `rs16` update is data-parallel per stripe; writers use thread pool per `NR`.
 * Locator patching: `RR` offset is patched after parity is known, just like `QO` offset. Patching must also recompute the main header CRC.
 

@@ -15,7 +15,7 @@ RAR5 provides two independent encryption layers, both AES-256-CBC with PBKDF2-HM
 
 ### Password Handling
 
-Password is a Unicode string, converted to UTF-8, truncated to `128-1` bytes (warning `TruncPsw`). Comparison uses the truncated UTF-8 form.
+Password is a Unicode string, converted to UTF-8, truncated to max password length (127) bytes (warning `TruncPsw`). Comparison uses the truncated UTF-8 form.
 
 ### PBKDF2-HMAC-SHA256 Derivation
 
@@ -43,7 +43,7 @@ A 4-entry LRU cache of `(pwd, Salt, Lg2Count) → (Key, HashKey, PswCheck)` is a
 | Scope | When | Salt / IV Scope | Data Protected |
 |-------|------|-----------------|----------------|
 | **Header encryption (`-hp`)** | Archive created with header encryption flag | Archive-wide `HeaderSalt` (16) + per-block 16-byte clear IV prepended to each encrypted header | All headers after the encryption header: `Main`, `File`/`Service`, `End`, and their extra/data areas |
-| **File data encryption (`-p`)** | Per-file when password is set | Per-file `FileSalt` (16) + `FileInitV` (16) in `FHEXTRA_CRYPT` | File payload (compressed or stored bytes), zero-padded to 16 |
+| **File data encryption (`-p`)** | Per-file when password is set | Per-file `FileSalt` (16) + `file_iv` (16) in `FHEXTRA_CRYPT` | File payload (compressed or stored bytes), zero-padded to 16 |
 
 Both may be active simultaneously; header encryption always implies file encryption for files written after it.
 
@@ -65,7 +65,7 @@ When header encryption is active, recovery record (`RR`) and quick-open (`QO`) a
 
 Block framing: standard block prefix (`[Header CRC32|Header size|Header type 4|Header flags]`) + `Body` above as `[BodySize vint][Body bytes]`. This block itself is never encrypted; the 16-byte IV for the *next* header is stored in clear before that header’s bytes.
 
-**Checksum gate:** On read, compute `SHA256(PswCheck)[0..3]` and compare to stored `PswCheckCsum`. Mismatch does **not** fail immediately — it disables `UsePswCheck`, letting the header CRC decide (damaged `PswCheck` is treated as absent).
+**Checksum gate:** On read, compute `SHA256(PswCheck)[0..3]` and compare to stored `PswCheckCsum`. Mismatch does **not** fail immediately — it disables `use_psw_check`, letting the header CRC decide (damaged `PswCheck` is treated as absent).
 
 ### File Encryption Extra Record (`0x01`, in file extra `HFL_EXTRA`)
 
@@ -73,14 +73,14 @@ Block framing: standard block prefix (`[Header CRC32|Header size|Header type 4|H
 |-------|------|-------------|
 | Size | `vint` | From `Type` onward |
 | Type | `vint` | `0x01` |
-| Version | `vint` | `0` (reject `>0` as `CRYPT_UNSUPPORTED`) |
+| Version | `vint` | `0` (reject `>0` as unsupported encryption parameters) |
 | Flags | `vint` | `0x0001` `PswCheck` present, `0x0002` `HASHMAC` (tweaked checksums) |
-| KDF count | `byte` | `log2` (`>24` → `CRYPT_UNSUPPORTED`) |
+| KDF count | `byte` | `log2` (`>24` → unsupported encryption parameters) |
 | Salt | `16` | File salt |
-| IV | `16` | File IV (`InitV`) |
+| IV | `16` | File IV (initialization vector (`IV`)) |
 | Check value | `12` | If `0x0001` set: `PswCheck[8]` + `PswCheckCsum[4]` |
 
-If the stored `PswCheck` is `8` zero bytes in a service header (historical RAR 5.21 bug), `UsePswCheck` is forced `false`.
+If the stored `PswCheck` is `8` zero bytes in a service header (historical RAR 5.21 bug), `use_psw_check` is forced `false`.
 
 ---
 
@@ -88,8 +88,8 @@ If the stored `PswCheck` is `8` zero bytes in a service header (historical RAR 5
 
 ### Header Integrity
 
-* After decrypting a header block (AES-256-CBC with `Key` and the clear IV prepended to the block), verify the block’s `Header CRC32`. Failure after a correct `PswCheck` means corrupt archive; failure without `UsePswCheck` may be wrong password.
-* Early password check: if `UsePswCheck` is true, derive `PswCheck` from the supplied password and compare to stored `PswCheck`. Mismatch → `BADPSW` before attempting header CRC. If `UsePswCheck` is false, skip early check and rely on header CRC (which still requires the correct key).
+* After decrypting a header block (AES-256-CBC with `Key` and the clear IV prepended to the block), verify the block’s `Header CRC32`. Failure after a correct `PswCheck` means corrupt archive; failure without `use_psw_check` may be wrong password.
+* Early password check: if `use_psw_check` is true, derive `PswCheck` from the supplied password and compare to stored `PswCheck`. Mismatch → password verification failure before attempting header CRC. If `use_psw_check` is false, skip early check and rely on header CRC (which still requires the correct key).
 
 ### File Integrity (`HASHMAC`)
 
@@ -117,12 +117,12 @@ if EncryptHeaders:
     # RR and QO suppressed
 for each file:
     if EncryptFiles:
-        FileSalt, FileInitV = random(16), random(16)
+        FileSalt, file_iv = random(16), random(16)
         Key, HashKey, PswCheck = derive(pwd, FileSalt, 15)
         rawCRC = CRC32(unpacked); rawBLAKE = BLAKE2sp(unpacked)
         if HASHMAC: storedCRC/BLAKE = HMAC(HashKey, raw)
-        padded = pad(payload, 16); encrypted = AES-CBC(Key, FileInitV, padded)
-        emit FHEXTRA_CRYPT with FileSalt, FileInitV, 15, PswCheck+PswCheckCsum, HASHMAC
+        padded = pad(payload, 16); encrypted = AES-CBC(Key, file_iv, padded)
+        emit FHEXTRA_CRYPT with FileSalt, file_iv, 15, PswCheck+PswCheckCsum, HASHMAC
         payload = encrypted
 ```
 
@@ -131,18 +131,18 @@ for each file:
 ```
 if block type == HEAD_CRYPT:
     if CryptVersion>0 or Lg2Count>24: UnknownVersion → FailedHeaderDecryption
-    else UsePswCheck = (Flags & 0x0001) && SHA256(PswCheck)[0..3]==PswCheckCsum
+    else use_psw_check = (Flags & 0x0001) && SHA256(PswCheck)[0..3]==PswCheckCsum
     next headers: IV = next 16 clear bytes; decrypt block with Key derived from pwd+Salt
-    if UsePswCheck and derived PswCheck != stored: BADPSW (or prompt again if manual)
-    else if Header CRC mismatch: BADPSW or corrupt
+    if use_psw_check and derived PswCheck != stored: wrong password error (or prompt again if manual)
+    else if Header CRC mismatch: wrong password error or corrupt
 
 if file extra 0x01:
-    if CryptVersion>0 or Lg2Count>24: CRYPT_UNSUPPORTED → skip file, warn
-    else if UsePswCheck and SHA256(PswCheck)[0..3]!=stored: UsePswCheck=false
-         (and if 8 zero bytes in service header: UsePswCheck=false)
+    if CryptVersion>0 or Lg2Count>24: unsupported encryption error → skip file, warn
+    else if use_psw_check and SHA256(PswCheck)[0..3]!=stored: use_psw_check=false
+         (and if 8 zero bytes in service header: use_psw_check=false)
     Key, HashKey, PswCheck = derive(pwd, FileSalt, Lg2Count)
-    if UsePswCheck and PswCheck != stored: BADPSW
-    else decrypt payload (AES-CBC, FileInitV), unpack, verify HASHMAC tweak
+    if use_psw_check and PswCheck != stored: wrong password error
+    else decrypt payload (AES-CBC, file_iv), unpack, verify HASHMAC tweak
 ```
 
 All key material must be wiped after use.
@@ -152,5 +152,5 @@ All key material must be wiped after use.
 ## Limits and Compatibility
 
 * `CryptVersion>0` or `Lg2Count>24` is a hard unknown-version error (do not attempt decrypt).
-* RAR 1.5–4 filename encryption (`EncName`, `LHD_UNICODE`) does not exist in RAR5; names are in `HEAD_FILE` which is encrypted wholesale under `-hp`.
-* Password length `128` truncation is identical for header and file KDFs; excess is silently cut with warning.
+* RAR 1.5–4 filename encryption (legacy encrypted filename, legacy Unicode header flag) does not exist in RAR5; names are in `HEAD_FILE` which is encrypted wholesale under `-hp`.
+* Password length maximum password length (128 bytes) truncation is identical for header and file KDFs; excess is silently cut with warning.
