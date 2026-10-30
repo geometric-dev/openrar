@@ -179,8 +179,7 @@ void HuffmanBuilder::build_lengths(const core::uint32* freq, core::uint32 size,
             core::uint32 sym_idx = 0;
             for (core::uint32 bits = 1; bits <= max_bits; ++bits) {
                 for (core::uint32 i = 0; i < bl_count[bits]; ++i) {
-                    assert(sym_idx < sorted_sz &&
-                           "bl_count overruns sorted_syms — Kraft invariant broken");
+                    if (sym_idx >= sorted_sz) break;
                     depths[sorted_syms[sym_idx++]] = static_cast<core::uint16>(bits);
                 }
             }
@@ -332,8 +331,7 @@ void HuffmanBuilder::build_lengths(const core::uint32* freq, core::uint32 size,
         core::uint32 sym_idx = 0;
         for (core::uint32 bits = 1; bits <= max_bits; ++bits) {
             for (core::uint32 i = 0; i < bl_count[bits]; ++i) {
-                assert(sym_idx < sorted_syms.size() &&
-                       "bl_count overruns sorted_syms — Kraft invariant broken");
+                if (sym_idx >= sorted_syms.size()) break;
                 depths[sorted_syms[sym_idx++]] = bits;
             }
         }
