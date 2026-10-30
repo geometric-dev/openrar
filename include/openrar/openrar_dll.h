@@ -743,8 +743,9 @@ typedef struct {
                             // strict, so a successfully opened set always has
                             // every volume scanned (1 for single-volume)
     uint64_t recovery_size; // recovery record (RR service) size in bytes, 0 if none
-    uint32_t comment_len;   // archive comment length in bytes, 0 if none
-} openrar_archive_info_t;   // 24 bytes, fixed size
+        // Note: unaligned at offset 12 due to pack(1); read with memcpy on strict-alignment CPUs
+    uint32_t comment_len; // archive comment length in bytes, 0 if none
+} openrar_archive_info_t; // 24 bytes, fixed size
 #pragma pack(pop)
 
 // Query archive-level properties. If comment_len > 0, comment_out receives a
