@@ -13,9 +13,16 @@ public:
     static constexpr size_t BLOCK_SIZE = 64;
 
     Sha256();
+    ~Sha256() noexcept { wipe(); }
+    Sha256(const Sha256&) = default;
+    Sha256& operator=(const Sha256&) = default;
+    Sha256(Sha256&&) noexcept = default;
+    Sha256& operator=(Sha256&&) noexcept = default;
+
     void reset();
     void update(const void* data, size_t size);
     void finish(void* out_digest);
+    void wipe() noexcept;
 
     static void compute(const void* data, size_t size, void* out_digest);
 
