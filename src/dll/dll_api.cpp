@@ -989,8 +989,8 @@ struct FileArchiveHandle : ArchiveHandleBase {
             if (username_out) {
                 char* u = static_cast<char*>(std::malloc(h.owner_user.size() + 1));
                 if (!u) {
-                    if (*groupname_out) std::free(*groupname_out);
-                    *groupname_out = nullptr;
+                    if (groupname_out && *groupname_out) std::free(*groupname_out);
+                    if (groupname_out) *groupname_out = nullptr;
                     owner_out->flags = 0;
                     set_error("out of memory");
                     return RAR_ERR_NOMEM;
@@ -1006,8 +1006,8 @@ struct FileArchiveHandle : ArchiveHandleBase {
             if (groupname_out) {
                 char* g = static_cast<char*>(std::malloc(h.owner_group.size() + 1));
                 if (!g) {
-                    if (*username_out) std::free(*username_out);
-                    *username_out = nullptr;
+                    if (username_out && *username_out) std::free(*username_out);
+                    if (username_out) *username_out = nullptr;
                     owner_out->flags = 0;
                     set_error("out of memory");
                     return RAR_ERR_NOMEM;
