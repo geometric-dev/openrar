@@ -50,6 +50,13 @@ void test_gf_arithmetic() {
         REQUIRE(rs.gf_mul(i, inv) == 1);
     }
 
+    // Out-of-bounds protection (CRIT-06)
+    REQUIRE(rs.gf_mul(65536, 12345) == 0);
+    REQUIRE(rs.gf_mul(12345, 65536) == 0);
+    REQUIRE(rs.gf_mul(0xFFFFFFFFu, 12345) == 0);
+    REQUIRE(rs.gf_inv(65536) == 0);
+    REQUIRE(rs.gf_inv(0xFFFFFFFFu) == 0);
+
     std::cout << "[PASS] Galois Field GF(65536) Arithmetic\n";
 }
 

@@ -64,12 +64,12 @@ public:
     // region and cannot silently produce a wrong product.
     constexpr core::uint32 gf_add(core::uint32 a, core::uint32 b) const { return a ^ b; }
     core::uint32 gf_mul(core::uint32 a, core::uint32 b) const {
-        if (a == 0 || b == 0) return 0;
+        if (a == 0 || b == 0 || a > GF_SIZE || b > GF_SIZE) return 0;
         const core::uint32 sum = logarithm_[a] + logarithm_[b];
         return antilog_[sum >= GF_SIZE ? sum - GF_SIZE : sum];
     }
     core::uint32 gf_inv(core::uint32 a) const {
-        if (a == 0) return 0;
+        if (a == 0 || a > GF_SIZE) return 0;
         const core::uint32 e = logarithm_[a];
         return e == 0 ? 1u : antilog_[GF_SIZE - e];
     }
