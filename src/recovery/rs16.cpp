@@ -713,6 +713,12 @@ void ReedSolomon16::update_ecc_scalar(core::uint32 data_num, core::uint32 ecc_nu
             e_ptr[1] = static_cast<core::byte>((ec >> 8) & 0xFF);
             e_ptr += 2;
         }
+        if (block_size % 2 != 0) {
+            const size_t last = block_size - 1;
+            const core::uint16 word = static_cast<core::uint16>(data[last]);
+            const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
+            ecc[last] ^= static_cast<core::byte>(product & 0xFF);
+        }
         return;
     }
 
@@ -743,6 +749,12 @@ void ReedSolomon16::update_ecc_scalar(core::uint32 data_num, core::uint32 ecc_nu
         e_ptr[0] = static_cast<core::byte>(ec & 0xFF);
         e_ptr[1] = static_cast<core::byte>((ec >> 8) & 0xFF);
         e_ptr += 2;
+    }
+    if (block_size % 2 != 0) {
+        const size_t last = block_size - 1;
+        const core::uint16 word = static_cast<core::uint16>(data[last]);
+        const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
+        ecc[last] ^= static_cast<core::byte>(product & 0xFF);
     }
 }
 
@@ -788,6 +800,12 @@ void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, cons
             ecc[off] = static_cast<core::byte>(ec & 0xFF);
             ecc[off + 1] = static_cast<core::byte>((ec >> 8) & 0xFF);
         }
+        if (block_size % 2 != 0) {
+            const size_t last = block_size - 1;
+            const core::uint16 word = static_cast<core::uint16>(data[last]);
+            const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
+            ecc[last] ^= static_cast<core::byte>(product & 0xFF);
+        }
         return;
     }
 #endif
@@ -812,6 +830,12 @@ void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, cons
             ecc[off] = static_cast<core::byte>(ec & 0xFF);
             ecc[off + 1] = static_cast<core::byte>((ec >> 8) & 0xFF);
         }
+        if (block_size % 2 != 0) {
+            const size_t last = block_size - 1;
+            const core::uint16 word = static_cast<core::uint16>(data[last]);
+            const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
+            ecc[last] ^= static_cast<core::byte>(product & 0xFF);
+        }
         return;
     }
 #endif
@@ -831,6 +855,12 @@ void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, cons
             ecc[off] = static_cast<core::byte>(ec & 0xFF);
             ecc[off + 1] = static_cast<core::byte>((ec >> 8) & 0xFF);
         }
+        if (block_size % 2 != 0) {
+            const size_t last = block_size - 1;
+            const core::uint16 word = static_cast<core::uint16>(data[last]);
+            const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
+            ecc[last] ^= static_cast<core::byte>(product & 0xFF);
+        }
         return;
     }
     if (cpu.ssse3 && block_size >= 32) {
@@ -845,6 +875,12 @@ void ReedSolomon16::update_ecc(core::uint32 data_num, core::uint32 ecc_num, cons
                 static_cast<core::uint16>(ecc[off] | (ecc[off + 1] << 8)) ^ product);
             ecc[off] = static_cast<core::byte>(ec & 0xFF);
             ecc[off + 1] = static_cast<core::byte>((ec >> 8) & 0xFF);
+        }
+        if (block_size % 2 != 0) {
+            const size_t last = block_size - 1;
+            const core::uint16 word = static_cast<core::uint16>(data[last]);
+            const core::uint16 product = static_cast<core::uint16>(gf_mul(coeff, word));
+            ecc[last] ^= static_cast<core::byte>(product & 0xFF);
         }
         return;
     }
