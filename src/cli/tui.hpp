@@ -117,7 +117,7 @@ inline std::string truncate_utf8(const std::string& s, size_t max_cols) {
 }
 
 inline int format_eta_secs(double seconds) {
-    if (seconds < 0 || seconds > 360000) return -1;
+    if (!std::isfinite(seconds) || seconds < 0 || seconds > 360000) return -1;
     return static_cast<int>(seconds + 0.5);
 }
 
@@ -399,12 +399,17 @@ public:
         if (unp_bytes > 0 && packed_bytes > 0) {
             double diff =
                 (1.0 - static_cast<double>(packed_bytes) / static_cast<double>(unp_bytes)) * 100.0;
-            if (diff >= 0) {
-                ratio_str = " \x1b[38;2;109;114;128m— " +
-                            std::to_string(static_cast<int>(diff + 0.5)) + "% smaller\x1b[0m";
-            } else {
-                ratio_str = " \x1b[38;2;109;114;128m— " +
-                            std::to_string(static_cast<int>(-diff + 0.5)) + "% larger\x1b[0m";
+            if (std::isfinite(diff)) {
+                if (diff >= 0) {
+                    if (diff > 100.0) diff = 100.0;
+                    ratio_str = " \x1b[38;2;109;114;128m— " +
+                                std::to_string(static_cast<int>(diff + 0.5)) + "% smaller\x1b[0m";
+                } else {
+                    double larger = -diff;
+                    if (larger > 1000000.0) larger = 1000000.0;
+                    ratio_str = " \x1b[38;2;109;114;128m— " +
+                                std::to_string(static_cast<int>(larger + 0.5)) + "% larger\x1b[0m";
+                }
             }
         } else if (!extra.empty()) {
             ratio_str = " \x1b[38;2;109;114;128m— " + extra + "\x1b[0m";
