@@ -137,7 +137,7 @@ fs::path build_redir_archive(const fs::path& dir, const std::string& name, int r
     fb.unp_size = 0;
     fb.pack_size = -1;
     fb.method = 0;
-    fb.redir_type = redir_type;
+    fb.redir_type = static_cast<core::uint8>(redir_type);
     fb.redir_target = target;
     REQUIRE(format::HeaderWriter::write_file_block(s, fb));
     format::EndArcBlock eb;

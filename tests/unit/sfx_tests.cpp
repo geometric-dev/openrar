@@ -1,5 +1,5 @@
 // v1.23.0 SFX directive-engine unit tests (M1): the directive grammar and
-// SfxConfig caps (docs/sfx-v1.23-implementation-plan.md §4) and the
+// SfxConfig caps (docs/milestones/v1.23-sfx-implementation-plan.md §4) and the
 // ArchiveReader::read_archive_comment accessor (§3). Sandbox e2e suites
 // (gate 2) build on these in M6.
 

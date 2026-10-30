@@ -9,7 +9,7 @@
 namespace openrar::sfx {
 
 // v1.23.0 directive-engine config, parsed from the archive's CMT service
-// header by the SFX stub (docs/sfx-v1.23-implementation-plan.md §4).
+// header by the SFX stub (docs/milestones/v1.23-sfx-implementation-plan.md §4).
 //
 // Grammar: Key=Value lines, keys case-insensitive (normalized to lower),
 // LF/CRLF line endings, UTF-8 (a UTF-8 BOM is tolerated and stripped; an
