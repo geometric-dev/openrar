@@ -109,6 +109,9 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
     (1ull << 15) // High-throughput parallel compression (-mt)
 #define OPENRAR_ABI_FEATURE_MMAP                                                                   \
     (1ull << 16) // mapped read engine: openrar_archive_handle_read_entry_region
+#define OPENRAR_ABI_FEATURE_V2_STREAMING                                                           \
+    (1ull << 17) // v2.0 zero-allocation circular streaming & chunk memory model
+#define OPENRAR_ABI_FEATURE_V2_RECOVERY (1ull << 18) // v2.0 Cauchy RS16 accelerated recovery engine
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
