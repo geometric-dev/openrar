@@ -191,8 +191,10 @@ struct CompressPlan {
         }
         uint64_t ws = 0;
         if (ep.decision == EntryDecision::BlockStream) {
+            constexpr uint64_t MAX_ALLOWED_DICT = 64ULL * 1024ULL * 1024ULL * 1024ULL; // 64 GiB
+            const uint64_t clamped_dict = std::min(ep.dict_size, MAX_ALLOWED_DICT);
             // Compressor50 allocates buf_ (win_size + 5 MB), head_ (512 KB), and prev_ (4 * win_size)
-            ws = (ep.dict_size * 5) + (6ULL * 1024ULL * 1024ULL);
+            ws = (clamped_dict * 5) + (6ULL * 1024ULL * 1024ULL);
         } else {
             // Stored: in-memory payload if < 16 MiB, otherwise 1 MiB streaming buffer
             ws = std::min<uint64_t>(ep.raw_size, 16ULL * 1024ULL * 1024ULL);
