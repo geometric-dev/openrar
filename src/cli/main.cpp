@@ -1037,7 +1037,7 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
         for (const auto& j : jobs) s += j.entry->wire.size;
         return s;
     }();
-    g_prog.init("TESTING", "[38;2;95;184;176m", "[48;2;19;37;35m");
+    g_prog.init("TESTING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
     g_prog.set_totals(jobs.size(), total_bytes);
 
     size_t error_count = 0;
