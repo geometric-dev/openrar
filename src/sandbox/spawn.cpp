@@ -421,7 +421,7 @@ void install_macos_seatbelt() {
                                            "(deny process-exec)\n";
 
     char* errorbuf = nullptr;
-    if (::sandbox_init(kSeatbeltProfile, SANDBOX_NAMED, &errorbuf) != 0) {
+    if (::sandbox_init(kSeatbeltProfile, 0, &errorbuf) != 0) {
         if (errorbuf != nullptr) {
             std::fprintf(stderr, "openrar_worker: sandbox_init failed: %s\n", errorbuf);
             ::sandbox_free_error(errorbuf);
