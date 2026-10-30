@@ -539,18 +539,11 @@ void ReedSolomon16::fill_parity_coefficients() {
     // d of D_d / (x_i ^ y_d), where the x-coordinates are the parity slots and
     // the y-coordinates the data slots. All x_i differ from all y_d and from
     // each other, which makes every square submatrix of this matrix invertible.
-    std::vector<core::uint32> x(nr_);
-    std::vector<core::uint32> y(nd_);
-    for (core::uint32 i = 0; i < nr_; ++i) {
-        x[i] = nd_ + i;
-    }
-    for (core::uint32 d = 0; d < nd_; ++d) {
-        y[d] = d;
-    }
     for (core::uint32 i = 0; i < nr_; ++i) {
         core::uint32* row = &mx_[static_cast<size_t>(i) * nd_];
+        const core::uint32 x_coord = nd_ + i;
         for (core::uint32 d = 0; d < nd_; ++d) {
-            row[d] = gf_inv(gf_add(x[i], y[d]));
+            row[d] = gf_inv(gf_add(x_coord, d));
         }
     }
 }
