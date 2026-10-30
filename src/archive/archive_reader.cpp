@@ -1848,6 +1848,7 @@ int ArchiveReader::stream_payload(size_t idx, crypto::Rar5Keys* keys,
             }
         }
     } else {
+        if (entry.data_size > SIZE_MAX) return false;
         ExtentPullSource src(entry, path_, keys,
                              [this](const std::filesystem::path& vol, io::FileStream& vs) {
                                  return open_extent_source(vol, vs);
@@ -2198,12 +2199,13 @@ bool ArchiveReader::read_packed_data(const ArchiveEntry& entry,
     // shared stream_ (a data race with concurrent readers — report L16).
     io::FileStream local;
     if (!open_extent_source(path_, local)) return false;
+    if (entry.data_offset > static_cast<core::uint64>(INT64_MAX)) return false;
     local.seek(static_cast<core::int64>(entry.data_offset), io::SeekOrigin::Begin);
     // Bound the allocation by the bytes the file actually holds; data_size is
     // untrusted header data and must not size a vector directly.
     core::uint64 fsz = local.size();
     core::uint64 readable = fsz > entry.data_offset ? fsz - entry.data_offset : 0;
-    if (entry.data_size > readable) return false;
+    if (entry.data_size > SIZE_MAX || entry.data_size > readable) return false;
     out.resize(static_cast<size_t>(entry.data_size));
     return local.read(out.data(), out.size()) == out.size();
 }
@@ -2313,6 +2315,10 @@ bool ArchiveReader::select_unpacker(const ArchiveEntry& entry, UnpackerSelection
 bool ArchiveReader::decode_compressed(const ArchiveEntry& entry, const core::byte* src,
                                       size_t src_size,
                                       std::function<bool(const core::byte*, size_t)> flush_cb) {
+    if (entry.header.unp_size > SIZE_MAX) {
+        last_decompress_error_ = compress::DecompressErrorCode::AllocationFailed;
+        return false;
+    }
     bool chain = is_solid() || entry.header.is_solid;
     const size_t dest = static_cast<size_t>(entry.header.unp_size);
     // v1.37.0: the single decision function gates the two-phase parallel
@@ -2353,6 +2359,10 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry,
                                       std::function<size_t(core::byte*, size_t)> src_cb,
                                       size_t src_size,
                                       std::function<bool(const core::byte*, size_t)> flush_cb) {
+    if (entry.header.unp_size > SIZE_MAX) {
+        last_decompress_error_ = compress::DecompressErrorCode::AllocationFailed;
+        return false;
+    }
     bool chain = is_solid() || entry.header.is_solid;
     const size_t dest = static_cast<size_t>(entry.header.unp_size);
     if (!chain && !is_volume() && !entry.header.is_encrypted) {
@@ -3145,6 +3155,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
         crypto::Blake2sp m_b2;
         crypto::Crc32 m_crc;
         if (entry.header.method == 0) {
+            if (entry.header.unp_size > SIZE_MAX) return fail();
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > entry.memory_data.size()) write_len = entry.memory_data.size();
             if (disk_poll_cancel()) return fail();
@@ -3244,6 +3255,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
             return false;
         };
         if (entry.header.method == 0) {
+            if (entry.header.unp_size > SIZE_MAX) return fail();
             size_t write_len = static_cast<size_t>(entry.header.unp_size);
             if (write_len > cipher.size()) write_len = cipher.size();
             if (disk_poll_cancel()) return fail();
