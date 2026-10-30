@@ -239,6 +239,23 @@ static void test_pipeline_path_containment() {
         if (line.status == "refused-containment-path") refused = true;
     REQUIRE(refused);
     REQUIRE(seen_dest != hostile);
+
+    // Path= targeting a sensitive directory (e.g. startup/autostart) is refused (CRIT-03)
+#ifdef _WIN32
+    std::string hostile_startup =
+        "AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup";
+#else
+    std::string hostile_startup = ".config/autostart";
+#endif
+    std::string cmt_persist = "Path=" + hostile_startup + "\n";
+    sfx::SfxConfig cfg_persist = sfx::parse_sfx_config(bytes(cmt_persist));
+    sfx::PipelineResult r_persist = sfx::run_sfx_pipeline(
+        cfg_persist, eng, opts, [&](const std::string&, sfx::OverwriteDirective) { return 0; });
+    bool refused_persist = false;
+    for (const auto& line : r_persist.report)
+        if (line.status == "refused-sensitive-dir") refused_persist = true;
+    REQUIRE(refused_persist);
+
     std::cout << "[PASS] pipeline: Path= outside profile refused (containment)" << std::endl;
 }
 
