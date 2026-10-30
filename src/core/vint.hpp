@@ -12,8 +12,9 @@ constexpr size_t MAX_VINT_SIZE = 10;
 // Appends variable-length integer Value to Vect
 void push_vint(std::vector<byte>& vect, uint64 value);
 
-// Appends variable-length integer Value padded to exactly width bytes
-void push_vint_fixed(std::vector<byte>& vect, uint64 value, size_t width);
+// Appends variable-length integer Value padded to exactly width bytes.
+// Returns true if value fit within width * 7 bits; false if truncated.
+bool push_vint_fixed(std::vector<byte>& vect, uint64 value, size_t width);
 
 // Reads variable-length integer from buffer [data, data + size].
 // Returns true on success, populating value and bytes_read.
