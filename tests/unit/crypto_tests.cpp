@@ -68,7 +68,8 @@ void test_vint() {
 
     // Fixed-width vint
     std::vector<core::byte> fixed_buf;
-    core::push_vint_fixed(fixed_buf, 42, 4);
+    bool fit = core::push_vint_fixed(fixed_buf, 42, 4);
+    REQUIRE(fit);
     REQUIRE(fixed_buf.size() == 4);
     core::uint64 decoded = 0;
     size_t read_bytes = 0;
@@ -79,6 +80,12 @@ void test_vint() {
     REQUIRE(ok);
     REQUIRE(decoded == 42);
     REQUIRE(read_bytes == fixed_buf.size());
+
+    // MED-04: push_vint_fixed returns false when value overflows width * 7 bits
+    std::vector<core::byte> vint_overflow_buf;
+    bool overflow_fit = core::push_vint_fixed(vint_overflow_buf, 1ULL << 28, 4);
+    REQUIRE_FALSE(overflow_fit);
+    REQUIRE(vint_overflow_buf.size() == 4);
 
     // Hardening Test: 100 consecutive 0x80 bytes (unbounded continuation)
     std::vector<core::byte> unbounded_buf(100, 0x80);
