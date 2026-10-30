@@ -51,9 +51,9 @@ public:
     // byte. Used for the PswCheck password-verification compare, where an
     // early-exit memcmp would create a timing side-channel leak.
     static inline bool constant_time_equal(const core::byte* a, const core::byte* b, size_t n) {
-        core::byte diff = 0;
+        volatile core::byte diff = 0;
         for (size_t i = 0; i < n; ++i) {
-            diff |= static_cast<core::byte>(a[i] ^ b[i]);
+            diff = static_cast<core::byte>(diff | (a[i] ^ b[i]));
         }
         return diff == 0;
     }
