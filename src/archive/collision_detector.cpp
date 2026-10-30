@@ -106,17 +106,16 @@ bool CollisionDetector::detect(const std::vector<CollisionEntry>& entries,
         // file-vs-dir: a FILE whose path is a strict component-prefix
         // (after NFC) of another entry — in either registration order —
         // makes the tree un-satisfiable on disk.
-        if (!e.is_dir) {
-            for (size_t j = 0; j < i; ++j) {
-                // (a) this FILE is a prefix of an earlier entry
-                if (is_strict_component_prefix(views[i].nfc_components, views[j].nfc_components)) {
-                    add(i, j, "file_vs_dir");
-                }
-                // (b) an earlier FILE is a prefix of this entry
-                if (!entries[j].is_dir &&
-                    is_strict_component_prefix(views[j].nfc_components, views[i].nfc_components)) {
-                    add(j, i, "file_vs_dir");
-                }
+        for (size_t j = 0; j < i; ++j) {
+            // (a) this FILE is a prefix of an earlier entry
+            if (!e.is_dir &&
+                is_strict_component_prefix(views[i].nfc_components, views[j].nfc_components)) {
+                add(i, j, "file_vs_dir");
+            }
+            // (b) an earlier FILE is a prefix of this entry
+            if (!entries[j].is_dir &&
+                is_strict_component_prefix(views[j].nfc_components, views[i].nfc_components)) {
+                add(j, i, "file_vs_dir");
             }
         }
     }
