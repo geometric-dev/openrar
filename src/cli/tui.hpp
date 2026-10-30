@@ -94,10 +94,42 @@ inline size_t utf8_seq_len(unsigned char c) {
     return c >= 0xF0 ? size_t(4) : c >= 0xE0 ? size_t(3) : c >= 0xC0 ? size_t(2) : size_t(1);
 }
 
+inline size_t ansi_seq_len(const std::string& s, size_t pos) {
+    if (pos >= s.size() || static_cast<unsigned char>(s[pos]) != 0x1b) return 0;
+    if (pos + 1 >= s.size()) return 1;
+    if (s[pos + 1] == '[') {
+        size_t j = pos + 2;
+        while (j < s.size() && (static_cast<unsigned char>(s[j]) >= 0x20 &&
+                                static_cast<unsigned char>(s[j]) <= 0x3F)) {
+            ++j;
+        }
+        if (j < s.size() && (static_cast<unsigned char>(s[j]) >= 0x40 &&
+                             static_cast<unsigned char>(s[j]) <= 0x7E)) {
+            return (j + 1) - pos;
+        }
+        return j - pos;
+    }
+    if (s[pos + 1] == ']') {
+        size_t j = pos + 2;
+        while (j < s.size()) {
+            if (s[j] == 0x07) return (j + 1) - pos;
+            if (s[j] == 0x1b && j + 1 < s.size() && s[j + 1] == '\\') return (j + 2) - pos;
+            ++j;
+        }
+        return j - pos;
+    }
+    return 2;
+}
+
 inline std::string truncate_utf8(const std::string& s, size_t max_cols) {
     if (max_cols == 0) return std::string();
     size_t total = 0;
     for (size_t i = 0; i < s.size();) {
+        if (s[i] == '\x1b') {
+            const size_t alen = ansi_seq_len(s, i);
+            i += (alen > 0 ? alen : 1);
+            continue;
+        }
         const size_t len = utf8_seq_len(static_cast<unsigned char>(s[i]));
         if (i + len > s.size()) break; // truncated tail: not counted
         ++total;
@@ -107,13 +139,25 @@ inline std::string truncate_utf8(const std::string& s, size_t max_cols) {
     const size_t budget = max_cols - 1; // room for the ellipsis itself
     size_t cols = 0;
     size_t i = 0;
+    bool has_ansi = false;
     while (i < s.size() && cols < budget) {
+        if (s[i] == '\x1b') {
+            has_ansi = true;
+            const size_t alen = ansi_seq_len(s, i);
+            i += (alen > 0 ? alen : 1);
+            continue;
+        }
         const size_t len = utf8_seq_len(static_cast<unsigned char>(s[i]));
         if (i + len > s.size()) break;
         ++cols;
         i += len;
     }
-    return s.substr(0, i) + "\xe2\x80\xa6";
+    while (i < s.size() && s[i] == '\x1b') {
+        has_ansi = true;
+        const size_t alen = ansi_seq_len(s, i);
+        i += (alen > 0 ? alen : 1);
+    }
+    return s.substr(0, i) + "\xe2\x80\xa6" + (has_ansi ? "\x1b[0m" : "");
 }
 
 inline int format_eta_secs(double seconds) {
