@@ -2,10 +2,10 @@ name: CI Build & Test
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, v2 ]
     tags: [ 'v*' ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, v2 ]
 
 # Cancel superseded runs on the same branch/PR: a second push within the
 # ~9-minute matrix window replaces the first, halving feedback latency and
