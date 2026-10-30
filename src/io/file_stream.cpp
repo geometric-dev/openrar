@@ -691,7 +691,8 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
     // behavior for root.
     if (mode == CommitMode::ReplaceExisting) {
         struct stat st;
-        if (::stat(dest.c_str(), &st) == 0 && ::faccessat(AT_FDCWD, dest.c_str(), W_OK, 0) != 0) {
+        if (::lstat(dest.c_str(), &st) == 0 && !S_ISLNK(st.st_mode) &&
+            ::faccessat(AT_FDCWD, dest.c_str(), W_OK, 0) != 0) {
             last_error_ = EACCES;
             return false;
         }
