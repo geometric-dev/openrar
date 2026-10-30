@@ -2497,6 +2497,13 @@ void test_renderer_core() {
     REQUIRE(hostile.find("\x1b[4;20H") == std::string::npos);
     REQUIRE(hostile.find("x?[4;20Hy.txt") != std::string::npos);
 
+    // MED-11: ANSI-aware truncate_utf8
+    const std::string colored_msg = "\x1b[38;2;95;184;176mabcdefghij\x1b[0m";
+    const std::string tr = openrar::cli::truncate_utf8(colored_msg, 6);
+    REQUIRE(tr.find("\xe2\x80\xa6") != std::string::npos);
+    REQUIRE(tr.find("\x1b[0m") != std::string::npos);
+    REQUIRE(tui_visible_cols(tr) == 6);
+
     // Spin mode renders exactly ONE line; zero totals do not divide by zero.
     TuiState sp;
     sp.mode = TuiState::Mode::Spin;
