@@ -166,7 +166,7 @@ int inspect_archive(const InspectOptions& opt) {
                      << static_cast<int>(cb.salt[i]);
             }
             f.salt_hex = s_ss.str();
-            f.kdf_iterations = 1u << cb.lg2_count;
+            f.kdf_iterations = (cb.lg2_count < 31) ? (1u << cb.lg2_count) : 0u;
         } else if (status == archive::RAR_ERR_NOT_RAR) {
             std::cerr << "Error: Not a RAR archive: " << opt.arc_path << "\n";
             return 13; // EXIT_BAD_ARCHIVE
@@ -194,7 +194,7 @@ int inspect_archive(const InspectOptions& opt) {
                      << static_cast<int>(cb.salt[i]);
             }
             f.salt_hex = s_ss.str();
-            f.kdf_iterations = 1u << cb.lg2_count;
+            f.kdf_iterations = (cb.lg2_count < 31) ? (1u << cb.lg2_count) : 0u;
         }
 
         // Tally service blocks and entry stats
