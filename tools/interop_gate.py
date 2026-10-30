@@ -919,8 +919,7 @@ def test_ctest():
     return True
 
 def test_exit_code_parity(openrar, unrar):
-    """Stage 15: CLI exit codes must match the unrar taxonomy (errors.hpp
-    RAR_EXIT). Measured scenarios: healthy=0, missing=10 (NO_FILES),
+    """Stage 15: CLI exit codes must match the reference CLI taxonomy. Measured scenarios: healthy=0, missing=10 (NO_FILES),
     not-an-archive=13 (BADARC), corrupt=3 (CRC), usage=7 (USERERROR),
     no-files-matched=10 for extraction. Documented deviation: testing an
     encrypted archive WITHOUT a password returns 11 (BADPWD) here, while
