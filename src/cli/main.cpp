@@ -28,6 +28,7 @@
 #include "../crypto/crc32.hpp"
 #include "../crypto/sha256.hpp"
 #include "benchmark.hpp"
+#include "json_output.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -538,6 +539,87 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
         return EXIT_OPEN;
     }
 
+    if (g_json_stdout_only) {
+        std::cout << "{\n"
+                  << "  \"command\": \"list\",\n"
+                  << "  \"version\": \"2.0.0\",\n"
+                  << "  \"archive\": \"" << escape_json_string(arc_path) << "\",\n"
+                  << "  \"format\": \"RAR5\",\n"
+                  << "  \"solid\": " << (reader.is_solid() ? "true" : "false") << ",\n"
+                  << "  \"locked\": " << (reader.is_locked() ? "true" : "false") << ",\n"
+                  << "  \"volume\": " << (reader.is_volume() ? "true" : "false") << ",\n"
+                  << "  \"recovery_record\": " << (reader.has_recovery_record() ? "true" : "false")
+                  << ",\n";
+
+        std::string cmt_text;
+        for (const auto& entry : reader.entries()) {
+            if (entry.header.is_service && entry.header.service_type == "CMT") {
+                if (!entry.header.sub_data.empty()) {
+                    cmt_text.assign(reinterpret_cast<const char*>(entry.header.sub_data.data()),
+                                    entry.header.sub_data.size());
+                } else if (entry.data_size > 0 && entry.data_size <= 1024 * 1024) {
+                    std::vector<char> cbuf(static_cast<size_t>(entry.data_size));
+                    auto& s = reader.stream();
+                    if (s.seek(static_cast<core::int64>(entry.data_offset),
+                               io::SeekOrigin::Begin) &&
+                        s.read(reinterpret_cast<core::byte*>(cbuf.data()), cbuf.size()) ==
+                            cbuf.size()) {
+                        cmt_text.assign(cbuf.data(), cbuf.size());
+                    }
+                }
+                break;
+            }
+        }
+        if (!cmt_text.empty()) {
+            std::cout << "  \"comment\": \"" << escape_json_string(cmt_text) << "\",\n";
+        }
+
+        std::cout << "  \"entries\": [\n";
+        bool first_entry = true;
+        for (const auto& entry : reader.entries()) {
+            if (entry.header.is_service) continue;
+            if (is_path_excluded(entry.header.file_name, exclude_patterns)) continue;
+            if (!file_masks.empty()) {
+                bool matched = false;
+                for (const auto& mask : file_masks) {
+                    if (io::wildcard_match(mask, entry.header.file_name) ||
+                        io::wildcard_match(
+                            mask,
+                            std::filesystem::path(entry.header.file_name).filename().string())) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) continue;
+            }
+
+            if (!first_entry) std::cout << ",\n";
+            first_entry = false;
+
+            std::ostringstream crc_ss;
+            crc_ss << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
+                   << entry.header.data_crc32;
+
+            std::cout << "    {\n"
+                      << "      \"name\": \"" << escape_json_string(entry.header.file_name)
+                      << "\",\n"
+                      << "      \"unpacked_size\": " << entry.header.unp_size << ",\n"
+                      << "      \"packed_size\": " << entry.header.pack_size << ",\n"
+                      << "      \"method\": " << entry.header.method << ",\n"
+                      << "      \"crc32\": \"" << crc_ss.str() << "\",\n"
+                      << "      \"solid\": " << (entry.header.is_solid ? "true" : "false") << ",\n"
+                      << "      \"is_dir\": "
+                      << (((entry.header.file_flags & format::file_flags::DIRECTORY) != 0)
+                              ? "true"
+                              : "false")
+                      << ",\n"
+                      << "      \"dictionary_bytes\": " << entry.header.win_size << "\n"
+                      << "    }";
+        }
+        std::cout << "\n  ]\n}\n";
+        return 0;
+    }
+
     if (!g_quiet_mode) {
         if (!bare) {
             std::cout << "Archive: " << arc_path << "\n"
@@ -861,6 +943,7 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
         std::cerr << "Cannot open " << arc_path << "\n";
         return EXIT_NO_FILES;
     }
+    if (g_json_stdout_only) set_prog_out(std::cerr);
     forward_decode_threads_to_worker(decode_threads);
 
     sandbox::WorkerBroker broker;
@@ -936,7 +1019,7 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
     }
 
     if (!g_quiet_mode && !is_vt_supported()) {
-        std::cout << "Testing archive: " << arc_path << "\n\n";
+        (g_json_stdout_only ? std::cerr : std::cout) << "Testing archive: " << arc_path << "\n\n";
     }
 
     const core::uint64 total_bytes = [&] {
@@ -955,7 +1038,8 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
         idx++;
         g_prog.start_file(job.entry->path, idx);
         if (!g_quiet_mode && !is_vt_supported()) {
-            std::cout << "Testing     " << sanitize_for_display(job.entry->path) << "... ";
+            (g_json_stdout_only ? std::cerr : std::cout)
+                << "Testing     " << sanitize_for_display(job.entry->path) << "... ";
         }
         // The in-proc contract: encrypted entries with no password can not be
         // verified — reported as a skip and counted as an error (11), never
@@ -964,7 +1048,8 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
         if (job.entry->wire.is_encrypted && password.empty()) {
             skipped_count++;
             if (!g_quiet_mode && !is_vt_supported())
-                std::cout << "SKIPPED (encrypted - no password)" << "\n";
+                (g_json_stdout_only ? std::cerr : std::cout)
+                    << "SKIPPED (encrypted - no password)" << "\n";
             error_count++;
             g_prog.update_bytes(job.entry->wire.size);
             continue;
@@ -986,11 +1071,24 @@ int test_archive_worker(const std::string& arc_path, const std::string& password
                 last_worker_rc = rc;
             }
         }
-        if (!g_quiet_mode && !is_vt_supported()) std::cout << (okv ? "OK" : "FAILED") << "\n";
+        if (!g_quiet_mode && !is_vt_supported())
+            (g_json_stdout_only ? std::cerr : std::cout) << (okv ? "OK" : "FAILED") << "\n";
         g_prog.update_bytes(job.entry->wire.size);
     }
     g_prog.done(jobs.size(), "tested", "", total_bytes, 0,
                 error_count == 0 ? "all OK" : (std::to_string(error_count) + " errors"));
+    if (g_json_stdout_only) {
+        std::cout << "{\n"
+                  << "  \"command\": \"test\",\n"
+                  << "  \"version\": \"2.0.0\",\n"
+                  << "  \"archive\": \"" << escape_json_string(arc_path) << "\",\n"
+                  << "  \"status\": \"" << (error_count == 0 ? "OK" : "FAILED") << "\",\n"
+                  << "  \"tested_entries\": " << jobs.size() << ",\n"
+                  << "  \"tested_bytes\": " << total_bytes << ",\n"
+                  << "  \"error_count\": " << error_count << ",\n"
+                  << "  \"skipped_count\": " << skipped_count << "\n"
+                  << "}\n";
+    }
     if (error_count == 0) return EXIT_OK;
     if (last_worker_rc == archive::RAR_ERR_CONTAINMENT_BREACH) return EXIT_FATAL;
     if (last_worker_rc == archive::RAR_ERR_PASSWORD_TIMEOUT) return EXIT_PASSWORD_TIMEOUT;
@@ -1074,6 +1172,7 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
         }
     }
 
+    if (g_json_stdout_only) set_prog_out(std::cerr);
     g_prog.init("TESTING", "\x1b[38;2;95;184;176m", "\x1b[48;2;19;37;35m");
     g_prog.set_totals(total_entries, total_bytes);
 
@@ -1252,6 +1351,20 @@ int test_archive(const std::string& arc_path, const std::string& password = "",
 
     g_prog.done(total_entries, "tested", "", total_bytes, 0,
                 error_count == 0 ? "all OK" : (std::to_string(error_count) + " errors"));
+    if (g_json_stdout_only) {
+        std::cout << "{\n"
+                  << "  \"command\": \"test\",\n"
+                  << "  \"version\": \"2.0.0\",\n"
+                  << "  \"archive\": \"" << escape_json_string(arc_path) << "\",\n"
+                  << "  \"status\": \"" << (error_count == 0 ? "OK" : "FAILED") << "\",\n"
+                  << "  \"tested_entries\": " << total_entries << ",\n"
+                  << "  \"tested_bytes\": " << total_bytes << ",\n"
+                  << "  \"error_count\": " << error_count << ",\n"
+                  << "  \"skipped_count\": " << skipped_count.load() << "\n"
+                  << "}\n";
+        return error_count == 0 ? EXIT_OK
+                                : (skipped_count.load() > 0 ? EXIT_BAD_PASSWORD : EXIT_CRC);
+    }
     if (error_count == 0) return EXIT_OK;
     // Taxonomy: unverified encrypted entries / BADPSW are password
     // failures (11); other verification failures are checksum- or
