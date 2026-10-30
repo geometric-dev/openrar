@@ -29,6 +29,7 @@
 #include "../crypto/sha256.hpp"
 #include "benchmark.hpp"
 #include "json_output.hpp"
+#include "inspect.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -447,6 +448,7 @@ void print_help() {
         << "  p             Print file to stdout\n"
         << "  r             Repair damaged archive\n"
         << "  rr[N]         Add data recovery record\n"
+        << "  inspect       Forensic analysis and health x-ray of archive\n"
         << "  s             Convert archive to SFX\n"
         << "  t             Test archive integrity\n"
         << "  u             Update files in archive\n"
@@ -4605,6 +4607,12 @@ static int cli_main(int argc, char* argv[]) {
             }
         }
         return rc;
+    } else if (cmd == "inspect") {
+        InspectOptions iopt;
+        iopt.arc_path = arc_path;
+        iopt.password = password;
+        iopt.json = g_json_stdout_only;
+        return openrar::cli::inspect_archive(iopt);
     } else if (cmd == "b" || cmd == "bench") {
         BenchmarkOptions bopt;
         bopt.threads = mt_flag;
