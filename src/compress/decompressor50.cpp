@@ -62,10 +62,12 @@ void BitReader::refill() {
     if (end_ - p_ >= 8) {
         core::uint64 v = 0;
         std::memcpy(&v, p_, 8);
+#ifndef OPENRAR_BIG_ENDIAN
 #if defined(_MSC_VER)
         v = _byteswap_uint64(v);
 #else
         v = __builtin_bswap64(v);
+#endif
 #endif
         unsigned int bytes = (64 - n_) >> 3;
         p_ += bytes;
@@ -84,10 +86,12 @@ void BitReader::refill() {
         if (k == 0) return; // accumulator holds >= 57 bits
         core::uint64 v = 0;
         std::memcpy(&v, p_, k);
+#ifndef OPENRAR_BIG_ENDIAN
 #if defined(_MSC_VER)
         v = _byteswap_uint64(v);
 #else
         v = __builtin_bswap64(v);
+#endif
 #endif
         v >>= (64 - 8 * k);
         if (k == 8) {
