@@ -310,7 +310,7 @@ public:
     // before any output is created (10-sfx.md:80).
     static constexpr core::uint64 MAX_SFX_SIZE = 0x400000ULL; // 4 MiB
 
-    // Helpers for CLI: resolve default.sfx lookup and apply_sfx_extension
+    // Helpers for CLI: resolve default.sfx lookup and extension rules
     static std::filesystem::path resolve_sfx_stub(const std::string& sfx_name_raw,
                                                   const char* argv0 = nullptr);
     static std::filesystem::path apply_sfx_extension(const std::filesystem::path& arc_path);
