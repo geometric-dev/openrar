@@ -138,7 +138,7 @@ Service headers are file-header-shaped blocks with `HFL_CHILD` and identifier na
 
 ### Archive Comment (`CMT`)
 
-* Placed after main header, before any file. Name `CMT`. Uncompressed (`method 0`), `PackSize == unpacked_size` is the UTF-8 comment length. Data area holds the comment. Not compressed even if archive method is compressed.
+* Placed after main header, before any file. Name `CMT`. Uncompressed (`method 0`), `Data size == Unpacked size` is the UTF-8 comment length. Data area holds the comment. Not compressed even if archive method is compressed.
 
 ### Quick Open (`QO`)
 
