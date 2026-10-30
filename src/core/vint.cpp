@@ -13,7 +13,7 @@ void push_vint(std::vector<byte>& vect, uint64 value) {
     } while (value != 0);
 }
 
-void push_vint_fixed(std::vector<byte>& vect, uint64 value, size_t width) {
+bool push_vint_fixed(std::vector<byte>& vect, uint64 value, size_t width) {
     for (size_t i = 0; i < width; ++i) {
         byte b = static_cast<byte>(value & 0x7F);
         value >>= 7;
@@ -22,6 +22,7 @@ void push_vint_fixed(std::vector<byte>& vect, uint64 value, size_t width) {
         }
         vect.push_back(b);
     }
+    return value == 0;
 }
 
 bool read_vint(const byte* data, size_t size, uint64& value, size_t& bytes_read) {
