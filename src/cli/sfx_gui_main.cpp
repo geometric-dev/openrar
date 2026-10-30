@@ -122,8 +122,14 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         return std::atoi(args[2].c_str());
     }
 
-    wchar_t self_w[MAX_PATH];
-    GetModuleFileNameW(nullptr, self_w, MAX_PATH);
+    wchar_t self_w[32768];
+    DWORD len = GetModuleFileNameW(nullptr, self_w, static_cast<DWORD>(std::size(self_w)));
+    if (len == 0 || len >= std::size(self_w)) {
+        MessageBoxW(nullptr, L"Failed to determine executable path.", L"OpenRAR SFX",
+                    MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    self_w[len] = 0;
     const std::filesystem::path self_path(openrar::sfx::wide_to_utf8(self_w));
 
     openrar::archive::ArchiveReader reader;
