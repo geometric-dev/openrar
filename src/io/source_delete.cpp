@@ -33,6 +33,10 @@ bool wipe_delete(const std::filesystem::path& path, std::error_code& ec) {
         }
         f.seekg(0, std::ios::end);
         const std::streamoff len = f.tellg();
+        if (len < 0) {
+            ec = std::make_error_code(std::errc::io_error);
+            return false;
+        }
         f.seekp(0, std::ios::beg);
         std::vector<char> zeros(64 * 1024, 0);
         std::streamoff done = 0;
