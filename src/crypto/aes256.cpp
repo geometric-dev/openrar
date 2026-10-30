@@ -580,6 +580,8 @@ bool Aes256::encrypt_cbc(core::byte* data, size_t size, core::byte* iv) const {
     // One alignment gate in front of every implementation path (scalar,
     // AES-NI, NEON); see aes256.hpp for the contract.
     if (size % BLOCK_SIZE != 0) return false;
+    if (size > 0 && (!data || !iv)) return false;
+    if (size == 0) return true;
 #ifdef OPENRAR_AES_NI
     if (has_ni_) {
         aesni_encrypt_cbc(data, size, iv, ni_enc_keys_);
@@ -622,6 +624,8 @@ bool Aes256::decrypt_cbc(core::byte* data, size_t size, core::byte* iv) const {
     // (format/header_reader.cpp). Do not change decrypt_cbc into a
     // non-mutating take-IV-by-value API.
     if (size % BLOCK_SIZE != 0) return false;
+    if (size > 0 && (!data || !iv)) return false;
+    if (size == 0) return true;
 #ifdef OPENRAR_AES_NI
     if (has_ni_) {
         aesni_decrypt_cbc(data, size, iv, ni_dec_keys_);
