@@ -5,6 +5,7 @@
 #include "../format/headers.hpp"
 #include "../io/file_stream.hpp"
 #include "json_output.hpp"
+#include "progress.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -297,33 +298,42 @@ int inspect_archive(const InspectOptions& opt) {
     }
 
     // Terminal Forensic Dashboard
-    std::cout
-        << "\n  \033[1;36mOpenRAR 2.0.0 Archive Forensics & Health X-Ray\033[0m\n"
-        << "  \033[90m==================================================================\033[0m\n"
-        << "  Archive: \033[1;37m" << f.path << "\033[0m (" << f.file_size << " bytes)\n"
-        << "  Status:  " << (f.read_error ? "\033[1;33m" : "\033[1;32m") << f.status
-        << "\033[0m\n\n"
-        << "  \033[1;37m[Envelope & Physical Layout]\033[0m\n"
-        << "    Format:          " << f.format << "\n"
-        << "    Solid Chain:     "
-        << (f.is_solid ? "Enabled (Inter-file dictionary history)"
-                       : "Disabled (Independent entries)")
-        << "\n"
-        << "    Multi-Volume:    "
-        << (f.is_volume ? "Yes (Spanned volume member)" : "No (Standalone archive)") << "\n"
-        << "    SFX Stub:        "
-        << (f.has_sfx ? ("Yes (" + std::to_string(f.sfx_offset) + " bytes prepended)") : "None")
-        << "\n"
-        << "    Lock Status:     " << (f.is_locked ? "Locked against modification" : "Unlocked")
-        << "\n"
-        << "    Integrity State: "
-        << (f.truncated ? "\033[1;31mTruncated Archive (Declared data exceeds volume)\033[0m"
-                        : "\033[1;32mClean (Valid boundaries)\033[0m")
-        << "\n\n";
+    const bool vt = is_vt_supported();
+    auto c = [vt](const char* code) -> const char* {
+        return vt ? code : "";
+    };
 
-    std::cout << "  \033[1;37m[Security & Cryptography]\033[0m\n"
+    std::cout << "\n  " << c("\033[1;36m") << "OpenRAR 2.0.0 Archive Forensics & Health X-Ray"
+              << c("\033[0m\n") << "  " << c("\033[90m")
+              << "=================================================================="
+              << c("\033[0m\n") << "  Archive: " << c("\033[1;37m") << f.path << c("\033[0m")
+              << " (" << f.file_size << " bytes)\n"
+              << "  Status:  " << (f.read_error ? c("\033[1;33m") : c("\033[1;32m")) << f.status
+              << c("\033[0m\n\n") << "  " << c("\033[1;37m") << "[Envelope & Physical Layout]"
+              << c("\033[0m\n") << "    Format:          " << f.format << "\n"
+              << "    Solid Chain:     "
+              << (f.is_solid ? "Enabled (Inter-file dictionary history)"
+                             : "Disabled (Independent entries)")
+              << "\n"
+              << "    Multi-Volume:    "
+              << (f.is_volume ? "Yes (Spanned volume member)" : "No (Standalone archive)") << "\n"
+              << "    SFX Stub:        "
+              << (f.has_sfx ? ("Yes (" + std::to_string(f.sfx_offset) + " bytes prepended)")
+                            : "None")
+              << "\n"
+              << "    Lock Status:     "
+              << (f.is_locked ? "Locked against modification" : "Unlocked") << "\n"
+              << "    Integrity State: "
+              << (f.truncated
+                      ? (std::string(c("\033[1;31m")) +
+                         "Truncated Archive (Declared data exceeds volume)" + c("\033[0m"))
+                      : (std::string(c("\033[1;32m")) + "Clean (Valid boundaries)" + c("\033[0m")))
+              << "\n\n";
+
+    std::cout << "  " << c("\033[1;37m") << "[Security & Cryptography]" << c("\033[0m\n")
               << "    Header Cipher:   "
-              << (f.header_encrypted ? ("\033[1;33m" + f.cipher + " (Encrypted Headers)\033[0m")
+              << (f.header_encrypted ? (std::string(c("\033[1;33m")) + f.cipher +
+                                        " (Encrypted Headers)" + c("\033[0m"))
                                      : "Plaintext Headers")
               << "\n";
     if (f.header_encrypted) {
@@ -334,9 +344,10 @@ int inspect_archive(const InspectOptions& opt) {
     std::cout << "    Payload Encr.:   " << f.encrypted_files << " / "
               << (f.file_count + f.dir_count) << " entries encrypted\n\n";
 
-    std::cout << "  \033[1;37m[Cauchy RS16 Recovery Geometry]\033[0m\n";
+    std::cout << "  " << c("\033[1;37m") << "[Cauchy RS16 Recovery Geometry]" << c("\033[0m\n");
     if (f.recovery.present) {
-        std::cout << "    Protection:      \033[1;32mActive (Cauchy RS16 Reed-Solomon)\033[0m\n"
+        std::cout << "    Protection:      " << c("\033[1;32m")
+                  << "Active (Cauchy RS16 Reed-Solomon)" << c("\033[0m\n")
                   << "    Sector Size:     " << f.recovery.sector_size << " bytes\n"
                   << "    Geometry:        K = " << f.recovery.data_sectors
                   << " data sectors, M = " << f.recovery.recovery_sectors << " parity sectors ("
@@ -346,25 +357,27 @@ int inspect_archive(const InspectOptions& opt) {
                   << "    Repair Capacity: Can reconstruct up to " << f.recovery.recovery_sectors
                   << " missing/punctured sectors\n";
     } else {
-        std::cout << "    Protection:      \033[90mNone (No recovery record present)\033[0m\n";
+        std::cout << "    Protection:      " << c("\033[90m") << "None (No recovery record present)"
+                  << c("\033[0m\n");
     }
 
-    std::cout
-        << "\n  \033[1;37m[Catalog & Storage Attribution]\033[0m\n"
-        << "    Files / Dirs:    " << f.file_count << " files, " << f.dir_count << " dirs, "
-        << f.symlink_count << " links\n"
-        << "    Unpacked Size:   " << f.total_unpacked_bytes << " bytes\n"
-        << "    Packed Size:     " << f.total_packed_bytes << " bytes (" << std::fixed
-        << std::setprecision(1) << f.compression_ratio << "% ratio)\n"
-        << "    Max Dictionary:  " << (f.max_dictionary_bytes / 1024) << " KiB\n"
-        << "    QuickOpen Block: "
-        << (f.has_quick_open ? ("Present (" + std::to_string(f.qo_size) + " bytes)") : "None")
-        << "\n"
-        << "    Archive Comment: "
-        << (f.has_comment ? ("Present (" + std::to_string(f.comment_size) + " bytes)") : "None")
-        << "\n"
-        << "  "
-           "\033[90m==================================================================\033[0m\n\n";
+    std::cout << "\n  " << c("\033[1;37m") << "[Catalog & Storage Attribution]" << c("\033[0m\n")
+              << "    Files / Dirs:    " << f.file_count << " files, " << f.dir_count << " dirs, "
+              << f.symlink_count << " links\n"
+              << "    Unpacked Size:   " << f.total_unpacked_bytes << " bytes\n"
+              << "    Packed Size:     " << f.total_packed_bytes << " bytes (" << std::fixed
+              << std::setprecision(1) << f.compression_ratio << "% ratio)\n"
+              << "    Max Dictionary:  " << (f.max_dictionary_bytes / 1024) << " KiB\n"
+              << "    QuickOpen Block: "
+              << (f.has_quick_open ? ("Present (" + std::to_string(f.qo_size) + " bytes)") : "None")
+              << "\n"
+              << "    Archive Comment: "
+              << (f.has_comment ? ("Present (" + std::to_string(f.comment_size) + " bytes)")
+                                : "None")
+              << "\n"
+              << "  " << c("\033[90m")
+              << "=================================================================="
+              << c("\033[0m\n\n");
 
     return f.read_error ? 1 : 0;
 }
