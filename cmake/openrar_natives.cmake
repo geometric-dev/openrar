@@ -58,7 +58,7 @@ endif()
 
 # Main CLI executable (native). When EMSCRIPTEN, this target is skipped — wasm uses src/wasm/wasm_api.cpp instead.
 if(NOT EMSCRIPTEN)
-    add_executable(openrar src/cli/main.cpp src/cli/benchmark.cpp src/cli/inspect.cpp)
+    add_executable(openrar src/cli/main.cpp src/cli/benchmark.cpp src/cli/inspect.cpp src/cli/diff.cpp)
     target_link_libraries(openrar PRIVATE openrar_core)
     # Single source of truth for the CLI banner version (Q2): the CMake
     # project version. main.cpp has an OFF fallback for bare manual builds.
