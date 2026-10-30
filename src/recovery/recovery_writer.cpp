@@ -826,7 +826,8 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
     core::uint64 shard = (max_vol + 1) & ~core::uint64(1);
     if (shard == 0) return false;
 
-    constexpr size_t REV_HEADER_MIN_BODY = 11; // version + DC + RC + shard_slot_index + RevCRC
+    constexpr size_t REV_HEADER_MIN_BODY =
+        11; // version + data_vols + parity_vols + shard_slot + rev_crc
     const size_t body_size = REV_HEADER_MIN_BODY + 12u * nd;
     if (body_size > 0x100000u) return false; // HeaderSize cap per spec
 
@@ -1285,9 +1286,9 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     // carries the authoritative (data_volume_count, parity_volume_count) + per-volume table.
     struct RevInfo {
         fs::path path;
-        core::uint32 rec_num{0};     // absolute slot: data_volume_count + index
-        core::uint32 payload_crc{0}; // expected CRC of the payload region
-        core::uint64 payload_off{0}; // payload start in the file
+        core::uint32 parity_slot_id{0}; // absolute slot: data_volume_count + index
+        core::uint32 payload_crc{0};    // expected CRC of the payload region
+        core::uint64 payload_off{0};    // payload start in the file
         bool valid{false};
     };
     std::vector<RevInfo> revs;
@@ -1347,18 +1348,23 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         hc.update(body.data(), body.size());
         if (hc.get() != stored_crc) continue;
         if (body[0] != 1) continue; // Version
-        core::uint32 dc = core::read_le16(body.data() + 1);
-        core::uint32 rc = core::read_le16(body.data() + 3);
-        core::uint32 rn = core::read_le16(body.data() + 5);
-        // A .rev file always carries a parity slot: shard_slot_index ∈ [dc, dc+rc).
+        core::uint32 data_shards_in_set = core::read_le16(body.data() + 1);
+        core::uint32 parity_shards_in_set = core::read_le16(body.data() + 3);
+        core::uint32 assigned_shard_slot = core::read_le16(body.data() + 5);
+        // A .rev file always carries a parity slot: parity_slot_id ∈ [dc, dc+rc).
         // Values below dc claim a *data* slot; admitting them let a crafted
         // .rev overwrite the data-slot validity flags in the mapping below
         // and route a NULL FileStream into the fold loop (report M1).
-        if (dc == 0 || rc == 0 || rn < dc || rn >= dc + rc || dc + rc > 65535u) continue;
-        if (!revs.empty() && (dc != nd || rc != nr)) continue; // set mismatch
+        if (data_shards_in_set == 0 || parity_shards_in_set == 0 ||
+            assigned_shard_slot < data_shards_in_set ||
+            assigned_shard_slot >= data_shards_in_set + parity_shards_in_set ||
+            data_shards_in_set + parity_shards_in_set > 65535u)
+            continue;
+        if (!revs.empty() && (data_shards_in_set != nd || parity_shards_in_set != nr))
+            continue; // set mismatch
         if (revs.empty()) {
-            nd = dc;
-            nr = rc;
+            nd = data_shards_in_set;
+            nr = parity_shards_in_set;
             table_size.resize(nd, 0);
             table_crc.resize(nd, 0);
             size_t off = 11;
@@ -1371,7 +1377,7 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         }
         RevInfo ri;
         ri.path = e.path();
-        ri.rec_num = rn;
+        ri.parity_slot_id = assigned_shard_slot;
         ri.payload_crc = core::read_le32(body.data() + 7);
         ri.payload_off = 16 + hsize;
         // Validate the payload CRC before trusting this parity shard.
@@ -1547,7 +1553,7 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     }
 
     // H-16: count DISTINCT parity slots. Two .rev files carrying the same
-    // rec_num (a backup copy, say) are one erasure-recovery unit, not two;
+    // parity_slot_id (a backup copy, say) are one erasure-recovery unit, not two;
     // counting them twice let the sufficiency gate pass for a set that
     // rs.init() then rejects. Later duplicates are dropped.
     core::uint32 valid_revs = 0;
@@ -1555,11 +1561,11 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         std::vector<char> seen(static_cast<size_t>(nd) + nr, 0);
         for (auto& r : revs) {
             if (!r.valid) continue;
-            if (r.rec_num >= seen.size() || seen[r.rec_num]) {
+            if (r.parity_slot_id >= seen.size() || seen[r.parity_slot_id]) {
                 r.valid = false;
                 continue;
             }
-            seen[r.rec_num] = 1;
+            seen[r.parity_slot_id] = 1;
             valid_revs++;
         }
     }
@@ -1577,7 +1583,7 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     std::vector<core::byte> valid(nd + nr, 0);
     for (core::uint32 i = 0; i < nd; ++i) valid[i] = vols[i].valid ? 1 : 0;
     for (auto& r : revs)
-        if (r.valid) valid[r.rec_num] = 1;
+        if (r.valid) valid[r.parity_slot_id] = 1;
     ReedSolomon16 rs;
     try {
         if (!rs.init(nd, nr, valid.data())) return false;
@@ -1608,7 +1614,7 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
             if (j >= nd + nr) break;
             RevInfo* ri = nullptr;
             for (auto& r : revs)
-                if (r.rec_num == j && r.valid) ri = &r;
+                if (r.parity_slot_id == j && r.valid) ri = &r;
             if (!ri) break;
             auto f = std::make_unique<io::FileStream>();
             if (!f->open(ri->path, io::FileMode::ReadOnly)) {

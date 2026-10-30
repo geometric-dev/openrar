@@ -4371,7 +4371,7 @@ static int cli_main(int argc, char* argv[]) {
     }
 #endif
 
-    // SFX handling: resolve stub, validate MAX_SFX_SIZE, apply apply_sfx_extension
+    // SFX handling: resolve stub, validate MAX_SFX_SIZE, apply extension rules
     // (first-volume-only with -v handled via want_vol reject above)
     std::filesystem::path sfx_stub_path;
     std::string sfx_arc_path_str = arc_path;
@@ -4388,7 +4388,7 @@ static int cli_main(int argc, char* argv[]) {
                       << openrar::archive::ArchiveMutator::MAX_SFX_SIZE << ")\n";
             return 7;
         }
-        // apply_sfx_extension .exe/.sfx per 10-sfx.md:70 (final name known before open)
+        // Apply .exe/.sfx extension per 10-sfx.md (final name known before open)
         sfx_arc_path_str = openrar::archive::ArchiveMutator::apply_sfx_extension(arc_path).string();
     }
 
