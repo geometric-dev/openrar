@@ -59,14 +59,10 @@ inline void transpose4x4(uint32x4_t& r0, uint32x4_t& r1, uint32x4_t& r2, uint32x
 // Load and transpose 16 words from 4 rows starting at byte offset `off`.
 inline void load_transpose16(const core::byte* const rows[4], size_t off, uint32x4_t out[16]) {
     for (size_t col_blk = 0; col_blk < 4; ++col_blk) {
-        uint32x4_t r0 =
-            vld1q_u32(reinterpret_cast<const core::uint32*>(rows[0] + off + col_blk * 16));
-        uint32x4_t r1 =
-            vld1q_u32(reinterpret_cast<const core::uint32*>(rows[1] + off + col_blk * 16));
-        uint32x4_t r2 =
-            vld1q_u32(reinterpret_cast<const core::uint32*>(rows[2] + off + col_blk * 16));
-        uint32x4_t r3 =
-            vld1q_u32(reinterpret_cast<const core::uint32*>(rows[3] + off + col_blk * 16));
+        uint32x4_t r0 = vreinterpretq_u32_u8(vld1q_u8(rows[0] + off + col_blk * 16));
+        uint32x4_t r1 = vreinterpretq_u32_u8(vld1q_u8(rows[1] + off + col_blk * 16));
+        uint32x4_t r2 = vreinterpretq_u32_u8(vld1q_u8(rows[2] + off + col_blk * 16));
+        uint32x4_t r3 = vreinterpretq_u32_u8(vld1q_u8(rows[3] + off + col_blk * 16));
         transpose4x4(r0, r1, r2, r3);
         out[col_blk * 4 + 0] = r0;
         out[col_blk * 4 + 1] = r1;
