@@ -74,7 +74,7 @@ Beside the layer stack sit the **boundary surfaces**: `src/api/abi_contract.hpp`
 ### 3.1 File Naming
 - All filenames must use **lower snake_case** with clear, descriptive words:
   - Good: `archive_reader.cpp`, `file_stream.hpp`, `recovery_record.cpp`, `header_writer.hpp`
-  - Prohibited: 8.3 legacy abbreviations (`archive_reader.cpp`, `filcreat.cpp`, `rdwrfn.cpp`, `errhnd.cpp`, `isnt.cpp`, `smallfn.cpp`, `secpassword.cpp`, `uowners.cpp`, `ulinks.cpp`)
+  - Prohibited: 8.3 legacy abbreviations (e.g. 8.3-era abbreviations or non-descriptive short names)
   - Prohibited: `cmd*` prefixes (`cmdadd.cpp`, `cmddata.cpp`, `cmdrepair.cpp`)
 - C++ headers use `.hpp`; implementation files use `.cpp`.
 - Every translation unit must compile independently. Never include `.cpp` files inside other source files (`#include "*.cpp"` is strictly forbidden).
@@ -85,7 +85,7 @@ Beside the layer stack sit the **boundary surfaces**: `src/api/abi_contract.hpp`
 |---|---|---|---|
 | **Namespaces** | `lower_snake_case` | `openrar::archive`, `openrar::crypto` | Global scope symbols, `unrar` |
 | **Types / Classes / Structs** | `PascalCase` | `ArchiveReader`, `FileBlock`, `FileStream` | `CommandData`, `ComprDataIO`, `BaseBlock` |
-| **Enums** | `enum class` + `PascalCase` | `enum class CompressionLevel`, `enum class ExitCode` | C-style untyped enums, `EXIT_CRC_CODE`, `NMDF_*` |
+| **Enums** | `enum class` + `PascalCase` | `enum class CompressionLevel`, `enum class ExitCode` | C-style untyped enums or untyped macro constants |
 | **Functions / Methods** | `lower_snake_case` | `read_header()`, `write_block()`, `is_solid()` | `ReadHeader()`, `DoExtract()`, `PushVint()` |
 | **Member Variables** | `lower_snake_case_` (trailing underscore) — *class* members | `file_stream_`, `header_offset_`, `is_encrypted_` | PascalCase (`CurBlockPos`, `NextBlockPos`, `ExitCode`) |
 | **POD Struct Members** | `lower_snake_case`, no trailing underscore (wire-format blocks mirroring on-disk layout) | `fb.pack_size`, `header.redir_type` | `pack_size_` on a format block |
@@ -115,7 +115,7 @@ enumerators and `enum class` would force casts at every `|` and `&`.
 
 ## 5. Error Handling Architecture
 
-Legacy error handling relied on a monolithic global object (`error_handler`), C-style exit code enums (`RAR_EXIT_*`), long-lived state flags (`err_handler.SetErrorCode(...)`), and process termination helpers.
+Legacy DOS/C++98 error handling relied on monolithic global error objects, mutable state flags, and process termination helpers.
 
 OpenRAR replaces this with a modern, layered approach:
 
