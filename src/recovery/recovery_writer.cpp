@@ -631,7 +631,8 @@ bool splice_repair(const std::filesystem::path& arc_path,
     if (!copy_stream_region(in, out, rr_header_offset, rr_len)) {
         in.close();
         out.close();
-        std::filesystem::remove(tmp_path);
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
         return false;
     }
     // 3. Whatever follows the RR block in the original (End Of Archive block).
@@ -683,7 +684,8 @@ bool splice_repair_with_rr(const std::filesystem::path& arc_path,
 
     if (!write_rr_service_block(out, new_rr_data_area, rec_pct)) {
         out.close();
-        std::filesystem::remove(tmp_path);
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
         return false;
     }
 
@@ -691,7 +693,8 @@ bool splice_repair_with_rr(const std::filesystem::path& arc_path,
     eb.end_flags = 0;
     if (!format::HeaderWriter::write_end_block(out, eb)) {
         out.close();
-        std::filesystem::remove(tmp_path);
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
         return false;
     }
 
