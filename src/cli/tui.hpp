@@ -628,7 +628,21 @@ private:
                     (void)_getch(); // extended key: two-byte sequence, skip both
                     continue;
                 }
-                if (c == 0x1B || c == 'q') g_tui_cancel.store(1, std::memory_order_relaxed);
+                if (c == 'q' || c == 'Q') {
+                    g_tui_cancel.store(1, std::memory_order_relaxed);
+                } else if (c == 0x1B) {
+                    // Check if followed by VT escape sequence
+                    if (_kbhit()) {
+                        while (_kbhit()) {
+                            int sc = _getch();
+                            if ((sc >= 'A' && sc <= 'Z') || (sc >= 'a' && sc <= 'z') || sc == '~') {
+                                break;
+                            }
+                        }
+                    } else {
+                        g_tui_cancel.store(1, std::memory_order_relaxed);
+                    }
+                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
 #else
@@ -638,7 +652,23 @@ private:
             if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) break; // EOF: exit quietly
             char c = 0;
             while (::read(STDIN_FILENO, &c, 1) == 1) {
-                if (c == 0x1B || c == 'q') g_tui_cancel.store(1, std::memory_order_relaxed);
+                if (c == 'q' || c == 'Q') {
+                    g_tui_cancel.store(1, std::memory_order_relaxed);
+                } else if (c == 0x1B) {
+                    // Check if this is an ANSI escape sequence (e.g. arrow keys [A)
+                    pollfd seq_pfd{STDIN_FILENO, POLLIN, 0};
+                    if (::poll(&seq_pfd, 1, 25) > 0 && (seq_pfd.revents & POLLIN)) {
+                        char seq_c = 0;
+                        while (::read(STDIN_FILENO, &seq_c, 1) == 1) {
+                            if ((seq_c >= 'A' && seq_c <= 'Z') || (seq_c >= 'a' && seq_c <= 'z') ||
+                                seq_c == '~') {
+                                break;
+                            }
+                        }
+                    } else {
+                        g_tui_cancel.store(1, std::memory_order_relaxed);
+                    }
+                }
             }
 #endif
         }
