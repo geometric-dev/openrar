@@ -45,6 +45,7 @@ struct WireEntry {
 };
 static_assert(sizeof(WireEntry) == 64, "WireEntry must mirror the 64-byte ABI layout");
 inline constexpr core::uint64 WIRE_FLAG_SERVICE = 1ull;
+inline constexpr core::uint64 WIRE_FLAG_HAS_CRC32 = 2ull;
 
 struct WireScanHeader {
     core::uint32 entry_count;
