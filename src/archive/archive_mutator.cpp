@@ -2098,7 +2098,7 @@ bool ArchiveMutator::prepare_add_filecopy(const std::filesystem::path& src_file,
     // Header layout for FILECOPY records: the logical size is preserved,
     // the data-area bit is set with a zero-length data area, and a dummy
     // CRC32 field is present. Deviating variants
-    // (unpacked_size=0, no HFL_DATA, no CRC flag) can corrupt chain-member decodes
+    // (unpacked_size=0, no data area, no CRC flag) can corrupt chain-member decodes
     // under multithreaded unpacking.
     fb.unp_size = 0;
     fb.pack_size = 0;
