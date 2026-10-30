@@ -139,12 +139,13 @@ bool RecoveryManager::repair_data(core::byte* protected_data, const core::byte* 
             if (r_idx >= valid_sectors.size()) {
                 return false;
             }
-            core::uint32 rec_num = r_idx - params.data_sectors;
-            if (rec_num > 0) {
-                auto off = calculate_parity_buffer_size(rec_num, params.sector_size);
+            core::uint32 parity_sector_index = r_idx - params.data_sectors;
+            if (parity_sector_index > 0) {
+                auto off = calculate_parity_buffer_size(parity_sector_index, params.sector_size);
                 if (!off) return false;
             }
-            proc_sectors[i] = parity_data + static_cast<size_t>(rec_num) * params.sector_size;
+            proc_sectors[i] =
+                parity_data + static_cast<size_t>(parity_sector_index) * params.sector_size;
             r_idx++;
         }
     }
