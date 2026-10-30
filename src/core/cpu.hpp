@@ -1,6 +1,7 @@
 #ifndef OPENRAR_CORE_CPU_HPP
 #define OPENRAR_CORE_CPU_HPP
 
+#include <string>
 #include <vector>
 
 namespace openrar::core {
@@ -43,6 +44,9 @@ struct AccelerationReport {
 // Mirrors the runtime dispatch rules (match_simd.hpp, aes256, sha256, crc32)
 // so the CLI banner cannot drift from what the code really executes.
 AccelerationReport describe_acceleration();
+
+// Returns the detected CPU brand/model string, or a generic fallback if unavailable.
+std::string get_cpu_brand_string();
 
 } // namespace openrar::core
 

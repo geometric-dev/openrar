@@ -72,6 +72,7 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(sfx_tests tests/unit/sfx_tests.cpp)
     add_openrar_test(sfx_pipeline_tests tests/unit/sfx_pipeline_tests.cpp)
     add_openrar_test(sfx_e2e_tests tests/unit/sfx_e2e_tests.cpp)
+    add_openrar_test(benchmark_tests tests/unit/benchmark_tests.cpp src/cli/benchmark.cpp)
     if(TARGET Default.SFX)
         set_tests_properties(sfx_e2e_tests PROPERTIES
             ENVIRONMENT "OPENRAR_SFX_STUB=$<TARGET_FILE:Default.SFX>")
