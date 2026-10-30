@@ -2,7 +2,7 @@
 
 Service headers (`type 3`, `HFL_CHILD`) store out-of-band file metadata. They are **not** required for basic file extraction — a decoder that skips unknown service headers remains compliant — but a complete implementation must handle them to round-trip permissions, alternate streams, and links exactly as reference archivers do.
 
-All service payloads are `HFL_DATA` child blocks of the preceding file header. Their wire format reuses the file header framing (`01-headers.md`) with `Name` = service identifier (`ACL`, `STM`, etc.) and `Host OS` = `0` Windows or `1` Unix as appropriate. `Method` is `0` (store) for `ACL`/`STM`/`RR`; `CompInfo` still carries a valid dictionary hint.
+All service payloads are `HFL_DATA` child blocks of the preceding file header. Their wire format reuses the file header framing (`01-headers.md`) with `Name` = service identifier (`ACL`, `STM`, etc.) and `Host OS` = `0` Windows or `1` Unix as appropriate. `Method` is `0` (store) for `ACL`/`STM`/`RR`; `Compression information` still carries a valid dictionary hint.
 
 ---
 
@@ -78,7 +78,7 @@ if Attributes present: chmod(path, Attributes & 0x1FF) // low 9 bits; use fchmod
 File header N (HEAD_FILE)
   └─ Service header "ACL" (HEAD_SERVICE, HFL_CHILD|HFL_DATA, HFL_INHERITED, NameLen=3, Name="ACL", Host OS 0)
        Extra area: none (no FHEXTRA_SUBDATA)
-       Data area: self-relative SECURITY_DESCRIPTOR blob, little-endian (see below), PackSize==unpacked_size==blob size, Method 0, CRC32 of blob
+       Data area: self-relative SECURITY_DESCRIPTOR blob, little-endian (see below), Data size==Unpacked size==blob size, Method 0, CRC32 of blob
 File header N+1
 ```
 
@@ -102,8 +102,8 @@ All offsets are from start of descriptor, little-endian `uint32`. `Control` bits
 
 * **Probe:** `GetFileSecurityW(path, OWNER|GROUP|DACL[|SACL], NULL, 0)` returns `ERROR_INSUFFICIENT_BUFFER` and `need`; second call fills `need` bytes. Long paths are retried with `\\?\` prefix.
 * **Size limits:** reject `need==0` or `>1 MiB`.
-* **Store:** `Method 0`, `PackSize==unpacked_size==need`, no compression, no filter.
-* **Restore:** `SetFileSecurityW(dest, OWNER|GROUP|DACL[|SACL], sd)` — same `si` used on save (include `SACL` only if `SACL` was present in the blob). `\\?\` long-path retry on failure. Missing privilege: warn `ACCESS_DENIED` → `NEED_ADMIN_PRIVILEGE` if not admin; otherwise non-fatal.
+* **Store:** `Method 0`, `Data size==Unpacked size==need`, no compression, no filter.
+* **Restore:** `SetFileSecurityW(dest, OWNER|GROUP|DACL[|SACL], sd)` — same `si` used on save (include `SACL` only if `SACL` was present in the blob). `\\?\` long-path retry on failure. Missing privilege: warn `ACCESS_DENIED` → elevation required error if not admin; otherwise non-fatal.
 * **Listing:** `rar l -v` does not expand ACL content; use `rar vta` to see extra sizes.
 * **Security:** `SE_SECURITY_NAME`, `SE_RESTORE_NAME`, `SE_BACKUP_NAME` privileges are acquired once per process and cached.
 
@@ -121,7 +121,7 @@ NTFS stores per-file alternate streams as `filename:stream:$DATA`. The default s
 File header N
   ├─ Service header "STM" × K (each HFL_CHILD|HFL_INHERITED|HFL_DATA, NameLen=3, Name="STM")
   │    Extra area: FHEXTRA_SUBDATA (0x07) with UTF-8 stream name including leading ':', e.g. ":Zone.Identifier" (trailing ":$DATA" stripped case-insensitively)
-  │    Data area: PackSize==unpacked_size==stream size, Method 0, CRC32 of stream bytes
+  │    Data area: Data size==Unpacked size==stream size, Method 0, CRC32 of stream bytes
   └─ ...
 File header N+1
 ```
@@ -135,7 +135,7 @@ Order follows `BackupRead` enumeration.
 ### Size Limits and Safety
 
 * **Save:** streams `>1 GiB` (`0x40000000`) are skipped to avoid buffer explosion. Prohibited names (`ColonCount>1`, empty, or path separators `/ \` in the stream part) are skipped. `BACKUP_DATA (1)` (main file data) is skipped via `BackupSeek`.
-* **Extract:** per-stream `unpacked_size` is capped at `16 MiB` (`0x1000000`) when reading into memory (e.g., for MOTW evaluation) to prevent DoS. Larger streams are still extracted via streaming to file, not buffered.
+* **Extract:** per-stream `Unpacked size` is capped at `16 MiB` (`0x1000000`) when reading into memory (e.g., for MOTW evaluation) to prevent DoS. Larger streams are still extracted via streaming to file, not buffered.
 * **Enumeration** requires `CreateFileW` with `FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_SEQUENTIAL_SCAN` and `BackupRead`/`BackupSeek` with `\\?\` long-path fallback.
 
 ### Extraction
@@ -183,7 +183,7 @@ ZoneId=N
 
 ## 4. Redirection — Symlinks, Junctions, Hard Links, File Copy (`-ol`, `-oi`, `-oh`)
 
-Redirections are stored as file headers **with no data area** (`HFL_DATA` clear, `PackSize=-1`, `unpacked_size=0`, `Method 0`, `FHFL_CRC32` clear). The link target is the extra record.
+Redirections are stored as file headers **with no data area** (`HFL_DATA` clear, `Data size=-1`, `Unpacked size=0`, `Method 0`, `FHFL_CRC32` clear). The link target is the extra record.
 
 ### Types
 
@@ -196,7 +196,7 @@ Redirections are stored as file headers **with no data area** (`HFL_DATA` clear,
 | `4` | `HARDLINK` | any | archived name of hardlink target file |
 | `5` | `FILECOPY` | any | same as `HARDLINK` but `FILE_ATTRIBUTE_REPARSE_POINT` not set or dedup fallback |
 
-`dir_target` flag (`FHEXTRA_REDIR_DIR 0x0001`) indicates the target is a directory.
+directory target flag (`dir_target`) flag (`FHEXTRA_REDIR_DIR 0x0001`) indicates the target is a directory.
 
 ### Extra Record `0x05` (`FHEXTRA_REDIR`)
 
@@ -207,7 +207,7 @@ Size: vint (from Type onward)
 Type: vint 0x05
 Content:
   RedirType: vint 1..5
-  Flags: vint (bit0 = dir_target)
+  Flags: vint (bit0 = directory target flag (`dir_target`))
   NameSize: vint (<2048 else ignore record)
   Utf8Target: NameSize bytes, forward slashes, no NUL
 Size includes the Type byte.
@@ -217,11 +217,11 @@ Legacy RAR 1.5 Unix symlink: `HostOS==UNIX` and `(FileAttr & 0xF000)==0xA000` an
 
 ### Write Path
 
-*Scan*: `lstat` (Unix, not `stat`) or `GetFileAttributesW` + `FILE_FLAG_OPEN_REPARSE_POINT` (Windows) to detect `IsLink` without following. For Windows, `FSCTL_GET_REPARSE_POINT` yields `REPARSE_DATA_BUFFER`; `PrintName` (or `SubstituteName` if `PrintName` empty) is the target. For junctions the target is always a directory.
+*Scan*: `lstat` (Unix, not `stat`) or `GetFileAttributesW` + `FILE_FLAG_OPEN_REPARSE_POINT` (Windows) detects a link without following it. For Windows, `FSCTL_GET_REPARSE_POINT` yields `REPARSE_DATA_BUFFER`; `PrintName` (or `SubstituteName` if `PrintName` is empty) is the target. For junctions the target is always a directory.
 
 *Hardlink deduplication* (`-oh`, `-oi[0-4]`): a `hardlinks` table maps inode/`FileIndex` to first archived name; later links emit `HARDLINK` (`4`) or `FILECOPY` (`5`) with `RedirName` = first file’s archived UTF-8 name. File copies use stream copy; hard links use `CreateHardLinkW`/`link()`.
 
-*Header*: `PackSize=0`, `unpacked_size=<real size>` (the logical size of the target's content), `Method 0`, `HFL_DATA` set with a **zero-length** data area, a dummy CRC32 field present (`FHFL_CRC32` set, `DataCRC=0` — no `BLAKE2`), `Attributes` preserves directory bit for dir-targets, `RedirType`/`RedirName`/`dir_target` stored as above, serialized via `MakeFileBody` → `WriteFileHeader50`. This mirrors the reference encoder's FILECOPY records exactly; sequentially-tolerated deviations (`unpacked_size=0`, no `HFL_DATA`, no CRC flag) corrupt chain-member decodes under the reference decoder's multithreaded unpacker. In a solid archive the reference header also carries the solid bit while a chain is active, and the solid window persists across the reference (no run break) — the reference encoder's layout, which that unpacker expects.
+*Header*: `Data size=0`, `Unpacked size=<real size>` (the logical size of the target's content), `Method 0`, `HFL_DATA` set with a **zero-length** data area, a dummy CRC32 field present (`FHFL_CRC32` set, `Data CRC32=0` — no `BLAKE2`), `Attributes` preserves directory bit for dir-targets, `RedirType`/`RedirName`/directory target flag (`dir_target`) stored as above, serialized through the normal file-header writer. This matches the FILECOPY records the reference encoder emits; sequentially-tolerated deviations (`Unpacked size=0`, no `HFL_DATA`, no CRC flag) corrupt chain-member decodes under the reference decoder's multithreaded unpacker. In a solid archive the reference header also carries the solid bit while a chain is active, and the solid window persists across the reference (no run break) — the reference encoder's layout, which that unpacker expects.
 
 ### Extraction and Safety
 
@@ -229,34 +229,34 @@ Parsing:
 
 ```
 RedirType = vint; Flags = vint; NameSize = vint; Utf8 = bytes → Wide, Windows: UnixSlashToDos()
-dir_target = Flags&1; RedirName = Utf8; Max NameSize 2047 else ignore
+dir_target = flags & 1; RedirName = Utf8; Max NameSize 2047 else ignore
 ```
 
 Decision:
 
 ```
-isLink = RedirType != NONE
-if isLink && type != FILECOPY:
-  if SkipSymLinks (-ol-): skip
-  if !AbsoluteLinks && (IsFullPath(RedirName) || !IsRelativeSymlinkSafe(FileName, DestPath, RedirName)): warn UIERROR_SKIPUNSAFELINK, skip
-  PrepareToDelete(dest)
+is_link = RedirType != NONE
+if is_link && type != FILECOPY:
+  if `-ol-` (skip symlinks): skip
+  if !AbsoluteLinks && (target is absolute || !relative_link_is_safe(FileName, dest_dir, RedirName)): warn UIERROR_SKIPUNSAFELINK, skip
+  remove the existing destination
 if HARDLINK or FILECOPY:
-  src = DestRoot + RedirName (SlashToNative, ConvertPath)
+  src = destination root + RedirName (normalise separators to native form)
   hardlink: CreateHardLink(new, src)
-  filecopy: copy src→new (stream, or move temp ref via RefList)
+  filecopy: stream-copy src→new (or move a temp reference from the copy list)
 else // UNIXSYMLINK / WINSYMLINK / JUNCTION:
-  CreateReparsePoint(dest)  // see below
+  create the reparse point / symlink (see below)
 ```
 
-`CreateReparsePoint` (Windows):
+Reparse-point creation (Windows):
 
 ```
 Require SE_RESTORE_NAME + SE_CREATE_SYMBOLIC_LINK_NAME
 Subst = RedirName; Print = strip "\??\" prefix (4 chars) if present, fix UNC \\?\→\\
-Abs = IsPrefix("\??\")
-if !AbsoluteLinks && (Abs || IsFullPath || !IsRelativeSymlinkSafe): skip
-CreatePath(dest, skipLast=true); Delete existing
-if Dir || dir_target: CreateDirectory(dest) else CreateFile(CREATE_NEW)
+Abs = target starts with "\??\"
+if !AbsoluteLinks && (Abs || target is absolute || !relative_link_is_safe): skip
+create the parent directories; remove any existing entry
+if is_dir || dir_target: CreateDirectory(dest) else CreateFile(CREATE_NEW)
 Build REPARSE_DATA_BUFFER:
   junction: tag=MOUNT_POINT, lengths/offsets for Subst/Print
   symlink: tag=SYMLINK, Flags = Abs?0:SYMLINK_FLAG_RELATIVE(1)
@@ -267,17 +267,17 @@ Set times/attrs; on failure delete placeholder
 Unix symlink:
 
 ```
-WideToChar(dest) + Utf8ToChar(target) → symlink(target, link); CreatePath; DelFile first
+symlink(native_path(target), native_path(dest)); create parents; remove an existing entry first
 lutimes with AT_SYMLINK_NOFOLLOW for atime/mtime when available
 ```
 
 Safety flags:
 
 * `FHEXTRA_REDIR_DIR` is advisory; `FHFL_DIRECTORY` is separate.
-* `IsRelativeSymlinkSafe`: counts `..` components in target vs `CalcAllowedDepth(srcName)`; also scans `DestPath` for existing symlink parents (`LinksToDirs` — any destination component that is itself a link denies). After each `..` extraction, `LinksToDirs` is re-scanned and any symlink prefix is replaced with a real directory.
-* Hardlink/filecopy via `RefList` avoids double extraction.
+* `relative_link_is_safe`: counts `..` components in the target against the permitted depth for the source path; also scans the destination components for existing symlinks (any destination component that is itself a link denies). After each `..` extraction the scan is repeated and any symlink prefix is replaced with a real directory.
+* Hardlink/filecopy through the copy list avoids double extraction.
 
-A decoder with `SkipSymLinks` or without reparse privilege must skip `1..3` and warn; `4..5` may still be extracted as regular files (copy).
+A decoder with `-ol-` (skip symlinks) or without reparse privilege must skip `1..3` and warn; `4..5` may still be extracted as regular files (copy).
 
 ---
 
@@ -286,4 +286,4 @@ A decoder with `SkipSymLinks` or without reparse privilege must skip `1..3` and 
 * Unix owner/attributes: decode `Attributes` + `0x06` extra; `chmod`/`chown` on Unix, `SetFileAttributesW` on Windows.
 * ACL: skip `ACL` if not on Windows or without privilege; otherwise restore via descriptor.
 * Streams: skip `STM` if not on NTFS; otherwise `CreateFileW(full)` per stream.
-* Redirection: enforce `NameSize<2048`, `IsRelativeSymlinkSafe`, `LinksToDirs`, long-path `\\?\` retry, and `HARDLINK` vs `FILECOPY` distinction.
+* Redirection: enforce `NameSize<2048`, the relative-link safety check, the destination-component link scan, long-path `\\?\` retry, and the `HARDLINK` vs `FILECOPY` distinction.

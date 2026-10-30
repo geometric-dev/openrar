@@ -1,6 +1,6 @@
 # RAR5 Specification — Encoding, Identifiers, and Checksums
 
-This file collects the low-level encodings and identifiers referenced by the other spec files. Implementations must match these exactly to pass the `UnRAR` cross-decode gate.
+This file collects the low-level encodings and identifiers referenced by the other spec files. Implementations must match these exactly to pass the external cross-decode gate.
 
 ---
 
@@ -17,7 +17,7 @@ Example: `300` (`0x12C`) → `0xAC 0x02` (`0x2C` with continue `0x80`, then `0x0
 ## Little-Endian Integers
 
 * `uint16`, `uint32`, `uint64`, and raw vectors are little-endian.
-* `RawGet4` / `RawPut4` in filter code (`04-filters.md`) are `LE32` loads/stores.
+* Unaligned 32-bit reads and writes in filter code (`04-filters.md`) are `LE32` loads/stores.
 * `CRC32` bytes in headers are `LE32`; `BLAKE2sp` digest is verbatim (no endian swap).
 
 ---
@@ -42,21 +42,21 @@ Example: `300` (`0x12C`) → `0xAC 0x02` (`0x2C` with continue `0x80`, then `0x0
 
 ## Block Header Checksum (Compression Stream)
 
-Each compressed block header (`03-compression-m1-m5.md`) carries a `CheckSum` byte:
+Each compressed block header (`03-compression-m1-m5.md`) carries a `checksum` byte:
 
 ```
-CheckSum = 0x5A ^ Flags ^ BlockSize ^ (BlockSize>>8) ^ (BlockSize>>16)  (low 8 bits)
+checksum = 0x5A ^ Flags ^ block_size ^ (block_size>>8) ^ (block_size>>16)  (low 8 bits)
 ```
 
-`Flags` is the `1`-byte flags, `BlockSize` is the `1..3`-byte little-endian byte count. A mismatch is a hard block error; the decoder must stop and report `corrupt`. The block’s `BlockBitSize` (`Flags & 0x07` +1) is not checksummed except indirectly via `Flags`.
+`Flags` is the `1`-byte flags, `block_size` is the `1..3`-byte little-endian byte count. A mismatch is a hard block error; the decoder must stop and report `corrupt`. The block’s `block_bit_size` (`Flags & 0x07` +1) is not checksummed except indirectly via `Flags`.
 
 ---
 
 ## Block Header Fields (Bit-Level)
 
-* `Flags` bits: `7` (`0x80`) table present, `6` (`0x40`) last block, `3..4` `(ByteCount-1)`, `0..2` `(BlockBitSize-1)`. `ByteCount==4` (`bits 3..4 == 3`) is invalid. Flag `0x80` clear keeps the previous block's tables in force and consumes no description bits (see `03-compression-m1-m5.md` §Table lifecycle). **This encoder always sets bit 7** and writes a description on every block; flag-clear is wire-legal and honored by the decoder for foreign archives but is never emitted — see §Table lifecycle for why and for the gate that would be required to reopen it.
-* `BlockSize` is little-endian per byte: `sum GetBits(8) << (8*i)` for `i=0..ByteCount-1`. Max `0xFFFFFF` (16 MiB); larger streams use multiple blocks.
-* `BlockBitSize` `1..8` is the count of valid bits in the last payload byte; remaining low bits are zero padding. After the payload bytes, the next block header is byte-aligned (skip `8-BlockBitSize` bits). **Trailing bits are only dangerous when they complete a code:** a reference decoder was measured consuming padding as tokens where the block's table made every padding bit a complete 1-bit code (`docs/question-log.md` Entry 4), but reference producers themselves emit non-byte-aligned tails routinely — 838 of 954 blocks in a WinRAR m1/m3/m5 sweep over text/random/runs — and such archives decode everywhere, so non-alignment alone is harmless. Encoders must byte-align token tails wherever the block's table has short codes and never rely on the bit count to truncate. Our decoder stops at the declared bit count — the conservative reader; it diverges from reference behavior only on foreign archives whose padding completes a code.
+* `Flags` bits: `7` (`0x80`) table present, `6` (`0x40`) last block, `3..4` `(ByteCount-1)`, `0..2` `(block_bit_size - 1)`. `ByteCount==4` (`bits 3..4 == 3`) is invalid. Flag `0x80` clear keeps the previous block's tables in force and consumes no description bits (see `03-compression-m1-m5.md` §Table lifecycle). **This encoder always sets bit 7** and writes a description on every block; flag-clear is wire-legal and honored by the decoder for foreign archives but is never emitted — see §Table lifecycle for why and for the gate that would be required to reopen it.
+* `block_size` is little-endian per byte: `sum GetBits(8) << (8*i)` for `i=0..ByteCount-1`. Max `0xFFFFFF` (16 MiB); larger streams use multiple blocks.
+* `block_bit_size` `1..8` is the count of valid bits in the last payload byte; remaining low bits are zero padding. After the payload bytes, the next block header is byte-aligned (skip `8-block_bit_size` bits). **Trailing bits are only dangerous when they complete a code:** a reference decoder was measured consuming padding as tokens where the block's table made every padding bit a complete 1-bit code (`docs/question-log.md` Entry 4), but reference producers themselves emit non-byte-aligned tails routinely — 838 of 954 blocks in a WinRAR m1/m3/m5 sweep over text/random/runs — and such archives decode everywhere, so non-alignment alone is harmless. Encoders must byte-align token tails wherever the block's table has short codes and never rely on the bit count to truncate. Our decoder stops at the declared bit count — the conservative reader; it diverges from reference behavior only on foreign archives whose padding completes a code.
 * Bitstream order: MSB-first. `GetBits(n)` returns the next `n` bits from the byte stream, MSB first. `PeekBits(n)` does not consume. `AlignByte` skips to the next byte boundary after a block. Implementations may buffer up to 64 bits (`Acc`/`AccBits`).
 
 ---
@@ -113,7 +113,7 @@ File/service extra: `0x01` encryption, `0x02` hash, `0x03` time, `0x04` version,
 
 `N` in `FCI_DICT` maps to `128 KiB << N` (`N=0` 128 KiB … `N=15` 4096 MiB, version `0`). Version `1` adds `N=16..23` up to `1 TB` (`128K<<23 = 1 TB`). Fraction `F` (`0..31`) refines between powers of two: `Effective = (128K<<N) * (32+F)/32`. Writers choose the smallest `N,F` that covers the requested `-md` size (e.g., `-md2m` → `N=4,F=0`; `-md3m` → `N=4,F=16`). Readers reconstruct via `128K<<N` plus fraction and allocate exactly that.
 
-Host `WinSize` in the decoder must be the effective dict size rounded up to a power of two for circular wrapping (`MaxWinSize` is always a power of two).
+The decoder's dictionary size must be the effective dictionary size rounded up to a power of two for circular wrapping (the wrapping modulus is always a power of two).
 
 ---
 
@@ -122,7 +122,7 @@ Host `WinSize` in the decoder must be the effective dict size rounded up to a po
 | Layer | Algorithm | Covers | Where |
 |-------|-----------|--------|-------|
 | Header CRC32 | IEEE CRC32 | `Header size` vint bytes + `Header body` (through extra area), excl. leading 4-byte CRC and excl. data area, including any trailing `0x80` padding in vints | Every block’s first 4 bytes (IEEE, init `0xFFFFFFFF`, final xor) |
-| Block header CheckSum | `0x5A` xor | `Flags` + `BlockSize` LE bytes | Per compressed block `0x5A ^ Flags ^ BlockSize ^ (BlockSize>>8) ^ (BlockSize>>16)` |
+| Block header checksum | `0x5A` xor | `Flags` + `block_size` LE bytes | Per compressed block `0x5A ^ Flags ^ block_size ^ (block_size>>8) ^ (block_size>>16)` |
 | File Data CRC32 | IEEE CRC32 | Unpacked file (or packed part for split intermediate; final volume = unpacked) | File header `Data CRC32` + `RR` parity |
 | File BLAKE2sp | BLAKE2sp | Unpacked file (or packed part) | `FHEXTRA_HASH` extra type `0x02` (32 bytes) |
 | Quick-open structure CRC32 | IEEE CRC32 | Structure from `Structure size` onward | Per `QO` cache structure |

@@ -52,6 +52,11 @@ inline constexpr core::uint64 CHILD = 0x0020;           // Child block (e.g. STM
 inline constexpr core::uint64 INHERITED = 0x0040;       // Inherited from previous block
 } // namespace header_flags
 
+// The HFL_/MHFL_/FHFL_/FHEXTRA_/MHEXTRA_ aliases below carry the flag names
+// used by the published format documentation and by other RAR5 tools, so code
+// and prose name the same wire value the same way. They alias the scoped enums
+// above and are not a source of structure; new code should prefer the scoped
+// form.
 inline constexpr core::uint64 HFL_EXTRA = header_flags::EXTRA;
 inline constexpr core::uint64 HFL_DATA = header_flags::DATA;
 inline constexpr core::uint64 HFL_SKIP_IF_UNKNOWN = header_flags::SKIP_IF_UNKNOWN;
