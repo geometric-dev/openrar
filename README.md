@@ -34,6 +34,10 @@
 | **POSIX/macOS extended attributes** (`-ox`) | `FHEXTRA_XATTR` (0x08) records — `user.*`/`security.*`/`trusted.*` + macOS Finder-tag namespaces; `com.apple.ResourceFork` / `com.apple.FinderInfo` (content-class, restore Apple-hosts only); restore allow-listed namespaces (`--xattr-security` opts in to `security.*`/`trusted.*`); stock WinRAR/UnRAR skip records cleanly |
 | **Mark of the Web / quarantine** (`-oz`) | propagation keyed on archive file's own Zone.Identifier ADS (Windows) / `com.apple.quarantine` (macOS); mark content generated locally — never parsed from archive-provided streams; `-oz-` disables |
 | **Interactive TUI** | dual-progress renderer (overall + current-file bars) on TTYs with terminal-injection sanitization for all rendered strings (comments, owner names, paths); cooperative ESC/q/^C cancellation (exit 255, clean temp sweeping); non-TTY (pipe/file/CI) renders plain per-file lines with zero escape sequences |
+| **Multi-Threaded Benchmark** (`b`/`bench`) | Built-in in-memory corpus benchmark, CPU topology auto-detection, single-thread and multi-thread compression/decompression throughput, RARMark rating, `--json` mode |
+| **Universal Structured JSON** (`--json`) | Strict RFC 8259 output across `l`, `v`, `lt`, `t`, `inspect`, `diff`, and `b` commands; stdout isolation with stderr diagnostics |
+| **Archive Forensics** (`inspect`) | Deep physical container envelope dissection, AES-256 PBKDF2 telemetry, Cauchy RS16 Reed-Solomon recovery geometry, and service block enumeration without unpacking |
+| **In-Archive Diff** (`diff`/`cmp`) | Zero-extraction structural comparison between archives; reports added, removed, modified, and metadata-changed members; POSIX-compliant exit codes (0 = identical, 1 = differences, 2 = error) |
 | **Benchmark engine** (`openrar_bench`) | warm-up + median-of-7 protocol with spread reporting, hardware disclosure, `--json` (schema v1) for CI trends, `--strict` opt-in variance gate; CDC three-number reduction suite |
 | **Sandboxed worker** | parse/decode engine runs in a sandboxed worker process — Windows AppContainer (empty capability set) / Linux seccomp-BPF allowlist — broker holds every file handle and enforces caps; worker cannot open, write, or execute anything. `--in-proc` / `OPENRAR_IN_PROC=1` forces in-process mode; graceful fallback with notice if worker cannot engage. Encrypted and multi-volume archives parse in-process |
 | **Multi-ecosystem SDKs** | `openrar` (Python ctypes over frozen C ABI), `OpenRAR.NET` (.NET NuGet package via P/Invoke), and WebAssembly module — verified by normative cross-binding conformance test suites with ABI-version and feature-mask negotiation |
@@ -80,6 +84,23 @@ make -j$(nproc)
 
 #### Visual Studio 2022 / VS Code
 Open the repository folder directly — CMake and `CMakePresets.json` are automatically detected.
+
+### Signature v2.0 Capabilities
+
+```bash
+# Run built-in multi-threaded system benchmark (calculates RARMark score)
+openrar b
+
+# Forensic health x-ray of an archive (encryption, recovery records, headers)
+openrar inspect archive.rar
+
+# Zero-extraction structural diff between two archives (POSIX 0/1/2 exit codes)
+openrar diff build_v1.rar build_v2.rar
+
+# DevOps RFC 8259 structured JSON output across listing and testing
+openrar l --json archive.rar
+openrar t --json archive.rar
+```
 
 ### Basic create
 

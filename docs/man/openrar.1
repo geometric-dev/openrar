@@ -24,11 +24,20 @@ NTFS streams and ACLs), Content-Defined Chunking (CDC) deduplication, and sandbo
 .B a
 Add specified files and directories to the archive. Creates a new archive if it does not exist.
 .TP
+.B b \fR[\fBbench\fR]
+Benchmark system compression and decompression performance across single-threaded and multi-threaded execution cores, calculating standard RARMark metrics.
+.TP
+.B diff \fR[\fBcmp\fR]
+Perform structural zero-extraction comparison between two RAR archives, identifying added, removed, modified, and metadata-changed entries. Returns POSIX exit code 0 if identical, 1 if differences are found, or 2 on error.
+.TP
 .B x
 Extract files with their full directory path hierarchy preserved.
 .TP
 .B e
 Extract files to the current or specified directory, discarding all archive path hierarchies.
+.TP
+.B inspect
+Perform deep archive forensic analysis and health inspection, dissecting physical envelopes, encryption parameters, service blocks, and Reed-Solomon recovery geometry without extraction.
 .TP
 .B t
 Test integrity of archived files by calculating checksums without writing files to disk.
@@ -157,6 +166,8 @@ Assume Yes to all interactive confirmation prompts.
 .B \-in\-proc
 Force decompression inside the main process, bypassing the sandboxed worker process.
 .TP
+.B \-\-json
+Emit universal RFC 8259 structured JSON output across archive listing (\fBl\fR, \fBv\fR, \fBlt\fR), testing (\fBt\fR), inspection (\fBinspect\fR), diffing (\fBdiff\fR), and benchmarking (\fBb\fR).
 .BI \-\-json\-summary [=FILE]
 Emit structured JSON extraction summary to stdout or to the specified output file.
 
@@ -213,6 +224,26 @@ When set to \fB1\fR, forces OpenRAR to run all parsing and decompression within 
 When set to \fB1\fR, disables memory-mapped file access and forces buffered I/O streams.
 
 .SH EXAMPLES
+.PP
+Benchmark system compression and decompression performance:
+.RS 4
+.B openrar b
+.RE
+.PP
+Inspect archive physical envelope, security parameters, and recovery records:
+.RS 4
+.B openrar inspect archive.rar
+.RE
+.PP
+Perform structural zero-extraction comparison between two archives:
+.RS 4
+.B openrar diff v1.rar v2.rar
+.RE
+.PP
+List archive contents as structured JSON for CI/CD automation:
+.RS 4
+.B openrar l \-\-json archive.rar
+.RE
 .PP
 Create a solid RAR archive with normal compression:
 .RS 4
