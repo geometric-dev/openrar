@@ -43,8 +43,22 @@ std::wstring make_profile_name() {
 
 void quote_into(std::string& out, const std::string& token) {
     out += " \"";
-    out += token;
-    out += "\"";
+    size_t backslashes = 0;
+    for (char c : token) {
+        if (c == '\\') {
+            backslashes += 1;
+        } else if (c == '"') {
+            out.append(backslashes * 2 + 1, '\\');
+            out += '"';
+            backslashes = 0;
+        } else {
+            out.append(backslashes, '\\');
+            out += c;
+            backslashes = 0;
+        }
+    }
+    out.append(backslashes * 2, '\\');
+    out += '"';
 }
 
 } // namespace
