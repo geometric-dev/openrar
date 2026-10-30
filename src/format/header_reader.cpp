@@ -822,18 +822,18 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
                     size_t probe_rr = 0;
                     size_t probe_off = offset;
                     if (oflags & 0x0001) {
-                        if (!core::read_vint(body + probe_off, rec_end - probe_off, probe_len,
-                                             probe_rr) ||
-                            probe_len > 255) {
+                        const size_t rem = rec_end >= probe_off ? rec_end - probe_off : 0;
+                        if (!core::read_vint(body + probe_off, rem, probe_len, probe_rr) ||
+                            probe_len > 255 || probe_rr + static_cast<size_t>(probe_len) > rem) {
                             name_ok = false;
                         } else {
-                            probe_off += probe_rr + probe_len;
+                            probe_off += probe_rr + static_cast<size_t>(probe_len);
                         }
                     }
                     if (name_ok && (oflags & 0x0002)) {
-                        if (!core::read_vint(body + probe_off, rec_end - probe_off, probe_len,
-                                             probe_rr) ||
-                            probe_len > 255) {
+                        const size_t rem = rec_end >= probe_off ? rec_end - probe_off : 0;
+                        if (!core::read_vint(body + probe_off, rem, probe_len, probe_rr) ||
+                            probe_len > 255 || probe_rr + static_cast<size_t>(probe_len) > rem) {
                             name_ok = false;
                         }
                     }
