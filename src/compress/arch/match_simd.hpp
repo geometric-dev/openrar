@@ -126,24 +126,25 @@ match_length_avx2(const core::byte* p, const core::byte* q, size_t cap) noexcept
 #endif
             }
             return cap;
-        }
-        if (cap - i >= 8) {
-            // C-07: LE value so ctz names the lowest-address mismatching byte.
-            const core::uint64 p_val = core::load_le64(p + i);
-            const core::uint64 q_val = core::load_le64(q + i);
-            if (p_val != q_val) {
+        } else {
+            if (cap - i >= 8) {
+                // C-07: LE value so ctz names the lowest-address mismatching byte.
+                const core::uint64 p_val = core::load_le64(p + i);
+                const core::uint64 q_val = core::load_le64(q + i);
+                if (p_val != q_val) {
 #if defined(_MSC_VER)
-                unsigned long index;
-                _BitScanForward64(&index, p_val ^ q_val);
-                return i + index / 8;
+                    unsigned long index;
+                    _BitScanForward64(&index, p_val ^ q_val);
+                    return i + index / 8;
 #elif defined(__GNUC__) || defined(__clang__)
-                return i + __builtin_ctzll(p_val ^ q_val) / 8;
+                    return i + __builtin_ctzll(p_val ^ q_val) / 8;
 #endif
+                }
+                i += 8;
             }
-            i += 8;
-        }
-        while (i < cap && p[i] == q[i]) {
-            i++;
+            while (i < cap && p[i] == q[i]) {
+                i++;
+            }
         }
     }
     return i;
