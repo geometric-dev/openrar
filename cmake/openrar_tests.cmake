@@ -519,6 +519,14 @@ target_link_libraries(archive_api_tests PRIVATE
         target_include_directories(fuzz_decompress PRIVATE ${OPENRAR_INCLUDES})
         openrar_enable_test_asserts(fuzz_decompress)
 
+        add_executable(fuzz_rs16 tests/fuzz/fuzz_rs16.cpp)
+        target_link_libraries(fuzz_rs16 PRIVATE openrar_core)
+        target_include_directories(fuzz_rs16 PRIVATE ${OPENRAR_INCLUDES})
+        openrar_enable_test_asserts(fuzz_rs16)
+        if(OPENRAR_THREAD_LIB)
+            target_link_libraries(fuzz_rs16 PRIVATE ${OPENRAR_THREAD_LIB})
+        endif()
+
         # Audit-driven codec target (docs/review-master-plan.md): hostile
         # decode, compress->decompress round trip with truncation/bit-flip
         # oracles, sequential-vs-two-phase differential, BitReader model.
@@ -623,6 +631,11 @@ target_link_libraries(archive_api_tests PRIVATE
                 target_compile_options(fuzz_tar PRIVATE -fsanitize=fuzzer-no-link)
                 target_link_options(fuzz_tar PRIVATE -fsanitize=fuzzer)
             endif()
+            if(TARGET fuzz_rs16)
+                target_compile_definitions(fuzz_rs16 PRIVATE OPENRAR_USE_LIBFUZZER)
+                target_compile_options(fuzz_rs16 PRIVATE -fsanitize=fuzzer-no-link)
+                target_link_options(fuzz_rs16 PRIVATE -fsanitize=fuzzer)
+            endif()
         endif()
 
         # The sweeps are cheap deterministic loops. They are only built and
@@ -645,6 +658,9 @@ target_link_libraries(archive_api_tests PRIVATE
             if(TARGET fuzz_tar)
                 add_test(NAME fuzz_tar COMMAND fuzz_tar -runs=2000 -max_len=1048576)
             endif()
+            if(TARGET fuzz_rs16)
+                add_test(NAME fuzz_rs16 COMMAND fuzz_rs16 -runs=2000 -max_len=65536)
+            endif()
         else()
             add_test(NAME fuzz_decompress COMMAND fuzz_decompress)
             add_test(NAME fuzz_archive COMMAND fuzz_archive)
@@ -656,6 +672,9 @@ target_link_libraries(archive_api_tests PRIVATE
             endif()
             if(TARGET fuzz_tar)
                 add_test(NAME fuzz_tar COMMAND fuzz_tar)
+            endif()
+            if(TARGET fuzz_rs16)
+                add_test(NAME fuzz_rs16 COMMAND fuzz_rs16)
             endif()
         endif()
     endif()
