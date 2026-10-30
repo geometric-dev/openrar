@@ -11,6 +11,7 @@ namespace fs = std::filesystem;
 #ifdef _WIN32
 #include <windows.h>
 #include <shlobj.h>
+#include <sddl.h>
 #include <bcrypt.h>
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "advapi32.lib")
@@ -151,14 +152,32 @@ std::string make_tempmode_dir() {
     if (root.empty()) return "";
     for (int attempt = 0; attempt < 8; ++attempt) {
         const std::string dir = root + "/OpenRAR-" + random_hex(TEMP_HEX_CHARS);
+#ifdef _WIN32
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = FALSE;
+        PSECURITY_DESCRIPTOR pSD = nullptr;
+        if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                L"D:P(A;;GA;;;OW)(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1, &pSD, nullptr)) {
+            sa.lpSecurityDescriptor = pSD;
+        }
+        std::wstring wdir = fs::u8path(dir).wstring();
+        BOOL ok = CreateDirectoryW(wdir.c_str(), pSD ? &sa : nullptr);
+        if (pSD) LocalFree(pSD);
+        if (ok) return dir;
+        DWORD err = GetLastError();
+        if (err != ERROR_ALREADY_EXISTS) continue;
+#else
+        mode_t old_mask = umask(0077);
         std::error_code ec;
-        if (fs::create_directory(dir, ec) && !ec) {
-#ifndef _WIN32
+        bool ok = fs::create_directory(dir, ec) && !ec;
+        umask(old_mask);
+        if (ok) {
             chmod(dir.c_str(), 0700);
-#endif
             return dir;
         }
-        if (ec) continue; // collision or failure: retry with a new name
+        if (ec) continue;
+#endif
     }
     return "";
 }
