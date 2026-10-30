@@ -863,7 +863,7 @@ M0 derives the final table from current CLI behaviour **and the WinRAR/unrar ora
 - **v1.27.0:** Extended Attributes, Quarantine & MotW shipped —
   Gate 0 cleared (docs/v1.27-pre-analysis.md §7, conditional approval +
   ten directives): the `FHEXTRA_XATTR` (0x08) record type was verified
-  free against unrar headers.hpp and bitplane rar-research, and the
+  free against published format specifications and bitplane rar-research, and the
   unknown-record skip contract is spec-verbatim (interop Track 10:
   spec-crafted archive vs the UnRAR oracle). `-ox` capture
   (user./security./trusted./com.apple.metadata.* namespaces, capped,
@@ -1541,7 +1541,7 @@ carried-window sets (R3 closed); caps cross-check pinned (§5.4).
 
 Gate 0 format-legality review COMPLETE (docs/v1.27-pre-analysis.md §7,
 conditional approval + ten directives): the 0x08 record type was verified
-free against unrar headers.hpp and bitplane rar-research, and the
+free against published format specifications and bitplane rar-research, and the
 unknown-record skip contract is spec-verbatim. Landed:
 
 1. **MotW `-oz` policy (default ON, `-oz-` disables):** zone data read
