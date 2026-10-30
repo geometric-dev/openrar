@@ -20,8 +20,8 @@
 
 namespace openrar::cli {
 
-extern bool g_plain_mode;
-extern bool g_quiet_mode;
+inline bool g_plain_mode = false;
+inline bool g_quiet_mode = false;
 
 // L11: entry names come from untrusted archives. Sanitize before echoing a
 // name to the terminal (v1.22.0 sweep hardening; the per-category contract
