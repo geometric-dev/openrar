@@ -33,7 +33,7 @@ std::vector<core::byte> generate_benchmark_corpus(size_t size) {
                                     "cauchy",      "reed_solomon", "hardware",    "concurrency",
                                     "thread_pool", "streaming",    "performance", "throughput",
                                     "simd_vector", "avx512",       "matrix",      "pipeline"};
-    constexpr size_t k_word_count = sizeof(k_words) / sizeof(k_words[0]);
+    constexpr size_t WORD_COUNT = sizeof(k_words) / sizeof(k_words[0]);
 
     uint32_t state = 0x1337C0DE;
     auto lcg_next = [&]() -> uint32_t {
@@ -46,7 +46,7 @@ std::vector<core::byte> generate_benchmark_corpus(size_t size) {
         uint32_t mode = r % 100;
         if (mode < 60) {
             // Emits structured repetitive English / source tokens with whitespace
-            const char* w = k_words[(r >> 8) % k_word_count];
+            const char* w = k_words[(r >> 8) % WORD_COUNT];
             for (const char* p = w; *p && corpus.size() < size; ++p) {
                 corpus.push_back(static_cast<core::byte>(*p));
             }
@@ -107,8 +107,8 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     res.method = opt.method;
 
     // Directives 1 & 6: Clamped single shared read-only corpus (16 MiB)
-    constexpr size_t k_corpus_size = 16 * 1024 * 1024;
-    const std::vector<core::byte> corpus = generate_benchmark_corpus(k_corpus_size);
+    constexpr size_t CORPUS_SIZE = 16 * 1024 * 1024;
+    const std::vector<core::byte> corpus = generate_benchmark_corpus(CORPUS_SIZE);
 
     // Warm-up pass (Directive 6: 100ms un-timed to steady CPU boost clocks)
     {
@@ -121,15 +121,15 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     const double phase_limit_sec = static_cast<double>(phase_sec);
 
     // ── Phase 1: Single-Thread Compression Benchmark ──────────────────────────
-    constexpr size_t k_st_slice_size = 4 * 1024 * 1024; // 4 MiB slice
+    constexpr size_t ST_SLICE_SIZE = 4 * 1024 * 1024; // 4 MiB slice
     const core::byte* st_src = corpus.data();
     uint64_t st_bytes_in = 0;
     auto t_st_start = std::chrono::steady_clock::now();
     for (;;) {
         std::vector<core::byte> packed;
-        compress::Compressor50::compress_buffer(st_src, k_st_slice_size, packed, opt.method,
+        compress::Compressor50::compress_buffer(st_src, ST_SLICE_SIZE, packed, opt.method,
                                                 opt.dict_size);
-        st_bytes_in += k_st_slice_size;
+        st_bytes_in += ST_SLICE_SIZE;
         auto elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t_st_start).count();
         if (elapsed >= std::max(1.0, phase_limit_sec * 0.4)) {
@@ -145,12 +145,12 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     std::vector<std::thread> workers;
     workers.reserve(threads);
 
-    const size_t chunk_per_thread = std::min<size_t>(k_corpus_size / threads, 4 * 1024 * 1024);
+    const size_t chunk_per_thread = std::min<size_t>(CORPUS_SIZE / threads, 4 * 1024 * 1024);
     const size_t actual_chunk = std::max<size_t>(chunk_per_thread, 256 * 1024);
 
     auto t_mt_start = std::chrono::steady_clock::now();
     for (unsigned i = 0; i < threads; ++i) {
-        const size_t offset = (i * actual_chunk) % (k_corpus_size - actual_chunk);
+        const size_t offset = (i * actual_chunk) % (CORPUS_SIZE - actual_chunk);
         workers.emplace_back([&, i, offset]() {
             std::vector<core::byte> packed;
             while (!mt_stop.load(std::memory_order_relaxed)) {
@@ -180,7 +180,7 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     // ── Phase 3: Parallel Decompression Benchmark & CRC32 Verification ────────
     // Pre-compress reference slice
     std::vector<core::byte> ref_packed;
-    const size_t decomp_slice_size = std::min<size_t>(k_corpus_size, 2 * 1024 * 1024);
+    const size_t decomp_slice_size = std::min<size_t>(CORPUS_SIZE, 2 * 1024 * 1024);
     compress::Compressor50::compress_buffer(corpus.data(), decomp_slice_size, ref_packed,
                                             opt.method, opt.dict_size);
     const uint32_t expected_crc = compute_crc32(corpus.data(), decomp_slice_size);
