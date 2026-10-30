@@ -404,6 +404,14 @@ static void test_process_exec_resolution() {
     // Absolute path passes through.
     const std::string abs = "\"" + g_self_exe + "\"";
     REQUIRE(!sfx::resolve_command_executable(abs, dest.string(), /*allow_dest=*/false).empty());
+
+    // Traversal out of destination directory is rejected (CRIT-02).
+    const std::string trav_win = "..\\" + probe_name;
+    REQUIRE(sfx::resolve_command_executable(trav_win, dest.string(), /*allow_dest=*/true).empty());
+    const std::string trav_posix = "../" + probe_name;
+    REQUIRE(
+        sfx::resolve_command_executable(trav_posix, dest.string(), /*allow_dest=*/true).empty());
+
     fs::remove_all(dest);
     std::cout << "[PASS] process exec: destination/PATH/absolute resolution" << std::endl;
 }
