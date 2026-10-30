@@ -365,6 +365,28 @@ static void run_suite_body() {
             std::cout << "[PASS] chunk_parallel pool reuse across multiple chunking calls\n";
     }
 
+    // 12. parallel_for verification: multithreaded accumulation & exception propagation
+    {
+        core::ThreadPool pool(4);
+        std::atomic<int> counter{0};
+        core::parallel_for(pool, 0, 100,
+                           [&](size_t) { counter.fetch_add(1, std::memory_order_relaxed); });
+        REQUIRE(counter.load() == 100);
+
+        bool caught = false;
+        try {
+            core::parallel_for(pool, 0, 50, [&](size_t i) {
+                if (i == 25) throw std::runtime_error("parallel_for test error");
+            });
+        } catch (const std::runtime_error& e) {
+            caught = true;
+            REQUIRE(std::string(e.what()) == "parallel_for test error");
+        }
+        REQUIRE(caught);
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] parallel_for multithreaded execution and exception propagation\n";
+    }
+
     if (!openrar::test::last_run_was_filtered()) std::cout << "All cdc_chunker_tests passed.\n";
     return;
 }
