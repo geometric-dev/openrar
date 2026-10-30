@@ -1,5 +1,6 @@
 #include "cpu.hpp"
 #include <cstdlib>
+#include <cstring>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
