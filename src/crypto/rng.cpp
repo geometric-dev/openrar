@@ -25,7 +25,7 @@ namespace openrar::crypto {
 
 bool secure_random_bytes(core::byte* buf, size_t len) {
     if (len == 0) return true;
-    if (buf == nullptr) return false;
+    if (buf == nullptr || len > 0xFFFFFFFFu) return false;
     NTSTATUS status = BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(buf),
                                       static_cast<ULONG>(len), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
     return status == 0; // STATUS_SUCCESS
