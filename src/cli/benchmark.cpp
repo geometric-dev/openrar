@@ -1,5 +1,6 @@
 #include "benchmark.hpp"
 #include "json_output.hpp"
+#include "progress.hpp"
 
 #include "../compress/compressor50.hpp"
 #include "../compress/decompressor50.hpp"
@@ -275,7 +276,12 @@ int run_benchmark_cli(const BenchmarkOptions& opt) {
         return 0;
     }
 
-    std::cout << "\n  \033[1;37mSystem Topology:\033[0m\n"
+    const bool vt = is_vt_supported();
+    auto c = [vt](const char* code) -> const char* {
+        return vt ? code : "";
+    };
+
+    std::cout << "\n  " << c("\033[1;37m") << "System Topology:" << c("\033[0m\n")
               << "    CPU Model:     " << res.cpu_brand << " (" << res.arch << ")\n"
               << "    Cores / MT:    " << res.logical_cores << " logical threads ("
               << res.threads_used << " engaged)\n"
@@ -290,22 +296,24 @@ int run_benchmark_cli(const BenchmarkOptions& opt) {
         std::cout << "\n";
     }
 
-    std::cout << "\n  \033[1;37mThroughput Results:\033[0m\n"
+    std::cout << "\n  " << c("\033[1;37m") << "Throughput Results:" << c("\033[0m\n")
               << "    Single-Thread Compression:  " << std::setw(10) << std::fixed
               << std::setprecision(0) << res.st_compress_kbps << " KB/s\n"
               << "    Multi-Thread Compression:   " << std::setw(10) << res.mt_compress_kbps
-              << " KB/s  (\033[1;32m" << std::setprecision(2) << res.speedup_ratio
-              << "x scaling\033[0m)\n"
+              << " KB/s  (" << c("\033[1;32m") << std::setprecision(2) << res.speedup_ratio
+              << "x scaling" << c("\033[0m") << ")\n"
               << "    Parallel Decompression:     " << std::setw(10) << std::setprecision(0)
               << res.mt_decompress_kbps << " KB/s  (" << std::setprecision(2)
               << (res.mt_decompress_kbps / (1024.0 * 1024.0)) << " GB/s)\n"
               << "    Decompression Integrity:    "
-              << (res.verified ? "\033[1;32m[PASS] Verified CRC32 match\033[0m"
-                               : "\033[1;31m[FAIL] CRC32 Mismatch\033[0m")
+              << (res.verified
+                      ? (std::string(c("\033[1;32m")) + "[PASS] Verified CRC32 match" +
+                         c("\033[0m"))
+                      : (std::string(c("\033[1;31m")) + "[FAIL] CRC32 Mismatch" + c("\033[0m")))
               << "\n"
-              << "\n  \033[1;33mRARMark v2.0 Score:          \033[1;32m" << res.rarmark_score
-              << " pts\033[0m\n"
-              << "  \033[90m===================================================\033[0m\n\n";
+              << "\n  " << c("\033[1;33m") << "RARMark v2.0 Score:          " << c("\033[1;32m")
+              << res.rarmark_score << " pts" << c("\033[0m\n") << "  " << c("\033[90m")
+              << "===================================================" << c("\033[0m\n\n");
 
     return res.verified ? 0 : 1;
 }
