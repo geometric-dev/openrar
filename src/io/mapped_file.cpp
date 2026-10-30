@@ -27,8 +27,8 @@ namespace openrar::io {
 
 namespace {
 // Copies through the mapping under SEH; returns bytes copied (0 on fault).
-size_t guarded_copy(const core::byte* base, size_t map_len, core::uint64 off, void* dst,
-                    size_t bytes) {
+size_t guarded_copy(const core::byte* base, [[maybe_unused]] size_t map_len, core::uint64 off,
+                    void* dst, size_t bytes) {
     __try {
         std::memcpy(dst, base + off, bytes);
         return bytes;
