@@ -43,11 +43,23 @@ void test_escape_json_string_hostile_path() {
     std::cout << "[PASS] Hostile injection vectors fully sanitized.\n";
 }
 
+void test_escape_json_string_utf8_validation() {
+    std::string invalid = std::string("bad\xff\xfe") + "path\xc0\xaf.rar";
+    std::string escaped = escape_json_string(invalid);
+    REQUIRE(escaped.find("\\uFFFD") != std::string::npos);
+
+    std::string valid = "\xe4\xb8\xad\xe6\x96\x87.txt";
+    std::string escaped_valid = escape_json_string(valid);
+    REQUIRE(escaped_valid == valid);
+    std::cout << "[PASS] UTF-8 validation and \\uFFFD replacement verified.\n";
+}
+
 static const openrar::test::Case k_cases[] = {
     {"test_escape_json_string_standard", test_escape_json_string_standard, false},
     {"test_escape_json_string_control_chars", test_escape_json_string_control_chars, false},
     {"test_escape_json_string_hex_control_chars", test_escape_json_string_hex_control_chars, false},
     {"test_escape_json_string_hostile_path", test_escape_json_string_hostile_path, false},
+    {"test_escape_json_string_utf8_validation", test_escape_json_string_utf8_validation, false},
 };
 
 int main(int argc, char* argv[]) {
