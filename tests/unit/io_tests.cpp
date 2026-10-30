@@ -124,6 +124,9 @@ void test_path_utils() {
     // M10: Windows-specific hazards must not reach the filesystem verbatim.
     REQUIRE(io::sanitize_archive_path("NUL") == "_NUL");
     REQUIRE(io::sanitize_archive_path("con") == "_con");
+    REQUIRE(io::sanitize_archive_path("CONIN$") == "_CONIN$");
+    REQUIRE(io::sanitize_archive_path("conout$.txt") == "_conout$.txt");
+    REQUIRE(io::sanitize_archive_path("clock$") == "_clock$");
     REQUIRE(io::sanitize_archive_path("aux.txt") == "_aux.txt");
     REQUIRE(io::sanitize_archive_path("COM1/data.bin") == "_COM1/data.bin");
     REQUIRE(io::sanitize_archive_path("com10.txt") == "com10.txt"); // not reserved
