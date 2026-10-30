@@ -336,7 +336,8 @@ int main(int argc, char** argv) {
                             w.is_dir = (fb.file_flags & format::FHFL_DIRECTORY) ? 1u : 0u;
                             w.method = fb.method;
                             w.is_encrypted = fb.is_encrypted ? 1u : 0u;
-                            w.crc32 = fb.has_crc32 ? fb.data_crc32 : 0u;
+                            const bool has_real_crc = fb.has_crc32 && (fb.redir_type == 0);
+                            w.crc32 = has_real_crc ? fb.data_crc32 : 0u;
                             w.size = fb.unp_size;
                             w.packed_size = e.data_size;
                             // FILETIME (100 ns since 1601) to UNIX seconds, the
@@ -345,7 +346,7 @@ int main(int argc, char** argv) {
                                           ? (fb.mtime_win - 116444736000000000ull) / 10000000ull
                                           : 0ull;
                             w._pad[0] = (fb.is_service ? sandbox::WIRE_FLAG_SERVICE : 0ull) |
-                                        (fb.has_crc32 ? sandbox::WIRE_FLAG_HAS_CRC32 : 0ull);
+                                        (has_real_crc ? sandbox::WIRE_FLAG_HAS_CRC32 : 0ull);
                             view.entries.push_back(w);
                             paths += name;
                         }
