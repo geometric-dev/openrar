@@ -81,7 +81,8 @@ bool StreamDecoder::feed(const core::byte* src, size_t n) {
 // the streaming API (wasm openrar_stream_decompress_feed) fails closed
 // instead of exhausting the heap.
 bool StreamDecoder::retain_output(const core::byte* data, size_t size) {
-    if (static_cast<core::uint64>(output_.size()) + size > MAX_RETAINED_OUTPUT) {
+    if (static_cast<core::uint64>(output_.size()) > MAX_RETAINED_OUTPUT ||
+        size > MAX_RETAINED_OUTPUT - static_cast<core::uint64>(output_.size())) {
         aborted_ = true;
         return false;
     }
