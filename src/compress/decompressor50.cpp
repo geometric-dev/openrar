@@ -1838,7 +1838,7 @@ bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size
     }
 
     auto cb = [&](const core::byte* data, size_t size) -> bool {
-        if (out.size() + size > MAX_STREAM_OUTPUT) return false;
+        if (out.size() > MAX_STREAM_OUTPUT || size > MAX_STREAM_OUTPUT - out.size()) return false;
         try {
             out.insert(out.end(), data, data + size);
         } catch (const std::bad_alloc&) {
