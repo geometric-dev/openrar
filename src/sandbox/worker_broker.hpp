@@ -38,6 +38,7 @@ struct BrokerEntry {
     WireEntry wire{};
     std::string path; // resolved from the paths blob at unpack time
     bool is_service() const { return (wire._pad[0] & WIRE_FLAG_SERVICE) != 0; }
+    bool has_crc32() const { return (wire._pad[0] & WIRE_FLAG_HAS_CRC32) != 0; }
 };
 
 class WorkerBroker {
