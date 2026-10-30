@@ -10,29 +10,29 @@ A filter token appears in the token stream like any `LD` symbol:
 
 ```
 MainSlot == 256
-  BlockStart  : variable-length integer, bytes = GetBits(2)+1 (1..4), little-endian via GetBits(8) per byte
-  BlockLength : same encoding
+  block_start : variable-length integer, bytes = GetBits(2)+1 (1..4), little-endian via GetBits(8) per byte
+  block_length: same encoding
   Type        : 3 bits (GetBits(3))
   Channels    : if Type==0 (DELTA) then 5 bits (GetBits(5)+1) else 1
 ```
 
-* `BlockStart` is an offset relative to the current unpack position. The linear start in this file's output is `total_written_so_far + BlockStart`. The address fixup base for E8/E8E9/ARM (`file_offset`) is the offset WITHIN the current member: `total_written_so_far + BlockStart` — it does NOT include prior solid bytes. (Corrected in the v1.36.x arc: the earlier `solid_base + …` wording described our decoder's carried base; oracle verification against a solid multi-member archive with E8-filtered non-first members proved the per-member base — a carried base corrupts every such member.)
-* `BlockLength` is clamped: if `>0x400000` (4 MiB) it is forced to `0` (no-op filter).
+* `block_start` is an offset relative to the current unpack position. The linear start in this file's output is `total_written_so_far + block_start`. The address fixup base for E8/E8E9/ARM (`file_offset`) is the offset WITHIN the current member: `total_written_so_far + block_start` — it does NOT include prior solid bytes. (Corrected in the v1.36.x arc: the earlier `solid_base + …` wording described our decoder's carried base; oracle verification against a solid multi-member archive with E8-filtered non-first members proved the per-member base — a carried base corrupts every such member.)
+* `block_length` is clamped: if `>0x400000` (4 MiB) it is forced to `0` (no-op filter).
 * `Type` values: `0=DELTA`, `1=E8`, `2=E8E9`, `3=ARM`, `4=AUDIO`, `5=RGB`, `6=ITANIUM`, `7=TEXT`. Only `0..3` are used by RAR5 encoders today; decoders must skip unknown types.
-* At most `8192` filters per file; excess must flush the write buffer (`unp_buffer`) and reset.
+* At most `8192` filters per file; excess must flush the write buffer and reset.
 
-`BlockStart` distance to the filter token is bounded: the encoder guarantees `BlockStart <= MaxWinSize`, so wrap-around at most once.
+`block_start` distance to the filter token is bounded: the encoder guarantees `block_start` ≤ the dictionary size, so wrap-around happens at most once.
 
-### NextWindow
+### Deferred filters
 
 In windowed (solid) mode, a filter whose `block_start` lies in the not-yet-written part of the circular window must be deferred:
 
 ```
-Filter.NextWindow = (wr_ptr != unp_ptr && WrapDown(wr_ptr - unp_ptr) <= BlockStart)
-Filter.BlockStart = (BlockStart + unp_ptr) % MaxWinSize
+Filter.deferred = (flush_pos != write_pos && WrapDown(flush_pos - write_pos) <= block_start)
+Filter.block_start = (block_start + write_pos) % dictionary_size
 ```
 
-`NextWindow` filters are skipped during the current write pass; when `BlockStart` enters the current write range, `NextWindow` is cleared. Single-file decoders that produce the whole output before applying filters apply every filter whose linear range lies within the output.
+Deferred filters are skipped during the current write pass; when `block_start` enters the current write range, the deferral is cleared. Single-file decoders that produce the whole output before applying filters apply every filter whose linear range lies within the output.
 
 Filter state is per-file: the pending queue is cleared at every file boundary even when the LZ window, distances, and tables carry over. A filter region never spans two files.
 
@@ -44,7 +44,7 @@ Maximum filter block is `4 MiB`; filters that would cross the write border are a
 
 All filters are applied **out-of-place**: copy the source block to a temporary buffer, transform in place, then copy back. This preserves window bytes for future LZ matches (which must see the pre-filter bytes).
 
-Filters are applied in insertion order after the file’s LZ bytes are fully decoded (or incrementally after each `unp_buffer` in windowed mode). Overlapping filters are applied sequentially.
+Filters are applied in insertion order after the file's LZ bytes are fully decoded (or incrementally after each window flush in windowed mode). Overlapping filters are applied sequentially.
 
 ### 0 — DELTA
 
@@ -52,13 +52,13 @@ Filters are applied in insertion order after the file’s LZ bytes are fully dec
 
 ```
 Channels = GetBits(5)+1  (1..32)
-DataSize = BlockLength
+block_length = block_length
 SrcPos = 0
 for Channel in 0..Channels-1:
     Prev = 0
-    for DestPos = Channel; DestPos < DataSize; DestPos += Channels:
-        Dst[DestPos] = Prev - Src[SrcPos++]
-        Prev = Dst[DestPos]
+    for dest_pos = Channel; dest_pos < block_length; dest_pos += Channels:
+        Dst[dest_pos] = Prev - Src[SrcPos++]
+        Prev = Dst[dest_pos]
 ```
 
 Bytes within each channel are delta-decoded (subtraction modulo 256); channels are de-interleaved (encoder interleaves them). Groups are contiguous per channel. Single-channel delta is just `Prev -= Src[SrcPos++]` (`Prev - Src`). The encoder stores `Src = Prev - Dst` (also subtraction, same modulo) so the decoder above round-trips. Implementations must use subtraction in both directions.
@@ -68,27 +68,27 @@ Bytes within each channel are delta-decoded (subtraction modulo 256); channels a
 *Purpose:* x86 `CALL` (`E8`) address translation.
 
 ```
-FileOffset = WrittenFileSize  (low 32 bits, the file offset of the block start)
+file_offset = written_file_size  (low 32 bits, the file offset of the block start)
 FileSize   = 0x1000000 (16 MiB window)
 CmpByte2   = 0xE8 (for E8) / 0xE9 (for E8E9)
-for CurPos = 0; CurPos+4 < DataSize; CurPos++:
-    CurByte = Data[CurPos]
+for pos = 0; pos+4 < block_length; pos++:
+    CurByte = Data[pos]
     if CurByte==0xE8 || CurByte==CmpByte2:
-        Offset = (CurPos + FileOffset) % FileSize
-        Addr   = LE32(Data[CurPos+1])  (raw 32-bit target)
+        Offset = (pos + file_offset) % FileSize
+        Addr   = LE32(Data[pos+1])  (raw 32-bit target)
         if (Addr & 0x80000000) { // Addr < 0 (high bit set)
             if ((Addr + Offset) & 0x80000000) == 0) // Addr+Offset >=0
-                LE32(Data[CurPos+1]) = Addr + FileSize
+                LE32(Data[pos+1]) = Addr + FileSize
         } else {
             if ((Addr - FileSize) & 0x80000000) // Addr < FileSize
-                LE32(Data[CurPos+1]) = Addr - Offset
+                LE32(Data[pos+1]) = Addr - Offset
         }
-        CurPos += 4  // skip operand
+        pos += 4  // skip operand
 ```
 
-For `E8` only `0xE8` bytes are transformed; for `E8E9` both `0xE8` and `0xE9` (`JMP`) are. The `FileSize` window is `16 MiB`; transformation is reversible and position-dependent. `DataSize<4` is skipped (needs `CurPos+4<DataSize`).
+For `E8` only `0xE8` bytes are transformed; for `E8E9` both `0xE8` and `0xE9` (`JMP`) are. The `FileSize` window is `16 MiB`; transformation is reversible and position-dependent. `block_length<4` is skipped (needs `pos+4<block_length`).
 
-Encoders may emit either `E8` or `E8E9`; decoders must handle both. The transform is applied with `linear_start` as the file offset base (for windowed decoders, the linear file offset at `BlockStart`, not the window offset).
+Encoders may emit either `E8` or `E8E9`; decoders must handle both. The transform is applied with `linear_start` as the file offset base (for windowed decoders, the linear file offset at `block_start`, not the window offset).
 
 ### 2 — E8E9
 
@@ -99,36 +99,36 @@ Same as `E8` but `CmpByte2 = 0xE9`. See above.
 *Purpose:* ARM `BL` (`0xEB`) branch with condition `Always` (`0xE` prefix in ARM encoding). Disabled by default since RAR 5.80b3 for modern 64-bit ARM, but decoders must still support it.
 
 ```
-FileOffset = WrittenFileSize
-for CurPos = 0; CurPos+3 < DataSize; CurPos += 4:
-    if Data[CurPos+3] == 0xEB: // BL Always
-        Offset = (Data[CurPos] | Data[CurPos+1]<<8 | Data[CurPos+2]<<16)
-        Offset -= (FileOffset + CurPos)/4
-        Data[CurPos]   = Offset & 0xFF
-        Data[CurPos+1] = (Offset>>8) & 0xFF
-        Data[CurPos+2] = (Offset>>16) & 0xFF
+file_offset = written_file_size
+for pos = 0; pos+3 < block_length; pos += 4:
+    if Data[pos+3] == 0xEB: // BL Always
+        Offset = (Data[pos] | Data[pos+1]<<8 | Data[pos+2]<<16)
+        Offset -= (file_offset + pos)/4
+        Data[pos]   = Offset & 0xFF
+        Data[pos+1] = (Offset>>8) & 0xFF
+        Data[pos+2] = (Offset>>16) & 0xFF
 ```
 
-Operates on 4-byte ARM instruction groups, little-endian. `FileOffset` truncated to 32 bits.
+Operates on 4-byte ARM instruction groups, little-endian. `file_offset` truncated to 32 bits.
 
 ### 4..7 — Reserved
 
-`AUDIO` (4), `RGB` (5), `ITANIUM` (6), `TEXT` (7) — not emitted by current RAR5 `m1..m5` encoders for `LD` filter type dispatch. Decoders for the LZ `LD=256` path must skip unknown types as `FILTER_NONE`. VM standard filters for audio/ITANIUM are defined separately in the VM specification and are not part of this LZ filter dispatch.
+`AUDIO` (4), `RGB` (5), `ITANIUM` (6), `TEXT` (7) — not emitted by current RAR5 `m1..m5` encoders for `LD` filter type dispatch. Decoders for the LZ `LD=256` path must skip unknown types as no filter (`FILTER_NONE`). VM standard filters for audio/ITANIUM are defined separately in the VM specification and are not part of this LZ filter dispatch.
 
 ---
 
 ## Encoder Constraints
 
 * Filter blocks are `≤4 MiB`; larger blocks are clamped to `0` length (no-op).
-* Encoders choose filter placement after LZ analysis; the `BlockStart` must be within `MaxWinSize` of the filter token position.
-* Solid archives must respect `NextWindow` — a filter referencing not-yet-flushed window bytes must be deferred correctly.
+* Encoders choose filter placement after LZ analysis; the `block_start` must be within the dictionary size of the filter token position.
+* Solid archives must respect filter deferral - a filter referencing not-yet-flushed window bytes must be deferred correctly.
 
 ---
 
 ## Decoder Checklist
 
-* Implement `BlockStart`/`BlockLength` variable-length `GetBits(2)+1` bytes, little-endian per byte.
-* Handle `NextWindow` for windowed decoders; linear decoders may ignore it (their out vector never wraps).
-* Apply filters out-of-place, in insertion order, after `unp_ptr` advancement and before `wr_ptr` flush.
+* Implement `block_start`/`block_length` variable-length `GetBits(2)+1` bytes, little-endian per byte.
+* Handle window wrapping (`next_window`) for windowed decoders; linear decoders may ignore it (their out vector never wraps).
+* Apply filters out-of-place, in insertion order, after advancing the write position and before flushing pending window bytes.
 * Support all four types (`DELTA`, `E8`, `E8E9`, `ARM`); skip unknown types.
-* Verify `BlockLength` bounds and `8192` filter limit (flush and reset on overflow).
+* Verify `block_length` bounds and `8192` filter limit (flush and reset on overflow).

@@ -32,7 +32,7 @@ CheckOptions:
     # Callback / function-type aliases stay PascalCase: they are types, and
     # ARCHITECTURE.md s3.2 types are PascalCase. The original list was
     # incomplete; RarError and ArchiveEntryOut are the shared-ABI aliases.
-    value: '^(ReedSolomon16|OutputCallback|InputCallback|MatchFn|InputFn|SinkFn|ParallelSinkFn|ParallelProgressCb|ParallelCancelCb|RarError|ArchiveEntryOut)$'
+    value: '^(OutputCallback|InputCallback|MatchFn|InputFn|SinkFn|ParallelSinkFn|ParallelProgressCb|ParallelCancelCb|RarError|ArchiveEntryOut)$'
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
   - key: readability-identifier-naming.ParameterCase
