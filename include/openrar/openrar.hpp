@@ -519,7 +519,9 @@ public:
         ai.flags = raw.flags;
         ai.volume_index = raw.volume_index;
         ai.volume_count = raw.volume_count;
-        ai.recovery_size = raw.recovery_size;
+        uint64_t rec_sz = 0;
+        std::memcpy(&rec_sz, &raw.recovery_size, sizeof(rec_sz));
+        ai.recovery_size = rec_sz;
         if (cmt && cmt_sz) ai.comment.assign(static_cast<const char*>(cmt), cmt_sz);
         return ai;
     }
