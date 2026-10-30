@@ -360,7 +360,7 @@ bool HeaderReader::parse_main_header(const core::byte* body, size_t body_size,
                         core::uint64 qo_off = 0;
                         if (core::read_vint(body + offset, rec_end - offset, qo_off, read_bytes)) {
                             // Spec: 0 means absent/preallocation insufficient — ignore
-                            if (qo_off != 0)
+                            if (qo_off != 0 && qo_off <= static_cast<core::uint64>(INT64_MAX))
                                 out_block.locator_qo_offset = static_cast<core::int64>(qo_off);
                             else
                                 out_block.locator_qo_offset = -1;
@@ -370,7 +370,7 @@ bool HeaderReader::parse_main_header(const core::byte* body, size_t body_size,
                     if (loc_flags & 0x02) { // RR
                         core::uint64 rr_off = 0;
                         if (core::read_vint(body + offset, rec_end - offset, rr_off, read_bytes)) {
-                            if (rr_off != 0)
+                            if (rr_off != 0 && rr_off <= static_cast<core::uint64>(INT64_MAX))
                                 out_block.locator_rr_offset = static_cast<core::int64>(rr_off);
                             else
                                 out_block.locator_rr_offset = -1;
@@ -456,6 +456,7 @@ bool HeaderReader::parse_file_header(const core::byte* body, size_t body_size,
     if (flags & HFL_DATA) {
         core::uint64 pack_sz = 0;
         if (!core::read_vint(body + offset, body_size - offset, pack_sz, read_bytes)) return false;
+        if (pack_sz > static_cast<core::uint64>(INT64_MAX)) return false;
         out_block.pack_size = static_cast<core::int64>(pack_sz);
         offset += read_bytes;
     } else {
