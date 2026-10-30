@@ -287,7 +287,7 @@ continues as v1.45.x patches.
   to v1.42.x output. `OPENRAR_NO_BACKSHIFT=1` reproduces the previous bytes exactly.
 - **Dictionary table flavor now follows the header, not the window.** The
   446-entry ExtraDist tables are selected by `unp_ver 1` *without*
-  `FCI_RAR5_COMPAT` (what unrar does); a RAR5-algorithm member may declare any
+  `FCI_RAR5_COMPAT` (what the reference binary does); a RAR5-algorithm member may declare any
   window up to 64 GiB with 430-entry tables. The encoder always writes 430-entry
   tables (match distance capped at 4 GiB) and the decoder takes the flavor per
   member from the header, including partway through a solid chain.
@@ -1780,7 +1780,7 @@ shipped Zone.Identifier-via-`-os` residue was closed in the same arc.
   `ExtraType::Xattr`, `header_reader.cpp` parse branch, `header_writer.cpp`
   emission): `Size/Type/Flags(0)/Count` + per-attribute
   `NameLen/Name/ValueLen/Value` with opaque byte values. The type number was
-  verified free against unrar `headers.hpp` and bitplane rar-research;
+  verified free against published format specifications and bitplane rar-research;
   record bounds (name 255 B, value 64 KiB, count 4096, 1 MiB per file) are
   shared constants (`FHEXTRA_XATTR_*`) used by reader validation, writer
   emission and capture. ANY malformed record (flags != 0, length violations,
@@ -2460,7 +2460,7 @@ measured against the reference UnRAR oracle.
 ### Changed
 
 - **WinRAR exit-code taxonomy (CLI)**: exit codes were measured against the
-  reference UnRAR implementation (`errors.hpp RAR_EXIT`) and mapped:
+  reference CLI exit taxonomy and mapped:
   healthy=0, missing archive=10 (NO_FILES), unrecognized=13 (BADARC),
   checksum=3 (CRC), locked=4, open=6, usage=7, memory=8, no files matched=10
   for extraction/testing, wrong password=11, user break=255. Previously every
