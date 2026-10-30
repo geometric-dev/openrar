@@ -10,9 +10,9 @@ For active project roadmaps and living specifications, refer back to the [OpenRA
 
 | Release | Focus / Milestone Title | Historical Artifacts |
 |---|---|---|
-| **v1.23** | SFX Directive Engine & Process Security | [Design Review](sfx-v1.23-design-review.md) · [Implementation Plan](sfx-v1.23-implementation-plan.md) |
+| **v1.23** | SFX Directive Engine & Process Security | [Design Review](v1.23-sfx-design-review.md) · [Implementation Plan](v1.23-sfx-implementation-plan.md) |
 | **v1.24** | Atomic Extraction & Syscall Path Containment | [Implementation Plan](v1.24-implementation-plan.md) |
-| **v1.25** | Memory-Mapped Read Engine | [Design Review](mmap-v1.25-design-review.md) · [Implementation Plan](v1.25-implementation-plan.md) · [Walkthrough](mmap-v1.25-walkthrough.md) |
+| **v1.25** | Memory-Mapped Read Engine | [Design Review](v1.25-mmap-design-review.md) · [Implementation Plan](v1.25-implementation-plan.md) · [Walkthrough](v1.25-mmap-walkthrough.md) |
 | **v1.26** | Content-Defined Chunking (CDC) Solid Ordering | [Pre-Analysis](v1.26-pre-analysis.md) · [Implementation Plan](v1.26-implementation-plan.md) |
 | **v1.27** | POSIX xattrs & Mark of the Web (Zone.Identifier) | [Pre-Analysis](v1.27-pre-analysis.md) · [Implementation Plan](v1.27-implementation-plan.md) |
 | **v1.28** | Interactive Dual-Progress TUI & Bench Engine | [Pre-Analysis](v1.28-pre-analysis.md) · [Implementation Plan](v1.28-implementation-plan.md) |
@@ -28,7 +28,7 @@ For active project roadmaps and living specifications, refer back to the [OpenRA
 | **v1.38** | Sliding Window Read Buffer Optimization | [Pre-Analysis](v1.38.0-pre-analysis.md) · [Implementation Plan](v1.38.0-implementation-plan.md) |
 | **v1.39** | Extraction Durability & Write Pipelines | [Pre-Analysis](v1.39.0-pre-analysis.md) · [Remediation Plan](v1.39.1-remediation-plan.md) |
 | **v1.40** | Corpus Benchmark Suite & Hardware Baselines | [Benchmark Bundle](v1.40.0-bench-bundle.md) |
-| **v1.41** | Security Review & Fuzzing Expansion | [Code Review v1.41.0](v1.41.0-code-review.md) · [Code Review v1.41.1](v1.41.1-code-review.md) |
+| **v1.41** | Security Review & Fuzzing Expansion | [Code Review v1.41.1](v1.41.1-code-review.md) |
 | **v1.42** | Classic Arc Stabilization & Release Tag | [Release Notes](v1.42.0-release-notes.md) |
 | **v1.43** | 5-Axis Ratio Attribution & Census Profiling | [Pre-Analysis](v1.43.0-pre-analysis.md) |
 | **v1.44** | Verification Substrate & Modular CMake Architecture | [Substrate Plan](v1.44-verification-substrate-plan.md) |

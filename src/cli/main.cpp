@@ -1327,7 +1327,7 @@ static bool files_byte_identical(const std::filesystem::path& a, const std::file
     if (ec || sa != sb) return false;
     io::FileStream fa, fb;
     if (!fa.open(a, io::FileMode::ReadOnly) || !fb.open(b, io::FileMode::ReadOnly)) return false;
-    core::byte ba[65536], bb[65536];
+    core::byte ba[8192], bb[8192];
     for (;;) {
         const size_t ga = fa.read(ba, sizeof(ba));
         const size_t gb = fb.read(bb, sizeof(bb));

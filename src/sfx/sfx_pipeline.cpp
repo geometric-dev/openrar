@@ -31,9 +31,9 @@ std::string user_profile_dir() {
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &raw))) {
         std::string profile;
         const int len = WideCharToMultiByte(CP_UTF8, 0, raw, -1, nullptr, 0, nullptr, nullptr);
-        if (len > 0) {
-            std::wstring w(raw);
-            profile.assign(w.begin(), w.end());
+        if (len > 1) {
+            profile.resize(static_cast<size_t>(len - 1));
+            WideCharToMultiByte(CP_UTF8, 0, raw, -1, profile.data(), len, nullptr, nullptr);
         }
         CoTaskMemFree(raw);
         return profile;

@@ -111,7 +111,7 @@ bool Inflate::HuffmanTable::build(const core::uint8* lengths, size_t n, bool all
         core::uint32 rev = reverse_bits(next_code[len]++, len);
         core::uint32 step = core::uint32(1) << len;
         core::uint32 entry = (core::uint32(len) << 16) | core::uint32(sym);
-        for (core::uint32 idx = rev; idx < ROOT_SIZE; idx += step) root[idx] = entry;
+        for (core::uint32 r_idx = rev; r_idx < ROOT_SIZE; r_idx += step) root[r_idx] = entry;
     }
     return true;
 }

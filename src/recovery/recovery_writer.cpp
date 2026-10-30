@@ -190,7 +190,7 @@ RecoveryGeometry compute_geometry(core::uint64 archive_size, core::uint32 rec_pc
 bool copy_stream_region(io::FileStream& src, io::FileStream& dest, core::uint64 src_offset,
                         core::uint64 size) {
     src.seek(static_cast<core::int64>(src_offset), io::SeekOrigin::Begin);
-    core::byte buf[65536];
+    core::byte buf[8192];
     core::uint64 remaining = size;
     while (remaining > 0) {
         size_t take =
@@ -811,7 +811,7 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
         if (!f.open(chain[i], io::FileMode::ReadOnly)) return false;
         vol_size[i] = f.size();
         crypto::Crc32 crc;
-        core::byte buf[65536];
+        core::byte buf[8192];
         for (;;) {
             size_t got = f.read(buf, sizeof(buf));
             if (got > 0) crc.update(buf, got);
@@ -1383,7 +1383,7 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
         // Validate the payload CRC before trusting this parity shard.
         f.seek(static_cast<core::int64>(ri.payload_off), io::SeekOrigin::Begin);
         crypto::Crc32 pc;
-        core::byte buf[65536];
+        core::byte buf[8192];
         for (;;) {
             size_t got = f.read(buf, sizeof(buf));
             if (got > 0) pc.update(buf, got);
@@ -1520,7 +1520,7 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
             continue;
         }
         crypto::Crc32 crc;
-        core::byte buf[65536];
+        core::byte buf[8192];
         for (;;) {
             size_t got = f.read(buf, sizeof(buf));
             if (got > 0) crc.update(buf, got);
