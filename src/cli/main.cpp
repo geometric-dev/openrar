@@ -27,6 +27,7 @@
 #include "../core/cpu.hpp"
 #include "../crypto/crc32.hpp"
 #include "../crypto/sha256.hpp"
+#include "benchmark.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -435,6 +436,7 @@ void print_help() {
         << "Usage: openrar <command> -<switch 1> -<switch N> <archive> <files...>\n\n"
         << "<Commands>\n"
         << "  a             Add files to archive\n"
+        << "  b             Benchmark system performance\n"
         << "  d             Delete files from archive\n"
         << "  e             Extract files without archived paths\n"
         << "  f             Freshen existing files in archive\n"
@@ -461,6 +463,7 @@ void print_help() {
         << "                on x/t: single-member decode workers (default: 2; -mt1 = sequential)\n"
         << "  -oh           Save hard links as the link instead of the file\n"
         << "  -ol           Save symbolic links as the link instead of the file\n"
+        << "  --json        Structured RFC 8259 JSON output\n"
         << "  -o+ / -o-     Overwrite all existing files / never overwrite (default: ask)\n"
         << "  -os, -ow      Save NTFS streams / File security data (Windows ACLs, POSIX "
            "owner/group/mode)\n"
@@ -3805,10 +3808,9 @@ static int cli_main(int argc, char* argv[]) {
     std::vector<std::string> switches;
     std::vector<std::string> exclude_patterns;
 
-    // --json-summary is an extraction-run flag (v1.24 plan §5.2); elsewhere
+    // --json-summary=<file> is an extraction-run flag (v1.24 plan §5.2); elsewhere
     // it is a usage error so scripts never get silent no-op output.
-    if ((g_json_stdout_only || !g_json_summary_path.empty()) && cmd != "x" && cmd != "e" &&
-        cmd != "cv") {
+    if (!g_json_summary_path.empty() && cmd != "x" && cmd != "e" && cmd != "cv") {
         std::cerr << "Error: --json-summary is only valid with the x/e/cv commands\n";
         return EXIT_USAGE;
     }
@@ -3839,7 +3841,7 @@ static int cli_main(int argc, char* argv[]) {
         }
     }
 
-    if (arc_path.empty()) {
+    if (arc_path.empty() && cmd != "b" && cmd != "bench") {
         std::cerr << "Error: No archive name specified.\n";
         openrar::cli::print_help();
         return EXIT_FATAL;
@@ -3892,6 +3894,7 @@ static int cli_main(int argc, char* argv[]) {
     bool want_df = false;     // -df (v1.29: consumed by cv; add-side wiring is a pre-existing gap)
     std::string opt_group;
     std::string opt_user;
+    unsigned bench_seconds = 5;
 
     for (const auto& s : switches) {
         if (sw_eq(s, "-plain") || sw_eq(s, "--plain") || sw_eq(s, "-idp") ||
@@ -3995,6 +3998,18 @@ static int cli_main(int argc, char* argv[]) {
             g_json_stdout_only = true;
         } else if (sw_starts(s, "--json-summary=")) {
             g_json_summary_path = s.substr(std::string("--json-summary=").size());
+        } else if (sw_eq(s, "--json") || sw_eq(s, "-json")) {
+            g_json_stdout_only = true;
+        } else if (sw_starts(s, "--seconds=")) {
+            try {
+                bench_seconds = static_cast<unsigned>(std::stoul(s.substr(10)));
+            } catch (...) {
+            }
+        } else if (sw_starts(s, "-seconds=")) {
+            try {
+                bench_seconds = static_cast<unsigned>(std::stoul(s.substr(9)));
+            } catch (...) {
+            }
         } else if (sw_eq(s, "--preserve-suid")) {
             // v1.24 plan §7.1: admin opt-in to restore SUID/SGID/sticky bits.
             preserve_suid = true;
@@ -4477,6 +4492,15 @@ static int cli_main(int argc, char* argv[]) {
             }
         }
         return rc;
+    } else if (cmd == "b" || cmd == "bench") {
+        BenchmarkOptions bopt;
+        bopt.threads = mt_flag;
+        if (opt_dict_size > 0) bopt.dict_size = opt_dict_size;
+        bopt.method = method;
+        bopt.seconds = bench_seconds;
+        bopt.plain = g_plain_mode;
+        bopt.json = g_json_stdout_only;
+        return openrar::cli::run_benchmark_cli(bopt);
     } else if (cmd == "p") {
         return openrar::cli::print_archive_to_stdout(arc_path, files, exclude_patterns, password);
     } else if (cmd == "x" || cmd == "e") {
