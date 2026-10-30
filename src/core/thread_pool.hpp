@@ -132,29 +132,46 @@ template <class F> void parallel_for(ThreadPool& pool, size_t begin, size_t end,
         return;
     }
 
-    std::mutex mu;
-    std::condition_variable done_cv;
-    std::exception_ptr first_eptr;
-    std::atomic<size_t> remaining{end - begin};
+    struct State {
+        std::mutex mu;
+        std::condition_variable done_cv;
+        std::exception_ptr first_eptr;
+        std::atomic<size_t> remaining{0};
+    };
+    auto state = std::make_shared<State>();
+    state->remaining.store(end - begin, std::memory_order_relaxed);
 
-    for (size_t i = begin; i < end; ++i) {
-        pool.submit([&mu, &done_cv, &first_eptr, &remaining, &f, i] {
-            try {
-                f(i);
-            } catch (...) {
-                std::lock_guard<std::mutex> lk(mu);
-                if (!first_eptr) first_eptr = std::current_exception();
-            }
-            if (remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                std::lock_guard<std::mutex> lk(mu);
-                done_cv.notify_all();
-            }
-        });
+    size_t submitted = 0;
+    std::exception_ptr submit_eptr;
+    try {
+        for (size_t i = begin; i < end; ++i) {
+            pool.submit([state, &f, i] {
+                try {
+                    f(i);
+                } catch (...) {
+                    std::lock_guard<std::mutex> lk(state->mu);
+                    if (!state->first_eptr) state->first_eptr = std::current_exception();
+                }
+                if (state->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    std::lock_guard<std::mutex> lk(state->mu);
+                    state->done_cv.notify_all();
+                }
+            });
+            ++submitted;
+        }
+    } catch (...) {
+        submit_eptr = std::current_exception();
+        size_t unsubmitted = (end - begin) - submitted;
+        if (state->remaining.fetch_sub(unsubmitted, std::memory_order_acq_rel) == unsubmitted) {
+            std::lock_guard<std::mutex> lk(state->mu);
+            state->done_cv.notify_all();
+        }
     }
 
-    std::unique_lock<std::mutex> lk(mu);
-    done_cv.wait(lk, [&remaining] { return remaining.load(std::memory_order_acquire) == 0; });
-    if (first_eptr) std::rethrow_exception(first_eptr);
+    std::unique_lock<std::mutex> lk(state->mu);
+    state->done_cv.wait(lk, [&] { return state->remaining.load(std::memory_order_acquire) == 0; });
+    if (submit_eptr) std::rethrow_exception(submit_eptr);
+    if (state->first_eptr) std::rethrow_exception(state->first_eptr);
 }
 
 // Byte-budget gate: parallel file preparation buffers whole files in memory,
