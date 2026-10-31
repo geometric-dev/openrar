@@ -191,12 +191,24 @@ core::uint64 BitReader::get_bits64(unsigned int count) {
 
 void BitReader::consume_bits(unsigned int count) {
     if (count == 0) return;
-    if (n_ < count) refill();
-    unsigned int take = std::min(count, n_);
-    if (take < count) truncated_ = true; // H-07: consumed padding, not input
-    consumed_ += take;
-    n_ -= take;
-    acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
+    if (n_ >= count) {
+        consumed_ += count;
+        n_ -= count;
+        acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
+        return;
+    }
+    while (count > 0) {
+        if (n_ == 0) refill();
+        if (n_ == 0) {
+            truncated_ = true; // H-07: consumed padding, not input
+            break;
+        }
+        unsigned int take = std::min(count, n_);
+        consumed_ += take;
+        n_ -= take;
+        acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
+        count -= take;
+    }
 }
 
 void BitReader::align_byte() {

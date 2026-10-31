@@ -497,6 +497,9 @@ ForeignStatus ZipReader::preflight_cd_vs_lfh(std::string& detail) {
             } else if (e.method == 8) {
                 if (file_.seek(static_cast<int64_t>(e.data_offset), io::SeekOrigin::Begin)) {
                     compress::Inflate inf;
+                    constexpr size_t MAX_SYMLINK_BYTES = 4096;
+                    const size_t max_out =
+                        std::min<size_t>(static_cast<size_t>(e.unpacked_size), MAX_SYMLINK_BYTES);
                     auto in_fn = [&](core::byte* buf, size_t max) -> size_t {
                         const core::uint64 remaining =
                             e.packed_size -
@@ -506,11 +509,20 @@ ForeignStatus ZipReader::preflight_cd_vs_lfh(std::string& detail) {
                         if (take == 0) return 0;
                         return file_.read(buf, take);
                     };
+                    bool overflow = false;
                     auto out_fn = [&](const core::byte* data, size_t size) -> bool {
+                        if (sym_target.size() + size > max_out) {
+                            overflow = true;
+                            return false;
+                        }
                         sym_target.append(reinterpret_cast<const char*>(data), size);
                         return true;
                     };
-                    inf.decode(in_fn, out_fn);
+                    const compress::InflateError err = inf.decode(in_fn, out_fn);
+                    if (err != compress::InflateError::Ok || overflow ||
+                        sym_target.size() != e.unpacked_size) {
+                        sym_target.clear();
+                    }
                 }
             }
             if (!sym_target.empty()) {

@@ -87,18 +87,83 @@ Open the repository folder directly — CMake and `CMakePresets.json` are automa
 
 ### Signature v2.0 Capabilities
 
+#### 1. In-Memory Multi-Threaded Benchmark (`b` / `bench`)
+Measures host CPU compression and decompression throughput using a deterministic synthetic corpus (~4.2 bits/byte entropy, bounded $\le$ 32 MiB RAM footprint). Automatically detects host CPU topology and vector acceleration (AVX-512, AVX2, SSE2, ARM NEON, GFNI), calculates multi-core scaling efficiency, performs roundtrip CRC32 integrity verification, and reports a standardized **RARMark** rating.
+
 ```bash
-# Run built-in multi-threaded system benchmark (calculates RARMark score)
+# Standard benchmark across all CPU cores (5s phases, default 4 MiB dictionary)
 openrar b
 
-# Forensic health x-ray of an archive (encryption, recovery records, headers)
-openrar inspect archive.rar
+# Benchmark with specific thread count and custom dictionary size
+openrar b -mt8 -md16m
 
-# Zero-extraction structural diff between two archives (POSIX 0/1/2 exit codes)
+# Custom measurement duration per phase (e.g. 10s for higher precision)
+openrar b --seconds=10
+
+# Disable ANSI progress animations for clean plain-text log files
+openrar b -plain
+
+# Emit RFC 8259 structured JSON metrics for CI performance tracking
+openrar b --json
+```
+
+**Benchmark Flags:**
+- `-mt<n>`: Worker thread count (default: all logical cores; `-mt0` = auto-detect; `-mt1` = sequential).
+- `-md<size>`: Compression dictionary size (`128k` .. `1t`; default `4m`).
+- `-m<0..5>`: Compression algorithm level (0 store … 3 default … 5 maximal).
+- `--seconds=<sec>` / `-seconds=<sec>`: Timed duration per benchmark phase (default: `5`, min: `1`, max: `60`).
+- `-plain` / `--plain`: Disable ANSI terminal animations / TUI rendering.
+- `--json`: Emit strict RFC 8259 JSON metrics to stdout, routing diagnostics to stderr.
+
+#### 2. Archive Forensics & Inspection (`inspect`)
+Performs a zero-extraction forensic x-ray of the physical archive envelope. Dissects container headers, quick-open locators (`QO`), service blocks (`CMT`), Cauchy RS16 Reed-Solomon recovery geometry (stripe width, data/parity counts), and AES-256 PBKDF2 encryption salt/workbound parameters — with resilient fallback analysis even on truncated or damaged archives.
+
+```bash
+# Inspect archive structure, headers, and RS16 recovery geometry
+openrar inspect backup.rar
+
+# Inspect encrypted archive headers using password
+openrar inspect -pSecret encrypted.rar
+
+# Output complete forensic telemetry as machine-readable JSON
+openrar inspect --json backup.rar
+```
+
+**Inspect Flags:**
+- `-p<password>` / `-p`: Decryption password for encrypted archives.
+- `--json`: Output complete forensic inspection envelope as structured RFC 8259 JSON.
+
+#### 3. In-Archive Zero-Extraction Diff (`diff` / `cmp`)
+Compares two archives structurally without extracting file data to disk. Compares archived members across relative paths, unpacked sizes, modification timestamps, CRC32/BLAKE2sp hashes, compression methods, and dictionary windows, clearly reporting added, removed, modified, and metadata-changed files.
+
+```bash
+# Structural diff between two archive revisions
 openrar diff build_v1.rar build_v2.rar
 
-# DevOps RFC 8259 structured JSON output across listing and testing
+# Verbose diff: also display matching/identical files
+openrar diff -v build_v1.rar build_v2.rar
+
+# Compare password-protected archives
+openrar diff -pSecret build_v1.rar build_v2.rar
+
+# Emit diff results as structured JSON for CI/CD artifact comparison
+openrar diff --json build_v1.rar build_v2.rar
+```
+
+**Diff Flags & Exit Codes:**
+- `-v` / `--verbose`: Verbose mode — include identical/matching files in the output report.
+- `-p<password>`: Decryption password for protected archives.
+- `--json`: Emit machine-readable RFC 8259 JSON diff schema.
+- **Exit codes:** `0`: Archives are content and metadata identical; `1`: Structural differences detected; `2`: Operational or syntax error (file missing, bad archive, bad password).
+
+#### 4. Universal Structured JSON (`--json`)
+Available across `l` (list), `v` (verbose list), `lt` (technical list), `t` (test), `b` (benchmark), `inspect`, and `diff`. Guarantees clean machine-readable RFC 8259 JSON on stdout while routing all operational logs, progress updates, and warnings to stderr.
+
+```bash
+# Extract structured archive inventory
 openrar l --json archive.rar
+
+# Automated CI integrity test with structured JSON result
 openrar t --json archive.rar
 ```
 
@@ -123,7 +188,14 @@ openrar a -m5 -r best.rar ./src
 | Switch | Effect |
 |---|---|
 | `-m0` … `-m5` | 0 store, 1 fast … 5 best (`-m3` default). Persisted as `method` bits in every file header. |
-| `-md<n>` | Dictionary hint (e.g. `-md1m`, `-md4m`, `-md1g`). Quantized to 128 KB–4 GB, informs `WinSize` in `FCI` bits. RAR 7.0 fractional/non-power-of-two sizes accepted (nearest discrete step). |
+| `-md<size>` | Dictionary size hint (e.g. `-md1m`, `-md4m`, `-md1g`) or `-md=auto` (dynamic memory-aware auto-sizing per entry based on input size and method). Quantized to 128 KB–1 TB, informs `WinSize` in `FCI` bits. RAR 7.0 fractional/non-power-of-two sizes accepted (nearest discrete step). |
+| `-mt<n>` | Worker threads for batch add (`-mt0` or bare `-mt` = auto; default all cores) and extraction/testing (default 2; `-mt1` = sequential). In benchmark `b`, sets worker thread count. |
+| `--seconds=<sec>` | Timed measurement duration per benchmark phase in seconds (default: 5s, min: 1s, max: 60s; command `b`). |
+| `--json` | Universal structured RFC 8259 JSON output across `l`, `v`, `lt`, `t`, `b`, `inspect`, and `diff`. Pure JSON to stdout, diagnostics to stderr. |
+| `--in-proc` | Force in-process engine, bypassing the sandboxed worker process (AppContainer on Windows, seccomp-BPF on Linux). |
+| `-plain` / `--plain` | Plain line-by-line output: disables ANSI progress animations and cursor positioning (default in pipes or CI). |
+| `-q` / `-quiet` / `--quiet` | Quiet mode: suppresses informational banners, headers, and operation progress lines. |
+| `-v` / `--verbose` | Verbose mode: in `diff`, displays identical matching entries alongside differences; in `l`, displays technical volume and block details (`v` command). |
 | `-ver[n]` | File version control: versioned adds keep `n` versions per name; `-ver<idx>` extracts that version. |
 | `-s` | Solid archive (`MHFL_SOLID` + `FCI_SOLID`). Shares one `Compressor50` window across files; stored/empty files don't break the chain. |
 | `-r` | Recurse subdirectories. Default for `a` is already recursive; `-r0` limits to wildcards. |

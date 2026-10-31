@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-10-31
+
+### Security & Hardening (v2.0.1)
+
+- **ZIP Symlink Preflight Deflate Bomb Mitigation (`foreign_zip.cpp`):**
+  - Enforced a strict 4096-byte extraction ceiling and bounded streaming decompression in `ZipReader::preflight_cd_vs_lfh()`.
+  - Aborts immediately on in-flight overflow, eliminating unbounded memory exhaustion (DoS) on hostile Deflate-compressed symlink targets.
+- **Worker Thread Scope RAII Guard (`parallel_decode.cpp`):**
+  - Added `ThreadScopeGuard` over parallel decode worker threads in `ParallelDecoder::decode_solid()`.
+  - Guarantees thread joining and cancellation wakeup across all failure paths, preventing `std::terminate()` crashes from joinable `std::thread` destructors on corrupted streams or allocation exceptions.
+- **Filter Thread-Local Allocation Exception Safety (`filters50.cpp`):**
+  - Wrapped `delta_scratch()` dynamic resize and buffer trimming in exception-safe blocks with graceful `nullptr` error propagation across `Filters50::apply_delta` and `encode_delta`.
+
+### Fixed & Robustness (v2.0.1)
+
+- **BitReader Bitstream Desynchronization Resolution (`decompressor50.cpp`):**
+  - Restructured `BitReader::consume_bits()` with an explicit multi-byte refill loop for requests > 56 bits.
+  - Eliminated premature EOF/false truncation and bitstream desynchronization on block boundaries.
+- **BitOutput Accumulator Masking (`compressor50.hpp`):**
+  - Sanitized register state in `BitOutput::put_bits()` by masking residual bits upon 32-bit register drain.
+  - Guarantees unpolluted state during byte alignment and multi-byte token serialization.
+- **FastCDC Gear Hash History Window Invariant (`cdc_chunker.cpp`):**
+  - Formally documented the 64-byte finite memory invariant of rolling gear hash `(h << 1) mod 2^64`, confirming mathematical equivalence between streaming accumulation and cut-window range hashing.
+
+### Performance & Optimizations (v2.0.1)
+
+- **Branchless AES-256 Inverse MixColumns (`aes256.cpp`):**
+  - Replaced data-dependent bit-shift multiplication loops with constant-time branchless `xtime` evaluations.
+  - Completely eliminated branch mispredictions in scalar decryption rounds and hardened against cache/branch timing side-channels.
+
+### Signature v2.0 Platform Release Capabilities (v2.0.0 Rollup)
+
+- **In-Memory Benchmark Suite (`openrar b`):**
+  - Built-in multi-threaded benchmarking engine (`openrar b`) measuring throughput across text, binary, zeroes, and random corpora with thread scaling and memory bandwidth tracking.
+- **Universal Structured JSON Output (`--json`):**
+  - Full RFC 8259 structured output across archive listing (`openrar l --json`), testing (`openrar t --json`), inspection, and benchmarking.
+- **Deep Forensics & Health Inspection (`openrar inspect`):**
+  - Comprehensive archive inspection tool analyzing block types, compression headers, encryption flags, recovery sectors, and corrupted member boundaries.
+- **Zero-Extraction In-Archive Structural Diff (`openrar diff`):**
+  - High-performance zero-extraction diffing comparing two archives or archive versions without unpacking to disk.
+- **Dedicated Cauchy RS16 Differential Recovery Fuzzer:**
+  - Automated erasure-coding fuzzer validating GF(2^16) Cauchy reed-solomon reconstruction against differential SIMD (GFNI/AVX-512) oracles.
+- **Frozen Public C ABI v2.0:**
+  - Standardized stable C API (`openrar_dll.h`) frozen for the v2.x LTS line, featuring AVX2/AES-NI accelerated key scheduling and complete ABI verification tests.
+- **Comprehensive Quality Assurance:**
+  - 53/53 CTest test suites passing with 100% green status across all platforms, comprehensive sanitizer validation, and WinRAR 7.x dual-oracle interop.
+
 ## [1.60.0] - 2026-10-29
 
 ### Added

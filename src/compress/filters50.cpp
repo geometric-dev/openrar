@@ -429,13 +429,17 @@ inline size_t delta_plane_base(size_t full, size_t rem, size_t c) {
 core::byte* delta_scratch(size_t size) {
     thread_local std::vector<core::byte> scratch;
     constexpr size_t MAX_CACHED_SCRATCH = 2 * 1024 * 1024;
-    if (scratch.capacity() > MAX_CACHED_SCRATCH && size <= MAX_CACHED_SCRATCH) {
-        scratch.resize(size);
-        scratch.shrink_to_fit();
-    } else if (scratch.size() < size) {
-        scratch.resize(size);
+    try {
+        if (scratch.capacity() > MAX_CACHED_SCRATCH && size <= MAX_CACHED_SCRATCH) {
+            scratch.resize(size);
+            scratch.shrink_to_fit();
+        } else if (scratch.size() < size) {
+            scratch.resize(size);
+        }
+        return scratch.data();
+    } catch (...) {
+        return nullptr;
     }
-    return scratch.data();
 }
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -661,6 +665,7 @@ bool Filters50::apply_delta(const core::byte* src, core::byte* dest, size_t size
     if (channels > 1) {
         // Planar -> interleaved is a permutation: in-place needs scratch.
         core::byte* out = (src == dest) ? delta_scratch(size) : dest;
+        if (out == nullptr) return false;
         delta_decode_multi(src, out, size, channels);
         if (out != dest) std::memcpy(dest, out, size);
         return true;
@@ -966,6 +971,7 @@ bool Filters50::encode_delta(const core::byte* src, core::byte* dest, size_t siz
         // Interleaved -> planar is a permutation: in-place needs scratch,
         // reused per thread instead of allocated per call (H-08).
         core::byte* out = (src == dest) ? delta_scratch(size) : dest;
+        if (out == nullptr) return false;
         delta_encode_multi(src, out, size, channels);
         if (out != dest) std::memcpy(dest, out, size);
         return true;
