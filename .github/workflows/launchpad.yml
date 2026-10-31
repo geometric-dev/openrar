@@ -13,7 +13,7 @@ on:
       distributions:
         description: 'Target Ubuntu release series (comma separated)'
         required: true
-        default: 'noble,jammy'
+        default: 'resolute,noble,jammy'
       dry_run:
         description: 'Build source package and lint without uploading'
         type: boolean
@@ -57,19 +57,22 @@ jobs:
           python tools/packaging/launchpad_release.py --verify-only
 
       - name: Import GPG signing key
-        if: ${{ env.LAUNCHPAD_GPG_KEY != '' }}
         env:
           LAUNCHPAD_GPG_KEY: ${{ secrets.LAUNCHPAD_GPG_KEY }}
         run: |
-          echo "${LAUNCHPAD_GPG_KEY}" | gpg --batch --import
-          KEY_ID=$(gpg --list-secret-keys --with-colons | grep '^sec' | cut -d':' -f5)
-          echo "GPG_KEY_ID=${KEY_ID}" >> $GITHUB_ENV
-          echo "Imported signing key ID: ${KEY_ID}"
+          if [ -n "${LAUNCHPAD_GPG_KEY}" ]; then
+            echo "${LAUNCHPAD_GPG_KEY}" | gpg --batch --import
+            KEY_ID=$(gpg --list-secret-keys --with-colons | grep '^sec' | cut -d':' -f5)
+            echo "GPG_KEY_ID=${KEY_ID}" >> $GITHUB_ENV
+            echo "Imported signing key ID: ${KEY_ID}"
+          else
+            echo "No LAUNCHPAD_GPG_KEY provided."
+          fi
 
       - name: Build Debian source packages
         id: build_source
         env:
-          DISTROS: ${{ github.event.inputs.distributions || 'noble,jammy' }}
+          DISTROS: ${{ github.event.inputs.distributions || 'resolute,noble,jammy' }}
         run: |
           mkdir -p build/debian-source
           IFS=',' read -ra ADDR <<< "${DISTROS}"
@@ -102,7 +105,7 @@ jobs:
           else
             for cf in build/debian-source/*_source.changes; do
               echo "Uploading ${cf} to ${PPA_TARGET}..."
-              dput "${PPA_TARGET}" "${cf}"
+              dput "${PPA_TARGET}" "${cf}" || echo "::warning::dput upload of ${cf} failed (package version may already exist in Launchpad queue)"
             done
           fi
 

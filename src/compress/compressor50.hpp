@@ -151,6 +151,7 @@ public:
             std::memcpy(wp_, &val, 4);
             wp_ += 4;
             acc_bits_ -= 32;
+            acc_ &= (acc_bits_ ? (core::uint64(1) << acc_bits_) - 1 : 0);
             if (mem_dest_ == nullptr && logical_size() >= OUTBUF_SIZE) flush_buf();
         }
     }
