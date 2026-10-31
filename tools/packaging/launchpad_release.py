@@ -138,7 +138,7 @@ def format_rfc2822_date(dt: datetime = None) -> str:
     return dt.strftime("%a, %d %b %Y %H:%M:%S +0000")
 
 def generate_series_changelog(repo_root: Path, version: str, series: str, out_path: Path):
-    debian_version = f"{version}-0ubuntu2~{series}1"
+    debian_version = f"{version}-0ubuntu3~{series}1"
     now_str = format_rfc2822_date()
     content = f"""openrar ({debian_version}) {series}; urgency=medium
 
