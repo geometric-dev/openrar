@@ -51,20 +51,50 @@
 
 ## How to create a RAR from the command line
 
-### Installation & Build
+### Installation & Packages
 
 #### Ubuntu & Debian (Launchpad PPA)
 
+Official PPA packages are maintained for active Ubuntu LTS releases (**26.04** `resolute`, **24.04** `noble`, and **22.04** `jammy`) across all primary architectures (`amd64`, `arm64`, `armhf`, `riscv64`, `ppc64el`, `s390x`):
+
 ```bash
-# Add official OpenRAR PPA
+# Add official OpenRAR PPA repository
 sudo add-apt-repository ppa:geometric-dev/openrar
 sudo apt update
 
-# Install CLI & manpage (or C/C++ development package libopenrar-dev)
-sudo apt install openrar libopenrar-dev
+# Install the OpenRAR CLI archiver and manpage
+sudo apt install openrar
+
+# Optionally install C/C++ headers and development libraries
+sudo apt install libopenrar-dev libopenrar1
 ```
 
-#### Standard CMake (Windows, Linux, macOS with GCC, Clang, or MSVC)
+#### Python SDK (PyPI)
+
+The official Python binding ([`openrar` on PyPI](https://pypi.org/project/openrar/)) provides a memory-safe ctypes interface over the frozen C ABI with pre-built platform wheels and source distributions:
+
+```bash
+# Install the OpenRAR Python SDK
+pip install openrar
+```
+
+Quick Python usage:
+```python
+import openrar
+
+# Open and inspect archive contents
+with openrar.Archive("backup.rar") as arc:
+    for entry in arc.list():
+        print(f"{entry.path}: {entry.unpacked_size} bytes (method: {entry.method})")
+
+    # Verify checksum integrity of an entry
+    if arc.test(0):
+        arc.extract_to_path(0, "./extracted")
+```
+
+#### Building from Source
+
+##### Standard CMake (Windows, Linux, macOS with GCC, Clang, or MSVC)
 
 ```bash
 # Configure & build Release binaries
@@ -76,13 +106,13 @@ ctest --test-dir build -C Release --output-on-failure
 # → OpenRAR binary at build/openrar64/Release/openrar.exe (Windows) or build/openrar (Linux/macOS)
 ```
 
-#### POSIX Makefile (Linux / macOS)
+##### POSIX Makefile (Linux / macOS)
 
 ```bash
 make -j$(nproc)
 ```
 
-#### Visual Studio 2022 / VS Code
+##### Visual Studio 2022 / VS Code
 Open the repository folder directly — CMake and `CMakePresets.json` are automatically detected.
 
 ### Signature v2.0 Capabilities
