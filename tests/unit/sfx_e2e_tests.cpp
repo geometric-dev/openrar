@@ -244,10 +244,31 @@ int main(int argc, char* argv[]) {
         }
         return 0;
     }
-    g_stub_exe = stub;
     g_work = g_self_exe.parent_path() / "sfx_e2e_work";
     fs::remove_all(g_work);
     fs::create_directories(g_work);
+
+    std::error_code sz_ec;
+    auto stub_size = fs::file_size(stub, sz_ec);
+    if (!sz_ec && stub_size > ArchiveMutator::MAX_SFX_SIZE) {
+#ifndef _WIN32
+        fs::path stripped_stub = g_work / "Default.SFX";
+        std::string strip_cmd = "strip --strip-debug -o \"" + stripped_stub.string() + "\" \"" +
+                                stub.string() + "\" 2>/dev/null";
+        if (std::system(strip_cmd.c_str()) == 0 && fs::exists(stripped_stub) &&
+            fs::file_size(stripped_stub) <= ArchiveMutator::MAX_SFX_SIZE) {
+            stub = stripped_stub;
+        }
+#endif
+    }
+    if (fs::file_size(stub, sz_ec) > ArchiveMutator::MAX_SFX_SIZE) {
+        if (!openrar::test::is_list_only(argc, argv)) {
+            std::cout << "[SKIP] sfx e2e: Default.SFX stub size exceeds MAX_SFX_SIZE ("
+                      << ArchiveMutator::MAX_SFX_SIZE << " bytes); unstripped debug binary\n";
+        }
+        return 0;
+    }
+    g_stub_exe = stub;
 
     static const openrar::test::Case k_cases[] = {
         {"test_e2e_consent_run_and_deny", test_e2e_consent_run_and_deny, false},
