@@ -64,11 +64,18 @@ STAGING_DIR="${OUTPUT_DIR}/openrar-${VERSION}"
 rm -rf "${STAGING_DIR}"
 mkdir -p "${STAGING_DIR}"
 
-# 1. Export clean source tree without VCS or temporary artifacts
-echo "==> Creating upstream orig tarball openrar_${VERSION}.orig.tar.gz..."
+# 1. Obtain upstream orig tarball (reuse existing from Launchpad if available to preserve immutable checksum)
 ORIG_TARBALL="${OUTPUT_DIR}/openrar_${VERSION}.orig.tar.gz"
+LAUNCHPAD_ORIG_URL="https://launchpadlibrarian.net/883148558/openrar_${VERSION}.orig.tar.gz"
 
-git archive --format=tar.gz --prefix="openrar-${VERSION}/" -o "${ORIG_TARBALL}" HEAD
+if curl -sLf -o "${ORIG_TARBALL}" "${LAUNCHPAD_ORIG_URL}"; then
+    echo "==> Reusing upstream orig tarball from Launchpad: ${ORIG_TARBALL}"
+    SRC_INCLUDE_FLAG="-sd"
+else
+    echo "==> Creating upstream orig tarball openrar_${VERSION}.orig.tar.gz from git..."
+    git archive --format=tar.gz --prefix="openrar-${VERSION}/" -o "${ORIG_TARBALL}" HEAD
+    SRC_INCLUDE_FLAG="-sa"
+fi
 
 # 2. Extract orig tarball into staging directory
 tar -xzf "${ORIG_TARBALL}" -C "${OUTPUT_DIR}"
@@ -93,9 +100,9 @@ EOF
 # 5. Build source package
 echo "==> Running dpkg-source / dpkg-buildpackage -S..."
 if [[ "${DO_SIGN}" = true && -n "${KEY_ID}" ]]; then
-    dpkg-buildpackage -S -sa -d -k"${KEY_ID}"
+    dpkg-buildpackage -S ${SRC_INCLUDE_FLAG} -d -k"${KEY_ID}"
 else
-    dpkg-buildpackage -S -sa -d -us -uc
+    dpkg-buildpackage -S ${SRC_INCLUDE_FLAG} -d -us -uc
 fi
 
 cd "${REPO_ROOT}"
