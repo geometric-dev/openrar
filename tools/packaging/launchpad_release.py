@@ -191,7 +191,7 @@ def main():
     parser = argparse.ArgumentParser(description="OpenRAR Launchpad & Debian Packaging Manager")
     parser.add_argument("--verify-only", action="store_true", help="Run Debian packaging and version verification gates")
     parser.add_argument("--build-source", action="store_true", help="Build Debian source package")
-    parser.add_argument("--distros", default="noble,jammy", help="Comma-separated Ubuntu release series (e.g. noble,jammy)")
+    parser.add_argument("--distros", default="resolute,noble,jammy", help="Comma-separated Ubuntu release series (e.g. resolute,noble,jammy)")
     parser.add_argument("--output-dir", default="build/debian-source", help="Directory for source package artifacts")
     parser.add_argument("--sign-key", default=None, help="GPG Key ID for signing source package")
     parser.add_argument("--upload", action="store_true", help="Upload built source packages to Launchpad PPA via dput")

@@ -6,6 +6,7 @@ on:
     tags: [ 'v*' ]
   pull_request:
     branches: [ master, v2 ]
+  workflow_dispatch:
 
 # Cancel superseded runs on the same branch/PR: a second push within the
 # ~9-minute matrix window replaces the first, halving feedback latency and
@@ -884,4 +885,106 @@ jobs:
             SHA256SUMS
             openrar-*-sbom.json
 
+  # ───────────────────────────────────────────────────────────────────────────
+  # Ecosystem Registries Publishing (PyPI, NuGet, NPM)
+  # Triggered exclusively on version tag pushes (v*) after release-assets.
+  # Gracefully reports missing repository secrets without failing the pipeline.
+  # ───────────────────────────────────────────────────────────────────────────
 
+  publish-pypi:
+    name: Publish Python SDK to PyPI
+    needs: [release-assets]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: https://pypi.org/p/openrar
+    permissions:
+      id-token: write # Required for PyPI OIDC Trusted Publishing
+    steps:
+      - name: Download Python packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: openrar-python-pkg
+          path: dist/
+
+      - name: Publish to PyPI via Token (if configured)
+        id: token_publish
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "${PYPI_TOKEN}" ]; then
+            echo "Publishing via configured PYPI_API_TOKEN..."
+            python -m pip install --upgrade twine
+            twine upload --non-interactive -u __token__ -p "${PYPI_TOKEN}" dist/*
+            echo "published=true" >> $GITHUB_OUTPUT
+          else
+            echo "PYPI_API_TOKEN secret not set."
+            echo "published=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish to PyPI via Trusted Publishing (OIDC)
+        if: steps.token_publish.outputs.published != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  publish-nuget:
+    name: Publish .NET SDK to NuGet.org
+    needs: [release-assets]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download NuGet packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: openrar-nuget
+          path: pkg/
+
+      - name: Push to NuGet.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "${NUGET_API_KEY}" ]; then
+            echo "::warning::NUGET_API_KEY secret not found. Skipping NuGet.org publish."
+          else
+            echo "Pushing packages to NuGet.org..."
+            dotnet nuget push "pkg/*.nupkg" \
+              --api-key "${NUGET_API_KEY}" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          fi
+
+  publish-npm:
+    name: Publish WASM SDK to NPM
+    needs: [release-assets]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Generates public Sigstore provenance attestation on NPM
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download WASM package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: openrar-wasm
+          path: wasm-pkg/
+
+      - name: Publish to NPM
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "::warning::NPM_TOKEN secret not found. Skipping NPM publish."
+          else
+            echo "Publishing package to NPM..."
+            npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
+            for pkg in wasm-pkg/*.tgz; do
+              npm publish "${pkg}" --provenance --access public
+            done
+          fi

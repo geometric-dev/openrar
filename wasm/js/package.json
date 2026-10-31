@@ -1,6 +1,6 @@
 {
   "name": "openrar-wasm",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "OpenRAR RAR5 block codec + in-memory archive API — WASM build (Emscripten MODULARIZE)",
   "type": "module",
   "main": "./openrar.js",

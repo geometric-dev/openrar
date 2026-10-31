@@ -236,6 +236,20 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
             if (t.joinable()) t.join();
         }
     };
+    struct ThreadScopeGuard {
+        std::vector<std::thread>& ths;
+        Sync& sync_ref;
+        ~ThreadScopeGuard() {
+            {
+                std::lock_guard<std::mutex> lk(sync_ref.mu);
+                sync_ref.cancelled = true;
+            }
+            sync_ref.cv.notify_all();
+            for (auto& t : ths) {
+                if (t.joinable()) t.join();
+            }
+        }
+    } thread_scope_guard{threads, sync};
     auto worker_body = [&](unsigned w) {
         try {
             Decompressor50 wdec(win_size, extra_dist);
