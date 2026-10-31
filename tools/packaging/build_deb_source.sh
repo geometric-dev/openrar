@@ -78,7 +78,7 @@ cp -r "${REPO_ROOT}/debian" "${STAGING_DIR}/"
 
 # 4. Generate distribution-specific changelog entry if DISTRO differs from changelog
 cd "${STAGING_DIR}"
-DEBIAN_VERSION="${VERSION}-0ubuntu1~${DISTRO}1"
+DEBIAN_VERSION="${VERSION}-0ubuntu2~${DISTRO}1"
 
 cat <<EOF > debian/changelog
 openrar (${DEBIAN_VERSION}) ${DISTRO}; urgency=medium

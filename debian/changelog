@@ -1,3 +1,10 @@
+openrar (2.0.1-0ubuntu2) noble; urgency=medium
+
+  * Fix SFX stub debug symbol size in dh_auto_test (strip DWARF tables).
+  * Exclude platform sandboxed worker e2e test from unprivileged chroot build.
+
+ -- OpenRAR Project <geometric-dev@users.noreply.github.com>  Sat, 31 Oct 2026 20:10:00 +0000
+
 openrar (2.0.1-0ubuntu1) noble; urgency=medium
 
   * Release v2.0.1.
