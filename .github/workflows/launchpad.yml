@@ -106,6 +106,7 @@ jobs:
             for cf in build/debian-source/*_source.changes; do
               echo "Uploading ${cf} to ${PPA_TARGET}..."
               dput "${PPA_TARGET}" "${cf}" || echo "::warning::dput upload of ${cf} failed (package version may already exist in Launchpad queue)"
+              sleep 3
             done
           fi
 
