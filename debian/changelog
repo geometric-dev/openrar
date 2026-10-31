@@ -1,3 +1,9 @@
+openrar (2.0.1-0ubuntu1) noble; urgency=medium
+
+  * Release v2.0.1.
+
+ -- OpenRAR Project <geometric-dev@users.noreply.github.com>  Sat, 31 Oct 2026 07:57:07 +0000
+
 openrar (2.0.0-0ubuntu1) noble; urgency=medium
 
   * Release v2.0.0.
