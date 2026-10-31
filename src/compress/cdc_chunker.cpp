@@ -284,6 +284,9 @@ void CdcChunker::chunk_parallel(const core::byte* data, size_t size, std::vector
             CdcChunk c;
             c.offset = last_cut;
             c.length = static_cast<core::uint32>(chunk_len);
+            // Gear rolling hash (h << 1) mod 2^64 has a 64-byte finite memory;
+            // for chunk_len >= 64, hash_range over the trailing 64 bytes is
+            // mathematically identical to the full-chunk stream accumulator.
             c.hash = hash_range(data + cut_at + 1 - 64, 64);
             out.push_back(c);
             last_cut = cut_at + 1;

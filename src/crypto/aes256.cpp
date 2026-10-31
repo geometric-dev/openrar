@@ -69,7 +69,7 @@ const core::uint32 RCON[10] = {0x01000000u, 0x02000000u, 0x04000000u, 0x08000000
                                0x20000000u, 0x40000000u, 0x80000000u, 0x1B000000u, 0x36000000u};
 
 inline core::byte xtime(core::byte x) {
-    return (x << 1) ^ ((x & 0x80) ? 0x1B : 0x00);
+    return static_cast<core::byte>((x << 1) ^ (((x >> 7) & 1) * 0x1B));
 }
 
 inline core::byte multiply(core::byte x, core::byte y) {
@@ -94,15 +94,25 @@ inline core::uint32 rot_word(core::uint32 w) {
 }
 
 inline core::uint32 inv_mix_column(core::uint32 w) {
-    core::byte a = (w >> 24) & 0xFF;
-    core::byte b = (w >> 16) & 0xFF;
-    core::byte c = (w >> 8) & 0xFF;
-    core::byte d = w & 0xFF;
+    const core::byte a = static_cast<core::byte>((w >> 24) & 0xFF);
+    const core::byte b = static_cast<core::byte>((w >> 16) & 0xFF);
+    const core::byte c = static_cast<core::byte>((w >> 8) & 0xFF);
+    const core::byte d = static_cast<core::byte>(w & 0xFF);
 
-    core::byte r0 = multiply(a, 0x0E) ^ multiply(b, 0x0B) ^ multiply(c, 0x0D) ^ multiply(d, 0x09);
-    core::byte r1 = multiply(a, 0x09) ^ multiply(b, 0x0E) ^ multiply(c, 0x0B) ^ multiply(d, 0x0D);
-    core::byte r2 = multiply(a, 0x0D) ^ multiply(b, 0x09) ^ multiply(c, 0x0E) ^ multiply(d, 0x0B);
-    core::byte r3 = multiply(a, 0x0B) ^ multiply(b, 0x0D) ^ multiply(c, 0x09) ^ multiply(d, 0x0E);
+    const core::byte a2 = xtime(a), a4 = xtime(a2), a8 = xtime(a4);
+    const core::byte b2 = xtime(b), b4 = xtime(b2), b8 = xtime(b4);
+    const core::byte c2 = xtime(c), c4 = xtime(c2), c8 = xtime(c4);
+    const core::byte d2 = xtime(d), d4 = xtime(d2), d8 = xtime(d4);
+
+    const core::byte a_09 = a8 ^ a, a_0b = a8 ^ a2 ^ a, a_0d = a8 ^ a4 ^ a, a_0e = a8 ^ a4 ^ a2;
+    const core::byte b_09 = b8 ^ b, b_0b = b8 ^ b2 ^ b, b_0d = b8 ^ b4 ^ b, b_0e = b8 ^ b4 ^ b2;
+    const core::byte c_09 = c8 ^ c, c_0b = c8 ^ c2 ^ c, c_0d = c8 ^ c4 ^ c, c_0e = c8 ^ c4 ^ c2;
+    const core::byte d_09 = d8 ^ d, d_0b = d8 ^ d2 ^ d, d_0d = d8 ^ d4 ^ d, d_0e = d8 ^ d4 ^ d2;
+
+    const core::byte r0 = a_0e ^ b_0b ^ c_0d ^ d_09;
+    const core::byte r1 = a_09 ^ b_0e ^ c_0b ^ d_0d;
+    const core::byte r2 = a_0d ^ b_09 ^ c_0e ^ d_0b;
+    const core::byte r3 = a_0b ^ b_0d ^ c_09 ^ d_0e;
 
     return (static_cast<core::uint32>(r0) << 24) | (static_cast<core::uint32>(r1) << 16) |
            (static_cast<core::uint32>(r2) << 8) | static_cast<core::uint32>(r3);

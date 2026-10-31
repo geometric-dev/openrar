@@ -146,7 +146,7 @@ Add your armored ASCII GPG private key to GitHub Repository Secrets:
 ### 6.2 Triggering
 
 - **Automatic:** Pushing a release tag `v*` (e.g. `v1.53.0`) triggers the workflow automatically.
-- **Manual:** Navigate to **Actions** -> **Launchpad PPA (deb)** -> **Run workflow**, where you can select target Ubuntu series (e.g. `noble,jammy`) or enable a `dry_run` validation build without uploading.
+- **Manual:** Navigate to **Actions** -> **Launchpad PPA (deb)** -> **Run workflow**, where you can select target Ubuntu series (e.g. `resolute,noble,jammy`) or enable a `dry_run` validation build without uploading.
 
 ---
 
