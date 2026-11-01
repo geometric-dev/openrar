@@ -1,0 +1,25 @@
+{
+  "benchmark": "openrar_rarmark_v2",
+  "version": "2.0.1",
+  "system": "GitHub Actions Ubuntu Runner (Ubuntu 24.04 LTS, GCC)",
+  "cpu": {
+    "brand": "AMD EPYC 7763 64-Core Processor",
+    "arch": "x86_64",
+    "logical_cores": 4,
+    "simd_features": ["AVX2 LZ", "AVX2 BLAKE2sp", "AES-NI", "SHA-NI", "PCLMUL CRC"]
+  },
+  "config": {
+    "threads": 4,
+    "dict_size_bytes": 4194304,
+    "method": 3
+  },
+  "results": {
+    "memory_bandwidth_gbps": 28.6,
+    "st_compress_kbps": 16377.2,
+    "mt_compress_kbps": 33585.7,
+    "mt_decompress_kbps": 579544.0,
+    "speedup_ratio": 2.05,
+    "rarmark_score": 25196,
+    "decompression_verified": true
+  }
+}
