@@ -66,7 +66,10 @@ def main():
     parser = argparse.ArgumentParser(description="Sync OpenRAR cloud benchmarks from Cloudflare Worker")
     parser.add_argument(
         "--endpoint",
-        default=os.getenv("OPENRAR_BENCHMARK_ENDPOINT", "https://benchmarks.openrar.dev/api/export"),
+        default=os.getenv(
+            "OPENRAR_BENCHMARK_ENDPOINT",
+            "https://openrar-benchmark-submission.openrar-benchmark-submission.workers.dev/api/export",
+        ),
         help="Export API endpoint URL",
     )
     parser.add_argument(
@@ -83,3 +86,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
