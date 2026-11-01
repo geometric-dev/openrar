@@ -521,7 +521,7 @@ private:
         core::uint8 from_offset{0};     // Predecessor index in [0, H]
         core::uint8 token_type{0};      // Literal, Match, Rep0..3, Slot257
         core::uint16 token_len{0};      // Bytes covered
-        core::uint32 token_dist{0};     // Distance or rep index
+        size_t token_dist{0};           // Distance or rep index
         size_t old_dist[4];             // Rep-state captured AT WRITE TIME
         size_t last_len{0};             // Shadow last_length_ captured AT WRITE TIME
     };
@@ -531,7 +531,7 @@ private:
     struct ForwardArrivalDecision {
         core::uint32 token_type{0}; // 0=Literal, 1=Match, 2=Rep0, 3=Rep1, 4=Rep2, 5=Rep3, 6=LastLen
         core::uint16 token_len{1};
-        core::uint32 token_dist{0};
+        size_t token_dist{0};
         core::uint32 cost{0};
     };
     ForwardArrivalDecision evaluate_forward_arrival(core::uint64 cur, size_t match_len,

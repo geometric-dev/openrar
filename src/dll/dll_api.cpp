@@ -160,6 +160,9 @@ void set_error(const std::string& msg) {
     g_err.set_message(msg);
 }
 
+thread_local openrar::archive::ExtractionLimits g_tls_limits;
+thread_local bool g_has_tls_limits{false};
+
 // Archive handle map — shared contract table (shared_ptr pinning, report L12).
 // Polymorphic since v1.3.0: buffer-backed handles keep the frozen in-memory
 // MVP behavior; file-backed handles (open_file) run on the streaming reader
@@ -1053,7 +1056,8 @@ uint64_t OPENRAR_DLL_CALL openrar_abi_features(void) {
            OPENRAR_ABI_FEATURE_OWNER | OPENRAR_ABI_FEATURE_DICT_EX |
            OPENRAR_ABI_FEATURE_VOL_ENCRYPT | OPENRAR_ABI_FEATURE_REC_VOL |
            OPENRAR_ABI_FEATURE_PARALLEL_COMPRESS | OPENRAR_ABI_FEATURE_MMAP |
-           OPENRAR_ABI_FEATURE_V2_STREAMING | OPENRAR_ABI_FEATURE_V2_RECOVERY;
+           OPENRAR_ABI_FEATURE_V2_STREAMING | OPENRAR_ABI_FEATURE_V2_RECOVERY |
+           OPENRAR_ABI_FEATURE_STATELESS_LIMITS;
 }
 
 void* OPENRAR_DLL_CALL openrar_alloc(size_t bytes) {
@@ -1136,10 +1140,15 @@ int OPENRAR_DLL_CALL openrar_decompress2(const uint8_t* src, size_t src_len, uin
         *out_len = 0;
         if (src_len == 0) return 1;
         if (!src) return 0;
+        uint64_t eff_limit = 0;
+        if (g_has_tls_limits && g_tls_limits.member_limited()) {
+            eff_limit = g_tls_limits.max_member_output_bytes;
+        }
+
         openrar::compress::Decompressor50 dec(win_size ? win_size : 2 * 1024 * 1024);
         std::vector<openrar::core::byte> out;
         size_t prior = out.size();
-        bool ok = dec.decompress_to_vector(src, src_len, out);
+        bool ok = dec.decompress_to_vector(src, src_len, out, false, eff_limit);
         if (!ok) {
             out.resize(prior);
             return 0;
@@ -1215,8 +1224,10 @@ int OPENRAR_DLL_CALL openrar_archive_extract(const uint8_t* data, size_t size, u
             set_error("entry_index out of range");
             return RAR_ERR_INVALID_ARG;
         }
+        const openrar::archive::ExtractionLimits* p_limits =
+            g_has_tls_limits ? &g_tls_limits : nullptr;
         std::vector<uint8_t> out;
-        rc = ba.extract(data, size, entry_index, out);
+        rc = ba.extract(data, size, entry_index, out, p_limits);
         if (rc != RAR_OK) return rc;
         *out_ptr = openrar::api::heap_dup(out.data(), out.size());
         if (!*out_ptr && !out.empty()) {
@@ -1246,9 +1257,11 @@ int OPENRAR_DLL_CALL openrar_archive_extract_all(const uint8_t* data, size_t siz
         *buf_size_out = 0;
         *offsets_out_ptr = nullptr;
         *offsets_count_out = 0;
+        const openrar::archive::ExtractionLimits* p_limits =
+            g_has_tls_limits ? &g_tls_limits : nullptr;
         openrar::archive::BufferArchive ba;
         std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
-        int rc = ba.extract_all(data, size, files);
+        int rc = ba.extract_all(data, size, files, nullptr, nullptr, nullptr, nullptr, p_limits);
         if (rc != RAR_OK) return rc;
 
         if (files.empty()) {
@@ -2640,3 +2653,322 @@ int OPENRAR_DLL_CALL openrar_archive_list_ex(const uint8_t* data, size_t size, u
 }
 
 } // extern "C"
+
+
+// ── Stateless & Bounded Extraction (v2.0.2, OPENRAR_ABI_FEATURE_STATELESS_LIMITS) ──
+
+int OPENRAR_DLL_CALL openrar_set_thread_limits(uint64_t max_member_bytes,
+                                               uint64_t max_total_bytes) {
+    if (max_member_bytes == 0 && max_total_bytes == 0) {
+        g_has_tls_limits = false;
+        g_tls_limits = openrar::archive::ExtractionLimits{};
+    } else {
+        g_tls_limits.max_member_output_bytes = max_member_bytes;
+        g_tls_limits.max_total_output_bytes = max_total_bytes;
+        g_has_tls_limits = true;
+    }
+    return RAR_OK;
+}
+
+int OPENRAR_DLL_CALL openrar_get_thread_limits(uint64_t* max_member_bytes,
+                                               uint64_t* max_total_bytes) {
+    if (!max_member_bytes || !max_total_bytes) return RAR_ERR_INVALID_ARG;
+    if (g_has_tls_limits) {
+        *max_member_bytes = g_tls_limits.max_member_output_bytes;
+        *max_total_bytes = g_tls_limits.max_total_output_bytes;
+    } else {
+        *max_member_bytes = 0;
+        *max_total_bytes = 0;
+    }
+    return RAR_OK;
+}
+
+int OPENRAR_DLL_CALL openrar_decompress_limits(const uint8_t* src, size_t src_len,
+                                               uint8_t** out_ptr, size_t* out_len, size_t win_size,
+                                               uint64_t max_output_bytes) {
+    try {
+        if (!out_ptr || !out_len) return RAR_ERR_INVALID_ARG;
+        if (win_size > openrar::api::MAX_WIN_SIZE) return RAR_ERR_INVALID_ARG;
+        *out_ptr = nullptr;
+        *out_len = 0;
+        if (src_len == 0) return RAR_OK;
+        if (!src) return RAR_ERR_INVALID_ARG;
+
+        uint64_t eff_limit = max_output_bytes;
+        if (eff_limit == 0 && g_has_tls_limits && g_tls_limits.member_limited()) {
+            eff_limit = g_tls_limits.max_member_output_bytes;
+        }
+
+        openrar::compress::Decompressor50 dec(win_size ? win_size : 2 * 1024 * 1024);
+        std::vector<openrar::core::byte> out;
+        bool ok = dec.decompress_to_vector(src, src_len, out, false, eff_limit);
+        if (!ok) {
+            if (dec.last_error() == openrar::compress::DecompressErrorCode::LimitExceeded) {
+                set_error("decompression limit exceeded");
+                return RAR_ERR_LIMIT_EXCEEDED;
+            }
+            if (dec.last_error() == openrar::compress::DecompressErrorCode::AllocationFailed) {
+                set_error("out of memory");
+                return RAR_ERR_NOMEM;
+            }
+            set_error(dec.last_error_message().empty() ? "decompression failed"
+                                                       : dec.last_error_message());
+            return RAR_ERR_TRUNCATED;
+        }
+        if (out.empty()) {
+            *out_ptr = nullptr;
+            *out_len = 0;
+            return RAR_OK;
+        }
+        uint8_t* buf = static_cast<uint8_t*>(std::malloc(out.size()));
+        if (!buf) {
+            set_error("out of memory");
+            return RAR_ERR_NOMEM;
+        }
+        std::memcpy(buf, out.data(), out.size());
+        *out_ptr = buf;
+        *out_len = out.size();
+        return RAR_OK;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_NOMEM;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_NOMEM;
+    }
+}
+
+int OPENRAR_DLL_CALL openrar_archive_extract_limits(const uint8_t* data, size_t size,
+                                                    uint32_t entry_index, uint8_t** out_ptr,
+                                                    size_t* out_len, uint64_t max_member_bytes) {
+    try {
+        if (!data || !out_ptr || !out_len) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *out_ptr = nullptr;
+        *out_len = 0;
+        openrar::archive::BufferArchive ba;
+        std::vector<openrar::archive::BufferArchiveEntry> parsed;
+        int rc = ba.list(data, size, parsed);
+        if (rc != RAR_OK) return rc;
+        if (entry_index >= parsed.size()) {
+            set_error("entry_index out of range");
+            return RAR_ERR_INVALID_ARG;
+        }
+
+        openrar::archive::ExtractionLimits limits_storage;
+        const openrar::archive::ExtractionLimits* p_limits = nullptr;
+        if (max_member_bytes > 0) {
+            limits_storage.max_member_output_bytes = max_member_bytes;
+            p_limits = &limits_storage;
+        } else if (g_has_tls_limits) {
+            limits_storage = g_tls_limits;
+            p_limits = &limits_storage;
+        }
+
+        std::vector<uint8_t> out;
+        rc = ba.extract(data, size, entry_index, out, p_limits);
+        if (rc != RAR_OK) {
+            if (rc == RAR_ERR_LIMIT_EXCEEDED) set_error("resource limit exceeded");
+            return rc;
+        }
+        *out_ptr = openrar::api::heap_dup(out.data(), out.size());
+        if (!*out_ptr && !out.empty()) {
+            set_error("oom");
+            return RAR_ERR_NOMEM;
+        }
+        *out_len = out.size();
+        return RAR_OK;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_NOMEM;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_NOMEM;
+    }
+}
+
+int OPENRAR_DLL_CALL openrar_archive_extract_all_limits(const uint8_t* data, size_t size,
+                                                        uint8_t** buf_out_ptr, size_t* buf_size_out,
+                                                        uint64_t** offsets_out_ptr,
+                                                        uint32_t* offsets_count_out,
+                                                        uint64_t max_member_bytes,
+                                                        uint64_t max_total_bytes) {
+    try {
+        if (!data || !buf_out_ptr || !buf_size_out || !offsets_out_ptr || !offsets_count_out) {
+            set_error("null argument");
+            return RAR_ERR_INVALID_ARG;
+        }
+        *buf_out_ptr = nullptr;
+        *buf_size_out = 0;
+        *offsets_out_ptr = nullptr;
+        *offsets_count_out = 0;
+
+        openrar::archive::ExtractionLimits limits_storage;
+        const openrar::archive::ExtractionLimits* p_limits = nullptr;
+        if (max_member_bytes > 0 || max_total_bytes > 0) {
+            limits_storage.max_member_output_bytes = max_member_bytes;
+            limits_storage.max_total_output_bytes = max_total_bytes;
+            p_limits = &limits_storage;
+        } else if (g_has_tls_limits) {
+            limits_storage = g_tls_limits;
+            p_limits = &limits_storage;
+        }
+
+        openrar::archive::BufferArchive ba;
+        std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
+        int rc = ba.extract_all(data, size, files, nullptr, nullptr, nullptr, nullptr, p_limits);
+        if (rc != RAR_OK && rc != RAR_ERR_PARTIAL_OK) {
+            if (rc == RAR_ERR_LIMIT_EXCEEDED) set_error("resource limit exceeded");
+            return rc;
+        }
+
+        if (files.empty()) {
+            return RAR_OK;
+        }
+
+        if (files.size() > SIZE_MAX / (sizeof(uint64_t) * 2)) {
+            set_error("oom");
+            return RAR_ERR_NOMEM;
+        }
+
+        size_t total = 0;
+        for (const auto& f : files) {
+            if (f.second.size() > SIZE_MAX - total) {
+                set_error("oom");
+                return RAR_ERR_NOMEM;
+            }
+            total += f.second.size();
+        }
+        uint8_t* buf = static_cast<uint8_t*>(std::malloc(total ? total : 1));
+        if (!buf) {
+            set_error("oom");
+            return RAR_ERR_NOMEM;
+        }
+        uint64_t* offs = static_cast<uint64_t*>(std::malloc(files.size() * sizeof(uint64_t) * 2));
+        if (!offs) {
+            std::free(buf);
+            set_error("oom");
+            return RAR_ERR_NOMEM;
+        }
+        size_t off = 0;
+        for (size_t i = 0; i < files.size(); ++i) {
+            auto& p = files[i].second;
+            if (!p.empty()) std::memcpy(buf + off, p.data(), p.size());
+            offs[i * 2] = off;
+            offs[i * 2 + 1] = p.size();
+            off += p.size();
+        }
+        *buf_out_ptr = buf;
+        *buf_size_out = total;
+        *offsets_out_ptr = offs;
+        *offsets_count_out = static_cast<uint32_t>(files.size());
+        return rc;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_NOMEM;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_NOMEM;
+    }
+}
+
+int OPENRAR_DLL_CALL openrar_archive_extract_file_limits(const char* arc_path, uint32_t entry_index,
+                                                         uint8_t** out_ptr, size_t* out_len,
+                                                         uint64_t max_member_bytes) {
+    try {
+        bool ok = false;
+        auto data = read_file_bytes(arc_path, ok);
+        if (!ok) return RAR_ERR_IO;
+        return openrar_archive_extract_limits(data.data(), data.size(), entry_index, out_ptr,
+                                              out_len, max_member_bytes);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}
+
+int OPENRAR_DLL_CALL openrar_archive_extract_file_to_path_limits(const char* arc_path,
+                                                                 uint32_t entry_index,
+                                                                 const char* dest_path,
+                                                                 uint64_t max_member_bytes) {
+    try {
+        if (!arc_path || !dest_path) return RAR_ERR_INVALID_ARG;
+
+        std::filesystem::path p_arc = std::filesystem::u8path(arc_path);
+        std::error_code ec;
+        if (!std::filesystem::exists(p_arc, ec)) {
+            set_error("archive not found");
+            return RAR_ERR_IO;
+        }
+
+        auto reader = std::make_unique<openrar::archive::ArchiveReader>();
+        std::string detail;
+        if (!reader->open(p_arc, detail)) {
+            set_error("failed to open archive");
+            return RAR_ERR_IO;
+        }
+
+        std::vector<size_t> reader_index;
+        const auto& all_entries = reader->entries();
+        for (size_t i = 0; i < all_entries.size(); ++i) {
+            if (!all_entries[i].header.is_service) {
+                reader_index.push_back(i);
+            }
+        }
+        if (entry_index >= reader_index.size()) {
+            set_error("entry_index out of range");
+            return RAR_ERR_INVALID_ARG;
+        }
+
+        openrar::archive::ExtractionLimits limits_storage;
+        const openrar::archive::ExtractionLimits* p_limits = nullptr;
+        if (max_member_bytes > 0) {
+            limits_storage.max_member_output_bytes = max_member_bytes;
+            p_limits = &limits_storage;
+        } else if (g_has_tls_limits) {
+            limits_storage = g_tls_limits;
+            p_limits = &limits_storage;
+        }
+
+        openrar::archive::LimitState limit_state;
+        const auto& re = all_entries[reader_index[entry_index]];
+
+        const std::filesystem::path dest = std::filesystem::u8path(dest_path);
+        for (const auto& vol : reader->volume_paths()) {
+            if (paths_same_file(dest, vol)) {
+                set_error("destination path cannot be the archive file");
+                return RAR_ERR_INVALID_ARG;
+            }
+        }
+
+        if (re.header.file_flags & openrar::format::FHFL_DIRECTORY) {
+            bool ok = reader->extract_entry(re, dest, "", p_limits, &limit_state);
+            return ok ? RAR_OK : RAR_ERR_IO;
+        }
+        if (re.header.redir_type != 0) {
+            bool ok = reader->extract_entry(re, dest, "", p_limits, &limit_state);
+            return ok ? RAR_OK : RAR_ERR_IO;
+        }
+
+        reader->begin_extraction_session();
+        openrar::archive::ReaderHooks hooks;
+
+        return durable_write_to(dest, [&](openrar::io::FileStream& f) {
+            int rc = reader->extract_entry_stream(reader_index[entry_index], f, hooks, p_limits,
+                                                  &limit_state);
+            if (rc == RAR_ERR_LIMIT_EXCEEDED) set_error("resource limit exceeded");
+            return rc;
+        });
+    } catch (const std::exception& e) {
+        set_error(e.what());
+        return RAR_ERR_IO;
+    } catch (...) {
+        set_error("unknown C++ exception");
+        return RAR_ERR_IO;
+    }
+}

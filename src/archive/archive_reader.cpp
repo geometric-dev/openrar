@@ -815,7 +815,34 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                 i = static_cast<size_t>(static_cast<const core::byte*>(hit) - scan_buf.data());
                 if (std::memcmp(scan_buf.data() + i, sig, 8) == 0) {
                     core::uint64 cand_offset = pos + i;
-                    stream_.seek(static_cast<core::int64>(cand_offset + 8), io::SeekOrigin::Begin);
+                    core::int64 cand_hdr_pos = static_cast<core::int64>(cand_offset + 8);
+                    stream_.seek(cand_hdr_pos, io::SeekOrigin::Begin);
+                    core::byte peek[16];
+                    size_t pgot = stream_.read(peek, sizeof(peek));
+                    bool plausible = false;
+                    if (pgot >= 6) {
+                        core::uint64 bsize = 0;
+                        size_t bsize_len = 0;
+                        if (core::read_vint(peek + 4, pgot - 4, bsize, bsize_len) && bsize > 0 &&
+                            bsize <= 2 * 1024 * 1024) {
+                            size_t type_pos = 4 + bsize_len;
+                            if (type_pos < pgot) {
+                                core::uint64 btype = 0;
+                                size_t btype_len = 0;
+                                if (core::read_vint(peek + type_pos, pgot - type_pos, btype,
+                                                    btype_len)) {
+                                    if (btype == format::HEAD_MAIN || btype == format::HEAD_CRYPT) {
+                                        plausible = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (!plausible) {
+                        ++i;
+                        continue;
+                    }
+                    stream_.seek(cand_hdr_pos, io::SeekOrigin::Begin);
                     core::uint64 type = 0, flags = 0, data_size = 0;
                     std::vector<core::byte> body;
                     if (format::HeaderReader::read_block_raw(

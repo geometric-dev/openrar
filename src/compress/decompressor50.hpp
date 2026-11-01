@@ -149,7 +149,8 @@ enum class DecompressErrorCode {
     // spec max exceeded or > alloc limit 1 GiB - spec says fail not truncate
     DictionaryTooLarge = 1,
     AllocationFailed = 2, // valid size but OOM (bad_alloc)
-    InvalidInput = 3
+    InvalidInput = 3,
+    LimitExceeded = 4
 };
 
 class Decompressor50 {
@@ -259,7 +260,7 @@ public:
     // it). Refuses to allocate more than MAX_STREAM_OUTPUT bytes to bound
     // memory usage on adversarial input.
     bool decompress_to_vector(const core::byte* src, size_t src_size, std::vector<core::byte>& out,
-                              bool solid = false);
+                              bool solid = false, core::uint64 max_output = 0);
 
     // ── v1.37.0 two-phase parallel decode (docs/v1.37.0-two-phase-*.md) ────
     //
