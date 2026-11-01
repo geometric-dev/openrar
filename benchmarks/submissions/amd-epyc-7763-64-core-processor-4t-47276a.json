@@ -1,0 +1,35 @@
+{
+  "id": "47276aa6-9284-405b-aa00-d07daeec103a",
+  "slug": "amd-epyc-7763-64-core-processor-4t-47276a",
+  "benchmark": "openrar_rarmark_v2",
+  "version": "2.0.1",
+  "system": "GitHub Actions Windows Runner (Windows Server 2022)",
+  "submitter": "Anonymous",
+  "created_at": "2026-11-01 12:28:26",
+  "cpu": {
+    "brand": "AMD EPYC 7763 64-Core Processor",
+    "arch": "x86_64",
+    "logical_cores": 4,
+    "simd_features": [
+      "AVX2 LZ",
+      "AVX2 BLAKE2sp",
+      "AES-NI",
+      "SHA-NI",
+      "PCLMUL CRC"
+    ]
+  },
+  "config": {
+    "threads": 4,
+    "dict_size_bytes": 4194304,
+    "method": 3
+  },
+  "results": {
+    "memory_bandwidth_gbps": 29.8,
+    "st_compress_kbps": 18500.8,
+    "mt_compress_kbps": 43356.4,
+    "mt_decompress_kbps": 701976.6,
+    "speedup_ratio": 2.34,
+    "rarmark_score": 30680,
+    "decompression_verified": true
+  }
+}
