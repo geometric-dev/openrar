@@ -2,12 +2,16 @@
   "benchmark": "openrar_rarmark_v2",
   "version": "2.0.1",
   "system": "Workstation (Windows 11 x64)",
-  "submitter": "@community",
   "cpu": {
     "brand": "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",
     "arch": "x86_64",
     "logical_cores": 4,
-    "simd_features": ["AVX2 LZ", "AVX2 BLAKE2sp", "AES-NI", "PCLMUL CRC"]
+    "simd_features": [
+      "AVX2 LZ",
+      "AVX2 BLAKE2sp",
+      "AES-NI",
+      "PCLMUL CRC"
+    ]
   },
   "config": {
     "threads": 4,

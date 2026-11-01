@@ -316,8 +316,6 @@ static void submit_benchmark_result(const BenchmarkResult& res, const BenchmarkO
     json << "{\n"
          << "  \"benchmark\": \"openrar_rarmark_v2\",\n"
          << "  \"version\": \"" << OPENRAR_VERSION_STRING << "\",\n"
-         << "  \"submitter\": \""
-         << escape_json_string(opt.submitter.empty() ? "Anonymous" : opt.submitter) << "\",\n"
          << "  \"system\": \""
          << escape_json_string(opt.system_name.empty() ? res.cpu_brand : opt.system_name) << "\",\n"
          << "  \"cpu\": {\n"
