@@ -89,7 +89,7 @@ jobs:
 
       - name: Sync Cloud Benchmark Submissions (Cloudflare Worker)
         env:
-          OPENRAR_BENCHMARK_ENDPOINT: ${{ secrets.OPENRAR_BENCHMARK_ENDPOINT || 'https://openrar-benchmark-submission.openrar-benchmark-submission.workers.dev/api/export' }}
+          OPENRAR_BENCHMARK_ENDPOINT: ${{ secrets.OPENRAR_BENCHMARK_ENDPOINT || 'https://benchmark.openrar.workers.dev/api/export' }}
         run: |
           python tools/sync_cloud_benchmarks.py
 
