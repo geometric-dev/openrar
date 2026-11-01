@@ -1,0 +1,25 @@
+{
+  "benchmark": "openrar_rarmark_v2",
+  "version": "2.0.1",
+  "system": "GitHub Actions macOS Runner (macOS 15 Sequoia)",
+  "cpu": {
+    "brand": "Apple Silicon (M-Series ARM64)",
+    "arch": "ARM64",
+    "logical_cores": 3,
+    "simd_features": ["NEON LZ", "NEON BLAKE2sp", "AES", "SHA", "CRC"]
+  },
+  "config": {
+    "threads": 3,
+    "dict_size_bytes": 4194304,
+    "method": 3
+  },
+  "results": {
+    "memory_bandwidth_gbps": 68.4,
+    "st_compress_kbps": 26322.0,
+    "mt_compress_kbps": 71193.3,
+    "mt_decompress_kbps": 1025479.9,
+    "speedup_ratio": 2.70,
+    "rarmark_score": 45290,
+    "decompression_verified": true
+  }
+}

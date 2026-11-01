@@ -1,0 +1,49 @@
+name: Hardware Benchmark Submission
+description: Submit your openrar b benchmark results to the OpenRAR Hardware Leaderboard
+title: "[Benchmark]: "
+labels: ["benchmark-submission"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### OpenRAR Hardware Benchmark Submission
+        Thank you for contributing your hardware performance metrics!
+        
+        To generate your benchmark metrics, run:
+        ```bash
+        openrar b --json > my_hardware.json
+        ```
+        Then paste the contents of `my_hardware.json` below.
+
+  - type: input
+    id: system_name
+    attributes:
+      label: System / Device Name
+      description: e.g., "ThinkPad P1 Gen 6", "MacBook Pro M3 Max", "Custom Desktop Rig", "Raspberry Pi 5"
+      placeholder: "e.g., MacBook Pro 16\" (M3 Max, 36GB Unified Memory)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: benchmark_json
+    attributes:
+      label: Benchmark JSON Output
+      description: Paste the complete RFC 8259 JSON produced by `openrar b --json`
+      placeholder: |
+        {
+          "benchmark": "openrar_rarmark_v2",
+          "version": "2.0.1",
+          ...
+        }
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Hardware Configuration Notes (Optional)
+      description: Mention memory speed/channels (e.g. DDR5-6000 CL30, LPDDR5X-7500), cooling, power limits, or OS version.
+      placeholder: "Dual-channel DDR5-6000, watercooled, Windows 11 23H2"
+    validations:
+      required: false

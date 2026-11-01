@@ -28,6 +28,7 @@ void test_benchmark_single_thread() {
 
     BenchmarkResult res = run_benchmark(opt);
     REQUIRE(res.threads_used == 1);
+    REQUIRE(res.memory_bandwidth_gbps > 0.0);
     REQUIRE(res.st_compress_kbps > 0.0);
     REQUIRE(res.mt_compress_kbps > 0.0);
     REQUIRE(res.mt_decompress_kbps > 0.0);
@@ -50,6 +51,7 @@ void test_benchmark_multi_thread() {
     BenchmarkResult res = run_benchmark(opt);
     REQUIRE(res.threads_used == 2);
     REQUIRE(res.mt_compress_kbps > 0.0);
+    REQUIRE(res.memory_bandwidth_gbps > 0.0);
     REQUIRE(res.speedup_ratio > 0.0);
     REQUIRE(res.verified);
 
