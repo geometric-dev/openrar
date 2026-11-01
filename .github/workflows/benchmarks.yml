@@ -1,0 +1,100 @@
+name: Benchmark Leaderboard & Submissions
+
+on:
+  push:
+    paths:
+      - 'benchmarks/**'
+      - 'tools/aggregate_benchmarks.py'
+  pull_request:
+    paths:
+      - 'benchmarks/**'
+      - 'tools/aggregate_benchmarks.py'
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  validate-and-aggregate:
+    name: Validate and Aggregate Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Process Issue Submission (if triggered by issue label)
+        if: github.event_name == 'issues' && github.event.label.name == 'benchmark-submission'
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_USER: ${{ github.event.issue.user.login }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - << 'EOF'
+          import json, os, re, sys
+          from pathlib import Path
+
+          body = os.environ.get("ISSUE_BODY", "")
+          user = os.environ.get("ISSUE_USER", "community")
+          issue_num = os.environ.get("ISSUE_NUMBER", "0")
+
+          # Extract JSON from code block
+          match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", body, re.DOTALL)
+          if not match:
+              print("No JSON code block found in issue body.")
+              sys.exit(0)
+
+          try:
+              data = json.loads(match.group(1))
+          except Exception as e:
+              print(f"Failed to parse JSON: {e}")
+              sys.exit(0)
+
+          if data.get("benchmark") != "openrar_rarmark_v2":
+              print("Not an openrar_rarmark_v2 benchmark.")
+              sys.exit(0)
+
+          if not data.get("results", {}).get("decompression_verified", False):
+              print("Decompression verification failed in submission.")
+              sys.exit(0)
+
+          cpu_brand = data.get("cpu", {}).get("brand", "cpu")
+          slug = re.sub(r"[^a-zA-Z0-9]+", "-", cpu_brand.lower()).strip("-")
+          data["submitter"] = f"@{user}"
+
+          out_file = Path(f"benchmarks/submissions/{slug}-{user}.json")
+          out_file.parent.mkdir(parents=True, exist_ok=True)
+          with open(out_file, "w", encoding="utf-8") as f:
+              json.dump(data, f, indent=2)
+
+          print(f"Saved submission to {out_file}")
+          EOF
+
+      - name: Aggregate Benchmarks into BENCHMARKS.md
+        run: |
+          python tools/aggregate_benchmarks.py
+          git diff BENCHMARKS.md
+
+      - name: Commit and push changes (if modified on default or v2 branch)
+        if: github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/master'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet BENCHMARKS.md benchmarks/; then
+            git add BENCHMARKS.md benchmarks/
+            git commit -m "docs(benchmarks): update hardware leaderboard and submissions"
+            git push
+          else
+            echo "Leaderboard is already up-to-date."
+          fi
