@@ -68,7 +68,7 @@ def main():
         "--endpoint",
         default=os.getenv(
             "OPENRAR_BENCHMARK_ENDPOINT",
-            "https://openrar-benchmark-submission.openrar-benchmark-submission.workers.dev/api/export",
+            "https://benchmark.openrar.workers.dev/api/export",
         ),
         help="Export API endpoint URL",
     )

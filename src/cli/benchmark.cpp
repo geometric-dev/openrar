@@ -304,7 +304,7 @@ static void submit_benchmark_result(const BenchmarkResult& res, const BenchmarkO
         if (env_ep && *env_ep) {
             endpoint = env_ep;
         } else {
-            endpoint = "https://benchmark.openrar-benchmark-submission.workers.dev/api/submit";
+            endpoint = "https://benchmark.openrar.workers.dev/api/submit";
         }
     }
 
