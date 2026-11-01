@@ -974,7 +974,7 @@ jobs:
           if [ -n "${PYPI_TOKEN}" ]; then
             echo "Publishing via configured PYPI_API_TOKEN..."
             python -m pip install --upgrade twine
-            twine upload --non-interactive -u __token__ -p "${PYPI_TOKEN}" dist/*
+            twine upload --non-interactive --skip-existing -u __token__ -p "${PYPI_TOKEN}" dist/*
             echo "published=true" >> $GITHUB_OUTPUT
           else
             echo "PYPI_API_TOKEN secret not set."
@@ -986,6 +986,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+          skip-existing: true
 
   publish-nuget:
     name: Publish .NET SDK to NuGet.org
