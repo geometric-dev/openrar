@@ -15,7 +15,6 @@ struct BenchmarkOptions {
     bool plain{false};                 // disable ANSI animations
     bool json{false};                  // emit JSON output
     bool submit{false};                // submit results to cloud leaderboard
-    std::string submitter;             // submitter name or handle (e.g. @user)
     std::string system_name;           // custom machine / system description
     std::string endpoint;              // ingestion URL override
 };

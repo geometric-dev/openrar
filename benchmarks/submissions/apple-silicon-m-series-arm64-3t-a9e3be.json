@@ -4,7 +4,6 @@
   "benchmark": "openrar_rarmark_v2",
   "version": "2.0.1",
   "system": "GitHub Actions macOS Runner (macOS 15 Sequoia)",
-  "submitter": "Anonymous",
   "created_at": "2026-11-01 12:28:22",
   "cpu": {
     "brand": "Apple Silicon (M-Series ARM64)",
