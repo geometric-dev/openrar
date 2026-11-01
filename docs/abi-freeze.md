@@ -144,13 +144,14 @@ Bits are assigned ONLY when the gated exports ship; the next free slot is
 | 16 | MMAP | v1.25.0 |
 | 17 | V2_STREAMING | v2.0.0 |
 | 18 | V2_RECOVERY | v2.0.0 |
-| 19+ | free (next assignment order: 19) | — |
+| 19 | STATELESS_LIMITS | v2.0.2 |
+| 20+ | free (next assignment order: 20) | — |
 
 Reserve convention (openrar_dll.h:86–88): future open-time options ship as a
 new `_ex` open export behind a new bit — never as signature changes to
 `openrar_archive_open_file`.
 
-## 6. Export list (58 symbols)
+## 6. Export list (65 symbols)
 
 The canonical, per-symbol list lives in `tools/abi_exports_canonical.txt`
 (one symbol per line, sorted) — regenerated ONLY by

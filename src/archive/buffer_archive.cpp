@@ -96,8 +96,22 @@ size_t find_rar5_signature(const uint8_t* data, size_t size) {
     size_t limit = std::min(size, SFX_SCAN);
     for (size_t i = 1; i + 8 <= limit; ++i) {
         if (std::memcmp(data + i, format::rar5_signature(), 8) == 0) {
-            // Verify that a header follows: read first block at i+8.
+            // Verify that a header follows: peek first block at i+8 before full copy/CRC.
             size_t off = i + 8;
+            if (off + 6 > size) continue;
+            core::uint64 bsize = 0;
+            size_t bsize_len = 0;
+            if (!core::read_vint(data + off + 4, size - (off + 4), bsize, bsize_len) ||
+                bsize == 0 || bsize > 2 * 1024 * 1024) {
+                continue;
+            }
+            size_t type_pos = off + 4 + bsize_len;
+            if (type_pos >= size) continue;
+            core::uint64 btype = 0;
+            size_t btype_len = 0;
+            if (!core::read_vint(data + type_pos, size - type_pos, btype, btype_len)) continue;
+            if (btype != format::HEAD_MAIN && btype != format::HEAD_CRYPT) continue;
+
             core::uint64 type = 0, flags = 0, data_size = 0;
             std::vector<core::byte> body;
             if (format::HeaderReader::read_block_raw_mem(data, size, off, type, flags, body,
@@ -570,7 +584,24 @@ int list_file_stream(const std::filesystem::path& arc_path,
             if (got < 8) break;
             for (size_t i = 0; i + 8 <= got; ++i) {
                 if (std::memcmp(scan_buf.data() + i, format::rar5_signature(), 8) != 0) continue;
-                stream.seek(static_cast<core::int64>(pos + i + 8), io::SeekOrigin::Begin);
+                core::int64 cand_header_pos = static_cast<core::int64>(pos + i + 8);
+                stream.seek(cand_header_pos, io::SeekOrigin::Begin);
+                core::byte peek[16];
+                size_t pgot = stream.read(peek, sizeof(peek));
+                if (pgot < 6) continue;
+                core::uint64 bsize = 0;
+                size_t bsize_len = 0;
+                if (!core::read_vint(peek + 4, pgot - 4, bsize, bsize_len) || bsize == 0 ||
+                    bsize > 2 * 1024 * 1024)
+                    continue;
+                size_t type_pos = 4 + bsize_len;
+                if (type_pos >= pgot) continue;
+                core::uint64 btype = 0;
+                size_t btype_len = 0;
+                if (!core::read_vint(peek + type_pos, pgot - type_pos, btype, btype_len)) continue;
+                if (btype != format::HEAD_MAIN && btype != format::HEAD_CRYPT) continue;
+
+                stream.seek(cand_header_pos, io::SeekOrigin::Begin);
                 core::uint64 type = 0, flags = 0, data_size = 0;
                 std::vector<core::byte> body;
                 if (format::HeaderReader::read_block_raw(stream, type, flags, body, data_size) ==
@@ -659,7 +690,9 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
         if (limits->member_limited() && e.size > limits->max_member_output_bytes) {
             return RAR_ERR_LIMIT_EXCEEDED;
         }
-        if (limits->total_limited() && state->total_out + e.size > limits->max_total_output_bytes) {
+        if (limits->total_limited() &&
+            (state->total_out > limits->max_total_output_bytes ||
+             e.size > limits->max_total_output_bytes - state->total_out)) {
             return RAR_ERR_LIMIT_EXCEEDED;
         }
     }
@@ -672,7 +705,8 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
         return RAR_ERR_UNSUPPORTED_FEATURE;
     }
     if (e.data_size == 0) {
-        // Empty file.
+        // Empty file: if declared unp_size is non-zero, input is truncated/corrupt.
+        if (e.size != 0) return RAR_ERR_TRUNCATED;
         return RAR_OK;
     }
     if (e.data_offset > size || e.data_size > size - e.data_offset) {
@@ -685,7 +719,9 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
         if (limits->member_limited() && e.size > limits->max_member_output_bytes) {
             return RAR_ERR_LIMIT_EXCEEDED;
         }
-        if (limits->total_limited() && state->total_out + e.size > limits->max_total_output_bytes) {
+        if (limits->total_limited() &&
+            (state->total_out > limits->max_total_output_bytes ||
+             e.size > limits->max_total_output_bytes - state->total_out)) {
             return RAR_ERR_LIMIT_EXCEEDED;
         }
     }
@@ -696,14 +732,34 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
                 return RAR_ERR_LIMIT_EXCEEDED;
             }
             if (limits->total_limited() &&
-                state->total_out + e.data_size > limits->max_total_output_bytes) {
+                (state->total_out > limits->max_total_output_bytes ||
+                 e.data_size > limits->max_total_output_bytes - state->total_out)) {
                 return RAR_ERR_LIMIT_EXCEEDED;
             }
         }
         out.assign(payload, payload + e.data_size);
+        if (out.size() != e.size) return RAR_ERR_TRUNCATED;
     } else if (e.method >= 1 && e.method <= 5) {
+        // Decompression-bomb guard: bound output even with no caller limits.
+#if defined(__EMSCRIPTEN__) || defined(_M_IX86) || defined(__i386__)
+        constexpr uint64_t HARD_MEMBER_CAP = 2ULL * 1024 * 1024 * 1024;
+#else
+        constexpr uint64_t HARD_MEMBER_CAP = 64ULL * 1024 * 1024 * 1024;
+#endif
+        uint64_t eff_cap =
+            (limits && limits->member_limited())
+                ? std::min<uint64_t>(limits->max_member_output_bytes, HARD_MEMBER_CAP)
+                : HARD_MEMBER_CAP;
+
+        if (e.size > eff_cap) {
+            return RAR_ERR_LIMIT_EXCEEDED;
+        }
+
         // Use the window written into the file header. If 0 (which shouldn't happen
         // for valid RAR5 files but might in edge cases), default to 32 MiB.
+        if (e.win_size > compress::Decompressor50::ALLOC_LIMIT) {
+            return RAR_ERR_LIMIT_EXCEEDED;
+        }
         size_t win = e.win_size > 0 ? static_cast<size_t>(e.win_size) : 32 * 1024 * 1024;
         compress::Decompressor50 unpacker(win, e.extra_dist);
 
@@ -714,14 +770,14 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
         }
 
         auto chunk_cb = [&](const core::byte* chunk, size_t chunk_sz) -> bool {
+            if (out.size() + chunk_sz > eff_cap) {
+                limit_exceeded = true;
+                return false;
+            }
             if (limits) {
-                if (limits->member_limited() &&
-                    out.size() + chunk_sz > limits->max_member_output_bytes) {
-                    limit_exceeded = true;
-                    return false;
-                }
                 if (limits->total_limited() &&
-                    state->total_out + out.size() + chunk_sz > limits->max_total_output_bytes) {
+                    (state->total_out > limits->max_total_output_bytes ||
+                     out.size() + chunk_sz > limits->max_total_output_bytes - state->total_out)) {
                     limit_exceeded = true;
                     return false;
                 }
@@ -730,7 +786,7 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
             return true;
         };
 
-        size_t dest_sz = static_cast<size_t>(e.size);
+        size_t dest_sz = static_cast<size_t>(std::min<uint64_t>(e.size, eff_cap));
         size_t written = 0;
         bool finished = false;
         if (!unpacker.decompress(payload, static_cast<size_t>(e.data_size), dest_sz, false,
@@ -854,10 +910,12 @@ int BufferArchive::extract_all(const uint8_t* data, size_t size,
             if (limits->member_limited() && e.size > limits->max_member_output_bytes)
                 return RAR_ERR_LIMIT_EXCEEDED;
             if (limits->total_limited() &&
-                state->total_out + e.size > limits->max_total_output_bytes)
+                (state->total_out > limits->max_total_output_bytes ||
+                 e.size > limits->max_total_output_bytes - state->total_out))
                 return RAR_ERR_LIMIT_EXCEEDED;
         }
-        if (cumulative + e.size > MAX_TOTAL_OUTPUT) return RAR_ERR_NOMEM;
+        if (cumulative > MAX_TOTAL_OUTPUT || e.size > MAX_TOTAL_OUTPUT - cumulative)
+            return RAR_ERR_NOMEM;
         rc = extract(data, size, idx, bytes, limits, state);
         if (rc == RAR_ERR_LIMIT_EXCEEDED) return RAR_ERR_LIMIT_EXCEEDED;
         if (rc != RAR_OK) {
