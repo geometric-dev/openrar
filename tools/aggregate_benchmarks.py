@@ -149,9 +149,9 @@ There are three ways to contribute your benchmark to this leaderboard:
 
 - **Option A (Instant Cloud Ingestion - Recommended):** Pipe directly to our Cloudflare Workers edge ingestion API:
   ```bash
-  openrar b --json | curl -s -X POST -H "Content-Type: application/json" -d @- https://benchmarks.openrar.dev/api/submit
+  openrar b --json | curl -s -X POST -H "Content-Type: application/json" -d @- https://openrar-benchmark-submission.openrar-benchmark-submission.workers.dev/api/submit
   ```
-  Submissions are verified cryptographically in real-time, saved to Cloudflare D1, and automatically synced into this table. View live stats at [benchmarks.openrar.dev](https://benchmarks.openrar.dev/) or the [openrar-benchmark-submission](https://github.com/geometric-dev/openrar-benchmark-submission) service.
+  Submissions are verified cryptographically in real-time, saved to Cloudflare D1, and automatically synced into this table. View live stats at [Cloud Leaderboard](https://openrar-benchmark-submission.openrar-benchmark-submission.workers.dev/) or the [openrar-benchmark-submission](https://github.com/geometric-dev/openrar-benchmark-submission) service.
 
 - **Option B (GitHub Issue Form):** Open an issue using the [Benchmark Submission Template](https://github.com/geometric-dev/openrar/issues/new?template=benchmark_submission.yml) and paste your JSON output.
 
