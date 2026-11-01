@@ -486,6 +486,9 @@ void print_help() {
         << "  -rr[N]        Add data recovery record (percentage)\n"
         << "  -s            Create solid archive\n"
         << "  -sfx          Create SFX archive\n"
+        << "  --submit      Submit verified benchmark results to global cloud leaderboard\n"
+        << "  --submitter=<name> Submitter name or handle (used with --submit)\n"
+        << "  --system=<str> Machine / rig description (used with --submit)\n"
         << "  -ts<m|c|a>    Time fields to store: m=modified, c=created, a=accessed\n"
         << "                (letters combine; default -tsm)\n"
         << "  -v<size>      Create multi-volume archive\n"
@@ -4017,6 +4020,10 @@ static int cli_main(int argc, char* argv[]) {
     std::string opt_group;
     std::string opt_user;
     unsigned bench_seconds = 5;
+    bool bench_submit = false;
+    std::string bench_submitter;
+    std::string bench_system;
+    std::string bench_endpoint;
 
     for (const auto& s : switches) {
         if (sw_eq(s, "-plain") || sw_eq(s, "--plain") || sw_eq(s, "-idp") ||
@@ -4132,6 +4139,14 @@ static int cli_main(int argc, char* argv[]) {
                 bench_seconds = static_cast<unsigned>(std::stoul(s.substr(9)));
             } catch (...) {
             }
+        } else if (sw_eq(s, "--submit") || sw_eq(s, "-submit") || sw_eq(s, "--submit-result")) {
+            bench_submit = true;
+        } else if (sw_starts(s, "--submitter=")) {
+            bench_submitter = s.substr(12);
+        } else if (sw_starts(s, "--system=")) {
+            bench_system = s.substr(9);
+        } else if (sw_starts(s, "--submit-endpoint=")) {
+            bench_endpoint = s.substr(18);
         } else if (sw_eq(s, "--preserve-suid")) {
             // v1.24 plan §7.1: admin opt-in to restore SUID/SGID/sticky bits.
             preserve_suid = true;
@@ -4642,6 +4657,10 @@ static int cli_main(int argc, char* argv[]) {
         bopt.seconds = bench_seconds;
         bopt.plain = g_plain_mode;
         bopt.json = g_json_stdout_only;
+        bopt.submit = bench_submit;
+        bopt.submitter = bench_submitter;
+        bopt.system_name = bench_system;
+        bopt.endpoint = bench_endpoint;
         return openrar::cli::run_benchmark_cli(bopt);
     } else if (cmd == "p") {
         return openrar::cli::print_archive_to_stdout(arc_path, files, exclude_patterns, password);
