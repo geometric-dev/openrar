@@ -2476,7 +2476,34 @@ bool ArchiveReader::test_entry(const ArchiveEntry& entry) {
         return std::memcmp(digest, entry.header.blake2sp.data(), 32) == 0;
     }
     if (!entry.header.has_crc32) {
-        return true;
+        if (entry.header.method == 0) {
+            // Stored: verify data extent is accessible and readable
+            if (entry.in_memory) {
+                return true;
+            }
+            bool io_ok = stream_stored_entry_chunks(
+                entry, [](const core::byte*, size_t) {},
+                [this](const std::filesystem::path& vol, io::FileStream& vs) {
+                    return open_extent_source(vol, vs);
+                });
+            if (!io_ok) {
+                std::vector<core::byte> packed;
+                return read_packed_data(entry, packed);
+            }
+            return true;
+        }
+
+        // Compressed path: must execute decompressor to verify bitstream syntax
+        // and filter parsing succeed even if header declared no checksum.
+        std::vector<core::byte> packed;
+        if (!read_packed_data(entry, packed)) {
+            solid_chain_ok_ = false;
+            return false;
+        }
+        auto cb = [](const core::byte*, size_t) -> bool {
+            return true;
+        };
+        return decode_compressed(entry, packed.data(), packed.size(), cb);
     }
 
     if (entry.header.method == 0) {
