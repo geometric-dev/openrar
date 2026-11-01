@@ -3,7 +3,7 @@
   "slug": "intel-r-core-tm-i7-7500u-cpu-2-7-4t-4a76b9",
   "benchmark": "openrar_rarmark_v2",
   "version": "2.0.1",
-  "system": "Dell XPS 13",
+  "system": "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",
   "created_at": "2026-11-01 12:44:47",
   "cpu": {
     "brand": "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",
@@ -22,12 +22,12 @@
     "method": 3
   },
   "results": {
-    "memory_bandwidth_gbps": 4.89,
-    "st_compress_kbps": 9354.8,
-    "mt_compress_kbps": 16978.2,
-    "mt_decompress_kbps": 277864.6,
-    "speedup_ratio": 1.81,
-    "rarmark_score": 12133,
+    "memory_bandwidth_gbps": 5.56,
+    "st_compress_kbps": 11677,
+    "mt_compress_kbps": 26291.9,
+    "mt_decompress_kbps": 482357.8,
+    "speedup_ratio": 2.25,
+    "rarmark_score": 20871,
     "decompression_verified": true
   }
 }

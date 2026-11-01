@@ -22,8 +22,8 @@ $$\text{RARMark Score} = \frac{0.6 \times \text{MT Compression (KB/s)} + 0.4 \ti
 | 3 | **AMD EPYC 7763 64-Core Processor**<br>_GitHub Actions Windows Runner (Windows Server 2022)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, SHA-NI, PCLMUL CRC` | 29.8 GB/s | 18.1 MB/s | 42.3 MB/s (2.34x) | 685.5 MB/s | **30,680** |
 | 4 | **AMD EPYC 7763 64-Core Processor**<br>_GitHub Actions Windows Runner (Windows Server 2022)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, SHA-NI, PCLMUL CRC` | 29.8 GB/s | 18.1 MB/s | 42.3 MB/s (2.34x) | 685.5 MB/s | **30,680** |
 | 5 | **AMD EPYC 7763 64-Core Processor**<br>_GitHub Actions Ubuntu Runner (Ubuntu 24.04 LTS, GCC)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, SHA-NI, PCLMUL CRC` | 28.6 GB/s | 16.0 MB/s | 32.8 MB/s (2.05x) | 566.0 MB/s | **25,196** |
-| 6 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Workstation (Windows 11 x64)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.7 GB/s | 10.7 MB/s | 20.7 MB/s (1.94x) | 351.1 MB/s | **15,652** |
-| 7 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Dell XPS 13_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 4.9 GB/s | 9.1 MB/s | 16.6 MB/s (1.81x) | 271.4 MB/s | **12,133** |
+| 6 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.6 GB/s | 11.4 MB/s | 25.7 MB/s (2.25x) | 471.1 MB/s | **20,871** |
+| 7 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Workstation (Windows 11 x64)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.7 GB/s | 10.7 MB/s | 20.7 MB/s (1.94x) | 351.1 MB/s | **15,652** |
 
 ---
 
@@ -47,8 +47,8 @@ Benchmarks submitted by community members across diverse architectures (Ryzen, C
 |:---:|---|:---:|:---:|---|:---:|:---:|:---:|:---:|:---:|
 | 1 | **Apple Silicon (M-Series ARM64)**<br>_GitHub Actions macOS Runner (macOS 15 Sequoia)_ | ARM64 | 3T | `NEON LZ, NEON BLAKE2sp, AES, SHA, CRC` | 68.4 GB/s | 25.7 MB/s | 69.5 MB/s (2.70x) | 1001.4 MB/s | **45,290** |
 | 2 | **AMD EPYC 7763 64-Core Processor**<br>_GitHub Actions Windows Runner (Windows Server 2022)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, SHA-NI, PCLMUL CRC` | 29.8 GB/s | 18.1 MB/s | 42.3 MB/s (2.34x) | 685.5 MB/s | **30,680** |
-| 3 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Workstation (Windows 11 x64)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.7 GB/s | 10.7 MB/s | 20.7 MB/s (1.94x) | 351.1 MB/s | **15,652** |
-| 4 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Dell XPS 13_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 4.9 GB/s | 9.1 MB/s | 16.6 MB/s (1.81x) | 271.4 MB/s | **12,133** |
+| 3 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.6 GB/s | 11.4 MB/s | 25.7 MB/s (2.25x) | 471.1 MB/s | **20,871** |
+| 4 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Workstation (Windows 11 x64)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.7 GB/s | 10.7 MB/s | 20.7 MB/s (1.94x) | 351.1 MB/s | **15,652** |
 
 ---
 
