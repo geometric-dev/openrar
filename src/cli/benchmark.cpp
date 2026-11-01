@@ -121,6 +121,45 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     const unsigned phase_sec = opt.seconds < 1 ? 1 : (opt.seconds > 60 ? 60 : opt.seconds);
     const double phase_limit_sec = static_cast<double>(phase_sec);
 
+    // ── Phase 0: Multi-Threaded Memory Copy Bandwidth Baseline ───────────────
+    std::atomic<bool> mem_stop{false};
+    std::vector<uint64_t> mem_bytes(threads, 0);
+    std::atomic<uint64_t> mem_sink_acc{0};
+    std::vector<std::thread> workers;
+    workers.reserve(threads);
+
+    const size_t mem_chunk = std::min<size_t>(CORPUS_SIZE / threads, 2 * 1024 * 1024);
+    const size_t actual_mem_chunk = std::max<size_t>(mem_chunk, 64 * 1024);
+
+    auto t_mem_start = std::chrono::steady_clock::now();
+    for (unsigned i = 0; i < threads; ++i) {
+        const size_t offset = (i * actual_mem_chunk) % (CORPUS_SIZE - actual_mem_chunk);
+        workers.emplace_back([&, i, offset]() {
+            std::vector<core::byte> dest(actual_mem_chunk);
+            uint64_t local_sink = 0;
+            while (!mem_stop.load(std::memory_order_relaxed)) {
+                std::memcpy(dest.data(), corpus.data() + offset, actual_mem_chunk);
+                local_sink += dest[actual_mem_chunk / 2];
+                mem_bytes[i] += actual_mem_chunk;
+            }
+            mem_sink_acc.fetch_add(local_sink, std::memory_order_relaxed);
+        });
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::max(200u, phase_sec * 200)));
+    mem_stop.store(true, std::memory_order_relaxed);
+    for (auto& w : workers) {
+        if (w.joinable()) w.join();
+    }
+    double mem_elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_mem_start).count();
+
+    uint64_t total_mem_bytes = 0;
+    for (uint64_t b : mem_bytes) total_mem_bytes += b;
+    res.memory_bandwidth_gbps =
+        (static_cast<double>(total_mem_bytes) / (1024.0 * 1024.0 * 1024.0)) /
+        std::max(mem_elapsed, 0.001);
+
     // ── Phase 1: Single-Thread Compression Benchmark ──────────────────────────
     constexpr size_t ST_SLICE_SIZE = 4 * 1024 * 1024; // 4 MiB slice
     const core::byte* st_src = corpus.data();
@@ -143,7 +182,7 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     // ── Phase 2: Multi-Thread Compression Benchmark ───────────────────────────
     std::atomic<bool> mt_stop{false};
     std::vector<uint64_t> thread_bytes(threads, 0);
-    std::vector<std::thread> workers;
+    workers.clear();
     workers.reserve(threads);
 
     const size_t chunk_per_thread = std::min<size_t>(CORPUS_SIZE / threads, 4 * 1024 * 1024);
@@ -266,6 +305,8 @@ int run_benchmark_cli(const BenchmarkOptions& opt) {
                   << "    \"method\": " << res.method << "\n"
                   << "  },\n"
                   << "  \"results\": {\n"
+                  << "    \"memory_bandwidth_gbps\": " << std::fixed << std::setprecision(2)
+                  << res.memory_bandwidth_gbps << ",\n"
                   << "    \"st_compress_kbps\": " << std::fixed << std::setprecision(1)
                   << res.st_compress_kbps << ",\n"
                   << "    \"mt_compress_kbps\": " << res.mt_compress_kbps << ",\n"
@@ -296,6 +337,14 @@ int run_benchmark_cli(const BenchmarkOptions& opt) {
             std::cout << res.simd_features[i];
         }
         std::cout << "\n";
+    }
+    std::cout << "    Memory Bandwidth: ";
+    if (res.memory_bandwidth_gbps >= 1.0) {
+        std::cout << std::fixed << std::setprecision(1) << res.memory_bandwidth_gbps
+                  << " GB/s (multi-threaded DRAM copy)\n";
+    } else {
+        std::cout << std::fixed << std::setprecision(0) << (res.memory_bandwidth_gbps * 1024.0)
+                  << " MB/s (multi-threaded DRAM copy)\n";
     }
 
     std::cout << "\n  " << c("\033[1;37m") << "Throughput Results:" << c("\033[0m\n")

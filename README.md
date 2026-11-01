@@ -118,7 +118,7 @@ Open the repository folder directly — CMake and `CMakePresets.json` are automa
 ### Signature v2.0 Capabilities
 
 #### 1. In-Memory Multi-Threaded Benchmark (`b` / `bench`)
-Measures host CPU compression and decompression throughput using a deterministic synthetic corpus (~4.2 bits/byte entropy, bounded $\le$ 32 MiB RAM footprint). Automatically detects host CPU topology and vector acceleration (AVX-512, AVX2, SSE2, ARM NEON, GFNI), calculates multi-core scaling efficiency, performs roundtrip CRC32 integrity verification, and reports a standardized **RARMark** rating.
+Measures host CPU compression and decompression throughput using a deterministic synthetic corpus (~4.2 bits/byte entropy, bounded $\le$ 32 MiB RAM footprint). Automatically detects host CPU topology and vector acceleration (AVX-512, AVX2, SSE2, ARM NEON, GFNI), calculates multi-core scaling efficiency, performs roundtrip CRC32 integrity verification, and reports a standardized **RARMark** rating. View current hardware rankings and submit your own results in [BENCHMARKS.md](BENCHMARKS.md).
 
 ```bash
 # Standard benchmark across all CPU cores (5s phases, default 4 MiB dictionary)

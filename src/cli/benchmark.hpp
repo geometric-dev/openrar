@@ -25,6 +25,7 @@ struct BenchmarkResult {
     size_t dict_size{0};
     int method{3};
 
+    double memory_bandwidth_gbps{0.0};
     double st_compress_kbps{0.0};
     double mt_compress_kbps{0.0};
     double mt_decompress_kbps{0.0};
