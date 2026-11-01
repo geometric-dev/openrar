@@ -149,7 +149,7 @@ void CdcChunker::chunk_parallel(const core::byte* data, size_t size, std::vector
 
     size_t slice_size = size / num_slices;
     std::vector<std::vector<CandidateInterval>> slice_candidates(num_slices);
-    std::vector<bool> slice_overflow(num_slices, false);
+    std::vector<uint8_t> slice_overflow(num_slices, 0);
 
     // Phase 1: Parallel scanning with 63-byte window overlap
     {
@@ -188,7 +188,7 @@ void CdcChunker::chunk_parallel(const core::byte* data, size_t size, std::vector
                         ++intervals.back().count;
                     } else {
                         if (intervals.size() >= max_intervals) {
-                            slice_overflow[s] = true;
+                            slice_overflow[s] = 1;
                             intervals.clear();
                             break;
                         }
@@ -200,7 +200,7 @@ void CdcChunker::chunk_parallel(const core::byte* data, size_t size, std::vector
     }
 
     bool any_overflow = false;
-    for (bool ov : slice_overflow) {
+    for (uint8_t ov : slice_overflow) {
         if (ov) {
             any_overflow = true;
             break;

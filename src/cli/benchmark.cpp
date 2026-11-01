@@ -279,11 +279,19 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
 }
 
 #ifdef _WIN32
-#define popen_cmd _popen
-#define pclose_cmd _pclose
+static inline FILE* open_pipe(const char* command, const char* mode) {
+    return _popen(command, mode);
+}
+static inline int close_pipe(FILE* stream) {
+    return _pclose(stream);
+}
 #else
-#define popen_cmd popen
-#define pclose_cmd pclose
+static inline FILE* open_pipe(const char* command, const char* mode) {
+    return popen(command, mode);
+}
+static inline int close_pipe(FILE* stream) {
+    return pclose(stream);
+}
 #endif
 
 static void submit_benchmark_result(const BenchmarkResult& res, const BenchmarkOptions& opt) {
@@ -369,13 +377,13 @@ static void submit_benchmark_result(const BenchmarkResult& res, const BenchmarkO
         tmp_file.string() + "\" \"" + endpoint + "\"";
 
     std::string response;
-    FILE* fp = popen_cmd(cmd.c_str(), "r");
+    FILE* fp = open_pipe(cmd.c_str(), "r");
     if (fp) {
         char buf[512];
         while (fgets(buf, sizeof(buf), fp)) {
             response += buf;
         }
-        pclose_cmd(fp);
+        close_pipe(fp);
     }
     std::filesystem::remove(tmp_file, ec);
 

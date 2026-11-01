@@ -77,9 +77,10 @@ jobs:
 
           cpu_brand = data.get("cpu", {}).get("brand", "cpu")
           slug = re.sub(r"[^a-zA-Z0-9]+", "-", cpu_brand.lower()).strip("-")
-          data["submitter"] = f"@{user}"
+          import hashlib
+          h = hashlib.sha256(f"{cpu_brand}-{issue_num}".encode()).hexdigest()[:6]
 
-          out_file = Path(f"benchmarks/submissions/{slug}-{user}.json")
+          out_file = Path(f"benchmarks/submissions/{slug}-{h}.json")
           out_file.parent.mkdir(parents=True, exist_ok=True)
           with open(out_file, "w", encoding="utf-8") as f:
               json.dump(data, f, indent=2)
