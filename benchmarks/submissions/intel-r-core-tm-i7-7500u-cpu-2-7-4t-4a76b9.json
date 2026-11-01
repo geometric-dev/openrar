@@ -3,7 +3,7 @@
   "slug": "intel-r-core-tm-i7-7500u-cpu-2-7-4t-4a76b9",
   "benchmark": "openrar_rarmark_v2",
   "version": "2.0.1",
-  "system": "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",
+  "system": "Dell XPS 13 (i7-7500U)",
   "created_at": "2026-11-01 12:44:47",
   "cpu": {
     "brand": "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",

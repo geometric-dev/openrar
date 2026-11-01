@@ -39,7 +39,6 @@ def load_and_validate(json_path):
     return {
         "file": Path(json_path).name,
         "system": data.get("system", Path(json_path).stem),
-        "submitter": data.get("submitter", "CI"),
         "version": data.get("version", "2.0.0"),
         "cpu_brand": cpu.get("brand", "Unknown CPU"),
         "arch": cpu.get("arch", "unknown"),
