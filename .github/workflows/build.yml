@@ -203,17 +203,21 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Kernel throughput report (native x86-64, informational)
-        # Real AVX2/SSE2 hardware numbers for the v1.22.0 SIMD arc. Native
-        # runners are shared and noisy: the median-of-passes protocol damps
-        # spikes, and this step is informational, never a gate. --quick
-        # keeps the v1.28 engine's CI time bounded (3 passes).
-        if: startsWith(matrix.os, 'ubuntu') && matrix.compiler == 'gcc'
-        run: ./build/openrar_bench --quick
-
-      - name: Kernel throughput report (native Apple Silicon NEON, informational)
-        if: matrix.os == 'macos-latest'
-        run: ./build/openrar_bench --quick
+      - name: Kernel throughput report (native hardware, informational)
+        # Real AVX2/SSE2/NEON hardware numbers across all native platforms.
+        # Informational throughput report with median-of-passes protocol;
+        # --quick bounds execution time to ~10-15s per runner.
+        if: matrix.arch != 'arm64'
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BENCH_EXE="./build/${{ matrix.build_type }}/openrar_bench.exe"
+            if [ ! -f "$BENCH_EXE" ]; then BENCH_EXE="./build/Release/openrar_bench.exe"; fi
+            if [ ! -f "$BENCH_EXE" ]; then BENCH_EXE="./build/openrar_bench.exe"; fi
+          else
+            BENCH_EXE="./build/openrar_bench"
+          fi
+          $BENCH_EXE --quick
 
       - name: Interop Gate (local spec, no rar.exe in CI)
         if: matrix.arch != 'arm64'
@@ -255,6 +259,38 @@ jobs:
           # Verify extracted content
           diff -u ci_test_data/hello.txt ci_out/ci_test_data/hello.txt
           echo "Cross-platform CLI smoke test PASSED!"
+
+      - name: CLI Benchmark & Hardware Sanity Check (Native Silicon)
+        # Real hardware validation gate: invokes shipping openrar binary directly.
+        # Automatically detects host CPU topology and vector acceleration (AVX-512,
+        # AVX2, SSE2, Apple Silicon NEON, GFNI), benchmarks in-memory RAR5 compression
+        # & multi-threaded decompression, calculates thread scaling, and gates on
+        # bit-exact CRC32 verification (decompression_verified: true).
+        if: matrix.arch != 'arm64'
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            EXE="./build/openrar64/${{ matrix.build_type }}/openrar.exe"
+          else
+            EXE="./build/openrar"
+          fi
+          
+          echo "=== 1. CLI Version & Hardware Topology Disclosure ==="
+          $EXE --version
+          
+          echo "=== 2. Real-Hardware Multi-Threaded In-Memory Benchmark ==="
+          $EXE b --seconds=1 -plain
+          
+          echo "=== 3. Benchmark RFC 8259 JSON Verification Gate ==="
+          $EXE b --seconds=1 --json > benchmark_result.json
+          cat benchmark_result.json
+          
+          # Gate: decompression integrity must be verified bit-exact
+          grep -q '"decompression_verified": true' benchmark_result.json || {
+            echo "::error::Decompression integrity verification failed in benchmark JSON"
+            exit 1
+          }
+          echo "Native hardware benchmark & sanity check PASSED!"
 
       - name: Build CPack Debian package (Linux gcc Release)
         if: startsWith(matrix.os, 'ubuntu') && matrix.compiler == 'gcc'
@@ -376,6 +412,28 @@ jobs:
           $QEMU ./build/openrar x -plain arm_ci.rar arm_ci_out/
           diff -u arm_ci_data/hello.txt arm_ci_out/arm_ci_data/hello.txt
           echo "aarch64 QEMU smoke test PASSED!"
+
+      - name: CLI Benchmark & Sanity Check (QEMU aarch64 Emulation)
+        # Validates aarch64 binary execution under user-mode QEMU emulation.
+        # Single-threaded mode (-mt1) avoids QEMU thread scheduling jitter
+        # while verifying NEON instruction execution, in-memory compression/
+        # decompression, and bit-exact CRC32 verification.
+        run: |
+          QEMU="qemu-aarch64-static -L /usr/aarch64-linux-gnu"
+          echo "=== 1. aarch64 Version under QEMU ==="
+          $QEMU ./build/openrar --version
+
+          echo "=== 2. aarch64 In-Memory Benchmark under QEMU ==="
+          $QEMU ./build/openrar b -mt1 --seconds=1 -plain
+
+          echo "=== 3. aarch64 Benchmark JSON Verification Gate ==="
+          $QEMU ./build/openrar b -mt1 --seconds=1 --json > arm_benchmark.json
+          cat arm_benchmark.json
+          grep -q '"decompression_verified": true' arm_benchmark.json || {
+            echo "::error::Decompression integrity verification failed under QEMU benchmark"
+            exit 1
+          }
+          echo "aarch64 QEMU benchmark & sanity check PASSED!"
 
       - name: Upload native shared-library artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
