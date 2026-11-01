@@ -4,7 +4,6 @@
   "benchmark": "openrar_rarmark_v2",
   "version": "2.0.1",
   "system": "GitHub Actions Windows Runner (Windows Server 2022)",
-  "submitter": "Anonymous",
   "created_at": "2026-11-01 12:28:26",
   "cpu": {
     "brand": "AMD EPYC 7763 64-Core Processor",
