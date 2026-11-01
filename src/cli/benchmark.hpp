@@ -14,6 +14,10 @@ struct BenchmarkOptions {
     unsigned seconds{5};               // duration per timed phase (default 5s, min 1, max 60)
     bool plain{false};                 // disable ANSI animations
     bool json{false};                  // emit JSON output
+    bool submit{false};                // submit results to cloud leaderboard
+    std::string submitter;             // submitter name or handle (e.g. @user)
+    std::string system_name;           // custom machine / system description
+    std::string endpoint;              // ingestion URL override
 };
 
 struct BenchmarkResult {
@@ -38,7 +42,7 @@ struct BenchmarkResult {
 // Bounded memory footprint (single shared read-only corpus <= 32 MiB).
 BenchmarkResult run_benchmark(const BenchmarkOptions& opt);
 
-// Formats and outputs the benchmark result to stdout (or JSON).
+// Formats and outputs the benchmark result to stdout (or JSON), optionally submitting to cloud.
 int run_benchmark_cli(const BenchmarkOptions& opt);
 
 } // namespace openrar::cli
