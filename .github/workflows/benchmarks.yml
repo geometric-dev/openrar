@@ -5,12 +5,18 @@ on:
     paths:
       - 'benchmarks/**'
       - 'tools/aggregate_benchmarks.py'
+      - 'tools/sync_cloud_benchmarks.py'
   pull_request:
     paths:
       - 'benchmarks/**'
       - 'tools/aggregate_benchmarks.py'
+      - 'tools/sync_cloud_benchmarks.py'
   issues:
     types: [labeled]
+  schedule:
+    - cron: '0 2 * * *'
+  repository_dispatch:
+    types: [sync_benchmarks, benchmarks_updated]
   workflow_dispatch:
 
 permissions:
@@ -81,6 +87,12 @@ jobs:
           print(f"Saved submission to {out_file}")
           EOF
 
+      - name: Sync Cloud Benchmark Submissions (Cloudflare Worker)
+        env:
+          OPENRAR_BENCHMARK_ENDPOINT: ${{ secrets.OPENRAR_BENCHMARK_ENDPOINT || 'https://benchmarks.openrar.dev/api/export' }}
+        run: |
+          python tools/sync_cloud_benchmarks.py
+
       - name: Aggregate Benchmarks into BENCHMARKS.md
         run: |
           python tools/aggregate_benchmarks.py
@@ -98,3 +110,4 @@ jobs:
           else
             echo "Leaderboard is already up-to-date."
           fi
+
