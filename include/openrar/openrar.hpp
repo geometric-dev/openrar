@@ -120,6 +120,25 @@ inline std::vector<uint8_t> decompress_block(const std::vector<uint8_t>& src,
                                              size_t win_size = 2 * 1024 * 1024) {
     return decompress_block(src.data(), src.size(), win_size);
 }
+inline std::vector<uint8_t> decompress_block_limits(const uint8_t* data, size_t size,
+                                                    uint64_t max_output,
+                                                    size_t win_size = 2 * 1024 * 1024) {
+    uint8_t* out = nullptr;
+    size_t out_len = 0;
+    int rc = openrar_decompress_limits(data, size, &out, &out_len, win_size, max_output);
+    auto cleanup = detail::make_scope_exit([&] {
+        if (out) openrar_free(out);
+    });
+    check(rc);
+    std::vector<uint8_t> ret;
+    if (out && out_len) ret.assign(out, out + out_len);
+    return ret;
+}
+inline std::vector<uint8_t> decompress_block_limits(const std::vector<uint8_t>& src,
+                                                    uint64_t max_output,
+                                                    size_t win_size = 2 * 1024 * 1024) {
+    return decompress_block_limits(src.data(), src.size(), max_output, win_size);
+}
 
 // ── Archive helpers ──────────────────────────────────────────────────────────
 // Unpack a malloc'd entries array + contiguous paths blob (as returned by the
@@ -284,6 +303,60 @@ inline std::map<std::string, std::vector<uint8_t>> extract_all(const uint8_t* da
 }
 inline std::map<std::string, std::vector<uint8_t>> extract_all(const std::vector<uint8_t>& rar) {
     return extract_all(rar.data(), rar.size());
+}
+
+inline std::vector<uint8_t> extract_file_limits(const uint8_t* data, size_t size, uint32_t index,
+                                                uint64_t max_member_bytes) {
+    uint8_t* out = nullptr;
+    size_t len = 0;
+    int rc = openrar_archive_extract_limits(data, size, index, &out, &len, max_member_bytes);
+    auto cleanup = detail::make_scope_exit([&] {
+        if (out) openrar_free(out);
+    });
+    check(rc);
+    std::vector<uint8_t> ret;
+    if (out && len) ret.assign(out, out + len);
+    return ret;
+}
+inline std::vector<uint8_t> extract_file_limits(const std::vector<uint8_t>& rar, uint32_t index,
+                                                uint64_t max_member_bytes) {
+    return extract_file_limits(rar.data(), rar.size(), index, max_member_bytes);
+}
+
+inline std::vector<uint8_t> extract_file_limits(const std::filesystem::path& arc,
+                                                uint32_t entry_index, uint64_t max_member_bytes) {
+    uint8_t* out = nullptr;
+    size_t len = 0;
+    std::string u8 = detail::u8_str(arc);
+    int rc =
+        openrar_archive_extract_file_limits(u8.c_str(), entry_index, &out, &len, max_member_bytes);
+    auto cleanup = detail::make_scope_exit([&] {
+        if (out) openrar_free(out);
+    });
+    check(rc);
+    std::vector<uint8_t> ret;
+    if (out && len) ret.assign(out, out + len);
+    return ret;
+}
+
+inline void extract_file_to_path_limits(const std::filesystem::path& arc, uint32_t entry_index,
+                                        const std::filesystem::path& dest_path,
+                                        uint64_t max_member_bytes) {
+    std::string u8_arc = detail::u8_str(arc);
+    std::string u8_dest = detail::u8_str(dest_path);
+    int rc = openrar_archive_extract_file_to_path_limits(u8_arc.c_str(), entry_index,
+                                                         u8_dest.c_str(), max_member_bytes);
+    check(rc);
+}
+
+inline void set_thread_limits(uint64_t max_member_bytes, uint64_t max_total_bytes) {
+    openrar_set_thread_limits(max_member_bytes, max_total_bytes);
+}
+inline void clear_thread_limits() {
+    openrar_set_thread_limits(0, 0);
+}
+inline bool get_thread_limits(uint64_t& max_member_bytes, uint64_t& max_total_bytes) {
+    return openrar_get_thread_limits(&max_member_bytes, &max_total_bytes) == RAR_OK;
 }
 
 inline std::vector<uint8_t> create_archive(const std::vector<InputFile>& files,

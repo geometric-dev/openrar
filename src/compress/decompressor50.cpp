@@ -1835,12 +1835,16 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
 }
 
 bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size,
-                                          std::vector<core::byte>& out, bool solid) {
+                                          std::vector<core::byte>& out, bool solid,
+                                          core::uint64 max_output) {
     out.clear();
     if (src == nullptr || src_size == 0) return true;
 
+    core::uint64 limit =
+        (max_output > 0 && max_output < MAX_STREAM_OUTPUT) ? max_output : MAX_STREAM_OUTPUT;
+
     size_t cap = std::max<size_t>(64 * 1024, src_size * 8);
-    if (cap > static_cast<size_t>(MAX_STREAM_OUTPUT)) cap = static_cast<size_t>(MAX_STREAM_OUTPUT);
+    if (cap > static_cast<size_t>(limit)) cap = static_cast<size_t>(limit);
     try {
         out.reserve(cap);
     } catch (const std::bad_alloc&) {
@@ -1849,8 +1853,14 @@ bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size
         return false;
     }
 
+    bool limit_hit = false;
     auto cb = [&](const core::byte* data, size_t size) -> bool {
-        if (out.size() > MAX_STREAM_OUTPUT || size > MAX_STREAM_OUTPUT - out.size()) return false;
+        if (out.size() > limit || size > limit - out.size()) {
+            limit_hit = true;
+            last_error_ = DecompressErrorCode::LimitExceeded;
+            last_error_str_ = "decompression limit exceeded";
+            return false;
+        }
         try {
             out.insert(out.end(), data, data + size);
         } catch (const std::bad_alloc&) {
@@ -1865,6 +1875,10 @@ bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size
     bool finished = false;
     if (!decompress(src, src_size, SIZE_MAX, solid, cb, &written, &finished)) {
         out.clear();
+        if (limit_hit) {
+            last_error_ = DecompressErrorCode::LimitExceeded;
+            last_error_str_ = "decompression limit exceeded";
+        }
         return false;
     }
 

@@ -779,8 +779,7 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
         size_t mdist = static_cast<size_t>(cur - static_cast<core::uint64>(match_candidate));
         core::uint32 inc = length_increment(mdist);
         if (match_len >= static_cast<size_t>(inc) + min_match_) {
-            return {1, static_cast<core::uint16>(std::min(match_len, avail)),
-                    static_cast<core::uint32>(mdist), 0};
+            return {1, static_cast<core::uint16>(std::min(match_len, avail)), mdist, 0};
         }
     }
 
@@ -798,7 +797,7 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
     }
     arrival[0].cost = 0;
 
-    auto store_candidate = [&](int token_type, size_t token_len, core::uint32 token_dist,
+    auto store_candidate = [&](int token_type, size_t token_len, size_t token_dist,
                                core::uint32 cost, const size_t* old_dist_src, size_t last_len_src) {
         if (cost >= DP_INF) return;
         int idx = token_len > static_cast<size_t>(h_eff) ? h_eff : static_cast<int>(token_len);
@@ -845,7 +844,7 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
             size_t new_dist[4];
             new_dist[0] = mdist;
             for (int d = 1; d < 4; ++d) new_dist[d] = old_dist_[d - 1];
-            store_candidate(1, mlen, static_cast<core::uint32>(mdist), cost, new_dist, mlen);
+            store_candidate(1, mlen, mdist, cost, new_dist, mlen);
         }
     }
 
@@ -956,7 +955,7 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
                             arrival[j].from_offset = static_cast<core::uint8>(i);
                             arrival[j].token_type = 1;
                             arrival[j].token_len = static_cast<core::uint16>(mlen);
-                            arrival[j].token_dist = static_cast<core::uint32>(mdist);
+                            arrival[j].token_dist = mdist;
                             size_t new_dist[4];
                             new_dist[0] = mdist;
                             for (int d = 1; d < 4; ++d) new_dist[d] = arrival[i].old_dist[d - 1];
@@ -989,7 +988,7 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
     int cur_off = target;
     int first_token_type = 0;
     core::uint16 first_token_len = 1;
-    core::uint32 first_token_dist = 0;
+    size_t first_token_dist = 0;
     while (cur_off > 0) {
         int prev = arrival[cur_off].from_offset;
         if (prev == 0) {
@@ -2726,7 +2725,7 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
     size_t comp_win_size = win_size;
     if (src_size > 0 && src_size < win_size) {
         size_t pow2_sz = 0x20000;
-        while (pow2_sz < src_size && pow2_sz < win_size) {
+        while (pow2_sz < src_size && pow2_sz < win_size && pow2_sz <= (SIZE_MAX >> 1)) {
             pow2_sz <<= 1;
         }
         comp_win_size = std::min(win_size, pow2_sz);
