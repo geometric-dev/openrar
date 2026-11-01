@@ -112,6 +112,8 @@ OPENRAR_DLL_API const char* OPENRAR_DLL_CALL openrar_package_version_string(void
 #define OPENRAR_ABI_FEATURE_V2_STREAMING                                                           \
     (1ull << 17) // v2.0 zero-allocation circular streaming & chunk memory model
 #define OPENRAR_ABI_FEATURE_V2_RECOVERY (1ull << 18) // v2.0 Cauchy RS16 accelerated recovery engine
+#define OPENRAR_ABI_FEATURE_STATELESS_LIMITS                                                       \
+    (1ull << 19) // bounded stateless & buffer extractions (openrar_*_limits)
 OPENRAR_DLL_API uint64_t OPENRAR_DLL_CALL openrar_abi_features(void);
 
 // ── Allocator (single heap; must pair alloc ↔ free) ─────────────────────────
@@ -787,6 +789,39 @@ OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_create_rev_volumes(
 OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_add_recovery_record(
     const char* arc_path, uint32_t percent, unsigned int threads, openrar_progress_cb progress,
     openrar_cancel_cb cancel, void* user);
+
+// ── Stateless & Bounded Extraction (v2.0.2, OPENRAR_ABI_FEATURE_STATELESS_LIMITS) ──
+// Explicit output-size ceilings protecting callers against decompression bombs.
+// All return standard enum RarError codes (0 on success, negative on error).
+
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_decompress_limits(const uint8_t* src, size_t src_len,
+                                                               uint8_t** out_ptr, size_t* out_len,
+                                                               size_t win_size,
+                                                               uint64_t max_output_bytes);
+
+OPENRAR_DLL_API int OPENRAR_DLL_CALL
+openrar_archive_extract_limits(const uint8_t* data, size_t size, uint32_t entry_index,
+                               uint8_t** out_ptr, size_t* out_len, uint64_t max_member_bytes);
+
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_extract_all_limits(
+    const uint8_t* data, size_t size, uint8_t** buf_out_ptr, size_t* buf_size_out,
+    uint64_t** offsets_out_ptr, uint32_t* offsets_count_out, uint64_t max_member_bytes,
+    uint64_t max_total_bytes);
+
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_extract_file_limits(const char* arc_path,
+                                                                         uint32_t entry_index,
+                                                                         uint8_t** out_ptr,
+                                                                         size_t* out_len,
+                                                                         uint64_t max_member_bytes);
+
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_archive_extract_file_to_path_limits(
+    const char* arc_path, uint32_t entry_index, const char* dest_path, uint64_t max_member_bytes);
+
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_set_thread_limits(uint64_t max_member_bytes,
+                                                               uint64_t max_total_bytes);
+
+OPENRAR_DLL_API int OPENRAR_DLL_CALL openrar_get_thread_limits(uint64_t* max_member_bytes,
+                                                               uint64_t* max_total_bytes);
 
 #ifdef __cplusplus
 } // extern "C"

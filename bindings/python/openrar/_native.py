@@ -236,7 +236,7 @@ class Native:
         self.package_version = self.lib.openrar_package_version_string().decode("utf-8")
         self.features = self.lib.openrar_abi_features()
         # Registered registry bits (docs/abi-freeze.md §5): 0..18 all set (v2.0).
-        self.expected_features = (1 << 19) - 1
+        self.expected_features = (1 << 20) - 1
 
     # ── helpers ───────────────────────────────────────────────────────────
     def last_error(self) -> str:

@@ -881,6 +881,153 @@ static void test_archive_create() {
     std::cout << "PASS test_archive_create\n";
 }
 
+
+static void test_stateless_limits() {
+    REQUIRE((openrar_abi_features() & OPENRAR_ABI_FEATURE_STATELESS_LIMITS) != 0);
+
+    // 1. Block codec decompress limits
+    const uint8_t raw[] = "012345678901234567890123456789"; // 30 bytes
+    uint8_t* comp = nullptr;
+    size_t comp_len = 0;
+    int rc = openrar_compress2(raw, sizeof(raw) - 1, &comp, &comp_len, 3, 2 * 1024 * 1024);
+    REQUIRE(rc == 1);
+    REQUIRE(comp != nullptr);
+
+    uint8_t* dec_out = nullptr;
+    size_t dec_len = 0;
+    // Limit = 10 bytes -> must fail with RAR_ERR_LIMIT_EXCEEDED (-15)
+    rc = openrar_decompress_limits(comp, comp_len, &dec_out, &dec_len, 2 * 1024 * 1024, 10);
+    REQUIRE(rc == RAR_ERR_LIMIT_EXCEEDED);
+    REQUIRE(dec_out == nullptr);
+
+    // Limit = 50 bytes -> must succeed with RAR_OK (0)
+    rc = openrar_decompress_limits(comp, comp_len, &dec_out, &dec_len, 2 * 1024 * 1024, 50);
+    REQUIRE(rc == RAR_OK);
+    REQUIRE(dec_len == 30);
+    REQUIRE(std::memcmp(dec_out, raw, 30) == 0);
+    openrar_free(dec_out);
+
+    // 2. Thread-local limit fallback
+    rc = openrar_set_thread_limits(10, 100);
+    REQUIRE(rc == RAR_OK);
+    uint64_t tm = 0, tt = 0;
+    rc = openrar_get_thread_limits(&tm, &tt);
+    REQUIRE(rc == RAR_OK);
+    REQUIRE(tm == 10);
+    REQUIRE(tt == 100);
+
+    // Calling with max_output_bytes = 0 should inherit thread limit 10
+    dec_out = nullptr;
+    dec_len = 0;
+    rc = openrar_decompress_limits(comp, comp_len, &dec_out, &dec_len, 2 * 1024 * 1024, 0);
+    REQUIRE(rc == RAR_ERR_LIMIT_EXCEEDED);
+    REQUIRE(dec_out == nullptr);
+
+    // Reset thread limits
+    openrar_set_thread_limits(0, 0);
+    openrar_free(comp);
+
+    // 3. Buffer archive extraction limits
+    const char* paths[] = {"small.txt", "large.txt"};
+    const uint8_t data1[] = "12345";                // 5 bytes
+    const uint8_t data2[] = "12345678901234567890"; // 20 bytes
+    const uint8_t* datas[] = {data1, data2};
+    size_t sizes[] = {sizeof(data1) - 1, sizeof(data2) - 1};
+    const uint8_t* path_ptrs[] = {reinterpret_cast<const uint8_t*>(paths[0]),
+                                  reinterpret_cast<const uint8_t*>(paths[1])};
+
+    uint8_t* rar = nullptr;
+    size_t rar_len = 0;
+    rc = openrar_archive_create(path_ptrs, datas, sizes, 2, 0, 4, &rar, &rar_len);
+    REQUIRE(rc == 0);
+    REQUIRE(rar != nullptr);
+
+    // Single entry extraction: small.txt (5B) with limit 10 succeeds
+    uint8_t* out = nullptr;
+    size_t len = 0;
+    rc = openrar_archive_extract_limits(rar, rar_len, 0, &out, &len, 10);
+    REQUIRE(rc == RAR_OK);
+    REQUIRE(len == 5);
+    openrar_free(out);
+
+    // Single entry extraction: large.txt (20B) with limit 10 fails
+    out = nullptr;
+    len = 0;
+    rc = openrar_archive_extract_limits(rar, rar_len, 1, &out, &len, 10);
+    REQUIRE(rc == RAR_ERR_LIMIT_EXCEEDED);
+    REQUIRE(out == nullptr);
+
+    // Single entry extraction: large.txt (20B) with limit 50 succeeds
+    rc = openrar_archive_extract_limits(rar, rar_len, 1, &out, &len, 50);
+    REQUIRE(rc == RAR_OK);
+    REQUIRE(len == 20);
+    openrar_free(out);
+
+    // 4. Extract all limits: total limit 15 fails (5 + 20 = 25 > 15)
+    uint8_t* all_buf = nullptr;
+    size_t all_size = 0;
+    uint64_t* offs = nullptr;
+    uint32_t offs_count = 0;
+    rc = openrar_archive_extract_all_limits(rar, rar_len, &all_buf, &all_size, &offs, &offs_count,
+                                            100, 15);
+    REQUIRE(rc == RAR_ERR_LIMIT_EXCEEDED);
+    REQUIRE(all_buf == nullptr);
+
+    // Extract all with total limit 50 succeeds
+    rc = openrar_archive_extract_all_limits(rar, rar_len, &all_buf, &all_size, &offs, &offs_count,
+                                            100, 50);
+    REQUIRE(rc == RAR_OK);
+    REQUIRE(all_size == 25);
+    REQUIRE(offs_count == 2);
+    openrar_free(all_buf);
+    openrar_free(offs);
+
+    // 5. File-based bounded extraction and atomic rollback to path
+    auto temp_dir = std::filesystem::temp_directory_path() / "openrar_stateless_limits_test";
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::create_directories(temp_dir, ec);
+
+    auto arc_file = temp_dir / "test.rar";
+    {
+        FILE* fp = std::fopen(arc_file.string().c_str(), "wb");
+        REQUIRE(fp);
+        std::fwrite(rar, 1, rar_len, fp);
+        std::fclose(fp);
+    }
+
+    // openrar_archive_extract_file_limits
+    out = nullptr;
+    len = 0;
+    rc = openrar_archive_extract_file_limits(arc_file.string().c_str(), 1, &out, &len, 10);
+    REQUIRE(rc == RAR_ERR_LIMIT_EXCEEDED);
+    REQUIRE(out == nullptr);
+
+    rc = openrar_archive_extract_file_limits(arc_file.string().c_str(), 1, &out, &len, 50);
+    REQUIRE(rc == RAR_OK);
+    REQUIRE(len == 20);
+    openrar_free(out);
+
+    // openrar_archive_extract_file_to_path_limits: limit breach must abort and unlink
+    auto dest_fail = temp_dir / "should_not_exist.txt";
+    rc = openrar_archive_extract_file_to_path_limits(arc_file.string().c_str(), 1,
+                                                     dest_fail.string().c_str(), 10);
+    REQUIRE(rc == RAR_ERR_LIMIT_EXCEEDED);
+    REQUIRE(!std::filesystem::exists(dest_fail));
+
+    // openrar_archive_extract_file_to_path_limits: permitted size writes atomically
+    auto dest_ok = temp_dir / "extracted.txt";
+    rc = openrar_archive_extract_file_to_path_limits(arc_file.string().c_str(), 1,
+                                                     dest_ok.string().c_str(), 50);
+    REQUIRE(rc == RAR_OK);
+    REQUIRE(std::filesystem::exists(dest_ok));
+    REQUIRE(std::filesystem::file_size(dest_ok) == 20);
+
+    std::filesystem::remove_all(temp_dir, ec);
+    openrar_free(rar);
+    std::cout << "PASS test_stateless_limits\n";
+}
+
 static const openrar::test::Case k_cases[] = {
     {"test_version", test_version, false},
     {"test_block_codec_roundtrip", test_block_codec_roundtrip, false},
@@ -904,7 +1051,8 @@ static const openrar::test::Case k_cases[] = {
     {"test_archive_handle_set_limits", test_archive_handle_set_limits, false},
     {"test_archive_repair", test_archive_repair, false},
     {"test_archive_recovery_volumes", test_archive_recovery_volumes, false},
-    {"test_archive_create", test_archive_create, false}};
+    {"test_archive_create", test_archive_create, false},
+    {"test_stateless_limits", test_stateless_limits, false}};
 
 int main(int argc, char* argv[]) {
     openrar::test::route_crt_asserts_to_stderr();
