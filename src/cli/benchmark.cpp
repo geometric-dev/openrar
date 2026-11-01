@@ -1,6 +1,7 @@
 #include "benchmark.hpp"
 #include "json_output.hpp"
 #include "progress.hpp"
+#include "openrar/version.h"
 
 #include "../compress/compressor50.hpp"
 #include "../compress/decompressor50.hpp"
@@ -236,7 +237,8 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
 
 int run_benchmark_cli(const BenchmarkOptions& opt) {
     if (!opt.json && !opt.plain) {
-        std::cout << "\n  \033[1;36mOpenRAR 2.0.0 Built-in Benchmark\033[0m\n"
+        std::cout << "\n  \033[1;36mOpenRAR " << OPENRAR_VERSION_STRING
+                  << " Built-in Benchmark\033[0m\n"
                   << "  \033[90m===================================================\033[0m\n"
                   << "  Benchmarking in-memory RAR5 compression & parallel decode...\n"
                   << std::flush;
@@ -247,7 +249,7 @@ int run_benchmark_cli(const BenchmarkOptions& opt) {
     if (opt.json) {
         std::cout << "{\n"
                   << "  \"benchmark\": \"openrar_rarmark_v2\",\n"
-                  << "  \"version\": \"2.0.0\",\n"
+                  << "  \"version\": \"" << OPENRAR_VERSION_STRING << "\",\n"
                   << "  \"cpu\": {\n"
                   << "    \"brand\": \"" << escape_json_string(res.cpu_brand) << "\",\n"
                   << "    \"arch\": \"" << escape_json_string(res.arch) << "\",\n"
@@ -273,7 +275,7 @@ int run_benchmark_cli(const BenchmarkOptions& opt) {
                   << "    \"decompression_verified\": " << (res.verified ? "true" : "false") << "\n"
                   << "  }\n"
                   << "}\n";
-        return 0;
+        return res.verified ? 0 : 1;
     }
 
     const bool vt = is_vt_supported();
