@@ -28,6 +28,7 @@ These documents define the active, living laws of the OpenRAR codebase. Every co
 | **[Invariants](invariants.md)** | Non-negotiable system invariants: chain semantics (G-1), RAM ceiling (G-2), zero-alloc decode (G-3), byte identity (G-4), and error taxonomy. | 🔒 Frozen |
 | **[Security Architecture](SECURITY_ARCHITECTURE.md)** | Sandboxed worker architecture (Windows AppContainer, Linux seccomp-BPF), syscall brokers, capability models, and threat analysis. | 🛡️ Active |
 | **[Extraction Contract](EXTRACTION_CONTRACT.md)** | Atomic extraction guarantees, journal manifests, directory traversal containment, rollback behavior, and symlink security. | 🛡️ Active |
+| **[CLI Reference Manual](cli.md)** | Exhaustive command catalog, switch parameters, exit codes, and operational flags. | 📜 Active |
 | **[Frozen C ABI](abi-freeze.md)** | Machine-checked C ABI layout, struct offsets, export tables, and additive-only binary compatibility rules. | 🔒 Frozen (v1.30) |
 | **[Versioning Policy](versioning.md)** | Semantic Versioning rules, ABI event criteria, and breaking-change policies. | 📜 Active |
 | **[Verification Legs](verification-legs.md)** | 24-stage CI verification matrix, sanitizer taxonomy (ASan, UBSan, TSan, MSan), and fuzzing gates. | 🧪 Active |
