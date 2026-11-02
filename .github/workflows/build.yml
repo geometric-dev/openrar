@@ -380,12 +380,13 @@ jobs:
       - name: Run unit tests under QEMU (aarch64 NEON / scalar paths)
         # In QEMU user-mode emulation on a 2-vCPU runner, threadpool synchronization
         # (parallel_compress_tests, two_phase_tests) causes severe TCG lock thrashing / deadlocks,
-        # and child-process spawning (sfx_*, cli_tests, transcode_tests) creates excessive emulation overhead.
-        # Native multi-threading and process isolation on ARM64 are verified natively on Apple Silicon & Windows ARM64 runners.
-        # Here we run the single-threaded in-process suites (compress, crypto, recovery, format, etc.) with a 60s per-test timeout.
+        # heavy multi-megabyte compression corpora (compress_tests, stream_encoder_tests, volume_tests)
+        # stall software emulation, and child-process spawning (sfx_*, cli_tests) creates excessive emulation overhead.
+        # Native multi-threading, large-scale compression, and process isolation on ARM64 are verified natively on Apple Silicon & Windows ARM64 runners.
+        # Here we run the single-threaded in-process suites (crypto, recovery, format, bitreader, dll, etc.) with a 60s per-test timeout.
         run: |
           ctest --test-dir build -C Release --output-on-failure --timeout 60 \
-            -E 'parallel_compress_tests|two_phase_tests|sfx_.*|cli_tests|collision_matrix_tests|extraction_report_tests|transcode_tests|foreign_format_tests|sandbox_.*|python_conformance|fuzz_.*'
+            -E 'compress_tests|stream_encoder_tests|solid_packer_tests|volume_tests|benchmark_tests|file_handle_tests|mutation_tests|parallel_compress_tests|two_phase_tests|sfx_.*|cli_tests|collision_matrix_tests|extraction_report_tests|transcode_tests|foreign_format_tests|sandbox_.*|python_conformance|fuzz_.*'
 
       - name: Aggregate JUnit report (v1.45 M0 gate)
         if: always()
