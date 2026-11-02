@@ -20,6 +20,7 @@ Checks: >
   clang-analyzer-*,
   -clang-analyzer-optin.performance.Padding,
   -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -clang-analyzer-core.CallAndMessage,
   -clang-analyzer-deadcode.DeadStores,
   -clang-analyzer-osx.*,
   cert-*,

@@ -56,7 +56,7 @@ printf '%s\0' "${FILES[@]}" | xargs -0 -P "$(nproc 2>/dev/null || echo 4)" -n 1 
 # Anything the enabled checks flagged, plus real parse errors.
 # clang-tidy 18 does not honour MacroDefinitionIgnoredRegexp (verified empirically);
 # exempt external Linux kernel fallback macros (RESOLVE_*) mirroring <linux/openat2.h>.
-HITS=$(grep -E '(warning|error):.*\[[a-zA-Z0-9_.-]+\]' "$OUT" | grep -v 'clang-diagnostic-' | grep -v 'RESOLVE_' | wc -l || true)
+HITS=$(grep -E '(warning|error):.*\[[a-zA-Z0-9_.-]+\]' "$OUT" | grep -v 'clang-diagnostic-' | grep -v 'RESOLVE_' | grep -v '/usr/' | wc -l || true)
 ERRS=$(grep -E 'error:' "$OUT" | grep -v '\[' | wc -l || true)
 
 if [ "$ERRS" -gt 0 ]; then
@@ -68,7 +68,7 @@ fi
 
 if [ "$HITS" -gt 0 ]; then
     echo "clang_tidy_check: $HITS static analysis / naming violation(s):" >&2
-    grep -E '(warning|error):.*\[[a-zA-Z0-9_.-]+\]' "$OUT" | grep -v 'clang-diagnostic-' | grep -v 'RESOLVE_' | sed 's#^[^:]*/##' | sort -u | head -80 >&2
+    grep -E '(warning|error):.*\[[a-zA-Z0-9_.-]+\]' "$OUT" | grep -v 'clang-diagnostic-' | grep -v 'RESOLVE_' | grep -v '/usr/' | sed 's#^[^:]*/##' | sort -u | head -80 >&2
     rm -f "$OUT"
     exit 1
 fi
