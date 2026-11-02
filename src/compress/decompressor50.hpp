@@ -312,6 +312,8 @@ public:
     // force O(packed) timeline entries with ~16x memory amplification.
     // Overflow => pre-scan failure => sequential fallback.
     static constexpr size_t PRESCAN_MAX_BLOCKS = 1u << 22; // 4 Mi blocks
+    static constexpr size_t PRESCAN_MAX_DESCRIPTIONS =
+        16384; // ~7.5 MiB max description memory (F2)
 
     struct PrescanTimeline {
         std::vector<PrescanBlock> blocks;
@@ -421,10 +423,9 @@ public:
     }
 #endif
 
-    // Safety cap on decompress_to_vector's growable output. 4 GiB is large
-    // enough for any realistic RAR block payload while keeping memory
-    // bounded on hostile input (e.g. crafted archives claiming to expand
-    // into unbounded output).
+    // Absolute safety floor on decompress_to_vector's growable output (docs/abi-freeze.md §8).
+    // 64 GiB on 64-bit native is the non-disableable floor. Callers that do not provide an
+    // explicit cap default to DEFAULT_STREAM_CAP (512 MiB), protecting against decompression bombs (F1).
     //
     // MUST stay 64-bit (core::uint64): as size_t it truncates to 0 on
     // wasm32 (4 GiB is not representable in a 32-bit size_t), which made
@@ -438,6 +439,9 @@ public:
     static constexpr core::uint64 MAX_STREAM_OUTPUT =
         64ULL * 1024 * 1024 * 1024; // 64 GiB on 64-bit native
 #endif
+
+    // Safe default cap when caller passes max_output == 0 (F1)
+    static constexpr core::uint64 DEFAULT_STREAM_CAP = 512ULL * 1024 * 1024; // 512 MiB
 
 private:
     struct BlockHeader {

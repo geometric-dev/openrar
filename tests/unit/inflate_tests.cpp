@@ -265,12 +265,25 @@ static void test_inflate_sink_cancel() {
               << std::endl;
 }
 
+static void test_inflate_incomplete_single_eob() {
+    std::cout << "[+] test_inflate_incomplete_single_eob (F3)" << std::endl;
+    // Dynamic block with single code of length 1 for EOB (symbol 256), matching RFC 1951 / zlib rule.
+    // 12-byte stream verified against zlib inflate_table.
+    const std::vector<core::byte> stream = {0x05, 0xc0, 0x01, 0x09, 0x00, 0x00,
+                                            0x00, 0x00, 0x90, 0xff, 0xaf, 0x05};
+    std::vector<core::byte> out;
+    const InflateError err = decode_vec(stream, out);
+    REQUIRE((err == InflateError::Ok && "incomplete single-EOB table must decode cleanly"));
+    REQUIRE(out.empty());
+}
+
 static const openrar::test::Case k_cases[] = {
     {"test_inflate_kats", test_inflate_kats, false},
     {"test_inflate_fixed_match", test_inflate_fixed_match, false},
     {"test_inflate_corrupt_stream_refused", test_inflate_corrupt_stream_refused, false},
     {"test_inflate_inflight_cap_bomb", test_inflate_inflight_cap_bomb, false},
-    {"test_inflate_sink_cancel", test_inflate_sink_cancel, false}};
+    {"test_inflate_sink_cancel", test_inflate_sink_cancel, false},
+    {"test_inflate_incomplete_single_eob", test_inflate_incomplete_single_eob, false}};
 
 int main(int argc, char* argv[]) {
     openrar::test::route_crt_asserts_to_stderr();

@@ -59,8 +59,8 @@ public:
     }
 
     // H-17: ceiling on output retained in-process when no flush sink is set
-    // (same bound as Decompressor50::decompress_to_vector).
-    static constexpr core::uint64 MAX_RETAINED_OUTPUT = Decompressor50::MAX_STREAM_OUTPUT;
+    // (aligned with Decompressor50::DEFAULT_STREAM_CAP to prevent unbounded retention).
+    static constexpr core::uint64 MAX_RETAINED_OUTPUT = Decompressor50::DEFAULT_STREAM_CAP;
 
 private:
     bool process_blocks();
