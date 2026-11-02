@@ -118,11 +118,17 @@ Open the repository folder directly — CMake and `CMakePresets.json` are automa
 ### Signature v2.0 Capabilities
 
 #### 1. In-Memory Multi-Threaded Benchmark (`b` / `bench`)
-Measures host CPU compression and decompression throughput using a deterministic synthetic corpus (~4.2 bits/byte entropy, bounded $\le$ 32 MiB RAM footprint). Automatically detects host CPU topology and vector acceleration (AVX-512, AVX2, SSE2, ARM NEON, GFNI), calculates multi-core scaling efficiency, performs roundtrip CRC32 integrity verification, and reports a standardized **RARMark** rating. View current hardware rankings and submit your own results in [BENCHMARKS.md](BENCHMARKS.md).
+Measures host CPU compression and decompression throughput using a deterministic synthetic corpus (~4.2 bits/byte entropy, bounded $\le$ 32 MiB RAM footprint). Automatically detects host CPU topology and vector acceleration (AVX-512, AVX2, SSE2, ARM NEON, GFNI), calculates multi-core scaling efficiency, performs roundtrip CRC32 integrity verification, and reports a standardized **RARMark** rating. View current hardware rankings and submit your own results to the community leaderboard in [BENCHMARKS.md](BENCHMARKS.md).
 
 ```bash
 # Standard benchmark across all CPU cores (5s phases, default 4 MiB dictionary)
 openrar b
+
+# Benchmark and submit verified results directly to the global cloud leaderboard
+openrar b --submit
+
+# Benchmark with custom machine description for leaderboard submission
+openrar b --submit --system="Apple M3 Max (16-Core) / 64GB Unified"
 
 # Benchmark with specific thread count and custom dictionary size
 openrar b -mt8 -md16m
@@ -141,7 +147,9 @@ openrar b --json
 - `-mt<n>`: Worker thread count (default: all logical cores; `-mt0` = auto-detect; `-mt1` = sequential).
 - `-md<size>`: Compression dictionary size (`128k` .. `1t`; default `4m`).
 - `-m<0..5>`: Compression algorithm level (0 store … 3 default … 5 maximal).
-- `--seconds=<sec>` / `-seconds=<sec>`: Timed duration per benchmark phase (default: `5`, min: `1`, max: `60`).
+- `--seconds=<sec>`: Timed duration per benchmark phase (default: `5`, min: `1`, max: `60`).
+- `--submit`: Submit verified benchmark results to the global cloud leaderboard.
+- `--system=<desc>`: Optional machine / rig description attached to the submission.
 - `-plain` / `--plain`: Disable ANSI terminal animations / TUI rendering.
 - `--json`: Emit strict RFC 8259 JSON metrics to stdout, routing diagnostics to stderr.
 
@@ -213,49 +221,33 @@ openrar a -m0 -r store.rar ./src
 openrar a -m5 -r best.rar ./src
 ```
 
-### Switches you can use
+### Common Switches
 
 | Switch | Effect |
 |---|---|
-| `-m0` … `-m5` | 0 store, 1 fast … 5 best (`-m3` default). Persisted as `method` bits in every file header. |
-| `-md<size>` | Dictionary size hint (e.g. `-md1m`, `-md4m`, `-md1g`) or `-md=auto` (dynamic memory-aware auto-sizing per entry based on input size and method). Quantized to 128 KB–1 TB, informs `WinSize` in `FCI` bits. RAR 7.0 fractional/non-power-of-two sizes accepted (nearest discrete step). |
-| `-mt<n>` | Worker threads for batch add (`-mt0` or bare `-mt` = auto; default all cores) and extraction/testing (default 2; `-mt1` = sequential). In benchmark `b`, sets worker thread count. |
-| `--seconds=<sec>` | Timed measurement duration per benchmark phase in seconds (default: 5s, min: 1s, max: 60s; command `b`). |
-| `--json` | Universal structured RFC 8259 JSON output across `l`, `v`, `lt`, `t`, `b`, `inspect`, and `diff`. Pure JSON to stdout, diagnostics to stderr. |
-| `--in-proc` | Force in-process engine, bypassing the sandboxed worker process (AppContainer on Windows, seccomp-BPF on Linux). |
-| `-plain` / `--plain` | Plain line-by-line output: disables ANSI progress animations and cursor positioning (default in pipes or CI). |
-| `-q` / `-quiet` / `--quiet` | Quiet mode: suppresses informational banners, headers, and operation progress lines. |
-| `-v` / `--verbose` | Verbose mode: in `diff`, displays identical matching entries alongside differences; in `l`, displays technical volume and block details (`v` command). |
-| `-ver[n]` | File version control: versioned adds keep `n` versions per name; `-ver<idx>` extracts that version. |
-| `-s` | Solid archive (`MHFL_SOLID` + `FCI_SOLID`). Shares one `Compressor50` window across files; stored/empty files don't break the chain. |
-| `-r` | Recurse subdirectories. Default for `a` is already recursive; `-r0` limits to wildcards. |
-| `-ed` | Omit directory records — files still archived with their paths; empty-dir info is lost (rar.exe semantics). |
-| `-ep` | Strip all paths — store bare filenames. |
-| `-df` / `-dr` / `-dw` | Delete successfully archived sources: plain / to Recycle Bin / wipe (zero overwrite → truncate → temp-name → delete). `m` implies plain delete; explicit switch overrides. |
-| `-oi[0-4][:<size>]` | Identical files as references via `FILECOPY` (0 off, 1 silent, 2 list, 3 list+exit, 4 dup-list+exit; default 64 KB comparison threshold; stored as `FHEXTRA_REDIR` type 5 with no data area — the first stored copy is referenced; materializing references on extraction follows the `-ol` links opt-in). In solid archives the run breaks around reference entries. |
-| `-cdc` | CDC-driven solid-chain packing: chunk-hash affinity ordering of solid runs + identical-file references (implies `-s` and `-oi1`; explicit `-oi0` wins). Pack-time report `cdc: logical/packed/window/flag`; the fingerprint index caps at 2M entries with an original-order fallback for the tail (reported). `-ver` and `-v` refused. |
-| `-ep1` | Strip the common base (as typed). |
-| `-ep2` | Save full path minus drive letter. |
-| `-ep3` | Full path with drive. |
-| `-z<file>` | Store archive comment from UTF-8/ANSI file (`CMT` service). |
-| `-ams` | Store archive metadata (original name + creation FILETIME) as `MHEXTRA_METADATA`. |
-| `-ts[m][c][a][4]` | High-precision times: `-tsm4 -tsc4 -tsa4` adds `FHEXTRA_HTIME` with `ctime`/`atime`. Default stores `mtime` only. |
-| `-qo-` | Disable quick-open. Default writes `QO` + locator. |
-| `-tk[<date>]` / `-tl` | Archive mtime: keep original on update, set `YYYYMMDDHHMMSS`, or set to newest stored file. Applied by `a` on close. |
-| `-p[<pwd>]` / `-hp[<pwd>]` | Encryption: AES-256 CBC with PBKDF2 (`crypt5`). `-p` encrypts file data; `-hp` encrypts headers and file data. |
-| `-rr[N[%]]` | In-archive recovery record: Reed-Solomon GF(2¹⁶) parity (`rs16`) protecting up to RR header; repaired via `openrar r`. The record carries per-chunk checksums (the reference repairer's erasure locator; fixed zero seed keeps it deterministic) and `r` restores any set of up to NR damaged chunks, including records written by RAR 7.x (both shard packagings). |
-| `-rv` | External `.rev` recovery volumes for multi-volume sets (`-v` required); rebuilt data volumes via `openrar r`. |
-| `-ow` | Save and restore NTFS file security and access control lists (ACLs) via `src/io/win32_meta.cpp`. |
-| `-os` | Save and restore NTFS Alternate Data Streams (ADS) as `STM` service blocks via `src/io/win32_meta.cpp`. Zone.Identifier is excluded: it is transport provenance, not content — propagation is the `-oz` policy. |
-| `-ol` | Save symbolic links and junctions as `FHEXTRA_REDIR` records. Links are default-deny on extraction; `-ol` opts in. |
-| `-ox` | Save POSIX/macOS extended attributes into the header's `FHEXTRA_XATTR` (0x08) record: `user.*`, `security.*`, `trusted.*`, `com.apple.metadata.*` (Finder tags), and `com.apple.ResourceFork` / `com.apple.FinderInfo` (macOS content metadata; restore on Apple hosts only). `system.*` (ACL side door) and quarantine/provenance namespaces are never stored. Over-cap attributes (name > 255 B, value > 64 KiB, > 1 MiB per file) are skipped, never truncated. Symlinks/hardlinks carry no records. Restore is automatic for `user.*`/`com.apple.metadata.*`; `--xattr-security` additionally restores `security.*`/`trusted.*` (admin opt-in, the `--preserve-suid` model). Stock WinRAR/UnRAR skip the record without error. |
-| `-oz` / `-oz-` | Mark-of-the-Web propagation at extraction (default ON; `-oz-` disables). When the archive file itself carries a Zone.Identifier ADS (Windows) or `com.apple.quarantine` (macOS), each extracted file receives a freshly generated mark (`ZoneTransfer` / `ZoneId=N` content); the archive's HostUrl or ReferrerUrl never travel; an existing stronger mark is never removed or downgraded. Zone streams stored inside the archive (`WinRAR -os` shape) are never restored. Extraction-side only — nothing is emitted into the archive. |
-| `--json-summary[=path]` | Machine-readable per-entry extraction report; without `path`, stdout carries only JSON. Includes session-level durability reporting. |
-| `--durability=batch` / `-db` | Opt-in batch durability granularity: journal record sync deferred to a boundary (every 32 appends, LRU eviction, session teardown), no temp-data flush — data durability is the OS writeback's (reference-tool class). Atomic no-follow rename unchanged. Default-off; `--durability=entry` / `-db-` re-pins the default. Kill switch `OPENRAR_NO_BATCH_DURABILITY=1`. Measured 1.99x stored / 1.18x text. |
-| `--no-mmap` | Force the buffered scan engine (the mapped engine is default-on for listing). |
-| `-v<size>` | Create multi-volume split archive (`.part01.rar`, etc.) with per-slice checksums and MACs. |
-| `-mc[params]` | Compression filter control: `-mcE` (x86 E8/E9), `-mcD` (Delta), `-mcL` (Long range), etc. |
-| `-y` | Assume Yes (no prompts), `-o+` overwrite. |
+| `-m<0..5>` | Compression level: 0 store, 1 fast … 3 default … 5 best (`-m3` default). |
+| `-md<size>` | Dictionary size (`-md128k` .. `-md1g`, or `-md=auto` for dynamic memory-aware auto-sizing). |
+| `-mt<n>` | Worker thread count (`-mt0` = auto-detect all cores, `-mt1` = sequential). |
+| `-s` | Solid archive: shares dictionary across files for higher compression ratio. |
+| `-p[<pwd>]` | Encrypt file data with AES-256 CBC and PBKDF2 (prompts securely if omitted). |
+| `-hp[<pwd>]` | Encrypt both file data and archive headers (names and metadata hidden). |
+| `-rr[N[%]]` | Add Cauchy Reed-Solomon GF(2¹⁶) recovery record (e.g. `-rr3%`) to repair corrupted archives (`openrar r`). |
+| `-rv[N]` | Create external `.rev` recovery volumes for multi-volume archives. |
+| `-v<size>` | Split archive into multi-volume parts (e.g. `-v100m`, `-v1g`). |
+| `-r` | Recurse subdirectories (default for `a`). |
+| `-ed` | Omit directory records while keeping relative file paths. |
+| `-ep` | Exclude paths from names (store or extract bare filenames). |
+| `-df` | Delete source files after successful, verified archiving or conversion (`cv`). |
+| `--submit` | Submit verified benchmark score to the global cloud leaderboard (`openrar b`). |
+| `--system=<str>` | Custom hardware description when submitting benchmarks. |
+| `--json` | Universal structured RFC 8259 JSON output across `l`, `t`, `b`, `inspect`, and `diff`. |
+| `--in-proc` | Bypass sandboxed worker process (forces in-process decode). |
+| `-plain` | Plain line-by-line output (disables ANSI animations; default in CI/pipes). |
+| `-q` / `-quiet` | Quiet mode: suppress informational headers and per-file progress lines. |
+| `-o+` / `-o-` | Overwrite existing files without asking (`-o+`) or never overwrite (`-o-`). |
+| `-y` | Assume "Yes" to all interactive confirmation prompts. |
+
+> 📖 **Complete CLI Reference Manual:** For the exhaustive switch catalog, advanced pre-processing filters (`-mc`), filesystem metadata flags (`-ow`, `-os`, `-ox`, `-oz`), batch durability (`-db`), CDC packing (`-cdc`), environment variables, and exit codes, see the **[OpenRAR CLI Reference Manual](docs/cli.md)** or run `man openrar`.
 
 ### More examples
 
@@ -453,6 +445,7 @@ Comprehensive architecture, wire-format specifications, security models, and dev
 - **[Architecture & Invariants](docs/invariants.md):** Non-negotiable system contracts (G-1..G-8) and RAM ceiling guarantees.
 - **[Security Architecture](docs/SECURITY_ARCHITECTURE.md):** Process sandboxing (AppContainer / seccomp-BPF) and syscall broker architecture.
 - **[Atomic Extraction Contract](docs/EXTRACTION_CONTRACT.md):** Directory traversal containment, journal manifests, and rollback behavior.
+- **[CLI Reference Manual](docs/cli.md):** Complete command synopsis, exhaustive switch catalog, environment variables, and exit codes.
 - **[Frozen C ABI](docs/abi-freeze.md):** Machine-checked binary layout for native C, Python, and C# SDKs.
 - **[RAR 5.0 Format Specification](docs/spec/00-overview.md):** Complete 12-chapter clean-room wire-format documentation.
 - **[WebAssembly Guide](docs/wasm-archive-spec.md):** In-memory archive creation, inspection, and extraction inside browsers and Node.js.
