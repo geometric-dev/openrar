@@ -22,7 +22,7 @@ inline std::optional<core::uint64> calculate_parity_buffer_size(core::uint64 cou
     if (count == 0 || unit_size == 0) return std::nullopt;
     if (count > MAX_PARITY_BUFFER_CAP / unit_size) return std::nullopt;
     core::uint64 total = count * unit_size;
-    if (total > std::numeric_limits<size_t>::max() || total > MAX_PARITY_BUFFER_CAP) {
+    if (total > std::numeric_limits<size_t>::max()) {
         return std::nullopt;
     }
     return total;

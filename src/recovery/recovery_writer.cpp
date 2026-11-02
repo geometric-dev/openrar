@@ -882,7 +882,7 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
 
     for (core::uint32 j = 0; j < nr; ++j) {
         // .rev files restart the numbering: out.part01.rar -> out.part01.rev
-        std::filesystem::path base = chain[0];
+        const std::filesystem::path& base = chain[0];
         std::string name = base.filename().string();
         std::filesystem::path dir = base.parent_path();
         std::string rev_name;
@@ -1482,7 +1482,7 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
     // pattern, so reconstructed volumes land under the canonical name.
     if (sample_slot >= 0) {
         auto name_for_slot = [&](core::uint32 slot) -> std::wstring {
-            std::wstring s = sample_name;
+            const std::wstring& s = sample_name;
             size_t dot = s.rfind(L".part");
             if (dot != std::wstring::npos) {
                 size_t d = s.find(L'.', dot + 5);

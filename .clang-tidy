@@ -1,10 +1,48 @@
-# Naming enforcement for OpenRAR — mirrors ARCHITECTURE.md §3.2 exactly.
-# Only the naming check is enabled here; code-quality checks are a separate
-# decision (add them deliberately, not implicitly).
+# Naming and static analysis enforcement for OpenRAR — mirrors ARCHITECTURE.md §3.2.
+# Checks: naming conventions, bug detection (bugprone, cert, clang-analyzer, performance, misc).
 # Run: clang-tidy -p build/<preset> <file>   (needs compile_commands.json,
 # which the `default`/`windows-msvc` presets export)
-Checks: '-*,readability-identifier-naming'
+Checks: >
+  -*,
+  readability-identifier-naming,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-reserved-identifier,
+  -bugprone-branch-clone,
+  -bugprone-empty-catch,
+  -bugprone-throwing-static-initialization,
+  -bugprone-incorrect-roundings,
+  -bugprone-switch-missing-default-case,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  -bugprone-command-processor,
+  clang-analyzer-*,
+  -clang-analyzer-optin.performance.Padding,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -clang-analyzer-deadcode.DeadStores,
+  -clang-analyzer-osx.*,
+  cert-*,
+  -cert-err33-c,
+  -cert-err58-cpp,
+  -cert-env33-c,
+  -cert-dcl37-c,
+  -cert-dcl51-cpp,
+  performance-*,
+  -performance-enum-size,
+  -performance-no-int-to-ptr,
+  -performance-inefficient-string-concatenation,
+  -performance-unnecessary-value-param,
+  misc-*,
+  -misc-include-cleaner,
+  -misc-const-correctness,
+  -misc-use-anonymous-namespace,
+  -misc-use-internal-linkage,
+  -misc-no-recursion,
+  -misc-non-private-member-variables-in-classes
 CheckOptions:
+  - key: bugprone-exception-escape.CheckMain
+    value: 'false'
   - key: readability-identifier-naming.NamespaceCase
     value: lower_case
   - key: readability-identifier-naming.ClassCase
@@ -30,9 +68,9 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.TypeAliasIgnoredRegexp
     # Callback / function-type aliases stay PascalCase: they are types, and
-    # ARCHITECTURE.md s3.2 types are PascalCase. The original list was
-    # incomplete; RarError and ArchiveEntryOut are the shared-ABI aliases.
-    value: '^(OutputCallback|InputCallback|MatchFn|InputFn|SinkFn|ParallelSinkFn|ParallelProgressCb|ParallelCancelCb|RarError|ArchiveEntryOut)$'
+    # ARCHITECTURE.md s3.2 types are PascalCase. Matches any Fn/Cb/Callback type
+    # alias or frozen ABI types.
+    value: '.*(Fn|Cb|Callback)$|^(RarError|ArchiveEntryOut)$'
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
   - key: readability-identifier-naming.ParameterCase
@@ -57,12 +95,12 @@ CheckOptions:
     value: lower_case
   # The frozen ABI enum is handled by leaving EnumConstantCase unset (see the
   # EnumCase block above); no EnumConstantIgnoredRegexp is needed.
-  # System-convention macros (e.g. WIN32_LEAN_AND_MEAN before windows.h, Linux RESOLVE_/SYS_/RENAME_ fallback definitions).
+  # System-convention macros (e.g. WIN32_LEAN_AND_MEAN before windows.h, Linux RESOLVE_/SYS_/RENAME_ fallback definitions, Windows mitigation macros).
   - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
-    value: '^(WIN32_|RESOLVE_|SYS_|RENAME_)'
-  # Windows system-struct replica in win32_meta.cpp, STL-conforming allocator structs in default_init_allocator.hpp.
+    value: '^(WIN32_|RESOLVE_|SYS_|RENAME_|PROCESS_CREATION_MITIGATION_|getpid)'
+  # STL-conforming allocator structs in default_init_allocator.hpp.
   - key: readability-identifier-naming.StructIgnoredRegexp
-    value: '^(_REPARSE|default_init_allocator|rebind)'
+    value: '^(default_init_allocator|rebind)'
   # Note: function-local `const` deliberately stays lower_snake (unpoliced);
   # scope/class-scope constants are UPPER via GlobalConstantCase +
   # ConstexprVariableCase below.

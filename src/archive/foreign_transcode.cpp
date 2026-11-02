@@ -53,7 +53,10 @@ struct StagingGuard {
     ~StagingGuard() {
         if (!dir.empty()) {
             std::error_code ec;
-            std::filesystem::remove_all(dir, ec);
+            try {
+                std::filesystem::remove_all(dir, ec);
+            } catch (...) {
+            }
         }
     }
 };

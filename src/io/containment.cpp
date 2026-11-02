@@ -51,8 +51,7 @@ constexpr ACCESS_MASK NT_DIR_ACCESS = FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE
 // mask changes rename-commit semantics (deferral) for POSIX-semantics
 // renames — found by the gate-1 suite.
 constexpr ACCESS_MASK NT_FILE_WRITE_ACCESS = FILE_GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES;
-constexpr ACCESS_MASK NT_JOURNAL_ACCESS =
-    FILE_GENERIC_READ | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE;
+constexpr ACCESS_MASK NT_JOURNAL_ACCESS = FILE_GENERIC_READ | FILE_WRITE_DATA | DELETE;
 
 // Directories are shared like kernel32's FILE_FLAG_BACKUP_SEMANTICS opens:
 // a too-restrictive share mode here would block every later write-intent
@@ -96,8 +95,7 @@ using NtCreateFileFn = LONG(NTAPI*)(PHANDLE, ACCESS_MASK, NtObjectAttributes*, N
 NtCreateFileFn nt_create_file() {
     static NtCreateFileFn fn = []() -> NtCreateFileFn {
         const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        return ntdll ? reinterpret_cast<NtCreateFileFn>(
-                           static_cast<void*>(GetProcAddress(ntdll, "NtCreateFile")))
+        return ntdll ? reinterpret_cast<NtCreateFileFn>(GetProcAddress(ntdll, "NtCreateFile"))
                      : nullptr;
     }();
     return fn;
@@ -111,7 +109,7 @@ NtCreateFileFn nt_create_file() {
 // exclusive lock work.
 LONG nt_open_anchored(HANDLE root, const std::wstring& name, ACCESS_MASK access,
                       ULONG create_options, ULONG disposition, HANDLE* out) {
-    const NtCreateFileFn create = nt_create_file();
+    NtCreateFileFn create = nt_create_file();
     if (!create) return static_cast<LONG>(0xC0000001u); // STATUS_UNSUCCESSFUL
     NtUnicodeString us;
     us.Length = static_cast<USHORT>(name.size() * sizeof(WCHAR));
@@ -748,8 +746,7 @@ bool ContainmentRoot::anchored_unlink_leaf(const VerifiedDir& dir, const std::st
     using NtSetInfoFn = LONG(NTAPI*)(HANDLE, PVOID, PVOID, ULONG, ULONG);
     static NtSetInfoFn set_info = []() -> NtSetInfoFn {
         const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        return ntdll ? reinterpret_cast<NtSetInfoFn>(
-                           static_cast<void*>(GetProcAddress(ntdll, "NtSetInformationFile")))
+        return ntdll ? reinterpret_cast<NtSetInfoFn>(GetProcAddress(ntdll, "NtSetInformationFile"))
                      : nullptr;
     }();
     if (set_info == nullptr) {
