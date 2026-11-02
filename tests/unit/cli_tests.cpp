@@ -99,10 +99,65 @@ static std::string get_cli_path() {
 }
 
 void test_cli_help() {
-    std::string cmd = get_cli_path() + " > " DEVNULL " 2>&1";
+    std::filesystem::path out_file = "build/cli_help_test.txt";
+    std::error_code ec;
+    std::filesystem::remove(out_file, ec);
+
+    // 1. Bare invocation prints banner and help with return code 0
+    std::string cmd = get_cli_path() + " > " + out_file.string() + " 2>&1";
     int res = std::system(cmd.c_str());
     REQUIRE(res == 0);
-    std::cout << "[PASS] CLI Help & Banner Output\n";
+    {
+        std::ifstream f(out_file, std::ios::binary);
+        std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        REQUIRE(s.find("OpenRAR") != std::string::npos);
+        REQUIRE(s.find("Archive Operations:") != std::string::npos);
+        REQUIRE(s.find("Archive Modification:") != std::string::npos);
+        REQUIRE(s.find("Forensics, Recovery & Comparison:") != std::string::npos);
+        REQUIRE(s.find("Benchmarking:") != std::string::npos);
+        REQUIRE(s.find("--submit") != std::string::npos);
+    }
+
+    // 2. --help flag prints help with return code 0
+    cmd = get_cli_path() + " --help > " + out_file.string() + " 2>&1";
+    res = std::system(cmd.c_str());
+    REQUIRE(res == 0);
+
+    // 3. help b and b --help print benchmark-specific help
+    cmd = get_cli_path() + " help b > " + out_file.string() + " 2>&1";
+    res = std::system(cmd.c_str());
+    REQUIRE(res == 0);
+    {
+        std::ifstream f(out_file, std::ios::binary);
+        std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        REQUIRE(s.find("openrar b [switches] [--submit] [--system=<desc>]") != std::string::npos);
+        REQUIRE(s.find("--submit") != std::string::npos);
+        REQUIRE(s.find("--system=<desc>") != std::string::npos);
+    }
+
+    cmd = get_cli_path() + " b --help > " + out_file.string() + " 2>&1";
+    res = std::system(cmd.c_str());
+    REQUIRE(res == 0);
+    {
+        std::ifstream f(out_file, std::ios::binary);
+        std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        REQUIRE(s.find("--submit") != std::string::npos);
+    }
+
+    // 4. Misplaced benchmark flag gives intuitive error and usage
+    cmd = get_cli_path() + " --submit > " + out_file.string() + " 2>&1";
+    res = std::system(cmd.c_str());
+    REQUIRE(res != 0);
+    {
+        std::ifstream f(out_file, std::ios::binary);
+        std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        REQUIRE(s.find("'--submit' is a benchmark option") != std::string::npos);
+        REQUIRE(s.find("openrar b --submit") != std::string::npos);
+    }
+
+    std::filesystem::remove(out_file, ec);
+    std::cout << "[PASS] CLI Help & Banner Output (hierarchical, command-specific & contextual "
+                 "guidance)\n";
 }
 
 void test_cli_lifecycle() {
