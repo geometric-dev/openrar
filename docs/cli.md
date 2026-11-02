@@ -8,7 +8,11 @@
 ## 1. Synopsis & Syntax
 
 ```bash
-openrar <command> [-<switch 1> ... -<switch N>] <archive> [files...] [@listfiles...] [path_to_extract]
+openrar <command> [switches] <archive> [files...] [@listfile] [path_to_extract]
+openrar b [switches] [--submit] [--system=<desc>]
+openrar inspect [switches] <archive>
+openrar diff [switches] <archive1> <archive2>
+openrar help [<command>]
 ```
 
 * **Command**: Exactly one primary action character or keyword (e.g. `a`, `x`, `b`, `inspect`, `diff`).

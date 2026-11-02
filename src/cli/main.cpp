@@ -438,65 +438,404 @@ void print_banner() {
     std::cout << "\n";
 }
 
-void print_help() {
+void print_bench_help() {
     print_banner();
     std::cout
-        << "Usage: openrar <command> -<switch 1> -<switch N> <archive> <files...>\n\n"
+        << "Usage:\n"
+        << "  openrar b [switches] [--submit] [--system=<desc>]\n\n"
+        << "Description:\n"
+        << "  In-memory multi-threaded benchmark measuring host CPU compression and\n"
+        << "  decompression throughput using a deterministic synthetic corpus (~4.2 bits/byte,\n"
+        << "  <= 32 MiB RAM footprint) with zero disk I/O. Automatically detects CPU vector\n"
+        << "  extensions (AVX-512, AVX2, SSE2, ARM NEON, GFNI), calculates multi-core scaling\n"
+        << "  efficiency, performs CRC32 integrity checks, and reports a standardized RARMark.\n\n"
+        << "Switches:\n"
+        << "  -mt<n>            Worker thread count (default: all logical cores; -mt0 = auto; -mt1 "
+           "= sequential)\n"
+        << "  -md<size>         Dictionary window size (128k..1t; default: 4m)\n"
+        << "  -m<0..5>          Compression algorithm level (0 store ... 3 default ... 5 maximal)\n"
+        << "  --seconds=<sec>   Timed measurement duration per phase (default: 5s, min: 1s, max: "
+           "60s)\n"
+        << "  --submit          Submit verified benchmark results directly to global cloud "
+           "leaderboard\n"
+        << "  --system=<desc>   Custom machine / rig description attached to leaderboard "
+           "submission\n"
+        << "  --submit-endpoint=<url> Custom leaderboard submission API endpoint\n"
+        << "  --json            Emit strict RFC 8259 structured JSON metrics to stdout\n"
+        << "  -plain, --plain   Disable ANSI animations for clean plain-text log files\n\n"
+        << "Examples:\n"
+        << "  openrar b                                     # Standard full-core benchmark (5s "
+           "phases)\n"
+        << "  openrar b -mt8 -md16m                         # Benchmark with 8 worker threads & 16 "
+           "MiB dict\n"
+        << "  openrar b --seconds=10                        # 10s per-phase measurement for higher "
+           "precision\n"
+        << "  openrar b --submit                            # Run benchmark and submit to cloud "
+           "leaderboard\n"
+        << "  openrar b --submit --system=\"Apple M3 Max\"    # Benchmark with rig description for "
+           "leaderboard\n"
+        << "  openrar b --json > benchmark.json             # Structured JSON output for CI "
+           "tracking\n\n"
+        << "Cloud Leaderboard: https://benchmark.openrar.workers.dev\n";
+}
+
+void print_diff_help() {
+    print_banner();
+    std::cout
+        << "Usage:\n"
+        << "  openrar diff [switches] <archive1> <archive2>\n\n"
+        << "Description:\n"
+        << "  In-archive zero-extraction structural diff between two archives without writing\n"
+        << "  to disk. Compares archived members across relative paths, unpacked sizes, mtime,\n"
+        << "  CRC32/BLAKE2sp hashes, compression methods, and dictionary windows.\n\n"
+        << "Switches:\n"
+        << "  -v, --verbose     Verbose mode: include matching/identical files in diff report\n"
+        << "  -p<password>      Decryption password for password-protected archives\n"
+        << "  --json            Emit machine-readable RFC 8259 JSON diff schema to stdout\n\n"
+        << "Exit Codes:\n"
+        << "  0                 Archives are content and metadata identical\n"
+        << "  1                 Structural differences detected between archives\n"
+        << "  2                 Operational error (missing file, invalid archive, bad password)\n\n"
+        << "Examples:\n"
+        << "  openrar diff build_v1.rar build_v2.rar        # Structural diff between two archive "
+           "revisions\n"
+        << "  openrar diff -v v1.rar v2.rar                 # Verbose diff showing identical files "
+           "too\n"
+        << "  openrar diff -pSecret v1.rar v2.rar           # Compare password-protected archives\n"
+        << "  openrar diff --json v1.rar v2.rar             # Emit structured JSON diff for CI/CD "
+           "comparison\n";
+}
+
+void print_inspect_help() {
+    print_banner();
+    std::cout
+        << "Usage:\n"
+        << "  openrar inspect [switches] <archive>\n\n"
+        << "Description:\n"
+        << "  Zero-extraction forensic physical envelope analysis and health x-ray of archive.\n"
+        << "  Dissects container headers, quick-open locators (QO), service blocks (CMT),\n"
+        << "  Cauchy RS16 Reed-Solomon recovery geometry (stripe width, data/parity counts),\n"
+        << "  and AES-256 PBKDF2 encryption salt/workbound parameters.\n\n"
+        << "Switches:\n"
+        << "  -p<password>      Decryption password for encrypted archive headers\n"
+        << "  --json            Output complete forensic inspection envelope as structured RFC "
+           "8259 JSON\n\n"
+        << "Examples:\n"
+        << "  openrar inspect backup.rar                    # Forensic inspection and recovery "
+           "health x-ray\n"
+        << "  openrar inspect -pSecret encrypted.rar        # Inspect encrypted archive headers "
+           "with password\n"
+        << "  openrar inspect --json backup.rar             # Output forensic telemetry as "
+           "structured JSON\n";
+}
+
+void print_archive_help(const std::string& cmd) {
+    print_banner();
+    std::cout << "Usage:\n"
+              << "  openrar " << cmd << " [switches] <archive> [files...] [@listfile]\n\n"
+              << "Description:\n";
+    if (cmd == "a") {
+        std::cout << "  Add files and directories to archive. Recursively preserves directory "
+                     "hierarchy.\n\n";
+    } else if (cmd == "u") {
+        std::cout << "  Update files in archive. Adds new files and updates existing files that "
+                     "are newer.\n\n";
+    } else if (cmd == "f") {
+        std::cout << "  Freshen files in archive. Only updates existing files that have newer disk "
+                     "versions.\n\n";
+    } else if (cmd == "m") {
+        std::cout << "  Move files to archive. Files are added to the archive and deleted from "
+                     "disk after verification.\n\n";
+    } else if (cmd == "d") {
+        std::cout << "  Delete specified files and directories from inside the archive.\n\n";
+    } else if (cmd == "k") {
+        std::cout << "  Lock archive against any further modification (cannot be updated, "
+                     "freshened, or deleted).\n\n";
+    }
+    std::cout << "Common Switches:\n"
+              << "  -m<0..5>          Compression level (0 store ... 3 default ... 5 maximal)\n"
+              << "  -md<size>         Dictionary window (128k..1t, or -md=auto for dynamic "
+                 "memory-aware sizing)\n"
+              << "  -s                Create solid archive (shared dictionary across files for "
+                 "higher ratio)\n"
+              << "  -mt<n>            Worker thread count (default: all logical cores; -mt0 = "
+                 "auto; -mt1 = sequential)\n"
+              << "  -p[<pwd>]         Encrypt file data with AES-256 CBC and PBKDF2\n"
+              << "  -hp[<pwd>]        Encrypt both file data and archive headers (file names and "
+                 "sizes hidden)\n"
+              << "  -rr[N[%]]         Add Cauchy RS16 recovery record (e.g. -rr3%) for archive "
+                 "repair ('openrar r')\n"
+              << "  -rv[N]            Create external .rev recovery volumes for multi-volume sets\n"
+              << "  -v<size>          Split archive into multi-volume parts (e.g. -v100m, -v1g)\n"
+              << "  -r                Recurse subdirectories (default for 'a')\n"
+              << "  -ed               Do not store directory records\n"
+              << "  -ep               Exclude paths from names (store flat filenames)\n"
+              << "  -x<pattern>       Exclude files matching wildcard or filename\n"
+              << "  -x@<listfile>     Exclude files listed in UTF-8 text file\n"
+              << "  -z<comment_file>  Read archive comment from UTF-8 text file\n"
+              << "  -ts<m|c|a>        Time fields to store: m=modified, c=created, a=accessed\n"
+              << "  -ow, -os, -ox     Save file security (POSIX permissions/owner, Windows ACLs, "
+                 "NTFS streams, xattrs)\n\n"
+              << "Examples:\n"
+              << "  openrar " << cmd
+              << " backup.rar ./data/                 # Archive directory tree\n"
+              << "  openrar " << cmd
+              << " -s -m5 source.rar ./src/           # Solid maximal compression\n"
+              << "  openrar " << cmd
+              << " -hpSecret secure.rar secret.docx   # Header-encrypted archive\n"
+              << "  openrar " << cmd
+              << " -v100m -rr5% part.part1.rar big.iso # Multi-volume with 5% recovery record\n"
+              << "  openrar " << cmd
+              << " -x*.tmp -x*.log log.rar ./logs/    # Archive with exclusion patterns\n";
+}
+
+void print_extract_help(const std::string& cmd) {
+    print_banner();
+    std::cout << "Usage:\n"
+              << "  openrar " << cmd
+              << " [switches] <archive> [destination/] [file_patterns...]\n\n"
+              << "Description:\n";
+    if (cmd == "x") {
+        std::cout << "  Extract files from archive with full directory hierarchy preserved.\n\n";
+    } else {
+        std::cout << "  Extract files without archived paths (all extracted files placed flat in "
+                     "destination).\n\n";
+    }
+    std::cout
+        << "Common Switches:\n"
+        << "  -o+ / -o-         Overwrite all existing files / never overwrite (default: ask)\n"
+        << "  -y                Assume Yes on all interactive queries\n"
+        << "  -p<password>      Decryption password for protected archives\n"
+        << "  -mt<n>            Single-member decode workers (default: 2; -mt1 = sequential)\n"
+        << "  -kb               Keep broken or damaged extracted files\n"
+        << "  -oh / -ol         Preserve hard links / symbolic links\n"
+        << "  -ow, -os, -ox     Restore file security (POSIX mode/owner, Windows ACLs, NTFS "
+           "streams, xattrs)\n"
+        << "  --json-summary    Output machine-readable JSON summary of extracted files\n"
+        << "  -plain            Plain line-by-line output (disable ANSI animations)\n"
+        << "  -q, -quiet        Quiet mode: suppress informational headers and progress lines\n\n"
+        << "Examples:\n"
+        << "  openrar " << cmd
+        << " backup.rar                         # Extract into current directory\n"
+        << "  openrar " << cmd
+        << " -y backup.rar ./extracted/         # Extract into destination without asking\n"
+        << "  openrar " << cmd
+        << " -pSecret encrypted.rar ./out/      # Extract password-protected archive\n"
+        << "  openrar " << cmd
+        << " backup.rar *.txt *.pdf             # Extract only matching files\n";
+}
+
+void print_list_help() {
+    print_banner();
+    std::cout
+        << "Usage:\n"
+        << "  openrar l[t[a],b] [switches] <archive> [file_patterns...]\n\n"
+        << "Description:\n"
+        << "  List contents of archive:\n"
+        << "    l               Standard table listing (filename, size, ratio, mtime, attributes)\n"
+        << "    lt              Technical listing (detailed compression method, dictionary, host "
+           "OS, hashes)\n"
+        << "    lb              Bare listing (filenames only, one per line — ideal for shell "
+           "scripting)\n\n"
+        << "Switches:\n"
+        << "  -p<password>      Decryption password for archives with encrypted headers\n"
+        << "  --json            Output complete archive inventory as structured RFC 8259 JSON\n"
+        << "  -v                Verbose listing\n\n"
+        << "Examples:\n"
+        << "  openrar l backup.rar                          # Standard inventory table\n"
+        << "  openrar lt backup.rar                         # Detailed technical metadata\n"
+        << "  openrar lb backup.rar                         # Bare paths for piping: openrar lb "
+           "arc.rar | grep ...\n"
+        << "  openrar l --json backup.rar                   # Structured RFC 8259 JSON to stdout\n";
+}
+
+void print_test_help() {
+    print_banner();
+    std::cout
+        << "Usage:\n"
+        << "  openrar t [switches] <archive> [file_patterns...]\n\n"
+        << "Description:\n"
+        << "  Test integrity of archived files by decompressing in memory and verifying\n"
+        << "  CRC32 / BLAKE2sp checksums without writing extracted files to disk.\n\n"
+        << "Switches:\n"
+        << "  -p<password>      Decryption password for protected archives\n"
+        << "  -mt<n>            Single-member decode workers (default: 2; -mt1 = sequential)\n"
+        << "  --json            Output structured RFC 8259 JSON test verification report\n"
+        << "  -plain            Plain line-by-line output (disable ANSI animations)\n"
+        << "  -q, -quiet        Quiet mode: only output errors (exit 0 on success, non-zero on "
+           "failure)\n\n"
+        << "Examples:\n"
+        << "  openrar t backup.rar                          # Test archive integrity\n"
+        << "  openrar t -pSecret encrypted.rar              # Test encrypted archive with "
+           "password\n"
+        << "  openrar t --json backup.rar                   # Automated CI test with structured "
+           "JSON result\n";
+}
+
+void print_repair_help() {
+    print_banner();
+    std::cout
+        << "Usage:\n"
+        << "  openrar r [switches] <archive>               # Repair damaged archive\n"
+        << "  openrar rr[N[%]] [switches] <archive>        # Add recovery record to existing "
+           "archive\n\n"
+        << "Description:\n"
+        << "  Cauchy Reed-Solomon GF(2^16) data recovery system for damaged or corrupt archives.\n"
+        << "  Can reconstruct missing or corrupt archive sectors and external .rev volumes.\n\n"
+        << "Switches:\n"
+        << "  -rr[N[%]]         Recovery record size as percentage of archive (default: 3%; e.g. "
+           "-rr5%)\n"
+        << "  -rv[N]            Number of external recovery volumes (.rev) to generate\n\n"
+        << "Examples:\n"
+        << "  openrar r damaged.rar                         # Reconstruct damaged archive to "
+           "_repaired.rar\n"
+        << "  openrar rr5% existing.rar                     # Add 5% recovery record protection to "
+           "archive\n";
+}
+
+void print_convert_help() {
+    print_banner();
+    std::cout
+        << "Usage:\n"
+        << "  openrar cv [switches] <source_archive> [dest_archive.rar]\n\n"
+        << "Description:\n"
+        << "  One-way clean-room conversion of foreign archives (ZIP, TAR, GZIP) into RAR 5.0.\n\n"
+        << "Switches:\n"
+        << "  -df               Delete source archive after successful, verified conversion\n"
+        << "  -m<0..5>          Compression level (0 store ... 3 default ... 5 maximal)\n"
+        << "  -s                Create solid archive\n"
+        << "  --json-summary    Output machine-readable JSON migration summary\n\n"
+        << "Examples:\n"
+        << "  openrar cv legacy.zip                         # Converts legacy.zip -> legacy.rar\n"
+        << "  openrar cv -df archive.tar.gz output.rar      # Converts and removes source tar.gz\n";
+}
+
+void print_sfx_help() {
+    print_banner();
+    std::cout << "Usage:\n"
+              << "  openrar s [switches] <archive> [sfx_module]\n\n"
+              << "Description:\n"
+              << "  Convert an existing RAR archive into a self-extracting executable (SFX).\n\n"
+              << "Switches:\n"
+              << "  -sfx[<module>]    Select SFX module\n\n"
+              << "Examples:\n"
+              << "  openrar s backup.rar                          # Converts backup.rar to "
+                 "backup.exe (or binary)\n";
+}
+
+void print_general_help() {
+    print_banner();
+    std::cout
+        << "Usage:\n"
+        << "  openrar <command> [switches] <archive> [files...]   (Archive operations)\n"
+        << "  openrar b [switches] [--submit] [--system=<desc>]    (In-memory hardware benchmark)\n"
+        << "  openrar inspect [switches] <archive>                 (Forensic envelope inspection)\n"
+        << "  openrar diff [switches] <archive1> <archive2>        (Zero-extraction structural "
+           "diff)\n\n"
         << "<Commands>\n"
-        << "  a             Add files to archive\n"
-        << "  b             Benchmark system performance\n"
-        << "  d             Delete files from archive\n"
-        << "  diff          Structural zero-extraction diff between two archives\n"
-        << "  e             Extract files without archived paths\n"
-        << "  f             Freshen existing files in archive\n"
-        << "  k             Lock archive against changes\n"
-        << "  l[t[a],b]     List contents of archive [technical, bare]\n"
-        << "  m             Move files to archive (delete after archiving)\n"
-        << "  p             Print file to stdout\n"
-        << "  r             Repair damaged archive\n"
-        << "  rr[N]         Add data recovery record\n"
-        << "  inspect       Forensic analysis and health x-ray of archive\n"
-        << "  s             Convert archive to SFX\n"
-        << "  t             Test archive integrity\n"
-        << "  u             Update files in archive\n"
-        << "  x             Extract files with full paths\n\n"
+        << "  Archive Operations:\n"
+        << "    a             Add files to archive (recursively preserves directory tree)\n"
+        << "    x             Extract files with full paths preserved\n"
+        << "    e             Extract files without archived paths (flat extraction)\n"
+        << "    t             Test archive integrity and verify CRC32/BLAKE2sp checksums\n"
+        << "    l[t[a],b]     List contents of archive [technical, bare]\n\n"
+        << "  Archive Modification:\n"
+        << "    u             Update files in archive (add newer files)\n"
+        << "    f             Freshen existing files in archive (newer disk files only)\n"
+        << "    m             Move files to archive (delete source after verified add)\n"
+        << "    d             Delete files from archive\n"
+        << "    k             Lock archive against further modifications\n"
+        << "    s             Convert archive to self-extracting executable (SFX)\n\n"
+        << "  Forensics, Recovery & Comparison:\n"
+        << "    inspect       Forensic physical analysis & health x-ray of archive envelope\n"
+        << "    diff          Structural zero-extraction diff between two archives\n"
+        << "    r             Repair damaged archive using recovery records\n"
+        << "    rr[N]         Add Cauchy RS16 data recovery record (percentage)\n"
+        << "    p             Print unpacked file contents directly to stdout\n\n"
+        << "  Benchmarking:\n"
+        << "    b, bench      Benchmark system compression/decompression in-memory\n\n"
         << "<Switches>\n"
-        << "  @<list>       Read file names from list file (UTF-8, ignores ;#// comments)\n"
-        << "  -ed           Do not store directory records\n"
-        << "  -ep           Exclude paths from names\n"
-        << "  -hp<p>        Encrypt both file data and headers\n"
-        << "  -m<0..5>      Set compression level (0-store...3-default...5-maximal)\n"
-        << "  -mc<par>      Set compression pre-processing filters (e.g. -mc-, -mcE+, -mcD+)\n"
-        << "  -md<size>     Set dictionary size (128k..1T) or -md=auto (default: auto-size\n"
-        << "                per entry based on compression method and input size)\n"
-        << "  -mt<n>        Worker threads for batch add (default: all cores; -mt0 = auto);\n"
-        << "                on x/t: single-member decode workers (default: 2; -mt1 = sequential)\n"
-        << "  -oh           Save hard links as the link instead of the file\n"
-        << "  -ol           Save symbolic links as the link instead of the file\n"
-        << "  --json        Structured RFC 8259 JSON output\n"
-        << "  -o+ / -o-     Overwrite all existing files / never overwrite (default: ask)\n"
-        << "  -os, -ow      Save NTFS streams / File security data (Windows ACLs, POSIX "
-           "owner/group/mode)\n"
-        << "  -p<p>         Set password\n"
-        << "  -plain, --plain\n"
-        << "                Plain line-by-line output (disable ANSI animations)\n"
-        << "  -q, -quiet, --quiet\n"
-        << "                Quiet mode (suppress informational output)\n"
-        << "  -r            Recurse subdirectories\n"
-        << "  -rr[N]        Add data recovery record (percentage)\n"
-        << "  -s            Create solid archive\n"
-        << "  -sfx          Create SFX archive\n"
-        << "  --submit      Submit verified benchmark results to global cloud leaderboard\n"
-        << "  --system=<str> Machine / rig description (used with --submit)\n"
-        << "  -ts<m|c|a>    Time fields to store: m=modified, c=created, a=accessed\n"
-        << "                (letters combine; default -tsm)\n"
-        << "  -v<size>      Create multi-volume archive\n"
-        << "  -ver[n]       File version control\n"
-        << "  -x<pattern>   Exclude specified file or wildcard\n"
-        << "  -x@<list>     Exclude files in specified list file\n"
-        << "  -y            Assume Yes on all queries\n"
-        << "  -z<file>      Read archive comment from file\n"
-        << "  --version     Print version information and exit\n";
+        << "  Compression & Performance:\n"
+        << "    -m<0..5>      Set compression level (0-store...3-default...5-maximal)\n"
+        << "    -md<size>     Dictionary window (128k..1t, or -md=auto for dynamic auto-sizing)\n"
+        << "    -s            Create solid archive (shared dictionary for higher ratio)\n"
+        << "    -mt<n>        Worker threads (-mt0 = auto all cores, -mt1 = sequential)\n"
+        << "    -v<size>      Split into multi-volume parts (e.g. -v100m, -v1g)\n"
+        << "    -r            Recurse subdirectories (default for 'a')\n"
+        << "    -z<file>      Read archive comment from UTF-8 text file\n\n"
+        << "  Encryption & Security:\n"
+        << "    -p[<pwd>]     Encrypt file data with AES-256 CBC and PBKDF2\n"
+        << "    -hp[<pwd>]    Encrypt both file data and archive headers (names hidden)\n\n"
+        << "  Data Protection & Recovery:\n"
+        << "    -rr[N[%]]     Add Cauchy RS16 recovery record (e.g. -rr3%, -rr5%)\n"
+        << "    -rv[N]        Create external .rev recovery volumes for multi-volume sets\n\n"
+        << "  Extraction & Filesystem:\n"
+        << "    -o+ / -o-     Overwrite all existing files / never overwrite (default: ask)\n"
+        << "    -y            Assume Yes on all interactive queries\n"
+        << "    -ed           Do not store directory records\n"
+        << "    -ep           Exclude paths from names (store or extract flat filenames)\n"
+        << "    -kb           Keep broken or damaged extracted files\n"
+        << "    -oh           Preserve hard links as links instead of copies\n"
+        << "    -ol           Preserve symbolic links as links instead of copies\n"
+        << "    -os, -ow      Save/restore NTFS streams, security ACLs & permissions\n\n"
+        << "  Benchmarking ('openrar b'):\n"
+        << "    --submit      Submit verified benchmark results to global cloud leaderboard\n"
+        << "    --system=<desc> Custom machine / rig description attached to submission\n"
+        << "    --seconds=<sec> Timed duration per benchmark phase (default: 5s, 1..60)\n\n"
+        << "  Output & General:\n"
+        << "    --json        Structured RFC 8259 JSON output (l, t, b, inspect, diff)\n"
+        << "    -plain        Plain line-by-line output (disable ANSI animations)\n"
+        << "    -q, -quiet    Quiet mode (suppress informational output)\n"
+        << "    --version     Print version information and exit\n\n"
+        << "Examples:\n"
+        << "  # Archive creation & extraction\n"
+        << "  openrar a -r backup.rar ./data/               # Create archive recursively\n"
+        << "  openrar a -s -m5 source.rar ./src/            # Solid maximal compression\n"
+        << "  openrar x -y backup.rar ./extracted/          # Extract with full directory "
+           "structure\n"
+        << "  openrar t backup.rar                          # Test archive integrity\n"
+        << "  openrar l --json backup.rar                   # List contents as structured JSON\n\n"
+        << "  # Forensics & comparison\n"
+        << "  openrar inspect backup.rar                    # Forensic envelope & RS16 health "
+           "x-ray\n"
+        << "  openrar diff archive1.rar archive2.rar        # Structural zero-extraction "
+           "comparison\n\n"
+        << "  # Benchmarking & cloud leaderboard\n"
+        << "  openrar b                                     # Full-core in-memory benchmark\n"
+        << "  openrar b -mt8 -md16m                         # Benchmark with 8 threads & 16 MiB "
+           "dict\n"
+        << "  openrar b --submit --system=\"Apple M3 Max\"    # Benchmark & submit to cloud "
+           "leaderboard\n\n"
+        << "See 'openrar help <command>' or docs/cli.md for the complete reference manual.\n";
+}
+
+void print_help(const std::string& specific_cmd = "") {
+    if (specific_cmd == "b" || specific_cmd == "bench") {
+        print_bench_help();
+    } else if (specific_cmd == "diff" || specific_cmd == "cmp") {
+        print_diff_help();
+    } else if (specific_cmd == "inspect") {
+        print_inspect_help();
+    } else if (specific_cmd == "a" || specific_cmd == "add" || specific_cmd == "u" ||
+               specific_cmd == "f" || specific_cmd == "m" || specific_cmd == "d" ||
+               specific_cmd == "k") {
+        print_archive_help(specific_cmd);
+    } else if (specific_cmd == "x" || specific_cmd == "e") {
+        print_extract_help(specific_cmd);
+    } else if (specific_cmd == "l" || specific_cmd == "lt" || specific_cmd == "lb" ||
+               specific_cmd == "v") {
+        print_list_help();
+    } else if (specific_cmd == "t" || specific_cmd == "test") {
+        print_test_help();
+    } else if (specific_cmd == "r" || specific_cmd == "rr") {
+        print_repair_help();
+    } else if (specific_cmd == "cv") {
+        print_convert_help();
+    } else if (specific_cmd == "s" || specific_cmd == "sfx") {
+        print_sfx_help();
+    } else {
+        print_general_help();
+    }
 }
 
 int list_archive(const std::string& arc_path, bool bare, bool technical,
@@ -3912,6 +4251,14 @@ static bool parse_mc_switch(const std::string& s, openrar::compress::FilterConfi
     return true;
 }
 
+static bool is_known_cli_command(const std::string& c) {
+    return c == "a" || c == "x" || c == "e" || c == "t" || c == "l" || c == "v" || c == "lt" ||
+           c == "lb" || c == "lta" || c == "la" || c == "b" || c == "bench" || c == "inspect" ||
+           c == "diff" || c == "cmp" || c == "d" || c == "u" || c == "f" || c == "m" || c == "k" ||
+           c == "r" || c == "rr" || c == "s" || c == "sfx" || c == "S" || c == "SFX" || c == "p" ||
+           c == "cv";
+}
+
 static int cli_main(int argc, char* argv[]) {
     using namespace openrar::cli;
     for (int i = 1; i < argc; ++i) {
@@ -3927,6 +4274,39 @@ static int cli_main(int argc, char* argv[]) {
     }
 
     std::string cmd = argv[1];
+
+    if (cmd == "--help" || cmd == "-h" || cmd == "-?" || cmd == "-help" || cmd == "/?" ||
+        cmd == "/h" || cmd == "help") {
+        if (argc >= 3) {
+            openrar::cli::print_help(argv[2]);
+        } else {
+            openrar::cli::print_help();
+        }
+        return 0;
+    }
+
+    if (cmd == "--submit" || cmd == "-submit" || cmd == "--submit-result") {
+        std::cerr << "Error: '--submit' is a benchmark option.\n\n"
+                  << "To run the benchmark and submit verified results to the global cloud "
+                     "leaderboard, use:\n"
+                  << "  openrar b --submit [--system=<desc>]\n\n"
+                  << "Run 'openrar help b' for all benchmark options.\n";
+        return EXIT_USAGE;
+    }
+    if (cmd.rfind("--system", 0) == 0 || cmd.rfind("-system", 0) == 0) {
+        std::cerr << "Error: '" << cmd << "' is a benchmark option.\n\n"
+                  << "To specify a machine description with your benchmark submission, use:\n"
+                  << "  openrar b --submit " << cmd << "\n\n"
+                  << "Run 'openrar help b' for all benchmark options.\n";
+        return EXIT_USAGE;
+    }
+
+    if (!is_known_cli_command(cmd)) {
+        std::cerr << "Unknown command: " << cmd << "\n\n";
+        openrar::cli::print_help();
+        return EXIT_USAGE;
+    }
+
     std::string arc_path;
     std::vector<std::string> files;
     std::vector<std::string> switches;
@@ -3946,9 +4326,18 @@ static int cli_main(int argc, char* argv[]) {
             stop_switches = true;
             continue;
         }
-        if (!stop_switches && !arg.empty() && arg[0] == '-') {
+        if (!stop_switches && !arg.empty() && (arg[0] == '-' || arg == "/?" || arg == "/h")) {
+            if (arg == "--help" || arg == "-h" || arg == "-?" || arg == "-help" || arg == "/?" ||
+                arg == "/h") {
+                openrar::cli::print_help(cmd);
+                return 0;
+            }
             switches.push_back(arg);
             continue;
+        }
+        if (!stop_switches && arc_path.empty() && arg == "help") {
+            openrar::cli::print_help(cmd);
+            return 0;
         }
         if (arc_path.empty()) {
             arc_path = arg;
@@ -3966,8 +4355,28 @@ static int cli_main(int argc, char* argv[]) {
     }
 
     if (arc_path.empty() && cmd != "b" && cmd != "bench") {
-        std::cerr << "Error: No archive name specified.\n";
-        openrar::cli::print_help();
+        if (cmd == "diff" || cmd == "cmp") {
+            std::cerr << "Error: diff requires two archives.\n\n"
+                      << "Usage: openrar diff [switches] <archive1> <archive2>\n\n"
+                      << "Run 'openrar help diff' for more information.\n";
+        } else if (cmd == "inspect") {
+            std::cerr << "Error: inspect requires an archive file.\n\n"
+                      << "Usage: openrar inspect [switches] <archive>\n\n"
+                      << "Run 'openrar help inspect' for more information.\n";
+        } else if (cmd == "repair" || cmd == "r") {
+            std::cerr << "Error: repair requires an archive file.\n\n"
+                      << "Usage: openrar r [switches] <archive>\n\n"
+                      << "Run 'openrar help r' for more information.\n";
+        } else if (cmd == "cv") {
+            std::cerr << "Error: cv requires an archive file.\n\n"
+                      << "Usage: openrar cv [switches] <archive> [files...]\n\n"
+                      << "Run 'openrar help cv' for more information.\n";
+        } else {
+            std::cerr << "Error: No archive name specified.\n\n"
+                      << "Usage: openrar " << cmd << " [switches] <archive> [files...]\n\n"
+                      << "Run 'openrar help " << cmd
+                      << "' or 'openrar --help' for detailed usage.\n";
+        }
         return EXIT_FATAL;
     }
 
@@ -4467,6 +4876,16 @@ static int cli_main(int argc, char* argv[]) {
             std::cerr << "Warning: unknown switch '" << s << "' ignored\n";
         }
     }
+    if ((bench_submit || !bench_system.empty() || !bench_endpoint.empty()) && cmd != "b" &&
+        cmd != "bench") {
+        std::cerr << "Error: benchmark options (--submit, --system, --submit-endpoint) are only "
+                     "valid with the 'b' (benchmark) command.\n\n"
+                  << "To benchmark and submit results, use:\n"
+                  << "  openrar b --submit"
+                  << (bench_system.empty() ? "" : (" --system=\"" + bench_system + "\"")) << "\n\n"
+                  << "Run 'openrar help b' for all benchmark options.\n";
+        return EXIT_USAGE;
+    }
     (void)vol_pause;
     // Defer W: messages to command handlers; keep flags
     (void)want_acl;
@@ -4627,7 +5046,9 @@ static int cli_main(int argc, char* argv[]) {
         return rc;
     } else if (cmd == "diff" || cmd == "cmp") {
         if (files.empty()) {
-            std::cerr << "Error: diff requires two archives (openrar diff <arc1> <arc2>)\n";
+            std::cerr << "Error: diff requires two archives.\n\n"
+                      << "Usage: openrar diff [switches] <archive1> <archive2>\n\n"
+                      << "Run 'openrar help diff' for more information.\n";
             return 2;
         }
         DiffOptions dopt;
