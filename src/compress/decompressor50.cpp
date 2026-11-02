@@ -1083,6 +1083,8 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             core::uint32 f_start = read_filter_data(ok);
             core::uint32 f_len = read_filter_data(ok);
             if (!ok) return false;
+            // UnRAR parity (Unpack::ReadFilter): filter lengths > 0x400000 are zeroed to drop
+            // corrupted or hostile filter regions without failing stream decode (F8).
             if (f_len > 0x400000) f_len = 0;
             if (reader.bits_remaining() < 3) return false;
             core::uint32 f_type = reader.get_bits(3);
@@ -1285,10 +1287,17 @@ bool Decompressor50::prescan_member(const core::byte* src, size_t src_size, Pres
         if (payload_start > src_size || payload > src_size - payload_start) return false;
         if (!read_tables(reader, header)) return false;
         if (header.table_present && header.block_size != 0) {
-            PrescanDescription d;
-            d.extra_dist = use_extra_dist_;
-            d.lengths.assign(table_, table_ + cur_table_size_);
-            out.descriptions.push_back(std::move(d));
+            // Reuse prior description when byte-identical (F2). Hostile churn is capped by
+            // PRESCAN_MAX_DESCRIPTIONS; exceeding the cap fails closed to sequential decode.
+            if (out.descriptions.empty() || out.descriptions.back().extra_dist != use_extra_dist_ ||
+                out.descriptions.back().lengths.size() != cur_table_size_ ||
+                std::memcmp(out.descriptions.back().lengths.data(), table_, cur_table_size_) != 0) {
+                if (out.descriptions.size() >= PRESCAN_MAX_DESCRIPTIONS) return false;
+                PrescanDescription d;
+                d.extra_dist = use_extra_dist_;
+                d.lengths.assign(table_, table_ + cur_table_size_);
+                out.descriptions.push_back(std::move(d));
+            }
             cur_desc = static_cast<uint32_t>(out.descriptions.size() - 1);
         }
         if (first) {
@@ -1512,6 +1521,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
                 core::uint32 f_start = read_filter_data(ok);
                 core::uint32 f_len = ok ? read_filter_data(ok) : 0;
                 if (!ok) return false;
+                // UnRAR parity (Unpack::ReadFilter): filter lengths > 0x400000 are zeroed (F8).
                 if (f_len > 0x400000) f_len = 0;
                 if (reader.bits_remaining() < 3) return false;
                 core::uint32 f_type = reader.get_bits(3);
@@ -1711,9 +1721,11 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
             continue;
         }
         if (tag == OpRecord::Tag::Match) {
-            // r.a is the 0-based distance (see the producer): widen before the
-            // +1 so 0xFFFFFFFF becomes 2^32, not 0 (v1.41.1).
-            size_t distance = static_cast<size_t>(r.a) + 1;
+            // r.a is the 0-based distance: widen to 64-bit before the +1 to avoid
+            // ILP32 32-bit wrap where 0xFFFFFFFF + 1 would become 0 (F4).
+            core::uint64 distance64 = static_cast<core::uint64>(r.a) + 1;
+            if (distance64 == 0 || distance64 > engine_.win_size_) return false;
+            size_t distance = static_cast<size_t>(distance64);
             size_t len = r.b;
             // Sequential order, verbatim: rep-state update, last_length
             // (the WIRE length — the dest clamp does not shrink it),
@@ -1723,7 +1735,6 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
             old_dist_[1] = old_dist_[0];
             old_dist_[0] = distance;
             last_length_ = len;
-            if (distance == 0 || distance > engine_.win_size_) return false;
             if (len > dest_size - total_written) len = dest_size - total_written;
             if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
             total_written += len;
@@ -1840,8 +1851,10 @@ bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size
     out.clear();
     if (src == nullptr || src_size == 0) return true;
 
+    // Callers passing 0 get the safe DEFAULT_STREAM_CAP (512 MiB), protecting against
+    // decompression bombs (F1). Explicit callers may bound up to MAX_STREAM_OUTPUT (64 GiB).
     core::uint64 limit =
-        (max_output > 0 && max_output < MAX_STREAM_OUTPUT) ? max_output : MAX_STREAM_OUTPUT;
+        max_output ? std::min<core::uint64>(max_output, MAX_STREAM_OUTPUT) : DEFAULT_STREAM_CAP;
 
     size_t cap = std::max<size_t>(64 * 1024, src_size * 8);
     if (cap > static_cast<size_t>(limit)) cap = static_cast<size_t>(limit);

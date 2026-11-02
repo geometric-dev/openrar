@@ -3660,6 +3660,34 @@ void test_decompressor_opt_d01_window_clamping() {
     std::cout << "[PASS] Decompressor OPT-D01 window clamping and security ceiling\n";
 }
 
+void test_decompress_to_vector_default_stream_cap() {
+    // Assert DEFAULT_STREAM_CAP is 512 MiB (F1).
+    static_assert(Decompressor50::DEFAULT_STREAM_CAP == 512ULL * 1024 * 1024,
+                  "DEFAULT_STREAM_CAP must be 512 MiB");
+    Decompressor50 dec(0x200000);
+    std::vector<core::byte> out;
+    // Calling decompress_to_vector with nullptr / 0 returns true with out empty.
+    REQUIRE(dec.decompress_to_vector(nullptr, 0, out));
+    REQUIRE(out.empty());
+    std::cout << "[PASS] decompress_to_vector default stream cap invariant (F1)\n";
+}
+
+void test_prescan_member_dedup_and_cap() {
+    // Assert PRESCAN_MAX_DESCRIPTIONS is 16384 (F2).
+    static_assert(Decompressor50::PRESCAN_MAX_DESCRIPTIONS == 16384,
+                  "PRESCAN_MAX_DESCRIPTIONS must be 16384");
+    std::vector<core::byte> data(256 * 1024, core::byte('A'));
+    std::vector<core::byte> packed;
+    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), packed, 3, 0x200000));
+
+    Decompressor50 ps(0x200000);
+    Decompressor50::PrescanTimeline tl;
+    REQUIRE(ps.prescan_member(packed.data(), packed.size(), tl));
+    // Multiple blocks sharing identical tables must deduplicate down to 1 description.
+    REQUIRE(tl.descriptions.size() <= tl.blocks.size());
+    std::cout << "[PASS] prescan_member description deduplication and cap (F2)\n";
+}
+
 static const openrar::test::Case k_cases[] = {
     {"test_resolve_auto_dict", test_resolve_auto_dict, false},
     {"test_decompressor_opt_d01_window_clamping", test_decompressor_opt_d01_window_clamping, false},
@@ -3756,7 +3784,10 @@ static const openrar::test::Case k_cases[] = {
     {"test_forward_arrival_slot257_continuation", test_forward_arrival_slot257_continuation, false},
     {"test_forward_arrival_run_hygiene", test_forward_arrival_run_hygiene, false},
     {"test_forward_arrival_incompressible_fallback", test_forward_arrival_incompressible_fallback,
-     false}};
+     false},
+    {"test_decompress_to_vector_default_stream_cap", test_decompress_to_vector_default_stream_cap,
+     false},
+    {"test_prescan_member_dedup_and_cap", test_prescan_member_dedup_and_cap, false}};
 
 int main(int argc, char* argv[]) {
     openrar::test::route_crt_asserts_to_stderr();

@@ -925,7 +925,8 @@ struct FileArchiveHandle : ArchiveHandleBase {
                     openrar::compress::Decompressor50 dec(
                         e.header.win_size ? static_cast<size_t>(e.header.win_size)
                                           : (1024u * 1024));
-                    if (!dec.decompress_to_vector(packed.data(), packed.size(), out_bytes)) {
+                    if (!dec.decompress_to_vector(packed.data(), packed.size(), out_bytes, false,
+                                                  MAX_COMMENT_PAYLOAD)) {
                         return RAR_OK; // undecodable comment reported as absent
                     }
                     payload.assign(out_bytes.begin(), out_bytes.end());
@@ -944,6 +945,11 @@ struct FileArchiveHandle : ArchiveHandleBase {
             if (!buf) {
                 set_error("oom");
                 return RAR_ERR_NOMEM;
+            }
+            if (payload.size() > UINT32_MAX) {
+                std::free(buf);
+                set_error("archive comment exceeds maximum supported size");
+                return RAR_ERR_UNSUPPORTED_FEATURE;
             }
             if (!payload.empty()) std::memcpy(buf, payload.data(), payload.size());
             out->comment_len = static_cast<uint32_t>(payload.size());
