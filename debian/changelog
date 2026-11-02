@@ -1,3 +1,9 @@
+openrar (2.0.23-0ubuntu1) noble; urgency=medium
+
+  * Release v2.0.23.
+
+ -- OpenRAR Project <geometric-dev@users.noreply.github.com>  Mon, 02 Nov 2026 12:10:01 +0000
+
 openrar (2.0.1-0ubuntu3) noble; urgency=medium
 
   * Fix SFX stub debug symbol size in dh_auto_test (strip DWARF tables).
