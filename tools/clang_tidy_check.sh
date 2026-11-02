@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# tools/clang_tidy_check.sh — naming gate (CONTRIBUTING.md "Code style").
+# tools/clang_tidy_check.sh — static analysis and naming gate.
 #
-# Runs clang-tidy with the repository's .clang-tidy (readability-identifier-
-# naming only) over every first-party translation unit the build actually
-# compiled on this platform.
+# Runs clang-tidy with the repository's .clang-tidy (static analysis and
+# readability-identifier-naming) over every first-party translation unit the
+# build actually compiled on this platform.
 #
 # Scope note: the file list comes from build/compile_commands.json, so a
 # source that is not built here (e.g. the Windows-only WinGUI SFX stub on a
@@ -53,25 +53,25 @@ OUT="$(mktemp)"
 printf '%s\0' "${FILES[@]}" | xargs -0 -P "$(nproc 2>/dev/null || echo 4)" -n 1 \
     "$CT" -p "$BUILD" -header-filter='(/src/|/include/)' --quiet >"$OUT" 2>&1
 
-# Anything the naming check flagged, plus real parse errors.
+# Anything the enabled checks flagged, plus real parse errors.
 # clang-tidy 18 does not honour MacroDefinitionIgnoredRegexp (verified empirically);
 # exempt external Linux kernel fallback macros (RESOLVE_*) mirroring <linux/openat2.h>.
-HITS=$(grep 'readability-identifier-naming' "$OUT" | grep -v 'RESOLVE_' | wc -l || true)
-ERRS=$(grep -c 'error:' "$OUT" || true)
+HITS=$(grep -E '(warning|error):.*\[[a-zA-Z0-9_.-]+\]' "$OUT" | grep -v 'clang-diagnostic-' | grep -v 'RESOLVE_' | wc -l || true)
+ERRS=$(grep -E 'error:' "$OUT" | grep -v '\[' | wc -l || true)
 
 if [ "$ERRS" -gt 0 ]; then
     echo "clang_tidy_check: clang-tidy reported parse errors:" >&2
-    grep 'error:' "$OUT" | head -40 >&2
+    grep 'error:' "$OUT" | grep -v '\[' | head -40 >&2
     rm -f "$OUT"
     exit 1
 fi
 
 if [ "$HITS" -gt 0 ]; then
-    echo "clang_tidy_check: $HITS naming violation(s):" >&2
-    grep 'readability-identifier-naming' "$OUT" | grep -v 'RESOLVE_' | sed 's#^[^:]*/##' | sort -u | head -80 >&2
+    echo "clang_tidy_check: $HITS static analysis / naming violation(s):" >&2
+    grep -E '(warning|error):.*\[[a-zA-Z0-9_.-]+\]' "$OUT" | grep -v 'clang-diagnostic-' | grep -v 'RESOLVE_' | sed 's#^[^:]*/##' | sort -u | head -80 >&2
     rm -f "$OUT"
     exit 1
 fi
 
-echo "clang_tidy_check: OK (naming clean)"
+echo "clang_tidy_check: OK (static analysis and naming clean)"
 rm -f "$OUT"

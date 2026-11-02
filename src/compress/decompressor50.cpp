@@ -432,7 +432,7 @@ bool WindowBuffer::grow_to(size_t n) {
     return true;
 }
 
-void WindowBuffer::release() {
+void WindowBuffer::release() noexcept {
     if (vm_ && base_ != nullptr) {
 #if defined(_WIN32)
         VirtualFree(base_, 0, MEM_RELEASE);
@@ -441,7 +441,10 @@ void WindowBuffer::release() {
 #endif
     }
     vec_.clear();
-    vec_.shrink_to_fit();
+    try {
+        vec_.shrink_to_fit();
+    } catch (...) {
+    }
     base_ = nullptr;
     size_ = reserved_ = committed_ = 0;
     vm_ = false;
@@ -1296,7 +1299,7 @@ bool Decompressor50::prescan_member(const core::byte* src, size_t src_size, Pres
                 PrescanDescription d;
                 d.extra_dist = use_extra_dist_;
                 d.lengths.assign(table_, table_ + cur_table_size_);
-                out.descriptions.push_back(std::move(d));
+                out.descriptions.push_back(d);
             }
             cur_desc = static_cast<uint32_t>(out.descriptions.size() - 1);
         }

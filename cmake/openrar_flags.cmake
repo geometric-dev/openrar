@@ -34,6 +34,44 @@ else()
     add_compile_options(-Wall -Wextra "$<$<CONFIG:Release>:-O3>" "$<$<CONFIG:Release>:-fomit-frame-pointer>")
 endif()
 
+# ── Hardened Security Mode (compiler, standard library, and linker) ────────────
+option(OPENRAR_HARDENED "Enable hardened compiler, standard library, and linker security modes" ON)
+if(OPENRAR_HARDENED AND NOT EMSCRIPTEN)
+    if(MSVC)
+        # MSVC: Standard C++ exception unwinding, Stack Canaries, Control Flow Guard
+        add_compile_options(/EHsc /GS /guard:cf)
+        add_link_options(/guard:cf /DYNAMICBASE /NXCOMPAT)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            add_link_options(/HIGHENTROPYVA)
+            if(CMAKE_GENERATOR_PLATFORM MATCHES "x64|X64|AMD64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+                add_link_options(/CETCOMPAT)
+            endif()
+        endif()
+    else()
+        # Standard library assertions (libstdc++ and libc++)
+        add_compile_definitions(_GLIBCXX_ASSERTIONS)
+        add_compile_definitions(_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST)
+        # Buffer overflow checking for libc calls under Release optimization
+        add_compile_options("$<$<CONFIG:Release>:-D_FORTIFY_SOURCE=3>")
+
+        # Stack canary protection
+        add_compile_options(-fstack-protector-strong)
+        # Format string security
+        add_compile_options(-Wformat -Wformat-security)
+
+        # Linux-specific stack clash & control flow protection + RELRO
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_compile_options(-fstack-clash-protection)
+            if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)")
+                add_compile_options(-fcf-protection=full)
+            elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "(aarch64)|(arm64)")
+                add_compile_options(-mbranch-protection=standard)
+            endif()
+            add_link_options(-Wl,-z,relro,-z,now -Wl,-z,noexecstack)
+        endif()
+    endif()
+endif()
+
 if(OPENRAR_WARNINGS_AS_ERRORS)
     if(MSVC)
         add_compile_options(/WX)

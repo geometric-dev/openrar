@@ -6,7 +6,6 @@
 #include <unistd.h>
 #else
 #include <process.h>
-#define getpid _getpid
 #endif
 #include <fstream>
 #include <vector>
@@ -20,6 +19,14 @@
 namespace openrar::io {
 
 namespace {
+
+inline int current_process_id() {
+#if defined(_WIN32)
+    return _getpid();
+#else
+    return getpid();
+#endif
+}
 
 // -dw's documented sequence: zero overwrite → truncate → temp-name → delete.
 // The rename defeats name-based recovery tools before the unlink; the zero
@@ -63,7 +70,7 @@ bool wipe_delete(const std::filesystem::path& path, std::error_code& ec) {
     // lives two layers UP from io (layer_check: downward-only includes).
     const unsigned seed =
         static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count()) ^
-        static_cast<unsigned>(getpid());
+        static_cast<unsigned>(current_process_id());
     std::filesystem::path renamed = path;
     for (int attempt = 0; attempt < 16; ++attempt) {
         std::string suffix;

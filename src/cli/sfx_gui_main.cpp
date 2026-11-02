@@ -119,7 +119,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         return 0;
     }
     if (args.size() >= 3 && args[1] == "--sfx-probe-exit") {
-        return std::atoi(args[2].c_str());
+        return static_cast<int>(std::strtol(args[2].c_str(), nullptr, 10));
     }
 
     wchar_t self_w[32768];

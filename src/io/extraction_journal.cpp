@@ -441,8 +441,7 @@ bool ExtractionSession::register_temp(const std::filesystem::path& dir,
             std::filesystem::remove(jpath, rm_ec);
             return false;
         }
-        it = journals_.emplace(key, DirJournal{lf.get(), 0, 0, lru_.end()}).first;
-        lf.release();
+        it = journals_.emplace(key, DirJournal{lf.release(), 0, 0, lru_.end()}).first;
         journal_paths_[key] = jpath;
         if (granularity_ == DurabilityGranularity::Batch) {
             lru_.push_back(key);
@@ -525,8 +524,7 @@ bool ExtractionSession::register_temp_contained(ContainmentRoot::VerifiedDir& di
             std::filesystem::remove(journal_dir_key / name, ec);
             return false;
         }
-        it = journals_.emplace(journal_dir_key, DirJournal{lf.get(), 0, 0, lru_.end()}).first;
-        lf.release();
+        it = journals_.emplace(journal_dir_key, DirJournal{lf.release(), 0, 0, lru_.end()}).first;
         journal_paths_[journal_dir_key] = journal_dir_key / name;
         if (granularity_ == DurabilityGranularity::Batch) {
             lru_.push_back(journal_dir_key);
@@ -769,7 +767,10 @@ ExtractionSession::~ExtractionSession() {
 AtomicWriter::AtomicWriter() = default;
 
 AtomicWriter::~AtomicWriter() {
-    if (!finished_) abandon();
+    try {
+        if (!finished_) abandon();
+    } catch (...) {
+    }
 }
 
 bool AtomicWriter::open(ExtractionSession& session, const std::filesystem::path& dest) {

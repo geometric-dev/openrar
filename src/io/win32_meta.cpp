@@ -48,33 +48,6 @@ bool is_prohibited_stream(const std::string& stream_name) {
 #define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
 #endif
 
-// Reparse buffer structures
-typedef struct _REPARSE_DATA_BUFFER {
-    ULONG ReparseTag;
-    USHORT ReparseDataLength;
-    USHORT Reserved;
-    union {
-        struct {
-            USHORT SubstituteNameOffset;
-            USHORT SubstituteNameLength;
-            USHORT PrintNameOffset;
-            USHORT PrintNameLength;
-            ULONG Flags;
-            WCHAR PathBuffer[1];
-        } SymbolicLinkReparseBuffer;
-        struct {
-            USHORT SubstituteNameOffset;
-            USHORT SubstituteNameLength;
-            USHORT PrintNameOffset;
-            USHORT PrintNameLength;
-            WCHAR PathBuffer[1];
-        } MountPointReparseBuffer;
-        struct {
-            UCHAR DataBuffer[1];
-        } GenericReparseBuffer;
-    };
-} REPARSE_DATA_BUFFER;
-
 } // namespace
 
 bool read_alternate_streams(const std::filesystem::path& path,
@@ -83,8 +56,8 @@ bool read_alternate_streams(const std::filesystem::path& path,
     std::wstring host_w = path.wstring();
 
     WIN32_FIND_STREAM_DATA fsd;
-    HANDLE hFind = FindFirstStreamW(host_w.c_str(), FindStreamInfoStandard, &fsd, 0);
-    if (hFind == INVALID_HANDLE_VALUE) {
+    HANDLE find_handle = FindFirstStreamW(host_w.c_str(), FindStreamInfoStandard, &fsd, 0);
+    if (find_handle == INVALID_HANDLE_VALUE) {
         return false;
     }
 
@@ -134,9 +107,9 @@ bool read_alternate_streams(const std::filesystem::path& path,
             }
             CloseHandle(stream_handle);
         }
-    } while (FindNextStreamW(hFind, &fsd));
+    } while (FindNextStreamW(find_handle, &fsd));
 
-    FindClose(hFind);
+    FindClose(find_handle);
     return true;
 }
 
@@ -246,14 +219,14 @@ bool parse_reparse_buffer(const core::byte* data, size_t size, RedirEntry& out_r
     };
 
     if (tag == IO_REPARSE_TAG_MOUNT_POINT) {
-        constexpr size_t kFields = 8;
-        constexpr size_t kPathBase = 16;
-        if (data_len < kFields || size < kPathBase) return false;
+        constexpr size_t FIELDS = 8;
+        constexpr size_t PATH_BASE = 16;
+        if (data_len < FIELDS || size < PATH_BASE) return false;
         const size_t sub_off = core::read_le16(data + 8);
         const size_t sub_len = core::read_le16(data + 10);
         const size_t print_off = core::read_le16(data + 12);
         const size_t print_len = core::read_le16(data + 14);
-        const size_t path_limit = std::min(data_len - kFields, size - kPathBase);
+        const size_t path_limit = std::min(data_len - FIELDS, size - PATH_BASE);
         if (!valid_span(sub_off, sub_len, path_limit) ||
             !valid_span(print_off, print_len, path_limit)) {
             return false;
@@ -262,7 +235,7 @@ bool parse_reparse_buffer(const core::byte* data, size_t size, RedirEntry& out_r
         const size_t off = print_len > 0 ? print_off : sub_off;
         const size_t len = print_len > 0 ? print_len : sub_len;
         std::wstring target;
-        if (!decode_path(kPathBase, off, len, path_limit, target)) return false;
+        if (!decode_path(PATH_BASE, off, len, path_limit, target)) return false;
         out_redir.type = RedirType::Junction;
         out_redir.is_directory = true;
         out_redir.target = wide_to_utf8(target);
@@ -270,15 +243,15 @@ bool parse_reparse_buffer(const core::byte* data, size_t size, RedirEntry& out_r
     }
 
     if (tag == IO_REPARSE_TAG_SYMLINK) {
-        constexpr size_t kFields = 12;
-        constexpr size_t kPathBase = 20;
-        if (data_len < kFields || size < kPathBase) return false;
+        constexpr size_t FIELDS = 12;
+        constexpr size_t PATH_BASE = 20;
+        if (data_len < FIELDS || size < PATH_BASE) return false;
         const size_t sub_off = core::read_le16(data + 8);
         const size_t sub_len = core::read_le16(data + 10);
         const size_t print_off = core::read_le16(data + 12);
         const size_t print_len = core::read_le16(data + 14);
         const size_t flags = core::read_le32(data + 16);
-        const size_t path_limit = std::min(data_len - kFields, size - kPathBase);
+        const size_t path_limit = std::min(data_len - FIELDS, size - PATH_BASE);
         if (!valid_span(sub_off, sub_len, path_limit) ||
             !valid_span(print_off, print_len, path_limit)) {
             return false;
@@ -287,7 +260,7 @@ bool parse_reparse_buffer(const core::byte* data, size_t size, RedirEntry& out_r
         const size_t off = print_len > 0 ? print_off : sub_off;
         const size_t len = print_len > 0 ? print_len : sub_len;
         std::wstring target;
-        if (!decode_path(kPathBase, off, len, path_limit, target)) return false;
+        if (!decode_path(PATH_BASE, off, len, path_limit, target)) return false;
         out_redir.type = RedirType::WinSymlink;
         out_redir.is_directory = (flags & 1) != 0;
         out_redir.target = wide_to_utf8(target);

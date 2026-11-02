@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <random>
 namespace fs = std::filesystem;
 
 #ifdef _WIN32
@@ -80,14 +81,16 @@ std::string random_hex(size_t chars) {
         unsigned char buf[16];
 #ifdef _WIN32
         if (BCryptGenRandom(nullptr, buf, sizeof(buf), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
-            // NTSTATUS nonzero = failure. Fall back to rand: temp NAMES are
+            // NTSTATUS nonzero = failure. Fall back to std::random_device: temp NAMES are
             // not the security boundary here (the owner-only ACL is).
-            for (unsigned char& b : buf) b = static_cast<unsigned char>(std::rand());
+            std::random_device rd;
+            for (unsigned char& b : buf) b = static_cast<unsigned char>(rd());
         }
 #else
         FILE* f = fopen("/dev/urandom", "rb");
         if (!f || fread(buf, 1, sizeof(buf), f) != sizeof(buf)) {
-            for (unsigned char& b : buf) b = static_cast<unsigned char>(std::rand());
+            std::random_device rd;
+            for (unsigned char& b : buf) b = static_cast<unsigned char>(rd());
         }
         if (f) fclose(f);
 #endif
@@ -156,14 +159,14 @@ std::string make_tempmode_dir() {
         SECURITY_ATTRIBUTES sa{};
         sa.nLength = sizeof(sa);
         sa.bInheritHandle = FALSE;
-        PSECURITY_DESCRIPTOR pSD = nullptr;
+        PSECURITY_DESCRIPTOR psd = nullptr;
         if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                L"D:P(A;;GA;;;OW)(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1, &pSD, nullptr)) {
-            sa.lpSecurityDescriptor = pSD;
+                L"D:P(A;;GA;;;OW)(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1, &psd, nullptr)) {
+            sa.lpSecurityDescriptor = psd;
         }
         std::wstring wdir = fs::u8path(dir).wstring();
-        BOOL ok = CreateDirectoryW(wdir.c_str(), pSD ? &sa : nullptr);
-        if (pSD) LocalFree(pSD);
+        BOOL ok = CreateDirectoryW(wdir.c_str(), psd ? &sa : nullptr);
+        if (psd) LocalFree(psd);
         if (ok) return dir;
         DWORD err = GetLastError();
         if (err != ERROR_ALREADY_EXISTS) continue;
@@ -213,7 +216,7 @@ std::string resolve_sfx_destination(const SfxConfig& cfg, const PipelineOptions&
         // inside the user profile. This is a refusal check, not a prompt.
         const std::string profile = user_profile_dir();
         std::error_code ec;
-        const std::string abs = fs::absolute(fs::u8path(cfg.path), ec).string();
+        std::string abs = fs::absolute(fs::u8path(cfg.path), ec).string();
         if (profile.empty() || ec || !fs::path(abs).is_absolute() || !path_inside(profile, abs)) {
             report.push_back({"path", "refused-containment-path",
                               "Path= outside the user profile refused: " + cfg.path});
