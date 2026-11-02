@@ -197,7 +197,7 @@ jobs:
         if: matrix.arch != 'arm64' && always()
         uses: actions/upload-artifact@v4
         with:
-          name: junit-${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.build_type }}
+          name: junit-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.arch }}-${{ matrix.build_type }}
           path: build/junit-report.xml
           if-no-files-found: error
           retention-days: 3
@@ -297,6 +297,12 @@ jobs:
           cpack --config build/CPackConfig.cmake -G DEB -B build
           ls -la build/*.deb
 
+      - name: Run Node writer suites (full run, R2)
+        # Full tools/tests suite runs on Ubuntu gcc Release using the freshly built binary.
+        # Self-test, self-extraction and structural asserts run without redundant VM spin-up.
+        if: startsWith(matrix.os, 'ubuntu') && matrix.compiler == 'gcc'
+        run: node tools/run-tests.cjs
+
       - name: Upload native shared-library artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -324,6 +330,7 @@ jobs:
   linux-arm64-qemu:
     name: linux-arm64 (gcc cross, QEMU run)
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       # cli_tests shells out to the CLI binary; under cross-compilation the
       # host kernel cannot exec an aarch64 ELF directly, so every invocation
@@ -371,7 +378,14 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Run unit tests under QEMU (aarch64 NEON / scalar paths)
-        run: ctest --test-dir build -C Release --output-on-failure -E 'sandbox_worker_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance'
+        # In QEMU user-mode emulation on a 2-vCPU runner, threadpool synchronization
+        # (parallel_compress_tests, two_phase_tests) causes severe TCG lock thrashing / deadlocks,
+        # and child-process spawning (sfx_*, cli_tests, transcode_tests) creates excessive emulation overhead.
+        # Native multi-threading and process isolation on ARM64 are verified natively on Apple Silicon & Windows ARM64 runners.
+        # Here we run the single-threaded in-process suites (compress, crypto, recovery, format, etc.) with a 60s per-test timeout.
+        run: |
+          ctest --test-dir build -C Release --output-on-failure --timeout 60 \
+            -E 'parallel_compress_tests|two_phase_tests|sfx_.*|cli_tests|collision_matrix_tests|extraction_report_tests|transcode_tests|foreign_format_tests|sandbox_.*|python_conformance|fuzz_.*'
 
       - name: Aggregate JUnit report (v1.45 M0 gate)
         if: always()
@@ -444,33 +458,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-
-  writer-conformance:
-    name: Writer structural conformance (linux)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
-
-      - name: Set up Ninja
-        uses: seanmiddleditch/gha-setup-ninja@3b1f8f94a2f8254bd26914c4ab9474d4f0015f67 # v6
-
-      - name: Configure CMake
-        run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=g++
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Run Node writer suites (full run, R2)
-        # Full tools/tests suite: every suite self-gates what it needs — the
-        # WinRAR oracle asserts skip when no UnRAR binary exists (Linux CI),
-        # streams/links self-skip on privilege/OS limits, and the filters /
-        # encryption suites skip until implemented. Self-test, self-extraction
-        # and structural asserts run everywhere.
-        run: node tools/run-tests.cjs
 
   simd-validation:
     name: "SIMD kernels (native + Intel SDE: AVX-512, GFNI)"
@@ -839,7 +826,7 @@ jobs:
     # attaches it to the GitHub release named after the tag (creating the
     # release with generated notes if it does not exist yet).
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-and-test, linux-arm64-qemu, writer-conformance, wasm, sanitizers, tsan, simd-validation, csharp, python-sdk]
+    needs: [build-and-test, linux-arm64-qemu, wasm, sanitizers, tsan, simd-validation, csharp, python-sdk]
     runs-on: ubuntu-latest
     permissions:
       contents: write
