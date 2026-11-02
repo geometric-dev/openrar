@@ -22,12 +22,12 @@
     "method": 3
   },
   "results": {
-    "memory_bandwidth_gbps": 5.56,
-    "st_compress_kbps": 11677,
-    "mt_compress_kbps": 26291.9,
-    "mt_decompress_kbps": 482357.8,
-    "speedup_ratio": 2.25,
-    "rarmark_score": 20871,
+    "memory_bandwidth_gbps": 5.83,
+    "st_compress_kbps": 9932.8,
+    "mt_compress_kbps": 21161.5,
+    "mt_decompress_kbps": 462420.7,
+    "speedup_ratio": 2.13,
+    "rarmark_score": 19766,
     "decompression_verified": true
   }
 }

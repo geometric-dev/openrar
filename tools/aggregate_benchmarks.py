@@ -173,7 +173,18 @@ def main():
     comm_files = glob.glob(str(base_dir / "submissions" / "*.json"))
 
     ci_entries = [e for f in ci_files if (e := load_and_validate(f))]
-    comm_entries = [e for f in comm_files if (e := load_and_validate(f))]
+    raw_comm = [e for f in comm_files if (e := load_and_validate(f))]
+
+    # Filter out community submissions that duplicate CI baselines (e.g. CI test submissions)
+    def is_ci_duplicate(entry):
+        for ci in ci_entries:
+            if entry.get("cpu_brand") == ci.get("cpu_brand") and entry.get("system") == ci.get("system"):
+                return True
+        if entry.get("system", "").startswith("GitHub Actions"):
+            return True
+        return False
+
+    comm_entries = [e for e in raw_comm if not is_ci_duplicate(e)]
 
     ci_entries.sort(key=lambda x: x["rarmark"], reverse=True)
     comm_entries.sort(key=lambda x: x["rarmark"], reverse=True)
