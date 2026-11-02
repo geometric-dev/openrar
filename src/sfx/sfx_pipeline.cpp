@@ -52,18 +52,21 @@ std::string user_profile_dir() {
 // `base` (also absolute/normalized). Case-insensitive on Windows.
 bool path_inside(const std::string& base, const std::string& candidate) {
     if (base.empty() || candidate.empty()) return false;
+#ifdef _WIN32
     std::string b = base;
     std::string c = candidate;
-#ifdef _WIN32
     std::transform(b.begin(), b.end(), b.begin(), [](unsigned char ch) {
         return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : static_cast<char>(ch);
     });
     std::transform(c.begin(), c.end(), c.begin(), [](unsigned char ch) {
         return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : static_cast<char>(ch);
     });
-#endif
     std::string nb = fs::path(b).lexically_normal().string();
     std::string nc = fs::path(c).lexically_normal().string();
+#else
+    std::string nb = fs::path(base).lexically_normal().string();
+    std::string nc = fs::path(candidate).lexically_normal().string();
+#endif
     if (nb.back() != '/'
 #ifdef _WIN32
         && nb.back() != '\\'
