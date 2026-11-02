@@ -330,8 +330,15 @@ bool Inflate::read_dynamic_tables() {
         }
     }
 
-    if (!litlen_.build(all_lengths, hlit, false)) return false;
+    if (!litlen_.build(all_lengths, hlit, /*allow_incomplete=*/true)) return false;
     if (!dist_.build(all_lengths + hlit, hdist, true)) return false;
+    // Literal/length special cases (RFC 1951 §3.2.7 / zlib inflate_table):
+    // Incomplete is legal ONLY as a single code of length 1, which MUST be EOB
+    // (symbol 256) so the block can terminate (F3).
+    if (!litlen_.complete) {
+        if (litlen_.counts[1] != 1) return false;
+        if (hlit <= 256 || all_lengths[256] != 1) return false;
+    }
     // Distance special cases (RFC 1951 §3.2.7): incomplete is legal ONLY
     // as a single code of length 1, or an all-zero (literals-only) table.
     if (!dist_.complete) {

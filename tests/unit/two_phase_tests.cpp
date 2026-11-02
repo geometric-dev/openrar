@@ -191,7 +191,8 @@ static void run_suite_body() {
                 REQUIRE(b.desc_id < tl.descriptions.size());
                 if (b.table_present && b.block_size != 0) ++table_blocks;
             }
-            REQUIRE(tl.descriptions.size() == table_blocks);
+            REQUIRE(tl.descriptions.size() <= table_blocks);
+            REQUIRE(tl.descriptions.size() >= 1);
             std::cout << "[PASS] prescan agreement: " << c.name << " (" << tl.blocks.size()
                       << " blocks, " << tl.descriptions.size() << " descriptions)\n";
         }

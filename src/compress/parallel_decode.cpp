@@ -127,7 +127,12 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
     // ── Phase 0: pre-scan (fail => sequential, F1) ─────────────────────────
     Decompressor50 ps(win_size, extra_dist);
     Decompressor50::PrescanTimeline tl;
-    if (!ps.prescan_member(src, src_size, tl)) {
+    try {
+        if (!ps.prescan_member(src, src_size, tl)) {
+            if (diag) diag->fell_back = true;
+            return run_sequential();
+        }
+    } catch (const std::bad_alloc&) {
         if (diag) diag->fell_back = true;
         return run_sequential();
     }
