@@ -1,7 +1,7 @@
 # 🗺️ OpenRAR Engineering Roadmap: v1.21 → v2.0 (Consolidated Master)
 
 **Status:** Sole roadmap of record  
-**Current Shipped Release:** v2.0.1 (2026-10-31)  
+**Current Shipped Release:** v2.0.23 (2026-11-02)  
 **Active Milestone:** Complete — Modern Arc & Signature v2.0 Release Fully Shipped (100%)
 **Consolidates:** Foundational baseline (v1.21.x → v1.42.x), modern engineering arcs (v1.43 → v1.52 / v2.0 Charter), and distribution milestones (v1.53 Launchpad/deb).
 
@@ -33,6 +33,7 @@
 | **v1.60** | ✅ **SHIPPED** | Parallel CDC multi-core fingerprinting & chunking engine | Low | Exact cut-set & index-cap determinism across thread counts | Shipped v1.60.0. Multi-file CDC dispatch, pool reuse in chunk_parallel, 49/49 ctest |
 | **v2.0.0** | ✅ **SHIPPED** | Signature v2.0 release: in-memory benchmark (`b`), universal `--json`, forensics (`inspect`), zero-extraction `diff`, Cauchy RS16 differential fuzzer, frozen C ABI v2.0 | Low | 100% golden fixture identity, deterministic zero-allocation semantics, RFC 8259 structured output | Shipped v2.0.0. 4 signature CLI capabilities, AVX2/AES-NI key schedule optimization, RS16 fuzzer, 52/52 ctest passing |
 | **v2.0.1** | ✅ **SHIPPED** | Post-release hardening & safety patch: Deflate symlink bomb mitigation, RAII thread lifecycle guards, BitReader sync fix, constant-time AES-256 mix columns | Low | 100% CTest pass, zero memory leaks, constant-time verification | Shipped v2.0.1. Memory safe symlink extraction, exception-safe thread joiners, constant-time AES, 53/53 ctest passing |
+| **v2.0.23** | ✅ **SHIPPED** | Decompression bomb hardening, bounded C ABI exports, static analysis & toolchain security | Low | 100% CTest pass, 0 static analysis diagnostics, bounded streaming verification | Shipped v2.0.23. Hardened decompression caps, bounded stateless C ABI, toolchain security flags |
 
 **Milestone Scorecard:** Modern Arc Fully Delivered (10/10, 100%). Packaging, Assurance & Signature v2.0 Release Fully Delivered.
 

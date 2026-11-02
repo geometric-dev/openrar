@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.23] - 2026-11-02
+
+### Security & Decompression Bomb Protection (v2.0.23)
+
+- **Default Stream Cap Protection (`decompressor50.cpp`, `decompressor50.hpp`):**
+  - Enforced `DEFAULT_STREAM_CAP` (512 MiB native / 128 MiB 32-bit/WASM) across all unbounded `decompress_to_vector` and `StreamDecoder` entry points (Finding F1).
+  - Thwarts memory-exhaustion attacks exploiting Slot 257 run-continuation amplification (1 bit → 4100 bytes).
+- **BufferArchive Stateless Extraction Ceilings (`buffer_archive.cpp`):**
+  - Implemented `HARD_MEMBER_CAP` (512 MiB native / 128 MiB 32-bit/WASM) in `BufferArchive::extract`, preventing decompression bomb allocation loops on malformed archives (Finding P0-1).
+  - Added cumulative total output ceilings (16 GiB native / 2 GiB 32-bit/WASM) across multi-entry archive extraction (Finding P0-2).
+- **Parallel Timeline & Prescan Memory Budgeting (`decompressor50.cpp`):**
+  - Deduplicated identical Huffman table descriptions across block boundaries in `prescan_member` and enforced `PRESCAN_MAX_DESCRIPTIONS` (4096), preventing memory amplification from adversarial 3-byte block headers (Finding F2).
+  - Added `std::bad_alloc` exception handling in `ParallelDecoder` with graceful fallback to sequential decoding.
+- **Archive Comment Length & Truncation Clamping (`dll_api.cpp`):**
+  - Bound archive comment decoding to `MAX_COMMENT_PAYLOAD` (16 MiB) with checked integer conversions, eliminating memory exhaustion and 32-bit integer truncation (Finding F6).
+- **Checksum Verification Enforcement (`archive_reader.cpp`):**
+  - Fixed checksum validation bypass in `ArchiveReader::test_entry` where clearing `FHFL_CRC32` allowed corrupt payloads to pass integrity verification (Finding P1-01).
+
+### Bounded Public C ABI & Direct-to-Disk Extraction (v2.0.23)
+
+- **Stateless Extraction Limits API (`openrar_dll.h`, `dll_api.cpp`):**
+  - Added bounded public C ABI exports (`openrar_archive_extract_to_buffer_bounded`, `openrar_archive_extract_to_file_bounded`, `openrar_decompress_buffer_bounded`) accepting explicit `RarExtractionLimits`.
+  - Exported ABI feature bit 19: `OPENRAR_ABI_FEATURE_STATELESS_LIMITS`.
+  - Implemented direct-to-disk streaming file extraction with atomic rollback and temporary file unlinking upon limit breach.
+
+### Static Analysis & Toolchain Security Hardening (v2.0.23)
+
+- **Comprehensive Clang-Tidy Static Analysis Enforcement (`.clang-tidy`, `tools/clang_tidy_check.sh`):**
+  - Expanded static analysis across `bugprone-*`, `cert-*`, `clang-analyzer-*`, `performance-*`, and `misc-*` while maintaining strict naming enforcement.
+  - Remediated all 70 source files across `src/` to achieve a 100% clean scan (0 warnings, 0 errors).
+- **Compiler, Standard Library & Linker Defense-in-Depth (`cmake/openrar_flags.cmake`):**
+  - Introduced `OPENRAR_HARDENED` option (enabled by default for native targets).
+  - **MSVC**: Enabled `/GS`, `/EHsc`, Control Flow Guard (`/guard:cf`), `/DYNAMICBASE`, `/NXCOMPAT`, `/HIGHENTROPYVA`, and `/CETCOMPAT` (Intel CET on x64).
+  - **GCC / Clang**: Enabled standard library bounds assertions (`-D_GLIBCXX_ASSERTIONS`, `-D_LIBCPP_HARDENING_MODE_FAST`), `-D_FORTIFY_SOURCE=3` (Release), stack canary (`-fstack-protector-strong`), Linux stack-clash protection (`-fstack-clash-protection`), control-flow integrity (`-fcf-protection=full` / `-mbranch-protection=standard`), full RELRO, and non-executable stack (`-Wl,-z,noexecstack`).
+
+### Concurrency, Bitstream & Core Fixes (v2.0.23)
+
+- **CDC Bit-Vector Concurrency Data Race Fix (`cdc_chunker.cpp`):**
+  - Replaced bit-packed `std::vector<bool>` in multi-threaded CDC slice workers with byte-addressed `std::vector<uint8_t>`, eliminating concurrent read-modify-write data races (Finding P1-02).
+- **RFC 1951 / zlib Incomplete Dynamic Table Parity (`inflate.cpp`):**
+  - Added support for legal RFC 1951 §3.2.7 single-code distance and literal/length trees in `Inflate`, eliminating false decompression errors on standard Deflate streams (Finding F3).
+- **ILP32 / 32-bit Integer Overflow Protections (`compressor50.cpp`, `decompressor50.cpp`):**
+  - Bounded window-sizing bit shifts (`shift < 30`) in `compress_buffer`, preventing non-terminating infinite loops on 32-bit architectures (Finding P0-3).
+  - Widened distance to 64-bit prior to `+1` increment in `apply_span_records`, preventing 32-bit unsigned integer wrap (Finding F4).
+- **Large Window Horizon Truncation Fix (`compressor50.hpp`):**
+  - Promoted `ArrivalNode::token_dist` and `ForwardArrivalDecision::dist` from `uint32_t` to `size_t`, preventing match distance truncation for dictionary windows > 4 GiB (Finding P1-1).
+- **Archive Header Validation Hardening (`archive_reader.cpp`, `header_reader.cpp`):**
+  - Rejected empty-data members declaring non-zero size with `RAR_ERR_TRUNCATED` (Finding P1-2).
+  - Verified stored method 0 unpacked size matches declared header `unp_size` (Finding P1-3).
+  - Accelerated SFX candidate probe with O(1) header-type peek, preventing copy and CRC amplification (Finding P1-4).
+
+### Cloud Benchmarking & Ecosystem Infrastructure (v2.0.23)
+
+- **Cloud Benchmark Ingestion & Global Leaderboard (`openrar b --submit`):**
+  - Added `--submit` and `--system=<desc>` flags to `openrar b` for direct submission to the live benchmark API (`https://benchmark.openrar.workers.dev/submit`).
+  - Added hardware memory bandwidth tracking and dynamic markdown leaderboard generation (`BENCHMARKS.md`).
+  - Strict privacy enforcement: completely purged submitter usernames across the CLI, payloads, and aggregator.
+
 ## [2.0.1] - 2026-10-31
 
 ### Security & Hardening (v2.0.1)

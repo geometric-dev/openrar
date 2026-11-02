@@ -810,7 +810,7 @@ bool ContainmentRoot::fd_prefix_verified(const void* handle) const {
     (void)handle;
     return true; // Windows uses final_path_inside
 #else
-    const int fd = static_cast<int>(reinterpret_cast<intptr_t>(const_cast<void*>(handle)));
+    const int fd = static_cast<int>(reinterpret_cast<intptr_t>(handle));
     const int root_fd = static_cast<int>(reinterpret_cast<intptr_t>(pinned_));
     const std::string root_path = fd_kernel_path(root_fd);
     if (root_path.empty()) return false;

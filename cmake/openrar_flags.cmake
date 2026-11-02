@@ -43,7 +43,11 @@ if(OPENRAR_HARDENED AND NOT EMSCRIPTEN)
         add_link_options(/guard:cf /DYNAMICBASE /NXCOMPAT)
         if(CMAKE_SIZEOF_VOID_P EQUAL 8)
             add_link_options(/HIGHENTROPYVA)
-            if(CMAKE_GENERATOR_PLATFORM MATCHES "x64|X64|AMD64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+            # Intel CET shadow stack is supported on x64 MSVC targets only (incompatible with ARM64 / x86).
+            if(NOT (CMAKE_GENERATOR_PLATFORM MATCHES "ARM64|arm64" OR
+                    CMAKE_VS_PLATFORM_NAME MATCHES "ARM64|arm64" OR
+                    (DEFINED CMAKE_SYSTEM_PROCESSOR AND CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64") OR
+                    (DEFINED CMAKE_CXX_COMPILER_ARCHITECTURE_ID AND CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "ARM64")))
                 add_link_options(/CETCOMPAT)
             endif()
         endif()
