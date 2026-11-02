@@ -157,7 +157,7 @@ bool get_file_times(const std::filesystem::path& path, FileTimes& out) {
         ul.LowPart = ft.dwLowDateTime;
         ul.HighPart = ft.dwHighDateTime;
         if (ul.QuadPart == 0) return 0; // unset on this filesystem
-        const core::uint64 EPOCH_DIFFERENCE = 11644473600ULL;
+        constexpr core::uint64 EPOCH_DIFFERENCE = 11644473600ULL;
         core::uint64 sec = ul.QuadPart / 10000000ULL;
         if (sec < EPOCH_DIFFERENCE)
             return 0; // Pre-1970 clamps utime to 0 to prevent uint64 underflow

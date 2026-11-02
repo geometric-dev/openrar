@@ -15,7 +15,10 @@
 // SDKs; the encoding is documented (4-bit fields, 1 = ALWAYS_ON, the
 // dynamic-code field sits at bits 40..43). Guarded so newer SDKs win.
 #ifndef PROCESS_CREATION_MITIGATION_POLICY_DYNAMIC_CODE_DISABLE_ALWAYS_ON
-#define PROCESS_CREATION_MITIGATION_POLICY_DYNAMIC_CODE_DISABLE_ALWAYS_ON (0x00000001UI64 << 40)
+static constexpr DWORD64 OPENRAR_MITIGATION_DYNAMIC_CODE_DISABLE_ALWAYS_ON = (0x00000001UI64 << 40);
+#else
+static constexpr DWORD64 OPENRAR_MITIGATION_DYNAMIC_CODE_DISABLE_ALWAYS_ON =
+    PROCESS_CREATION_MITIGATION_POLICY_DYNAMIC_CODE_DISABLE_ALWAYS_ON;
 #endif
 
 #else
@@ -88,7 +91,7 @@ bool file_present(const std::string& path) {
 
 std::string resolve_command_executable(const std::string& command, const std::string& dest_dir,
                                        bool allow_dest) {
-    const std::string token = first_token(command);
+    std::string token = first_token(command);
     if (token.empty()) return "";
 #ifdef _WIN32
     const bool absolute = token.size() >= 2 && (token[1] == ':' || token[1] == '\\');
@@ -228,7 +231,7 @@ ExecResult spawn_contained(const std::string& command, const std::string& resolv
         CloseHandle(job);
         return result;
     }
-    DWORD64 policy = PROCESS_CREATION_MITIGATION_POLICY_DYNAMIC_CODE_DISABLE_ALWAYS_ON;
+    DWORD64 policy = OPENRAR_MITIGATION_DYNAMIC_CODE_DISABLE_ALWAYS_ON;
     if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &policy,
                                    sizeof(policy), nullptr, nullptr)) {
         result.error = "containment unavailable: mitigation policy rejected";

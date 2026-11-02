@@ -39,15 +39,15 @@ inline core::uint32
 crc32_step_pclmul(core::uint32 crc, const void* data, size_t len) {
     const auto* buf = static_cast<const core::byte*>(data);
 #if defined(_MSC_VER)
-    __declspec(align(16)) static const core::uint64 K1K2[] = {0x0154442bd4, 0x01c6e41596};
-    __declspec(align(16)) static const core::uint64 K3K4[] = {0x01751997d0, 0x00ccaa009e};
-    __declspec(align(16)) static const core::uint64 K5K0[] = {0x0163cd6124, 0x0000000000};
-    __declspec(align(16)) static const core::uint64 POLY[] = {0x01db710641, 0x01f7011641};
+    __declspec(align(16)) static constexpr core::uint64 K1K2[] = {0x0154442bd4, 0x01c6e41596};
+    __declspec(align(16)) static constexpr core::uint64 K3K4[] = {0x01751997d0, 0x00ccaa009e};
+    __declspec(align(16)) static constexpr core::uint64 K5K0[] = {0x0163cd6124, 0x0000000000};
+    __declspec(align(16)) static constexpr core::uint64 POLY[] = {0x01db710641, 0x01f7011641};
 #else
-    alignas(16) static const core::uint64 K1K2[] = {0x0154442bd4, 0x01c6e41596};
-    alignas(16) static const core::uint64 K3K4[] = {0x01751997d0, 0x00ccaa009e};
-    alignas(16) static const core::uint64 K5K0[] = {0x0163cd6124, 0x0000000000};
-    alignas(16) static const core::uint64 POLY[] = {0x01db710641, 0x01f7011641};
+    alignas(16) static constexpr core::uint64 K1K2[] = {0x0154442bd4, 0x01c6e41596};
+    alignas(16) static constexpr core::uint64 K3K4[] = {0x01751997d0, 0x00ccaa009e};
+    alignas(16) static constexpr core::uint64 K5K0[] = {0x0163cd6124, 0x0000000000};
+    alignas(16) static constexpr core::uint64 POLY[] = {0x01db710641, 0x01f7011641};
 #endif
 
     __m128i x0, x1, x2, x3, x4, x5, x6, x7, x8, y5, y6, y7, y8;

@@ -87,7 +87,7 @@ bool parse_part_number(const std::filesystem::path& p, long& num) {
     size_t e = d;
     while (e < f.size() && std::isdigit(static_cast<unsigned char>(f[e]))) ++e;
     if (e == d || e >= f.size() || f[e] != '.') return false;
-    num = std::atol(f.substr(d, e - d).c_str());
+    num = std::strtol(f.substr(d, e - d).c_str(), nullptr, 10);
     return true;
 }
 
@@ -871,7 +871,6 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
     bool first_main_read = false;
     size_t vol_idx = 0;
     bool saw_end = false;
-    std::filesystem::path current_vol_path = path_;
 
     // Cumulative progress bases for the volume walk: done counts bytes
     // consumed across volumes already processed, total counts bytes of

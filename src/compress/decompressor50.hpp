@@ -90,7 +90,7 @@ using core::default_init_allocator;
 class WindowBuffer {
 public:
     WindowBuffer() = default;
-    ~WindowBuffer() { release(); }
+    ~WindowBuffer() noexcept { release(); }
     WindowBuffer(const WindowBuffer&) = delete;
     WindowBuffer& operator=(const WindowBuffer&) = delete;
     WindowBuffer(WindowBuffer&& o) noexcept { take(o); }
@@ -108,7 +108,7 @@ public:
     // Ensure size() >= n (n <= max). False on allocation/commit failure,
     // leaving the buffer unchanged.
     bool grow_to(size_t n);
-    void release();
+    void release() noexcept;
 
     core::byte* data() { return base_; }
     const core::byte* data() const { return base_; }

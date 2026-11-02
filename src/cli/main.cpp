@@ -781,10 +781,10 @@ static int tui_disk_cancel(void* user) {
 static void tui_parse_cancel_env() {
     // An empty value means unset (tests clear the hooks with VAR=).
     if (const char* s = std::getenv("OPENRAR_TEST_CANCEL_AFTER_BYTES")) {
-        if (*s) g_tui_cancel_after_bytes = std::atoll(s);
+        if (*s) g_tui_cancel_after_bytes = std::strtoll(s, nullptr, 10);
     }
     if (const char* s = std::getenv("OPENRAR_TEST_CANCEL_AFTER_FILES")) {
-        if (*s) g_tui_cancel_after_files = std::atoll(s);
+        if (*s) g_tui_cancel_after_files = std::strtoll(s, nullptr, 10);
     }
 }
 
@@ -4895,8 +4895,7 @@ static int cli_main(int argc, char* argv[]) {
         // accepted typos ("stats") as SFX conversion with the suffix as a
         // module name that could never resolve. Modules are selected with
         // the -sfx switch.
-        std::string sfx_sub = sfx_name_raw;
-        return openrar::cli::convert_to_sfx(arc_path, sfx_sub, argv[0]);
+        return openrar::cli::convert_to_sfx(arc_path, sfx_name_raw, argv[0]);
     } else {
         std::cerr << "Unknown command: " << cmd << "\n";
         openrar::cli::print_help();

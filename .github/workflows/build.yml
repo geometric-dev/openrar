@@ -134,11 +134,10 @@ jobs:
         if: matrix.format_check == true
         run: sudo apt-get update && sudo apt-get install -y clang-tidy
 
-      - name: Naming check (clang-tidy, gate leg only)
-        # CONTRIBUTING.md "Code style": readability-identifier-naming via the
-        # repository .clang-tidy, over the TUs this build compiled. This is the
-        # gate that the "no k-prefix" / UPPER_SNAKE / g_ rules were documented
-        # as having but never did until now.
+      - name: Static analysis & naming check (clang-tidy, gate leg only)
+        # CONTRIBUTING.md "Code style": static analysis (bugprone, cert, performance,
+        # clang-analyzer) and readability-identifier-naming via the repository .clang-tidy,
+        # over the TUs this build compiled.
         if: matrix.format_check == true
         run: bash tools/clang_tidy_check.sh build
 
