@@ -495,7 +495,7 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
         static NtSetInfoFn set_info = []() -> NtSetInfoFn {
             const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
             return ntdll ? reinterpret_cast<NtSetInfoFn>(
-                               static_cast<void*>(GetProcAddress(ntdll, "NtSetInformationFile")))
+                               GetProcAddress(ntdll, "NtSetInformationFile"))
                          : nullptr;
         }();
         if (set_info != nullptr) {
@@ -520,8 +520,8 @@ bool FileStream::commit_rename(const std::filesystem::path& dest, CommitMode mod
                 const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
                 if (ntdll) {
                     using RtlFn = ULONG(NTAPI*)(LONG);
-                    auto to_dos = reinterpret_cast<RtlFn>(
-                        static_cast<void*>(GetProcAddress(ntdll, "RtlNtStatusToDosError")));
+                    auto to_dos =
+                        reinterpret_cast<RtlFn>(GetProcAddress(ntdll, "RtlNtStatusToDosError"));
                     if (to_dos) last_error_ = static_cast<int>(to_dos(st));
                 }
                 CloseHandle(parent);
@@ -608,8 +608,7 @@ bool FileStream::commit_rename_in(void* parent_dir_handle, const std::string& ut
     using NtSetInfoFn = LONG(NTAPI*)(HANDLE, PVOID, PVOID, ULONG, ULONG);
     static NtSetInfoFn set_info = []() -> NtSetInfoFn {
         const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        return ntdll ? reinterpret_cast<NtSetInfoFn>(
-                           static_cast<void*>(GetProcAddress(ntdll, "NtSetInformationFile")))
+        return ntdll ? reinterpret_cast<NtSetInfoFn>(GetProcAddress(ntdll, "NtSetInformationFile"))
                      : nullptr;
     }();
     if (set_info == nullptr) {
@@ -644,8 +643,7 @@ bool FileStream::commit_rename_in(void* parent_dir_handle, const std::string& ut
         const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
         if (ntdll) {
             using RtlFn = ULONG(NTAPI*)(LONG);
-            auto to_dos = reinterpret_cast<RtlFn>(
-                static_cast<void*>(GetProcAddress(ntdll, "RtlNtStatusToDosError")));
+            auto to_dos = reinterpret_cast<RtlFn>(GetProcAddress(ntdll, "RtlNtStatusToDosError"));
             if (to_dos) last_error_ = static_cast<int>(to_dos(st));
         }
     }

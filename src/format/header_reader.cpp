@@ -121,7 +121,7 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
         size_t sv_len = 0;
         core::uint64 body_size = 0;
         size_t read_bytes = 0;
-        while (sv_len < (sizeof(plain_first) - 4) && sv_len < 10) {
+        while (sv_len < 10) {
             const core::byte b = size_vint_bytes[sv_len++];
             if ((b & 0x80) == 0) break;
         }
