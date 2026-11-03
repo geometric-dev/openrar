@@ -82,6 +82,9 @@ uint32_t compute_crc32(const core::byte* data, size_t size) {
 
 } // namespace
 
+
+static std::string detect_cpu_topology(unsigned logical_cores);
+
 BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     BenchmarkResult res;
     res.cpu_brand = core::get_cpu_brand_string();
@@ -104,6 +107,7 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
 
     res.logical_cores = std::thread::hardware_concurrency();
     if (res.logical_cores == 0) res.logical_cores = 1;
+    res.topology = detect_cpu_topology(res.logical_cores);
 
     unsigned threads = opt.threads == 0 ? res.logical_cores : opt.threads;
     if (threads > 256) threads = 256;
@@ -297,7 +301,10 @@ static inline int close_pipe(FILE* stream) {
 static void submit_benchmark_result(const BenchmarkResult& res, const BenchmarkOptions& opt) {
     const bool vt = is_vt_supported();
     auto c = [vt](const char* code) -> const char* {
-        return vt ? code : "";
+        if (vt) return code;
+        if (std::strcmp(code, "\033[0m\n\n") == 0) return "\n\n";
+        if (std::strcmp(code, "\033[0m\n") == 0) return "\n";
+        return "";
     };
 
     if (!res.verified) {
@@ -489,13 +496,15 @@ int run_benchmark_cli(const BenchmarkOptions& opt) {
 
     const bool vt = is_vt_supported();
     auto c = [vt](const char* code) -> const char* {
-        return vt ? code : "";
+        if (vt) return code;
+        if (std::strcmp(code, "\033[0m\n\n") == 0) return "\n\n";
+        if (std::strcmp(code, "\033[0m\n") == 0) return "\n";
+        return "";
     };
 
     std::cout << "\n  " << c("\033[1;37m") << "System Topology:" << c("\033[0m\n")
               << "    CPU Model:     " << res.cpu_brand << " (" << res.arch << ")\n"
-              << "    Cores / MT:    " << res.logical_cores << " logical threads ("
-              << res.threads_used << " engaged)\n"
+              << "    Topology:      " << res.topology << " (" << res.threads_used << " engaged)\n"
               << "    Hardware SIMD: ";
     if (res.simd_features.empty()) {
         std::cout << "Scalar Baseline\n";
@@ -536,12 +545,256 @@ int run_benchmark_cli(const BenchmarkOptions& opt) {
 
     if (opt.submit) {
         submit_benchmark_result(res, opt);
+        if (opt.leaderboard) display_cloud_leaderboard(opt);
     } else if (!opt.plain) {
         std::cout
             << "  Tip: Submit your score to the global leaderboard with: openrar b --submit\n\n";
     }
 
     return res.verified ? 0 : 1;
+}
+
+
+static std::string detect_cpu_topology(unsigned logical_cores) {
+#if defined(_WIN32)
+    DWORD length = 0;
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &length) &&
+        GetLastError() == ERROR_INSUFFICIENT_BUFFER && length > 0) {
+        std::vector<BYTE> buffer(length);
+        auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data());
+        if (GetLogicalProcessorInformationEx(RelationProcessorCore, info, &length)) {
+            unsigned p_cores = 0;
+            unsigned e_cores = 0;
+            unsigned total_physical = 0;
+            BYTE min_eff = 0xFF;
+            BYTE max_eff = 0;
+
+            DWORD offset = 0;
+            while (offset < length) {
+                auto* curr = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
+                    buffer.data() + offset);
+                if (curr->Relationship == RelationProcessorCore) {
+                    total_physical++;
+                    BYTE eff = curr->Processor.EfficiencyClass;
+                    if (eff < min_eff) min_eff = eff;
+                    if (eff > max_eff) max_eff = eff;
+                }
+                offset += curr->Size;
+            }
+            if (max_eff > min_eff) {
+                offset = 0;
+                while (offset < length) {
+                    auto* curr = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
+                        buffer.data() + offset);
+                    if (curr->Relationship == RelationProcessorCore) {
+                        if (curr->Processor.EfficiencyClass == max_eff)
+                            p_cores++;
+                        else
+                            e_cores++;
+                    }
+                    offset += curr->Size;
+                }
+                return std::to_string(total_physical) + " cores (" + std::to_string(p_cores) +
+                       "P + " + std::to_string(e_cores) + "E), " + std::to_string(logical_cores) +
+                       " logical threads";
+            } else if (total_physical > 0) {
+                return std::to_string(total_physical) + " cores, " + std::to_string(logical_cores) +
+                       " logical threads";
+            }
+        }
+    }
+#endif
+    return std::to_string(logical_cores) + " logical threads";
+}
+
+int display_cloud_leaderboard(const BenchmarkOptions& opt) {
+    const bool vt = is_vt_supported() && !opt.plain;
+    auto c = [vt](const char* code_str) -> const char* {
+        if (vt) return code_str;
+        if (std::strcmp(code_str, "\033[0m\n\n") == 0) return "\n\n";
+        if (std::strcmp(code_str, "\033[0m\n") == 0) return "\n";
+        return "";
+    };
+
+    std::string endpoint = opt.endpoint;
+    if (endpoint.empty()) {
+        const char* env_ep = std::getenv("OPENRAR_BENCHMARK_ENDPOINT");
+        if (env_ep && *env_ep) {
+            endpoint = env_ep;
+        } else {
+            endpoint = "https://benchmark.openrar.workers.dev/api/leaderboard";
+        }
+    } else {
+        size_t sub_pos = endpoint.find("/api/submit");
+        if (sub_pos != std::string::npos) {
+            endpoint.replace(sub_pos, 11, "/api/leaderboard");
+        }
+    }
+
+    std::string cmd = "curl -s -m 6 -H \"Accept: application/json\" \"" + endpoint + "\"";
+    std::string response;
+    FILE* fp = open_pipe(cmd.c_str(), "r");
+    if (fp) {
+        char buf[1024];
+        while (fgets(buf, sizeof(buf), fp)) {
+            response += buf;
+        }
+        close_pipe(fp);
+    }
+
+    if (response.empty() || response.find("\"entries\"") == std::string::npos) {
+        if (opt.json) {
+            std::cout << "{\"error\": \"Failed to reach leaderboard endpoint\"}\n";
+        } else {
+            std::cout << "\n  " << c("\033[1;33m") << "Cloud Leaderboard:" << c("\033[0m\n")
+                      << "    Status:   Could not reach " << endpoint << "\n"
+                      << "    Tip:      Check internet connection or view live rankings at:\n"
+                      << "              https://benchmark.openrar.workers.dev\n\n";
+        }
+        return 1;
+    }
+
+    if (opt.json) {
+        std::cout << response;
+        if (!response.empty() && response.back() != '\n') std::cout << "\n";
+        return 0;
+    }
+
+    struct Entry {
+        int rank{0};
+        std::string cpu_brand;
+        std::string system;
+        std::string arch;
+        int threads{0};
+        double mem_bw{0.0};
+        double st_comp{0.0};
+        double mt_comp{0.0};
+        double mt_decomp{0.0};
+        double speedup{1.0};
+        int score{0};
+    };
+
+    std::vector<Entry> entries;
+    size_t pos = 0;
+    while ((pos = response.find("{\"rank\":", pos)) != std::string::npos) {
+        size_t end_pos = response.find("}", pos);
+        if (end_pos == std::string::npos) break;
+        std::string obj = response.substr(pos, end_pos - pos + 1);
+
+        auto extract_int = [&obj](const char* key) -> int {
+            size_t kpos = obj.find(key);
+            if (kpos == std::string::npos) return 0;
+            size_t val_pos = kpos + std::strlen(key);
+            while (val_pos < obj.size() && (obj[val_pos] == ':' || obj[val_pos] == ' ')) val_pos++;
+            try {
+                return std::stoi(obj.substr(val_pos));
+            } catch (...) {
+                return 0;
+            }
+        };
+
+        auto extract_double = [&obj](const char* key) -> double {
+            size_t kpos = obj.find(key);
+            if (kpos == std::string::npos) return 0.0;
+            size_t val_pos = kpos + std::strlen(key);
+            while (val_pos < obj.size() && (obj[val_pos] == ':' || obj[val_pos] == ' ')) val_pos++;
+            try {
+                return std::stod(obj.substr(val_pos));
+            } catch (...) {
+                return 0.0;
+            }
+        };
+
+        auto extract_str = [&obj](const char* key) -> std::string {
+            size_t kpos = obj.find(key);
+            if (kpos == std::string::npos) return "";
+            size_t q1 = obj.find('"', kpos + std::strlen(key));
+            if (q1 == std::string::npos) return "";
+            size_t q2 = obj.find('"', q1 + 1);
+            if (q2 == std::string::npos) return "";
+            return obj.substr(q1 + 1, q2 - q1 - 1);
+        };
+
+        Entry e;
+        e.rank = extract_int("\"rank\"");
+        e.cpu_brand = extract_str("\"cpu_brand\"");
+        e.system = extract_str("\"system\"");
+        e.arch = extract_str("\"arch\"");
+        e.threads = extract_int("\"threads\"");
+        e.mem_bw = extract_double("\"mem_bw_gbps\"");
+        e.st_comp = extract_double("\"st_compress_kbps\"");
+        e.mt_comp = extract_double("\"mt_compress_kbps\"");
+        e.mt_decomp = extract_double("\"mt_decompress_kbps\"");
+        e.speedup = extract_double("\"speedup_ratio\"");
+        e.score = extract_int("\"rarmark_score\"");
+
+        entries.push_back(e);
+        pos = end_pos + 1;
+    }
+
+    std::cout << "\n  " << c("\033[1;36m") << "OpenRAR RARMark v2.0 Global Cloud Leaderboard"
+              << c("\033[0m\n") << "  " << c("\033[90m")
+              << "================================================================================="
+                 "========================="
+              << c("\033[0m\n")
+              << "   Rank  Processor / System                     Arch   Threads  Mem BW    "
+                 "Compress (MT)     Decomp (MT)       RARMark\n"
+              << "  " << c("\033[90m")
+              << "---------------------------------------------------------------------------------"
+                 "-------------------------"
+              << c("\033[0m\n");
+
+    for (const auto& e : entries) {
+        std::string rank_label;
+        if (e.rank == 1)
+            rank_label = std::string(c("\033[1;33m")) + " 🥇 1" + c("\033[0m");
+        else if (e.rank == 2)
+            rank_label = std::string(c("\033[1;37m")) + " 🥈 2" + c("\033[0m");
+        else if (e.rank == 3)
+            rank_label = std::string(c("\033[38;5;208m")) + " 🥉 3" + c("\033[0m");
+        else
+            rank_label = "   #" + std::to_string(e.rank);
+
+        std::string name = e.cpu_brand.empty() ? e.system : e.cpu_brand;
+        if (name.size() > 36) name = name.substr(0, 33) + "...";
+
+        double mt_comp_mb = e.mt_comp / 1024.0;
+        double decomp_mb = e.mt_decomp / 1024.0;
+        std::ostringstream comp_ss;
+        comp_ss << std::fixed << std::setprecision(1) << mt_comp_mb << " MB/s ("
+                << std::setprecision(1) << e.speedup << "x)";
+
+        std::ostringstream decomp_ss;
+        if (decomp_mb >= 1024.0) {
+            decomp_ss << std::fixed << std::setprecision(2) << (decomp_mb / 1024.0) << " GB/s";
+        } else {
+            decomp_ss << std::fixed << std::setprecision(1) << decomp_mb << " MB/s";
+        }
+
+        std::ostringstream mem_ss;
+        if (e.mem_bw > 0.0)
+            mem_ss << std::fixed << std::setprecision(1) << e.mem_bw << " GB/s";
+        else
+            mem_ss << "-";
+
+        std::cout << "  " << std::left << std::setw(6) << rank_label << " " << std::left
+                  << std::setw(38) << (std::string(c("\033[1m")) + name + c("\033[0m")) << " "
+                  << std::left << std::setw(6) << e.arch << " " << std::right << std::setw(3)
+                  << e.threads << "T  " << std::right << std::setw(9) << mem_ss.str() << " "
+                  << std::right << std::setw(17) << comp_ss.str() << " " << std::right
+                  << std::setw(13) << decomp_ss.str() << " " << std::right << std::setw(12)
+                  << (std::string(c("\033[1;32m")) + std::to_string(e.score) + c("\033[0m"))
+                  << "\n";
+    }
+
+    std::cout << "  " << c("\033[90m")
+              << "================================================================================="
+                 "========================="
+              << c("\033[0m\n") << "  Live Edge Leaderboard: " << c("\033[4m")
+              << "https://benchmark.openrar.workers.dev" << c("\033[0m\n")
+              << "  Submit your hardware:   openrar b --submit [--system=\"<desc>\"]\n\n";
+
+    return 0;
 }
 
 } // namespace openrar::cli
