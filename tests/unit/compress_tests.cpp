@@ -2526,15 +2526,15 @@ void test_slot257_pure_addition_suppressed() {
         // pure-addition property hold. m5 intentionally diverges from
         // pre-M2 — the binary-tree finder changes match selection by design,
         // so no byte identity is asserted there.
-        // v1.56.0 forward-arrival graph parser re-capture (OPENRAR_REFCAP=1, 2026-10-28).
-        {"text64k", 1, "9b7e8b56d545f5820ec283243a1b3d64a9ac6461f02beb77b56359346ff86c97"},
-        {"text64k", 3, "82620752bbab7630ebd69dad50a2b36d4d8d27d3d58cb00b21459ff7ba3c4018"},
+        // v2.1.0 Track E Forward-Arrival relaxation and bit-density selection re-capture (OPENRAR_REFCAP=1).
+        {"text64k", 1, "3ee77dea016fafc7e376dc4e99bf80d2ed15980b98ef64c50b586c221b54ed9c"},
+        {"text64k", 3, "2647eb06fa9d4c6f98d038caee0de5b51f28252aa572976e2eb0a5190025d795"},
         {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"zeros1m", 1, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
         {"zeros1m", 3, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
-        {"mixed", 1, "3506ff26b3a893b75b01a1b1d0b2e303fe07cfa691f3360854034e04e5c38616"},
-        {"mixed", 3, "1481569dd9dc3761984854ad6bf18cbbaf81afd41b709f54cf57fd7e2175286d"},
+        {"mixed", 1, "8f6fe2af405b24ec3f970e5223687d01ace7d243a843d183e818e1e4f64444d9"},
+        {"mixed", 3, "4bdad8362e87b9d095ace94dda2a7d067aff2eeaec4f2b0e3c637bc13732dcbc"},
         {"farrepeat", 1, "bdb80ea91cd0cbde64b19edaf6b72a8b499139979fe45db5ccbc13873a035340"},
         {"farrepeat", 3, "bdb80ea91cd0cbde64b19edaf6b72a8b499139979fe45db5ccbc13873a035340"},
     };
@@ -2597,15 +2597,15 @@ void test_selection_reference() {
         int method;
         const char* sha;
     } expected[] = {
-        // v1.59.0 Distance-costed candidate pruning & slot 257 horizon expansion re-capture (OPENRAR_REFCAP=1, 2026-10-29).
-        {"text64k", 1, "9b7e8b56d545f5820ec283243a1b3d64a9ac6461f02beb77b56359346ff86c97"},
-        {"text64k", 3, "82620752bbab7630ebd69dad50a2b36d4d8d27d3d58cb00b21459ff7ba3c4018"},
+        // v2.1.0 Track E Forward-Arrival relaxation and bit-density selection re-capture (OPENRAR_REFCAP=1).
+        {"text64k", 1, "3d699514856b25b316071ec472ce31f665e95041db6db2c09cd8b423c77dc761"},
+        {"text64k", 3, "1a26487b69610d70aa859efeda1a460273fced850571a9161a5263172bffdb6d"},
         {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"zeros1m", 1, "29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d"},
         {"zeros1m", 3, "29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d"},
-        {"mixed", 1, "232414be1db966916bfed3494fab33599550e4efe426797a37b45b031c2dc67b"},
-        {"mixed", 3, "3b8441f0a16dd37378cec1595dfaf0050054868ab816cddbe41774b0b951f9fb"},
+        {"mixed", 1, "0eb32a8e8c1aa47e66215438764fdf0bbaf9fca5942ecfe9afdd168b1852dbdc"},
+        {"mixed", 3, "629ec0b46acdc8b3b3b360fa5261ed28f9aa1a7bd3c68ddd2ef5a71bd5e8848e"},
         {"farrepeat", 1, "b1bffbe2c04024826cdb803e8621ffd93550d27a98a5124a04309170e3b0fa0e"},
         {"farrepeat", 3, "b1bffbe2c04024826cdb803e8621ffd93550d27a98a5124a04309170e3b0fa0e"},
     };
