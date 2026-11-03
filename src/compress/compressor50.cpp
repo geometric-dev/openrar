@@ -801,7 +801,17 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
                                core::uint32 cost, const size_t* old_dist_src, size_t last_len_src) {
         if (cost >= DP_INF) return;
         int idx = token_len > static_cast<size_t>(h_eff) ? h_eff : static_cast<int>(token_len);
-        if (cost < arrival[idx].cost) {
+        bool better = false;
+        if (arrival[idx].cost == DP_INF) {
+            better = true;
+        } else if (idx < h_eff) {
+            better = (cost < arrival[idx].cost);
+        } else {
+            size_t cur_len = static_cast<size_t>(arrival[idx].from_offset) + arrival[idx].token_len;
+            better = (static_cast<core::uint64>(cost) * cur_len <
+                      static_cast<core::uint64>(arrival[idx].cost) * token_len);
+        }
+        if (better) {
             arrival[idx].cost = cost;
             arrival[idx].from_offset = 0;
             arrival[idx].token_type = static_cast<core::uint8>(token_type);
@@ -816,16 +826,31 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
     core::uint32 lit0_cost = price_literal(buf_cur[0]);
     store_candidate(0, 1, 0, lit0_cost, old_dist_, last_length_);
 
-    // 2. Rep0..3 at offset 0 (enforce admission floor min_match_ >= 3 per v1.33.1)
-    if (rep_best_len >= min_match_ && rep_idx >= 0) {
-        size_t rlen = std::min(rep_best_len, avail);
-        core::uint32 cost = price_rep(static_cast<core::uint32>(rep_idx), rlen);
-        size_t new_dist[4];
-        new_dist[0] = old_dist_[rep_idx];
-        for (int d = 1; d <= rep_idx; ++d) new_dist[d] = old_dist_[d - 1];
-        for (int d = rep_idx + 1; d < 4; ++d) new_dist[d] = old_dist_[d];
-        store_candidate(2 + rep_idx, rlen, static_cast<core::uint32>(rep_idx), cost, new_dist,
-                        rlen);
+    // 2. Rep0..3 at offset 0 with sub-length relaxation across all valid rep distances
+    for (int r = 0; r < 4; ++r) {
+        size_t d = old_dist_[r];
+        if (d == static_cast<size_t>(-1) || d == 0 || d > cur - pos_base_ || d > max_dist_)
+            continue;
+        if (avail >= min_match_ && buf_cur[0] == buf_cur[-static_cast<core::int64>(d)]) {
+            size_t rlen = rep_length(cur, d, avail);
+            if (rlen >= min_match_) {
+                size_t new_dist[4];
+                new_dist[0] = d;
+                for (int di = 1; di <= r; ++di) new_dist[di] = old_dist_[di - 1];
+                for (int di = r + 1; di < 4; ++di) new_dist[di] = old_dist_[di];
+
+                // Full rep length
+                core::uint32 cost = price_rep(static_cast<core::uint32>(r), rlen);
+                store_candidate(2 + r, rlen, static_cast<core::uint32>(r), cost, new_dist, rlen);
+
+                // Sub-length relaxation for rep within horizon
+                size_t sub_limit = std::min<size_t>(rlen, static_cast<size_t>(h_eff));
+                for (size_t l = min_match_; l < sub_limit; ++l) {
+                    core::uint32 sub_cost = price_rep(static_cast<core::uint32>(r), l);
+                    store_candidate(2 + r, l, static_cast<core::uint32>(r), sub_cost, new_dist, l);
+                }
+            }
+        }
     }
 
     // 3. Slot 257 at offset 0
@@ -920,27 +945,45 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
                             }
                         }
 
-                        core::uint32 cost = price_rep(static_cast<core::uint32>(r), rep_len);
-                        if (cost < DP_INF) {
+                        size_t new_dist[4];
+                        new_dist[0] = rep_d;
+                        for (int d = 1; d <= r; ++d) new_dist[d] = arrival[i].old_dist[d - 1];
+                        for (int d = r + 1; d < 4; ++d) new_dist[d] = arrival[i].old_dist[d];
+
+                        auto store_rep_edge = [&](size_t l) {
+                            core::uint32 cost = price_rep(static_cast<core::uint32>(r), l);
+                            if (cost >= DP_INF) return;
                             core::uint32 new_cost = arrival[i].cost + cost;
-                            int j = i + static_cast<int>(rep_len) > h_eff
-                                        ? h_eff
-                                        : i + static_cast<int>(rep_len);
-                            if (new_cost < arrival[j].cost) {
+                            int j =
+                                i + static_cast<int>(l) > h_eff ? h_eff : i + static_cast<int>(l);
+                            size_t cand_len = static_cast<size_t>(i) + l;
+                            bool better = false;
+                            if (arrival[j].cost == DP_INF) {
+                                better = true;
+                            } else if (j < h_eff) {
+                                better = (new_cost < arrival[j].cost);
+                            } else {
+                                size_t cur_len = static_cast<size_t>(arrival[j].from_offset) +
+                                                 arrival[j].token_len;
+                                better = (static_cast<core::uint64>(new_cost) * cur_len <
+                                          static_cast<core::uint64>(arrival[j].cost) * cand_len);
+                            }
+                            if (better) {
                                 arrival[j].cost = new_cost;
                                 arrival[j].from_offset = static_cast<core::uint8>(i);
                                 arrival[j].token_type = static_cast<core::uint8>(2 + r);
-                                arrival[j].token_len = static_cast<core::uint16>(rep_len);
+                                arrival[j].token_len = static_cast<core::uint16>(l);
                                 arrival[j].token_dist = static_cast<core::uint32>(r);
-                                size_t new_dist[4];
-                                new_dist[0] = rep_d;
-                                for (int d = 1; d <= r; ++d)
-                                    new_dist[d] = arrival[i].old_dist[d - 1];
-                                for (int d = r + 1; d < 4; ++d)
-                                    new_dist[d] = arrival[i].old_dist[d];
                                 for (int d = 0; d < 4; ++d) arrival[j].old_dist[d] = new_dist[d];
-                                arrival[j].last_len = rep_len;
+                                arrival[j].last_len = l;
                             }
+                        };
+
+                        store_rep_edge(rep_len);
+                        size_t sub_limit =
+                            std::min<size_t>(rep_len, static_cast<size_t>(h_eff - i));
+                        for (size_t l = min_match_; l < sub_limit; ++l) {
+                            store_rep_edge(l);
                         }
                     }
                 }
@@ -948,7 +991,8 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
         }
 
         // 3. Selective Fresh match search at offset 1 ONLY with sub-length relaxation
-        if (lazy_tests_ > 0 && i == 1 && (match_len >= 3 || rep_best_len >= 2) && avail_i >= 3) {
+        if (fail_count_ <= 0x100 && lazy_tests_ > 0 && i == 1 &&
+            (match_len >= 3 || rep_best_len >= 2) && avail_i >= 3) {
             MatchInfo mi = find_match(pos, std::min<core::uint32>(max_chain_, 16), nice_len_);
             if (mi.length >= 3 && mi.candidate >= 0) {
                 size_t mlen = std::min(mi.length, avail_i);
@@ -960,22 +1004,38 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
                     new_dist[0] = mdist;
                     for (int d = 1; d < 4; ++d) new_dist[d] = arrival[i].old_dist[d - 1];
 
-                    size_t sub_limit = std::min<size_t>(mlen, static_cast<size_t>(h_eff - i));
-                    for (size_t l = min_legal_len; l <= sub_limit; ++l) {
+                    auto store_match_edge = [&](size_t l) {
                         core::uint32 cost = price_match(l, mdist);
-                        if (cost < DP_INF) {
-                            core::uint32 new_cost = arrival[i].cost + cost;
-                            int j = i + static_cast<int>(l);
-                            if (j <= h_eff && new_cost < arrival[j].cost) {
-                                arrival[j].cost = new_cost;
-                                arrival[j].from_offset = static_cast<core::uint8>(i);
-                                arrival[j].token_type = 1;
-                                arrival[j].token_len = static_cast<core::uint16>(l);
-                                arrival[j].token_dist = mdist;
-                                for (int d = 0; d < 4; ++d) arrival[j].old_dist[d] = new_dist[d];
-                                arrival[j].last_len = l;
-                            }
+                        if (cost >= DP_INF) return;
+                        core::uint32 new_cost = arrival[i].cost + cost;
+                        int j = i + static_cast<int>(l) > h_eff ? h_eff : i + static_cast<int>(l);
+                        size_t cand_len = static_cast<size_t>(i) + l;
+                        bool better = false;
+                        if (arrival[j].cost == DP_INF) {
+                            better = true;
+                        } else if (j < h_eff) {
+                            better = (new_cost < arrival[j].cost);
+                        } else {
+                            size_t cur_len =
+                                static_cast<size_t>(arrival[j].from_offset) + arrival[j].token_len;
+                            better = (static_cast<core::uint64>(new_cost) * cur_len <
+                                      static_cast<core::uint64>(arrival[j].cost) * cand_len);
                         }
+                        if (better) {
+                            arrival[j].cost = new_cost;
+                            arrival[j].from_offset = static_cast<core::uint8>(i);
+                            arrival[j].token_type = 1;
+                            arrival[j].token_len = static_cast<core::uint16>(l);
+                            arrival[j].token_dist = mdist;
+                            for (int d = 0; d < 4; ++d) arrival[j].old_dist[d] = new_dist[d];
+                            arrival[j].last_len = l;
+                        }
+                    };
+
+                    store_match_edge(mlen);
+                    size_t sub_limit = std::min<size_t>(mlen, static_cast<size_t>(h_eff - i));
+                    for (size_t l = min_legal_len; l < sub_limit; ++l) {
+                        store_match_edge(l);
                     }
                 }
             }
@@ -983,18 +1043,21 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
     }
 
     // Terminal Horizon Path Selection:
-    // Evaluate lowest bit density rho(t) = cost(t) / t across reachable nodes in [1, h_eff].
+    // Evaluate lowest bit density rho(t) = cost(t) / bytes_covered across reachable nodes in [1, h_eff].
     int target = 1;
     core::uint64 best_cost = arrival[1].cost;
-    size_t best_len = 1;
+    size_t best_len = static_cast<size_t>(arrival[1].from_offset) + arrival[1].token_len;
+    if (best_len < 1) best_len = 1;
 
     for (int t = 2; t <= h_eff; ++t) {
         if (arrival[t].cost < DP_INF) {
-            if (best_cost == DP_INF || (static_cast<core::uint64>(arrival[t].cost) * best_len <
-                                        best_cost * static_cast<size_t>(t))) {
+            size_t t_len = static_cast<size_t>(arrival[t].from_offset) + arrival[t].token_len;
+            if (t_len < static_cast<size_t>(t)) t_len = static_cast<size_t>(t);
+            if (best_cost == DP_INF ||
+                (static_cast<core::uint64>(arrival[t].cost) * best_len < best_cost * t_len)) {
                 target = t;
                 best_cost = arrival[t].cost;
-                best_len = static_cast<size_t>(t);
+                best_len = t_len;
             }
         }
     }
