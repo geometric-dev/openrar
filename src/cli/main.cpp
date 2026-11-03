@@ -479,7 +479,7 @@ void print_bench_help() {
            "leaderboard\n"
         << "  openrar b --json > benchmark.json             # Structured JSON output for CI "
            "tracking\n\n"
-        << "Cloud Leaderboard: https://benchmark.openrar.workers.dev\n";
+        << "Cloud Leaderboard: https://geometric-dev.github.io/openrar/\n";
 }
 
 void print_diff_help() {

@@ -1,6 +1,7 @@
 #include "../../src/cli/benchmark.hpp"
 #include "../../src/core/cpu.hpp"
 
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <doctest.h>
@@ -115,6 +116,20 @@ void test_benchmark_leaderboard_options_and_topology() {
     REQUIRE(res.topology.find("threads") != std::string::npos);
 
     std::cout << "[PASS] Topology detected: " << res.topology << "\n";
+
+    // Test local leaderboard rendering from generated docs/leaderboard.json
+    BenchmarkOptions lb_opt;
+    lb_opt.leaderboard = true;
+    lb_opt.plain = true;
+    if (std::filesystem::exists("docs/leaderboard.json")) {
+        lb_opt.endpoint = "docs/leaderboard.json";
+        int rc = display_cloud_leaderboard(lb_opt);
+        REQUIRE(rc == 0);
+    } else if (std::filesystem::exists("../docs/leaderboard.json")) {
+        lb_opt.endpoint = "../docs/leaderboard.json";
+        int rc = display_cloud_leaderboard(lb_opt);
+        REQUIRE(rc == 0);
+    }
 }
 
 static const openrar::test::Case k_cases[] = {

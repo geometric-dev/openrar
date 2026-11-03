@@ -23,6 +23,12 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages-and-benchmarks"
+  cancel-in-progress: false
 
 jobs:
   validate-and-aggregate:
@@ -94,21 +100,43 @@ jobs:
         run: |
           python tools/sync_cloud_benchmarks.py
 
-      - name: Aggregate Benchmarks into BENCHMARKS.md
+      - name: Aggregate Benchmarks and Generate GitHub Pages
         run: |
           python tools/aggregate_benchmarks.py
-          git diff BENCHMARKS.md
+          git diff BENCHMARKS.md docs/
 
       - name: Commit and push changes (if modified on default or v2 branch)
         if: github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/master'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet BENCHMARKS.md benchmarks/; then
-            git add BENCHMARKS.md benchmarks/
-            git commit -m "docs(benchmarks): update hardware leaderboard and submissions"
+          if ! git diff --quiet BENCHMARKS.md benchmarks/ docs/; then
+            git add BENCHMARKS.md benchmarks/ docs/
+            git commit -m "docs(benchmarks): update hardware leaderboard, GitHub Pages site, and submissions"
             git push
           else
             echo "Leaderboard is already up-to-date."
           fi
 
+      - name: Setup Pages
+        if: (github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/master') && (github.event_name != 'pull_request')
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages Artifact
+        if: (github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/master') && (github.event_name != 'pull_request')
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'docs/'
+
+  deploy-pages:
+    name: Deploy GitHub Pages
+    if: (github.ref == 'refs/heads/v2' || github.ref == 'refs/heads/master') && (github.event_name != 'pull_request')
+    needs: validate-and-aggregate
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

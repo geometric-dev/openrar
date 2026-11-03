@@ -437,9 +437,10 @@ static void submit_benchmark_result(const BenchmarkResult& res, const BenchmarkO
         if (!id_str.empty()) {
             std::cout << "    Entry ID:    " << id_str << "\n";
         }
-        std::string view_url = endpoint;
+        std::string view_url =
+            opt.endpoint.empty() ? "https://geometric-dev.github.io/openrar/" : endpoint;
         size_t api_idx = view_url.find("/api/");
-        if (api_idx != std::string::npos) {
+        if (api_idx != std::string::npos && !opt.endpoint.empty()) {
             view_url = view_url.substr(0, api_idx + 1);
         }
         std::cout << "    View Live:   " << c("\033[1;36m") << view_url << c("\033[0m\n\n");
@@ -547,8 +548,8 @@ int run_benchmark_cli(const BenchmarkOptions& opt) {
         submit_benchmark_result(res, opt);
         if (opt.leaderboard) display_cloud_leaderboard(opt);
     } else if (!opt.plain) {
-        std::cout
-            << "  Tip: Submit your score to the global leaderboard with: openrar b --submit\n\n";
+        std::cout << "  Tip: Submit your score to the global leaderboard with: openrar b --submit\n"
+                  << "       View live rankings at: https://geometric-dev.github.io/openrar/\n\n";
     }
 
     return res.verified ? 0 : 1;
@@ -622,7 +623,7 @@ int display_cloud_leaderboard(const BenchmarkOptions& opt) {
         if (env_ep && *env_ep) {
             endpoint = env_ep;
         } else {
-            endpoint = "https://benchmark.openrar.workers.dev/api/leaderboard";
+            endpoint = "https://geometric-dev.github.io/openrar/leaderboard.json";
         }
     } else {
         size_t sub_pos = endpoint.find("/api/submit");
@@ -631,15 +632,51 @@ int display_cloud_leaderboard(const BenchmarkOptions& opt) {
         }
     }
 
-    std::string cmd = "curl -s -m 6 -H \"Accept: application/json\" \"" + endpoint + "\"";
     std::string response;
-    FILE* fp = open_pipe(cmd.c_str(), "r");
-    if (fp) {
-        char buf[1024];
-        while (fgets(buf, sizeof(buf), fp)) {
-            response += buf;
+    bool is_file = false;
+    std::string filepath = endpoint;
+    if (filepath.rfind("file://", 0) == 0) {
+        filepath = filepath.substr(7);
+        is_file = true;
+    } else if (filepath.size() > 5 && filepath.substr(filepath.size() - 5) == ".json" &&
+               filepath.find("://") == std::string::npos) {
+        is_file = true;
+    }
+
+    if (is_file) {
+        std::ifstream ifs(filepath, std::ios::binary);
+        if (ifs) {
+            std::ostringstream ss;
+            ss << ifs.rdbuf();
+            response = ss.str();
         }
-        close_pipe(fp);
+    } else {
+        std::string cmd = "curl -s -m 6 -H \"Accept: application/json\" \"" + endpoint + "\"";
+        FILE* fp = open_pipe(cmd.c_str(), "r");
+        if (fp) {
+            char buf[1024];
+            while (fgets(buf, sizeof(buf), fp)) {
+                response += buf;
+            }
+            close_pipe(fp);
+        }
+
+        // Fallback to raw GitHub repo content if GitHub Pages CDN has not deployed yet
+        if ((response.empty() || response.find("\"entries\"") == std::string::npos) &&
+            endpoint.find("geometric-dev.github.io/openrar") != std::string::npos) {
+            std::string fb_cmd =
+                "curl -s -m 6 -H \"Accept: application/json\" "
+                "\"https://raw.githubusercontent.com/geometric-dev/openrar/v2/docs/"
+                "leaderboard.json\"";
+            fp = open_pipe(fb_cmd.c_str(), "r");
+            if (fp) {
+                char buf[1024];
+                while (fgets(buf, sizeof(buf), fp)) {
+                    response += buf;
+                }
+                close_pipe(fp);
+            }
+        }
     }
 
     if (response.empty() || response.find("\"entries\"") == std::string::npos) {
@@ -649,7 +686,7 @@ int display_cloud_leaderboard(const BenchmarkOptions& opt) {
             std::cout << "\n  " << c("\033[1;33m") << "Cloud Leaderboard:" << c("\033[0m\n")
                       << "    Status:   Could not reach " << endpoint << "\n"
                       << "    Tip:      Check internet connection or view live rankings at:\n"
-                      << "              https://benchmark.openrar.workers.dev\n\n";
+                      << "              https://geometric-dev.github.io/openrar/\n\n";
         }
         return 1;
     }
@@ -676,16 +713,21 @@ int display_cloud_leaderboard(const BenchmarkOptions& opt) {
 
     std::vector<Entry> entries;
     size_t pos = 0;
-    while ((pos = response.find("{\"rank\":", pos)) != std::string::npos) {
+    while ((pos = response.find("\"rank\"", pos)) != std::string::npos) {
         size_t end_pos = response.find("}", pos);
         if (end_pos == std::string::npos) break;
-        std::string obj = response.substr(pos, end_pos - pos + 1);
+        size_t start_pos = response.rfind('{', pos);
+        if (start_pos == std::string::npos) start_pos = pos;
+        std::string obj = response.substr(start_pos, end_pos - start_pos + 1);
 
         auto extract_int = [&obj](const char* key) -> int {
             size_t kpos = obj.find(key);
             if (kpos == std::string::npos) return 0;
             size_t val_pos = kpos + std::strlen(key);
-            while (val_pos < obj.size() && (obj[val_pos] == ':' || obj[val_pos] == ' ')) val_pos++;
+            while (val_pos < obj.size() &&
+                   (obj[val_pos] == ':' || obj[val_pos] == ' ' || obj[val_pos] == '\t' ||
+                    obj[val_pos] == '\r' || obj[val_pos] == '\n'))
+                val_pos++;
             try {
                 return std::stoi(obj.substr(val_pos));
             } catch (...) {
@@ -697,7 +739,10 @@ int display_cloud_leaderboard(const BenchmarkOptions& opt) {
             size_t kpos = obj.find(key);
             if (kpos == std::string::npos) return 0.0;
             size_t val_pos = kpos + std::strlen(key);
-            while (val_pos < obj.size() && (obj[val_pos] == ':' || obj[val_pos] == ' ')) val_pos++;
+            while (val_pos < obj.size() &&
+                   (obj[val_pos] == ':' || obj[val_pos] == ' ' || obj[val_pos] == '\t' ||
+                    obj[val_pos] == '\r' || obj[val_pos] == '\n'))
+                val_pos++;
             try {
                 return std::stod(obj.substr(val_pos));
             } catch (...) {
@@ -708,7 +753,9 @@ int display_cloud_leaderboard(const BenchmarkOptions& opt) {
         auto extract_str = [&obj](const char* key) -> std::string {
             size_t kpos = obj.find(key);
             if (kpos == std::string::npos) return "";
-            size_t q1 = obj.find('"', kpos + std::strlen(key));
+            size_t colon_pos = obj.find(':', kpos + std::strlen(key));
+            if (colon_pos == std::string::npos) return "";
+            size_t q1 = obj.find('"', colon_pos + 1);
             if (q1 == std::string::npos) return "";
             size_t q2 = obj.find('"', q1 + 1);
             if (q2 == std::string::npos) return "";
@@ -728,7 +775,9 @@ int display_cloud_leaderboard(const BenchmarkOptions& opt) {
         e.speedup = extract_double("\"speedup_ratio\"");
         e.score = extract_int("\"rarmark_score\"");
 
-        entries.push_back(e);
+        if (e.rank > 0 && e.score > 0) {
+            entries.push_back(e);
+        }
         pos = end_pos + 1;
     }
 
@@ -790,8 +839,8 @@ int display_cloud_leaderboard(const BenchmarkOptions& opt) {
     std::cout << "  " << c("\033[90m")
               << "================================================================================="
                  "========================="
-              << c("\033[0m\n") << "  Live Edge Leaderboard: " << c("\033[4m")
-              << "https://benchmark.openrar.workers.dev" << c("\033[0m\n")
+              << c("\033[0m\n") << "  Live Web Leaderboard:   " << c("\033[4m")
+              << "https://geometric-dev.github.io/openrar/" << c("\033[0m\n")
               << "  Submit your hardware:   openrar b --submit [--system=\"<desc>\"]\n\n";
 
     return 0;
