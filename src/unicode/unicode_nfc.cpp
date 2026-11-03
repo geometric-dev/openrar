@@ -90,7 +90,7 @@ size_t utf8_decode(const std::string& s, size_t i, core::uint32& cp) {
         v = (v << 6) | (cont & 0x3F);
     }
     // overlong / surrogate / out-of-range rejection
-    static const core::uint32 min_cp[4] = {0u, 0u, 0x80u, 0x800u};
+    static const core::uint32 min_cp[5] = {0u, 0u, 0x80u, 0x800u, 0x10000u};
     if (v < min_cp[len] || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return 0;
     cp = v;
     return len;
@@ -266,30 +266,27 @@ std::string simple_case_fold(const std::string& utf8) {
 }
 
 std::string nfc(const std::string& utf8) {
+    std::string out;
     std::vector<core::uint32> seq;
     seq.reserve(utf8.size());
     size_t i = 0;
     while (i < utf8.size()) {
         core::uint32 cp = 0;
         const size_t len = utf8_decode(utf8, i, cp);
-        if (len == 0) {
-            // Invalid byte: flush what we have (invalid bytes act as
-            // starters/blockers), pass the byte through literally, and
-            // normalize the remainder independently.
+        if (len == 0) { // invalid byte: flush, pass through, keep going
             canonical_order(seq);
-            std::string out = compose_sequence(seq);
+            out += compose_sequence(seq);
             out.push_back(utf8[i]);
             seq.clear();
             i += 1;
-            std::string rest(utf8.begin() + static_cast<long>(i), utf8.end());
-            out += nfc(rest);
-            return out;
+            continue;
         }
         canonical_decompose(cp, seq);
         i += len;
     }
     canonical_order(seq);
-    return compose_sequence(seq);
+    out += compose_sequence(seq);
+    return out;
 }
 
 } // namespace openrar::unicode
