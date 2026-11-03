@@ -456,6 +456,7 @@ void print_bench_help() {
         << "  -m<0..5>          Compression algorithm level (0 store ... 3 default ... 5 maximal)\n"
         << "  --seconds=<sec>   Timed measurement duration per phase (default: 5s, min: 1s, max: "
            "60s)\n"
+        << "  --leaderboard, --top View top rankings from the global cloud hardware leaderboard\n"
         << "  --submit          Submit verified benchmark results directly to global cloud "
            "leaderboard\n"
         << "  --system=<desc>   Custom machine / rig description attached to leaderboard "
@@ -470,6 +471,8 @@ void print_bench_help() {
            "MiB dict\n"
         << "  openrar b --seconds=10                        # 10s per-phase measurement for higher "
            "precision\n"
+        << "  openrar b --leaderboard                       # View top scores from global hardware "
+           "leaderboard\n"
         << "  openrar b --submit                            # Run benchmark and submit to cloud "
            "leaderboard\n"
         << "  openrar b --submit --system=\"Apple M3 Max\"    # Benchmark with rig description for "
@@ -4285,6 +4288,20 @@ static int cli_main(int argc, char* argv[]) {
         return 0;
     }
 
+    if (cmd == "--leaderboard" || cmd == "-leaderboard" || cmd == "--top" || cmd == "-top") {
+        openrar::cli::BenchmarkOptions bopt;
+        for (int i = 2; i < argc; ++i) {
+            std::string s = argv[i];
+            if (s == "--json")
+                bopt.json = true;
+            else if (s == "-plain" || s == "--plain")
+                bopt.plain = true;
+            else if (s.rfind("--endpoint=", 0) == 0)
+                bopt.endpoint = s.substr(11);
+        }
+        return openrar::cli::display_cloud_leaderboard(bopt);
+    }
+
     if (cmd == "--submit" || cmd == "-submit" || cmd == "--submit-result") {
         std::cerr << "Error: '--submit' is a benchmark option.\n\n"
                   << "To run the benchmark and submit verified results to the global cloud "
@@ -4429,6 +4446,7 @@ static int cli_main(int argc, char* argv[]) {
     std::string opt_user;
     unsigned bench_seconds = 5;
     bool bench_submit = false;
+    bool bench_leaderboard = false;
     std::string bench_system;
     std::string bench_endpoint;
 
@@ -4546,6 +4564,9 @@ static int cli_main(int argc, char* argv[]) {
                 bench_seconds = static_cast<unsigned>(std::stoul(s.substr(9)));
             } catch (...) {
             }
+        } else if (sw_eq(s, "--leaderboard") || sw_eq(s, "-leaderboard") || sw_eq(s, "--top") ||
+                   sw_eq(s, "-top")) {
+            bench_leaderboard = true;
         } else if (sw_eq(s, "--submit") || sw_eq(s, "-submit") || sw_eq(s, "--submit-result")) {
             bench_submit = true;
         } else if (sw_starts(s, "--system=")) {
@@ -4876,8 +4897,8 @@ static int cli_main(int argc, char* argv[]) {
             std::cerr << "Warning: unknown switch '" << s << "' ignored\n";
         }
     }
-    if ((bench_submit || !bench_system.empty() || !bench_endpoint.empty()) && cmd != "b" &&
-        cmd != "bench") {
+    if ((bench_submit || bench_leaderboard || !bench_system.empty() || !bench_endpoint.empty()) &&
+        cmd != "b" && cmd != "bench") {
         std::cerr << "Error: benchmark options (--submit, --system, --submit-endpoint) are only "
                      "valid with the 'b' (benchmark) command.\n\n"
                   << "To benchmark and submit results, use:\n"
@@ -5075,8 +5096,12 @@ static int cli_main(int argc, char* argv[]) {
         bopt.plain = g_plain_mode;
         bopt.json = g_json_stdout_only;
         bopt.submit = bench_submit;
+        bopt.leaderboard = bench_leaderboard;
         bopt.system_name = bench_system;
         bopt.endpoint = bench_endpoint;
+        if (bench_leaderboard && !bench_submit) {
+            return openrar::cli::display_cloud_leaderboard(bopt);
+        }
         return openrar::cli::run_benchmark_cli(bopt);
     } else if (cmd == "p") {
         return openrar::cli::print_archive_to_stdout(arc_path, files, exclude_patterns, password);
