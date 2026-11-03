@@ -64,21 +64,22 @@ openrar b
 # Quick benchmark with plain log output
 openrar b --seconds=1 -plain
 
+# View top scores from the global leaderboard in your terminal
+openrar b --leaderboard
+
 # Emit RFC 8259 structured JSON with hardware metrics
 openrar b --json > my_hardware.json
 ```
 
-### 2. Submit Your Results
-There are three ways to contribute your benchmark to this leaderboard:
-
-- **Option A (Instant Cloud Ingestion - Recommended):** Pipe directly to our Cloudflare Workers edge ingestion API:
+### 2. View Live Leaderboard & Submit Results
+- **Interactive Web Leaderboard:** View live rankings, search CPUs, and inspect vector extensions on the official [GitHub Pages Leaderboard](https://geometric-dev.github.io/openrar/).
+- **In-Terminal Query:** Run `openrar b --leaderboard` to query the top hardware rankings directly in your terminal.
+- **Option A (Instant Cloud Ingestion - Recommended):** Submit results directly via CLI:
   ```bash
   openrar b --submit
-  # Or with custom endpoint / piping:
-  openrar b --json | curl -s -X POST -H "Content-Type: application/json" -d @- https://benchmark.openrar.workers.dev/api/submit
+  # Or with custom rig description:
+  openrar b --submit --system="Workstation / 64GB DDR5"
   ```
-  Submissions are verified cryptographically in real-time, saved to Cloudflare D1, and automatically synced into this table. View live stats at [Cloud Leaderboard](https://benchmark.openrar.workers.dev/) or the [openrar-benchmark-submission](https://github.com/geometric-dev/openrar-benchmark-submission) service.
-
+  Submissions are verified cryptographically in real-time, saved to Cloudflare D1, and automatically synced into this table and the GitHub Pages site on every periodic update.
 - **Option B (GitHub Issue Form):** Open an issue using the [Benchmark Submission Template](https://github.com/geometric-dev/openrar/issues/new?template=benchmark_submission.yml) and paste your JSON output.
-
 - **Option C (Pull Request):** Place `my_hardware.json` in `benchmarks/submissions/<your-cpu-name>.json` and open a PR. The aggregation workflow will automatically validate your results and update the leaderboard!
