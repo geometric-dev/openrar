@@ -792,10 +792,10 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
         arrival[i].token_type = 0;
         arrival[i].token_len = 0;
         arrival[i].token_dist = 0;
-        for (int d = 0; d < 4; ++d) arrival[i].old_dist[d] = old_dist_[d];
-        arrival[i].last_len = last_length_;
     }
     arrival[0].cost = 0;
+    for (int d = 0; d < 4; ++d) arrival[0].old_dist[d] = old_dist_[d];
+    arrival[0].last_len = last_length_;
 
     auto store_candidate = [&](int token_type, size_t token_len, size_t token_dist,
                                core::uint32 cost, const size_t* old_dist_src, size_t last_len_src) {
@@ -834,17 +834,27 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
         store_candidate(6, last_length_, 0, cost, old_dist_, last_length_);
     }
 
-    // 4. Fresh match at offset 0
+    // 4. Fresh match at offset 0 with sub-length relaxation
     if (match_len >= min_match_ && match_candidate >= 0) {
         size_t mlen = std::min(match_len, avail);
         size_t mdist = static_cast<size_t>(cur - static_cast<core::uint64>(match_candidate));
         core::uint32 inc = length_increment(mdist);
-        if (mlen >= min_match_ && mlen >= static_cast<size_t>(inc) + 2) {
-            core::uint32 cost = price_match(mlen, mdist);
+        size_t min_legal_len = std::max<size_t>(min_match_, static_cast<size_t>(inc) + 2);
+        if (mlen >= min_legal_len) {
             size_t new_dist[4];
             new_dist[0] = mdist;
             for (int d = 1; d < 4; ++d) new_dist[d] = old_dist_[d - 1];
+
+            // Relax maximum match length
+            core::uint32 cost = price_match(mlen, mdist);
             store_candidate(1, mlen, mdist, cost, new_dist, mlen);
+
+            // Relax valid sub-lengths within the horizon h_eff
+            size_t sub_limit = std::min<size_t>(mlen, static_cast<size_t>(h_eff));
+            for (size_t l = min_legal_len; l < sub_limit; ++l) {
+                core::uint32 sub_cost = price_match(l, mdist);
+                store_candidate(1, l, mdist, sub_cost, new_dist, l);
+            }
         }
     }
 
@@ -937,30 +947,34 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
             }
         }
 
-        // 3. Selective Fresh match search at offset 1 ONLY (Frugal Search)
+        // 3. Selective Fresh match search at offset 1 ONLY with sub-length relaxation
         if (lazy_tests_ > 0 && i == 1 && (match_len >= 3 || rep_best_len >= 2) && avail_i >= 3) {
             MatchInfo mi = find_match(pos, std::min<core::uint32>(max_chain_, 16), nice_len_);
             if (mi.length >= 3 && mi.candidate >= 0) {
                 size_t mlen = std::min(mi.length, avail_i);
                 size_t mdist = static_cast<size_t>(pos - static_cast<core::uint64>(mi.candidate));
                 core::uint32 inc = length_increment(mdist);
-                if (mlen >= 3 && mlen >= static_cast<size_t>(inc) + 2) {
-                    core::uint32 cost = price_match(mlen, mdist);
-                    if (cost < DP_INF) {
-                        core::uint32 new_cost = arrival[i].cost + cost;
-                        int j =
-                            i + static_cast<int>(mlen) > h_eff ? h_eff : i + static_cast<int>(mlen);
-                        if (new_cost < arrival[j].cost) {
-                            arrival[j].cost = new_cost;
-                            arrival[j].from_offset = static_cast<core::uint8>(i);
-                            arrival[j].token_type = 1;
-                            arrival[j].token_len = static_cast<core::uint16>(mlen);
-                            arrival[j].token_dist = mdist;
-                            size_t new_dist[4];
-                            new_dist[0] = mdist;
-                            for (int d = 1; d < 4; ++d) new_dist[d] = arrival[i].old_dist[d - 1];
-                            for (int d = 0; d < 4; ++d) arrival[j].old_dist[d] = new_dist[d];
-                            arrival[j].last_len = mlen;
+                size_t min_legal_len = std::max<size_t>(min_match_, static_cast<size_t>(inc) + 2);
+                if (mlen >= min_legal_len) {
+                    size_t new_dist[4];
+                    new_dist[0] = mdist;
+                    for (int d = 1; d < 4; ++d) new_dist[d] = arrival[i].old_dist[d - 1];
+
+                    size_t sub_limit = std::min<size_t>(mlen, static_cast<size_t>(h_eff - i));
+                    for (size_t l = min_legal_len; l <= sub_limit; ++l) {
+                        core::uint32 cost = price_match(l, mdist);
+                        if (cost < DP_INF) {
+                            core::uint32 new_cost = arrival[i].cost + cost;
+                            int j = i + static_cast<int>(l);
+                            if (j <= h_eff && new_cost < arrival[j].cost) {
+                                arrival[j].cost = new_cost;
+                                arrival[j].from_offset = static_cast<core::uint8>(i);
+                                arrival[j].token_type = 1;
+                                arrival[j].token_len = static_cast<core::uint16>(l);
+                                arrival[j].token_dist = mdist;
+                                for (int d = 0; d < 4; ++d) arrival[j].old_dist[d] = new_dist[d];
+                                arrival[j].last_len = l;
+                            }
                         }
                     }
                 }
@@ -969,18 +983,23 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
     }
 
     // Terminal Horizon Path Selection:
-    // All reachable paths have been padded to h_eff with literals/tokens.
-    // The node arrival[h_eff] holds the lowest-cost path covering all h_eff bytes.
-    int target = h_eff;
-    if (arrival[target].cost == DP_INF) {
-        for (int t = h_eff; t >= 1; --t) {
-            if (arrival[t].cost < DP_INF) {
+    // Evaluate lowest bit density rho(t) = cost(t) / t across reachable nodes in [1, h_eff].
+    int target = 1;
+    core::uint64 best_cost = arrival[1].cost;
+    size_t best_len = 1;
+
+    for (int t = 2; t <= h_eff; ++t) {
+        if (arrival[t].cost < DP_INF) {
+            if (best_cost == DP_INF || (static_cast<core::uint64>(arrival[t].cost) * best_len <
+                                        best_cost * static_cast<size_t>(t))) {
                 target = t;
-                break;
+                best_cost = arrival[t].cost;
+                best_len = static_cast<size_t>(t);
             }
         }
     }
-    if (arrival[target].cost == DP_INF) {
+
+    if (best_cost == DP_INF) {
         return {0, 1, 0, lit0_cost};
     }
 
@@ -2381,23 +2400,23 @@ int Compressor50::process_available(bool final) {
         unhashed_pos_ = cur_;
 
         // ── v1.56.0 Phase 2: Homogeneous Run / Zero Fast-Path Guard ──────────────
-        // Disabled for now to maintain bit-identical output with reference baselines.
-        // Threshold set to MAX_LZ_MATCH + 1 so it never triggers.
-        // Can be re-enabled after forward-arrival parser (Phase 3) is stable.
-        if (false && cur_ > pos_base_ + 3 && old_dist_[0] != 1) { // only when no rep0 context
+        if (active_filter_ == FilterType::None && cur_ > pos_base_ + 3 && cur_ + 3 < src_loaded_ &&
+            old_dist_[0] != 1) { // only when no rep0 context and no active filter
             const core::byte* buf_cur = &buf_data_[static_cast<size_t>(cur_ - pos_base_)];
             if (buf_cur[0] == buf_cur[-1] && buf_cur[0] == buf_cur[1] && buf_cur[0] == buf_cur[2] &&
                 buf_cur[0] == buf_cur[3]) {
                 size_t max_run = std::min(static_cast<size_t>(MAX_LZ_MATCH),
                                           static_cast<size_t>(src_loaded_ - cur_));
                 size_t run_len = arch::match_length_simd(buf_cur, buf_cur - 1, max_run);
-                if (run_len >= static_cast<size_t>(MAX_LZ_MATCH) + 1) { // never triggers
-                    // Emit a single fresh match token (not the entire run)
+                if (run_len >= min_match_) {
                     size_t emit_len = std::min(run_len, static_cast<size_t>(MAX_LZ_MATCH));
                     add_match(emit_len, 1);
-                    cur_ += emit_len;
+                    core::uint64 end = cur_ + emit_len;
+                    if (end > src_loaded_) end = src_loaded_;
+                    hash_range(cur_, end);
+                    cur_ = end;
                     input_since_block_ += emit_len;
-                    // Match body hashing will be done by catch-up at next loop iteration
+                    unhashed_pos_ = cur_;
                     continue; // skip match finder for this position
                 }
             }
@@ -2428,6 +2447,9 @@ int Compressor50::process_available(bool final) {
             if (fail_count_ > 0x400) skip_mask = 7;
             if (fail_count_ > 0x800) skip_mask = 15;
             if (fail_count_ > 0x1000) skip_mask = 31;
+            if (fail_count_ > 0x2000) skip_mask = 127;
+            if (fail_count_ > 0x4000) skip_mask = 511;
+            if (fail_count_ > 0x8000) skip_mask = 2047;
             if ((fail_count_ & skip_mask) != 0) search_chain = 0;
         }
         MatchInfo best = {0, -1};
