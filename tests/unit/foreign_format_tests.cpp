@@ -1005,8 +1005,61 @@ static void test_gzip_name_and_detect() {
     std::cout << "    - stem conventions and gzip dispatch pinned" << std::endl;
 }
 
+static void test_zip_dos_datetime_post_2106_no_wrap() {
+    std::cout << "[+] test_zip_dos_datetime_post_2106_no_wrap" << std::endl;
+
+    // 1. Direct unit tests of dos_datetime_to_epoch() bounds
+    // Year 1980 (lower bound): 1980-01-01 00:00:00
+    const int64_t epoch_1980 = dos_datetime_to_epoch((0 << 9) | (1 << 5) | 1, 0);
+    REQUIRE(epoch_1980 == 315532800LL);
+
+    // Year 2106 (past 2106-02-07 06:28:15 UTC where 32-bit uint32 wraps):
+    // 2106-12-31 23:59:58 UTC
+    // Year offset = 2106 - 1980 = 126
+    const core::uint16 date_2106 = static_cast<core::uint16>((126 << 9) | (12 << 5) | 31);
+    const core::uint16 time_2106 = static_cast<core::uint16>((23 << 11) | (59 << 5) | 29);
+    const int64_t epoch_2106 = dos_datetime_to_epoch(date_2106, time_2106);
+    REQUIRE(epoch_2106 > 4294967295LL);
+
+    // Year 2107 (maximum valid DOS year):
+    // 2107-12-31 23:59:58 UTC
+    // Year offset = 2107 - 1980 = 127 (0x7F)
+    const core::uint16 date_2107 = static_cast<core::uint16>((127 << 9) | (12 << 5) | 31);
+    const core::uint16 time_2107 = static_cast<core::uint16>((23 << 11) | (59 << 5) | 29);
+    const int64_t epoch_2107 = dos_datetime_to_epoch(date_2107, time_2107);
+    REQUIRE(epoch_2107 > 4294967295LL);
+    REQUIRE(epoch_2107 == 4354819198LL);
+
+    // 2. Integration test via ZipReader reading a ZIP entry with no extended timestamp
+    const auto dir = openrar::test::scratch_dir("foreign_format");
+    const auto p = dir / "dos_2107.zip";
+    ZipMember m;
+    m.name = "post2106.txt";
+    m.unp_size = 4;
+    m.packed = {0x74, 0x65, 0x73, 0x74}; // "test"
+    m.crc = 0xD87F7E0C;
+    m.dos_date = date_2107;
+    m.dos_time = time_2107;
+
+    std::ofstream f(p, std::ios::binary);
+    const auto buf = build_zip({m});
+    f.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+    f.close();
+
+    ZipReader r;
+    std::string detail;
+    ExtractionLimits limits;
+    REQUIRE(r.open(p, limits, ReaderHooks{}, detail) == ForeignStatus::Ok);
+    REQUIRE(r.entry_count() == 1);
+    REQUIRE(r.entry(0).mtime_sec > 4294967295LL);
+    REQUIRE(r.entry(0).mtime_sec == epoch_2107);
+    std::cout << "    - DOS datetime past 2106 (year 2107) returns int64_t > 2^32 without wrapping"
+              << std::endl;
+}
+
 static const openrar::test::Case k_cases[] = {
     {"test_dispatch_precedence", test_dispatch_precedence, false},
+    {"test_zip_dos_datetime_post_2106_no_wrap", test_zip_dos_datetime_post_2106_no_wrap, false},
     {"test_zip_roundtrip_store_and_deflate", test_zip_roundtrip_store_and_deflate, false},
     {"test_zip_cd_lf_mismatch", test_zip_cd_lf_mismatch, false},
     {"test_zip_bit3_descriptor_tolerance", test_zip_bit3_descriptor_tolerance, false},

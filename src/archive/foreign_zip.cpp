@@ -38,7 +38,9 @@ core::uint32 rd32(const core::byte* p) {
 core::uint64 rd64(const core::byte* p) {
     return static_cast<core::uint64>(rd32(p)) | (static_cast<core::uint64>(rd32(p + 4)) << 32);
 }
-core::uint32 dos_datetime_to_epoch(core::uint16 d, core::uint16 t) {
+} // namespace
+
+int64_t dos_datetime_to_epoch(core::uint16 d, core::uint16 t) {
     if (d == 0 && t == 0) return 0;
     const int year = 1980 + ((d >> 9) & 0x7F);
     const int month = (d >> 5) & 0x0F;
@@ -56,10 +58,8 @@ core::uint32 dos_datetime_to_epoch(core::uint16 d, core::uint16 t) {
     const int doy = (153 * mp + 2) / 5 + day - 1;
     const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     const int64_t days = static_cast<int64_t>(era) * 146097 + doe - 719468;
-    return static_cast<core::uint32>(days * 86400 + hour * 3600 + minute * 60 + second);
+    return days * 86400 + hour * 3600 + minute * 60 + second;
 }
-
-} // namespace
 
 // ---------------------------------------------------------------------------
 // ZipReader

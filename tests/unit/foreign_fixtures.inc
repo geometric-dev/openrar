@@ -36,6 +36,8 @@ struct ZipMember {
     core::uint32 dos_attrs = 0;
     core::uint32 unix_mode = 0; // external attrs high 16 bits
     bool is_dir = false;
+    core::uint16 dos_time = 0x6000;   // 12:00:00
+    core::uint16 dos_date = 0x5821;   // 2024-01-01
     std::vector<core::byte> cd_extra; // raw extra-field bytes appended to the CDH
 };
 
@@ -66,8 +68,8 @@ std::vector<core::byte> build_zip(const std::vector<ZipMember>& members,
         put16(lfh, 20); // version needed
         put16(lfh, m.flags);
         put16(lfh, m.method);
-        put16(lfh, 0x6000); // DOS time 12:00:00
-        put16(lfh, 0x5821); // DOS date 2024-01-01
+        put16(lfh, m.dos_time);
+        put16(lfh, m.dos_date);
         put32(lfh, m.lfh_crc_mismatch ? m.crc ^ 0xFFFF : m.crc);
         put32(lfh, pack32);
         put32(lfh, m.lfh_size_mismatch ? static_cast<core::uint32>(m.unp_size + 7) : unp32);
@@ -94,8 +96,8 @@ std::vector<core::byte> build_zip(const std::vector<ZipMember>& members,
         put16(cdh, 20);
         put16(cdh, m.flags);
         put16(cdh, m.lfh_method_mismatch ? static_cast<core::uint16>(m.method ^ 0xFF) : m.method);
-        put16(cdh, 0x6000);
-        put16(cdh, 0x5821);
+        put16(cdh, m.dos_time);
+        put16(cdh, m.dos_date);
         put32(cdh, m.crc);
         put32(cdh, m.zip64 ? 0xFFFFFFFFu : static_cast<core::uint32>(m.packed.size()));
         put32(cdh, m.zip64 ? 0xFFFFFFFFu : static_cast<core::uint32>(m.unp_size));

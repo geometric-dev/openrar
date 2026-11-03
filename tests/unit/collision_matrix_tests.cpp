@@ -13,6 +13,7 @@
 #include "../../src/io/file_stream.hpp"
 #include "../../src/archive/archive_reader.hpp"
 #include "../../src/archive/collision_detector.hpp"
+#include "../../src/unicode/unicode_tables.hpp"
 
 #include <cassert>
 #include <filesystem>
@@ -359,8 +360,50 @@ void test_multivolume_span() {
 
 } // namespace
 
+void test_unicode_nfc_bounds_and_recursion() {
+    // 1. 4-byte UTF-8 decoding bounds test (min_cp[4] access)
+    // Ordinary emoji (U+1F600 😀 = F0 9F 98 80, U+1F680 🚀 = F0 9F 9A 80)
+    std::string emoji_str = "File \xF0\x9F\x98\x80 \xF0\x9F\x9A\x80.txt";
+    std::string nfc_emoji = unicode::nfc(emoji_str);
+    REQUIRE(nfc_emoji == emoji_str);
+
+    // Max Unicode codepoint (U+10FFFF = F4 8F BF BF)
+    std::string max_cp = "\xF4\x8F\xBF\xBF";
+    REQUIRE(unicode::nfc(max_cp) == max_cp);
+
+    // Overlong 4-byte sequence (< 0x10000, e.g. U+0001 encoded as 4 bytes: F0 80 80 81)
+    // Must be rejected as invalid and passed through literally byte-by-byte
+    std::string overlong_4b = "\xF0\x80\x80\x81";
+    REQUIRE(unicode::nfc(overlong_4b) == overlong_4b);
+
+    // 2. Stack overflow prevention: non-recursive nfc() on deep invalid byte sequence
+    // A hostile archive entry with 10,000 invalid bytes (previously crashed with 0xC00000FD)
+    std::string hostile_name(10000, '\xFF');
+    std::string nfc_hostile = unicode::nfc(hostile_name);
+    REQUIRE(nfc_hostile.size() == 10000);
+    REQUIRE(nfc_hostile == hostile_name);
+
+    // Mixed invalid bytes with valid decomposed text (combining accents)
+    // "e" + U+0301 (acute) -> "e" + combining acute -> composed é (C3 A9)
+    std::string mixed = "e\xCC\x81" + std::string(5000, '\xFF') + "e\xCC\x81";
+    std::string nfc_mixed = unicode::nfc(mixed);
+    std::string expected_prefix = "\xC3\xA9"; // composed é
+    REQUIRE(nfc_mixed.substr(0, 2) == expected_prefix);
+    REQUIRE(nfc_mixed.substr(nfc_mixed.size() - 2) == expected_prefix);
+    REQUIRE(nfc_mixed.size() == 2 + 5000 + 2);
+
+    // 3. CollisionDetector::detect with hostile deep invalid bytes runs without stack overflow
+    std::vector<archive::CollisionEntry> entries = {{hostile_name, false}};
+    std::vector<archive::CollisionPair> collisions;
+    REQUIRE(!archive::CollisionDetector::detect(entries, collisions));
+
+    std::cout << "[PASS] unicode_nfc_bounds_and_recursion (4-byte emoji + 10k invalid bytes no "
+                 "stack overflow)\n";
+}
+
 static const openrar::test::Case k_cases[] = {
     {"test_detector_matrix", test_detector_matrix, false},
+    {"test_unicode_nfc_bounds_and_recursion", test_unicode_nfc_bounds_and_recursion, false},
     {"test_cli_collision_aborts", test_cli_collision_aborts, false},
     {"test_service_headers_exempt", test_service_headers_exempt, false},
     {"test_multivolume_span", test_multivolume_span, false}};
