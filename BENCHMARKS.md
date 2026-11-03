@@ -23,7 +23,8 @@ $$\text{RARMark Score} = \frac{0.6 \times \text{MT Compression (KB/s)} + 0.4 \ti
 | 4 | **AMD EPYC 7763 64-Core Processor**<br>_GitHub Actions Windows Runner (Windows Server 2022)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, SHA-NI, PCLMUL CRC` | 29.8 GB/s | 18.1 MB/s | 42.3 MB/s (2.34x) | 685.5 MB/s | **30,680** |
 | 5 | **AMD EPYC 7763 64-Core Processor**<br>_GitHub Actions Ubuntu Runner (Ubuntu 24.04 LTS, GCC)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, SHA-NI, PCLMUL CRC` | 28.6 GB/s | 16.0 MB/s | 32.8 MB/s (2.05x) | 566.0 MB/s | **25,196** |
 | 6 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.8 GB/s | 9.7 MB/s | 20.7 MB/s (2.13x) | 451.6 MB/s | **19,766** |
-| 7 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Workstation (Windows 11 x64)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.7 GB/s | 10.7 MB/s | 20.7 MB/s (1.94x) | 351.1 MB/s | **15,652** |
+| 7 | **Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz**<br>_Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 8.0 GB/s | 8.2 MB/s | 27.6 MB/s (3.37x) | 433.5 MB/s | **19,453** |
+| 8 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Workstation (Windows 11 x64)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.7 GB/s | 10.7 MB/s | 20.7 MB/s (1.94x) | 351.1 MB/s | **15,652** |
 
 ---
 
@@ -48,7 +49,8 @@ Benchmarks submitted by community members across diverse architectures (Ryzen, C
 | 1 | **13th Gen Intel(R) Core(TM) i7-1365U**<br>_13th Gen Intel(R) Core(TM) i7-1365U_ | x86_64 | 12T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, SHA-NI, PCLMUL CRC` | 32.2 GB/s | 24.1 MB/s | 126.4 MB/s (5.25x) | 2.06 GB/s | **94,216** |
 | 2 | **11th Gen Intel(R) Core(TM) i5-1145G7 @ 2.60GHz**<br>_11th Gen Intel(R) Core(TM) i5-1145G7 @ 2.60GHz_ | x86_64 | 8T | `AVX512 LZ, AVX-512 BLAKE2sp, AES-NI, SHA-NI, PCLMUL CRC` | 11.4 GB/s | 19.6 MB/s | 83.4 MB/s (4.26x) | 1.36 GB/s | **61,974** |
 | 3 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.8 GB/s | 9.7 MB/s | 20.7 MB/s (2.13x) | 451.6 MB/s | **19,766** |
-| 4 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Workstation (Windows 11 x64)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.7 GB/s | 10.7 MB/s | 20.7 MB/s (1.94x) | 351.1 MB/s | **15,652** |
+| 4 | **Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz**<br>_Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 8.0 GB/s | 8.2 MB/s | 27.6 MB/s (3.37x) | 433.5 MB/s | **19,453** |
+| 5 | **Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz**<br>_Workstation (Windows 11 x64)_ | x86_64 | 4T | `AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC` | 5.7 GB/s | 10.7 MB/s | 20.7 MB/s (1.94x) | 351.1 MB/s | **15,652** |
 
 ---
 
