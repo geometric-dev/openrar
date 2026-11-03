@@ -3661,14 +3661,50 @@ void test_decompressor_opt_d01_window_clamping() {
 }
 
 void test_decompress_to_vector_default_stream_cap() {
-    // Assert DEFAULT_STREAM_CAP is 512 MiB (F1).
+    // 1. Assert compile-time constants and platform differentiation (F1)
+#if defined(__EMSCRIPTEN__) || defined(_M_IX86) || defined(__i386__)
+    static_assert(Decompressor50::DEFAULT_STREAM_CAP == 128ULL * 1024 * 1024,
+                  "DEFAULT_STREAM_CAP must be 128 MiB on 32-bit/WASM");
+#else
     static_assert(Decompressor50::DEFAULT_STREAM_CAP == 512ULL * 1024 * 1024,
-                  "DEFAULT_STREAM_CAP must be 512 MiB");
-    Decompressor50 dec(0x200000);
-    std::vector<core::byte> out;
-    // Calling decompress_to_vector with nullptr / 0 returns true with out empty.
-    REQUIRE(dec.decompress_to_vector(nullptr, 0, out));
-    REQUIRE(out.empty());
+                  "DEFAULT_STREAM_CAP must be 512 MiB on 64-bit native");
+#endif
+
+    // 2. Test effective_stream_limit helper
+    REQUIRE(Decompressor50::effective_stream_limit(0) == Decompressor50::DEFAULT_STREAM_CAP);
+    REQUIRE(Decompressor50::effective_stream_limit(1024) == 1024);
+    REQUIRE(Decompressor50::effective_stream_limit(Decompressor50::MAX_STREAM_OUTPUT + 1000) ==
+            Decompressor50::MAX_STREAM_OUTPUT);
+
+    // 3. End-to-end enforcement with an explicit limit
+    std::vector<core::byte> data(64 * 1024, core::byte('B'));
+    std::vector<core::byte> packed;
+    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), packed, 3, 0x200000));
+
+    // Calling with explicit limit smaller than uncompressed payload fails with LimitExceeded
+    {
+        Decompressor50 dec(0x200000);
+        std::vector<core::byte> out;
+        // Calling decompress_to_vector with nullptr / 0 returns true with out empty.
+        REQUIRE(dec.decompress_to_vector(nullptr, 0, out));
+        REQUIRE(out.empty());
+
+        bool res_limited = dec.decompress_to_vector(packed.data(), packed.size(), out, false, 1024);
+        REQUIRE(!res_limited);
+        REQUIRE(dec.last_error() == DecompressErrorCode::LimitExceeded);
+        REQUIRE(out.size() <= 1024);
+    }
+
+    // Calling with default limit (0 => DEFAULT_STREAM_CAP) succeeds completely
+    {
+        Decompressor50 dec(0x200000);
+        std::vector<core::byte> out;
+        bool res_default = dec.decompress_to_vector(packed.data(), packed.size(), out, false, 0);
+        REQUIRE(res_default);
+        REQUIRE(out.size() == 64 * 1024);
+        REQUIRE(out == data);
+    }
+
     std::cout << "[PASS] decompress_to_vector default stream cap invariant (F1)\n";
 }
 
@@ -3676,16 +3712,41 @@ void test_prescan_member_dedup_and_cap() {
     // Assert PRESCAN_MAX_DESCRIPTIONS is 16384 (F2).
     static_assert(Decompressor50::PRESCAN_MAX_DESCRIPTIONS == 16384,
                   "PRESCAN_MAX_DESCRIPTIONS must be 16384");
-    std::vector<core::byte> data(256 * 1024, core::byte('A'));
+
+    std::vector<core::byte> data(4096, core::byte('A'));
     std::vector<core::byte> packed;
     REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), packed, 3, 0x200000));
 
+    // Construct a multi-block stream where 4 sequential blocks share identical tables.
+    // Blocks 0..2 have the last-block flag (bit 6, 0x40) cleared; block 3 has it set.
+    std::vector<core::byte> multi_block;
+    for (int b = 0; b < 4; ++b) {
+        std::vector<core::byte> blk = packed;
+        if (b < 3) {
+            blk[0] &= ~0x40; // clear last-block bit
+        } else {
+            blk[0] |= 0x40; // set last-block bit
+        }
+        // Extract size byte count from bits 3..4
+        core::uint32 flags = static_cast<unsigned char>(blk[0]);
+        core::uint32 byte_cnt = ((flags >> 3) & 3) + 1;
+        core::uint32 bsize = 0;
+        for (core::uint32 i = 0; i < byte_cnt; ++i) {
+            bsize |= static_cast<unsigned char>(blk[2 + i]) << (i * 8);
+        }
+        blk[1] =
+            static_cast<core::byte>((0x5A ^ flags ^ bsize ^ (bsize >> 8) ^ (bsize >> 16)) & 0xFF);
+        multi_block.insert(multi_block.end(), blk.begin(), blk.end());
+    }
+
     Decompressor50 ps(0x200000);
     Decompressor50::PrescanTimeline tl;
-    REQUIRE(ps.prescan_member(packed.data(), packed.size(), tl));
-    // Multiple blocks sharing identical tables must deduplicate down to 1 description.
-    REQUIRE(tl.descriptions.size() <= tl.blocks.size());
-    std::cout << "[PASS] prescan_member description deduplication and cap (F2)\n";
+    REQUIRE(ps.prescan_member(multi_block.data(), multi_block.size(), tl));
+    // Multiple sequential blocks sharing identical tables must deduplicate down to 1 description!
+    REQUIRE(tl.blocks.size() == 4);
+    REQUIRE(tl.descriptions.size() == 1);
+    std::cout << "[PASS] prescan_member description deduplication and cap (F2: 4 blocks -> 1 "
+                 "description)\n";
 }
 
 static const openrar::test::Case k_cases[] = {

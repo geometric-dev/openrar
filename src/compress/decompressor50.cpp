@@ -1086,7 +1086,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             core::uint32 f_start = read_filter_data(ok);
             core::uint32 f_len = read_filter_data(ok);
             if (!ok) return false;
-            // UnRAR parity (Unpack::ReadFilter): filter lengths > 0x400000 are zeroed to drop
+            // Format specification: filter lengths > 0x400000 are zeroed to drop
             // corrupted or hostile filter regions without failing stream decode (F8).
             if (f_len > 0x400000) f_len = 0;
             if (reader.bits_remaining() < 3) return false;
@@ -1524,7 +1524,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
                 core::uint32 f_start = read_filter_data(ok);
                 core::uint32 f_len = ok ? read_filter_data(ok) : 0;
                 if (!ok) return false;
-                // UnRAR parity (Unpack::ReadFilter): filter lengths > 0x400000 are zeroed (F8).
+                // Format specification: filter lengths > 0x400000 are zeroed to drop corrupted filter regions (F8).
                 if (f_len > 0x400000) f_len = 0;
                 if (reader.bits_remaining() < 3) return false;
                 core::uint32 f_type = reader.get_bits(3);
@@ -1854,10 +1854,9 @@ bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size
     out.clear();
     if (src == nullptr || src_size == 0) return true;
 
-    // Callers passing 0 get the safe DEFAULT_STREAM_CAP (512 MiB), protecting against
-    // decompression bombs (F1). Explicit callers may bound up to MAX_STREAM_OUTPUT (64 GiB).
-    core::uint64 limit =
-        max_output ? std::min<core::uint64>(max_output, MAX_STREAM_OUTPUT) : DEFAULT_STREAM_CAP;
+    // Callers passing 0 get the safe DEFAULT_STREAM_CAP (512 MiB native / 128 MiB 32-bit), protecting against
+    // decompression bombs (F1). Explicit callers may bound up to MAX_STREAM_OUTPUT (64 GiB native / 2 GiB 32-bit).
+    core::uint64 limit = effective_stream_limit(max_output);
 
     size_t cap = std::max<size_t>(64 * 1024, src_size * 8);
     if (cap > static_cast<size_t>(limit)) cap = static_cast<size_t>(limit);
