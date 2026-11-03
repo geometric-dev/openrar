@@ -2527,14 +2527,14 @@ void test_slot257_pure_addition_suppressed() {
         // pre-M2 — the binary-tree finder changes match selection by design,
         // so no byte identity is asserted there.
         // v2.1.0 Track E Forward-Arrival relaxation and bit-density selection re-capture (OPENRAR_REFCAP=1).
-        {"text64k", 1, "3ee77dea016fafc7e376dc4e99bf80d2ed15980b98ef64c50b586c221b54ed9c"},
-        {"text64k", 3, "2647eb06fa9d4c6f98d038caee0de5b51f28252aa572976e2eb0a5190025d795"},
+        {"text64k", 1, "17407578e70f71dcc2c6091c51390c2529d3b9831552e0c39949dbcb24d2f1cb"},
+        {"text64k", 3, "f2a7bdb2f8c15d3371be12ba4a4b35353efd29eb51eac0270bf7b99a6efcd848"},
         {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"zeros1m", 1, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
         {"zeros1m", 3, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
-        {"mixed", 1, "8f6fe2af405b24ec3f970e5223687d01ace7d243a843d183e818e1e4f64444d9"},
-        {"mixed", 3, "4bdad8362e87b9d095ace94dda2a7d067aff2eeaec4f2b0e3c637bc13732dcbc"},
+        {"mixed", 1, "39819c8b63ca4356ec82bef90f6e888f9aba6f789268b2a5f11d9a644685ccc2"},
+        {"mixed", 3, "7d47b6718e473655315101a0a68cf60dbe202a1a66dc1dde5177396ca5dd284b"},
         {"farrepeat", 1, "bdb80ea91cd0cbde64b19edaf6b72a8b499139979fe45db5ccbc13873a035340"},
         {"farrepeat", 3, "bdb80ea91cd0cbde64b19edaf6b72a8b499139979fe45db5ccbc13873a035340"},
     };
@@ -2598,14 +2598,14 @@ void test_selection_reference() {
         const char* sha;
     } expected[] = {
         // v2.1.0 Track E Forward-Arrival relaxation and bit-density selection re-capture (OPENRAR_REFCAP=1).
-        {"text64k", 1, "3d699514856b25b316071ec472ce31f665e95041db6db2c09cd8b423c77dc761"},
-        {"text64k", 3, "1a26487b69610d70aa859efeda1a460273fced850571a9161a5263172bffdb6d"},
+        {"text64k", 1, "6bd79ff9ba40857a424f0780c4059001d6c4e8b2fa1dd2643169506d0c73a1e6"},
+        {"text64k", 3, "43cfe1601f62b7192c7fb6663157388ba64c9f9dd5d907b58154c81c73248ee8"},
         {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"zeros1m", 1, "29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d"},
         {"zeros1m", 3, "29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d"},
-        {"mixed", 1, "0eb32a8e8c1aa47e66215438764fdf0bbaf9fca5942ecfe9afdd168b1852dbdc"},
-        {"mixed", 3, "629ec0b46acdc8b3b3b360fa5261ed28f9aa1a7bd3c68ddd2ef5a71bd5e8848e"},
+        {"mixed", 1, "15bbd774fc7a6c67406f641d2fc47346fcb96b13d1211d8bef1f46ceccae5353"},
+        {"mixed", 3, "59443d998f4a5cb7fa6247631d0f897b859573b20d4f68340b78f4aa417a1e75"},
         {"farrepeat", 1, "b1bffbe2c04024826cdb803e8621ffd93550d27a98a5124a04309170e3b0fa0e"},
         {"farrepeat", 3, "b1bffbe2c04024826cdb803e8621ffd93550d27a98a5124a04309170e3b0fa0e"},
     };
