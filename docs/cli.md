@@ -77,8 +77,8 @@ openrar help [<command>]
 | Switch | Syntax & Parameters | Description |
 |---|---|---|
 | `--leaderboard` / `--top` | `--leaderboard`, `--top` | Queries and displays the ranked global cloud hardware leaderboard in the terminal. |
-| `--submit` | `--submit`, `-submit` | Automatically submits verified benchmark results to the live OpenRAR Cloudflare Workers edge API (`https://benchmark.openrar.workers.dev/submit`). |
-| `--system=<desc>` | `--system="Ryzen 9 7950X / 64GB DDR5"` | Custom hardware / rig description attached to the benchmark result for the community leaderboard in `BENCHMARKS.md`. |
+| `--submit` | `--submit`, `-submit` | Automatically submits verified benchmark results for publication on the official [GitHub Pages Leaderboard](https://geometric-dev.github.io/openrar/). |
+| `--system=<desc>` | `--system="Ryzen 9 7950X / 64GB DDR5"` | Custom hardware / rig description attached to the benchmark result for the community leaderboard on GitHub Pages and in `BENCHMARKS.md`. |
 | `--submit-endpoint=<url>` | `--submit-endpoint=https://...` | Overrides the default submission API endpoint (for private testing or custom mirrors). |
 
 ### 3.4 Encryption & Security
