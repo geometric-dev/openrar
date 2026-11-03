@@ -435,13 +435,21 @@ public:
 #if defined(__EMSCRIPTEN__) || defined(_M_IX86) || defined(__i386__)
     static constexpr core::uint64 MAX_STREAM_OUTPUT =
         2ULL * 1024 * 1024 * 1024; // 2 GiB on 32-bit / WASM
+    static constexpr core::uint64 DEFAULT_STREAM_CAP =
+        128ULL * 1024 * 1024; // 128 MiB on 32-bit / WASM (F1)
 #else
     static constexpr core::uint64 MAX_STREAM_OUTPUT =
         64ULL * 1024 * 1024 * 1024; // 64 GiB on 64-bit native
+    static constexpr core::uint64 DEFAULT_STREAM_CAP =
+        512ULL * 1024 * 1024; // 512 MiB on 64-bit native (F1)
 #endif
 
-    // Safe default cap when caller passes max_output == 0 (F1)
-    static constexpr core::uint64 DEFAULT_STREAM_CAP = 512ULL * 1024 * 1024; // 512 MiB
+    // Resolves the effective stream limit: 0 maps to DEFAULT_STREAM_CAP, and any
+    // caller-supplied limit is clamped to MAX_STREAM_OUTPUT.
+    static constexpr core::uint64 effective_stream_limit(core::uint64 max_output) noexcept {
+        return max_output == 0 ? DEFAULT_STREAM_CAP
+                               : (max_output > MAX_STREAM_OUTPUT ? MAX_STREAM_OUTPUT : max_output);
+    }
 
 private:
     struct BlockHeader {
