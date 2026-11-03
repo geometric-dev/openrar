@@ -1,0 +1,202 @@
+{
+  "zeros8.bin": {
+    "m1": {
+      "forward_arrival": {
+        "size": 587,
+        "time_s": 0.08736549993045628,
+        "mb_s": 91.56932663772395,
+        "orig_size": 8388608
+      },
+      "greedy_legacy": {
+        "size": 587,
+        "time_s": 0.0666145000141114,
+        "mb_s": 120.09397350885027,
+        "orig_size": 8388608
+      },
+      "delta_bytes": 0,
+      "pct_delta": 0.0
+    },
+    "m3": {
+      "forward_arrival": {
+        "size": 587,
+        "time_s": 0.0729012000374496,
+        "mb_s": 109.7375625626241,
+        "orig_size": 8388608
+      },
+      "greedy_legacy": {
+        "size": 587,
+        "time_s": 0.14705839985981584,
+        "mb_s": 54.40015672430844,
+        "orig_size": 8388608
+      },
+      "delta_bytes": 0,
+      "pct_delta": 0.0
+    },
+    "m5": {
+      "forward_arrival": {
+        "size": 600,
+        "time_s": 0.07829859992489219,
+        "mb_s": 102.17296359927238,
+        "orig_size": 8388608
+      },
+      "greedy_legacy": {
+        "size": 587,
+        "time_s": 0.06665690010413527,
+        "mb_s": 120.01758238834893,
+        "orig_size": 8388608
+      },
+      "delta_bytes": 13,
+      "pct_delta": 2.2146507666098807
+    }
+  },
+  "random8.bin": {
+    "m1": {
+      "forward_arrival": {
+        "size": 8388779,
+        "time_s": 0.5635946998372674,
+        "mb_s": 14.194597646695264,
+        "orig_size": 8388608
+      },
+      "greedy_legacy": {
+        "size": 8388779,
+        "time_s": 1.0337924999184906,
+        "mb_s": 7.738496845963537,
+        "orig_size": 8388608
+      },
+      "delta_bytes": 0,
+      "pct_delta": 0.0
+    },
+    "m3": {
+      "forward_arrival": {
+        "size": 8388779,
+        "time_s": 2.588612399995327,
+        "mb_s": 3.0904588110658984,
+        "orig_size": 8388608
+      },
+      "greedy_legacy": {
+        "size": 8388779,
+        "time_s": 2.8858264998998493,
+        "mb_s": 2.7721694288543106,
+        "orig_size": 8388608
+      },
+      "delta_bytes": 0,
+      "pct_delta": 0.0
+    },
+    "m5": {
+      "forward_arrival": {
+        "size": 8388779,
+        "time_s": 2.5313274001237005,
+        "mb_s": 3.16039718908311,
+        "orig_size": 8388608
+      },
+      "greedy_legacy": {
+        "size": 8388779,
+        "time_s": 3.3699194001965225,
+        "mb_s": 2.3739440176324296,
+        "orig_size": 8388608
+      },
+      "delta_bytes": 0,
+      "pct_delta": 0.0
+    }
+  },
+  "text8.txt": {
+    "m1": {
+      "forward_arrival": {
+        "size": 2037188,
+        "time_s": 0.8065653999801725,
+        "mb_s": 9.918608802109384,
+        "orig_size": 8388615
+      },
+      "greedy_legacy": {
+        "size": 2027169,
+        "time_s": 0.42886339989490807,
+        "mb_s": 18.653973917290674,
+        "orig_size": 8388615
+      },
+      "delta_bytes": 10019,
+      "pct_delta": 0.4942360503736985
+    },
+    "m3": {
+      "forward_arrival": {
+        "size": 1844220,
+        "time_s": 1.2059834999963641,
+        "mb_s": 6.633595464402568,
+        "orig_size": 8388615
+      },
+      "greedy_legacy": {
+        "size": 1837765,
+        "time_s": 0.9680119999684393,
+        "mb_s": 8.264367255758238,
+        "orig_size": 8388615
+      },
+      "delta_bytes": 6455,
+      "pct_delta": 0.3512418617179019
+    },
+    "m5": {
+      "forward_arrival": {
+        "size": 1590218,
+        "time_s": 1.7984358000103384,
+        "mb_s": 4.448313737790488,
+        "orig_size": 8388615
+      },
+      "greedy_legacy": {
+        "size": 1611524,
+        "time_s": 2.8710956000722945,
+        "mb_s": 2.7863950874776773,
+        "orig_size": 8388615
+      },
+      "delta_bytes": -21306,
+      "pct_delta": -1.3221025563379758
+    }
+  },
+  "mixed16.bin": {
+    "m1": {
+      "forward_arrival": {
+        "size": 10431456,
+        "time_s": 1.3409980998840183,
+        "mb_s": 11.931411387819137,
+        "orig_size": 16777216
+      },
+      "greedy_legacy": {
+        "size": 10422834,
+        "time_s": 0.7065034001134336,
+        "mb_s": 22.64674168224965,
+        "orig_size": 16777216
+      },
+      "delta_bytes": 8622,
+      "pct_delta": 0.08272222314967312
+    },
+    "m3": {
+      "forward_arrival": {
+        "size": 10239719,
+        "time_s": 2.4482470999937505,
+        "mb_s": 6.53528804344988,
+        "orig_size": 16777216
+      },
+      "greedy_legacy": {
+        "size": 10233731,
+        "time_s": 2.0741139000747353,
+        "mb_s": 7.714137588790799,
+        "orig_size": 16777216
+      },
+      "delta_bytes": 5988,
+      "pct_delta": 0.05851238419301817
+    },
+    "m5": {
+      "forward_arrival": {
+        "size": 9985468,
+        "time_s": 3.108998600160703,
+        "mb_s": 5.146351625624073,
+        "orig_size": 16777216
+      },
+      "greedy_legacy": {
+        "size": 10006577,
+        "time_s": 3.9692500999663025,
+        "mb_s": 4.030988120435101,
+        "orig_size": 16777216
+      },
+      "delta_bytes": -21109,
+      "pct_delta": -0.21095125735803563
+    }
+  }
+}
