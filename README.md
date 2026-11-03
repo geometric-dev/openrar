@@ -124,6 +124,9 @@ Measures host CPU compression and decompression throughput using a deterministic
 # Standard benchmark across all CPU cores (5s phases, default 4 MiB dictionary)
 openrar b
 
+# View top rankings from the global cloud hardware leaderboard
+openrar b --leaderboard
+
 # Benchmark and submit verified results directly to the global cloud leaderboard
 openrar b --submit
 
@@ -238,6 +241,7 @@ openrar a -m5 -r best.rar ./src
 | `-ed` | Omit directory records while keeping relative file paths. |
 | `-ep` | Exclude paths from names (store or extract bare filenames). |
 | `-df` | Delete source files after successful, verified archiving or conversion (`cv`). |
+| `--leaderboard` | View top rankings from the global cloud hardware leaderboard (`openrar b --leaderboard`). |
 | `--submit` | Submit verified benchmark score to the global cloud leaderboard (`openrar b`). |
 | `--system=<str>` | Custom hardware description when submitting benchmarks. |
 | `--json` | Universal structured RFC 8259 JSON output across `l`, `t`, `b`, `inspect`, and `diff`. |

@@ -15,6 +15,7 @@ struct BenchmarkOptions {
     bool plain{false};                 // disable ANSI animations
     bool json{false};                  // emit JSON output
     bool submit{false};                // submit results to cloud leaderboard
+    bool leaderboard{false};           // view global cloud hardware leaderboard
     std::string system_name;           // custom machine / system description
     std::string endpoint;              // ingestion URL override
 };
@@ -22,6 +23,7 @@ struct BenchmarkOptions {
 struct BenchmarkResult {
     std::string cpu_brand;
     std::string arch;
+    std::string topology;
     std::vector<std::string> simd_features;
     unsigned logical_cores{1};
     unsigned threads_used{1};
@@ -43,6 +45,9 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt);
 
 // Formats and outputs the benchmark result to stdout (or JSON), optionally submitting to cloud.
 int run_benchmark_cli(const BenchmarkOptions& opt);
+
+// Fetches and displays the top entries from the global cloud leaderboard.
+int display_cloud_leaderboard(const BenchmarkOptions& opt);
 
 } // namespace openrar::cli
 

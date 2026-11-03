@@ -100,12 +100,31 @@ void test_benchmark_cli_json_and_plain() {
     std::cout << "[PASS] CLI JSON output format validated.\n";
 }
 
+
+void test_benchmark_leaderboard_options_and_topology() {
+    BenchmarkOptions opt;
+    REQUIRE(!opt.leaderboard);
+    opt.threads = 1;
+    opt.seconds = 1;
+    opt.dict_size = 1024 * 1024;
+    opt.method = 3;
+    opt.plain = true;
+
+    BenchmarkResult res = run_benchmark(opt);
+    REQUIRE(!res.topology.empty());
+    REQUIRE(res.topology.find("threads") != std::string::npos);
+
+    std::cout << "[PASS] Topology detected: " << res.topology << "\n";
+}
+
 static const openrar::test::Case k_cases[] = {
     {"test_cpu_brand_and_acceleration", test_cpu_brand_and_acceleration, false},
     {"test_benchmark_single_thread", test_benchmark_single_thread, false},
     {"test_benchmark_multi_thread", test_benchmark_multi_thread, false},
     {"test_benchmark_clamping_and_bounds", test_benchmark_clamping_and_bounds, false},
     {"test_benchmark_cli_json_and_plain", test_benchmark_cli_json_and_plain, false},
+    {"test_benchmark_leaderboard_options_and_topology",
+     test_benchmark_leaderboard_options_and_topology, false},
 };
 
 int main(int argc, char* argv[]) {
