@@ -52,6 +52,10 @@ private:
     std::string archive_comment_; // raw bytes (sanitized by the transcoder)
 };
 
+// DOS datetime to UNIX epoch seconds. DOS dates run through year 2107;
+// returns int64_t to prevent 32-bit timestamp wrapping past 2106-02-07.
+int64_t dos_datetime_to_epoch(core::uint16 d, core::uint16 t);
+
 } // namespace openrar::archive::foreign
 
 #endif // OPENRAR_ARCHIVE_FOREIGN_ZIP_HPP
