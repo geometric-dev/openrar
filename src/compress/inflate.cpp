@@ -338,6 +338,9 @@ bool Inflate::read_dynamic_tables() {
     if (!litlen_.complete) {
         if (litlen_.counts[1] != 1) return false;
         if (hlit <= 256 || all_lengths[256] != 1) return false;
+        for (unsigned int l = 2; l <= HuffmanTable::MAX_BITS; ++l) {
+            if (litlen_.counts[l] != 0) return false;
+        }
     }
     // Distance special cases (RFC 1951 §3.2.7): incomplete is legal ONLY
     // as a single code of length 1, or an all-zero (literals-only) table.

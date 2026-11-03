@@ -232,15 +232,17 @@ Two DISTINCT layers — the freeze documentation draws the line explicitly
 (pre-analysis §1.2):
 
 1. **Absolute floors — NOT reachable by any embedder call, non-disableable:**
-   `Decompressor50::MAX_STREAM_OUTPUT` allocation cap (constexpr,
-   decompressor50.hpp:203; enforced decompressor50.cpp:942/952); KDF
-   iteration ceiling (`lg2_count ≤ 24`, pinned at both header paths,
-   `test_kdf_cap_pinned`); dictionary/window caps; header-walk loop bounds
-   and entry-count caps; the §4.1 syscall-level path-containment walk (NO
-   disable switch exists — `--no-mmap`/`OPENRAR_NO_MMAP` downgrades the read
-   engine only, never containment). Pinned by
-   `library_mode_limits_non_disableable` and
-   `library_containment_no_disable_switch` (v1.30.0 M2).
+   - `Decompressor50::MAX_STREAM_OUTPUT` allocation cap (constexpr,
+     decompressor50.hpp:435–441; enforced decompressor50.cpp:1860); 64 GiB native / 2 GiB 32-bit/WASM.
+   - `Decompressor50::DEFAULT_STREAM_CAP` default stream cap (constexpr,
+     decompressor50.hpp:443–445; enforced decompressor50.cpp:1860); 512 MiB native / 128 MiB 32-bit/WASM applied when caller passes `max_output == 0`.
+   - KDF iteration ceiling (`lg2_count ≤ 24`, pinned at both header paths,
+     `test_kdf_cap_pinned`); dictionary/window caps; header-walk loop bounds
+     and entry-count caps; the §4.1 syscall-level path-containment walk (NO
+     disable switch exists — `--no-mmap`/`OPENRAR_NO_MMAP` downgrades the read
+     engine only, never containment). Pinned by
+     `library_mode_limits_non_disableable` and
+     `library_containment_no_disable_switch` (v1.30.0 M2).
 2. **Caller budgets — tunable by design, up to unlimited:**
    `ExtractionLimits` (extraction_limits.hpp:33–58, every field defaults
    UNLIMITED) and `openrar_archive_handle_set_limits` (`UINT64_MAX` =

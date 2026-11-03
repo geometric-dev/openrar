@@ -946,11 +946,6 @@ struct FileArchiveHandle : ArchiveHandleBase {
                 set_error("oom");
                 return RAR_ERR_NOMEM;
             }
-            if (payload.size() > UINT32_MAX) {
-                std::free(buf);
-                set_error("archive comment exceeds maximum supported size");
-                return RAR_ERR_UNSUPPORTED_FEATURE;
-            }
             if (!payload.empty()) std::memcpy(buf, payload.data(), payload.size());
             out->comment_len = static_cast<uint32_t>(payload.size());
             *comment_out = buf;
