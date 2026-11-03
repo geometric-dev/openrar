@@ -1,8 +1,8 @@
 {
   "benchmark": "openrar_rarmark_v2",
   "leaderboard_url": "https://geometric-dev.github.io/openrar/",
-  "updated_at": "2026-11-03 15:03:24 UTC",
-  "total": 7,
+  "updated_at": "2026-11-03 15:12:35 UTC",
+  "total": 8,
   "entries": [
     {
       "rank": 1,
@@ -90,6 +90,20 @@
     },
     {
       "rank": 7,
+      "cpu_brand": "Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz",
+      "system": "Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz",
+      "arch": "x86_64",
+      "threads": 4,
+      "simd": "AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC",
+      "mem_bw_gbps": 7.95,
+      "st_compress_kbps": 8391.4,
+      "mt_compress_kbps": 28296.3,
+      "mt_decompress_kbps": 443890.7,
+      "speedup_ratio": 3.37,
+      "rarmark_score": 19453
+    },
+    {
+      "rank": 8,
       "cpu_brand": "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",
       "system": "Workstation (Windows 11 x64)",
       "arch": "x86_64",

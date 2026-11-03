@@ -234,7 +234,7 @@
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-title">Verified Submissions</div>
-        <div class="stat-value">7</div>
+        <div class="stat-value">8</div>
         <div class="stat-sub">Across x86_64 and ARM64 platforms</div>
       </div>
       <div class="stat-card">
@@ -275,9 +275,9 @@
 
     <div class="controls-bar">
       <div class="tab-group">
-        <button class="tab-btn active" id="btn-overall" onclick="showTab('overall')">Overall Leaderboard (7)</button>
+        <button class="tab-btn active" id="btn-overall" onclick="showTab('overall')">Overall Leaderboard (8)</button>
         <button class="tab-btn" id="btn-ci" onclick="showTab('ci')">Official CI Baselines (3)</button>
-        <button class="tab-btn" id="btn-community" onclick="showTab('community')">Community Submissions (4)</button>
+        <button class="tab-btn" id="btn-community" onclick="showTab('community')">Community Submissions (5)</button>
       </div>
       <input type="text" class="search-box" id="search-input" placeholder="Search CPU, arch, SIMD..." oninput="filterTable(this.value)">
     </div>
@@ -392,6 +392,21 @@
           </tr>
           <tr>
             <td class="col-rank"><span class="rank default">#7</span></td>
+            <td class="col-cpu">
+              <div class="cpu-name">Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz</div>
+              <div class="system-sub">Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz</div>
+            </td>
+            <td><span class="badge badge-arch">x86_64</span></td>
+            <td class="num">4T</td>
+            <td class="simd-cell"><span class="badge badge-simd">AVX2 LZ</span> <span class="badge badge-simd">AVX2 BLAKE2sp</span> <span class="badge badge-simd">AES-NI</span> <span class="badge badge-simd">PCLMUL CRC</span></td>
+            <td class="num">8.0 GB/s</td>
+            <td class="num">8.2 MB/s</td>
+            <td class="num">27.6 MB/s <span class="scaling">(3.37x)</span></td>
+            <td class="num">433.5 MB/s</td>
+            <td class="num col-score"><strong>19,453</strong></td>
+          </tr>
+          <tr>
+            <td class="col-rank"><span class="rank default">#8</span></td>
             <td class="col-cpu">
               <div class="cpu-name">Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz</div>
               <div class="system-sub">Workstation (Windows 11 x64)</div>
@@ -544,6 +559,21 @@
           <tr>
             <td class="col-rank"><span class="rank default">#4</span></td>
             <td class="col-cpu">
+              <div class="cpu-name">Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz</div>
+              <div class="system-sub">Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz</div>
+            </td>
+            <td><span class="badge badge-arch">x86_64</span></td>
+            <td class="num">4T</td>
+            <td class="simd-cell"><span class="badge badge-simd">AVX2 LZ</span> <span class="badge badge-simd">AVX2 BLAKE2sp</span> <span class="badge badge-simd">AES-NI</span> <span class="badge badge-simd">PCLMUL CRC</span></td>
+            <td class="num">8.0 GB/s</td>
+            <td class="num">8.2 MB/s</td>
+            <td class="num">27.6 MB/s <span class="scaling">(3.37x)</span></td>
+            <td class="num">433.5 MB/s</td>
+            <td class="num col-score"><strong>19,453</strong></td>
+          </tr>
+          <tr>
+            <td class="col-rank"><span class="rank default">#5</span></td>
+            <td class="col-cpu">
               <div class="cpu-name">Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz</div>
               <div class="system-sub">Workstation (Windows 11 x64)</div>
             </td>
@@ -563,7 +593,7 @@
 
     <footer>
       <p>Hosted on <strong>GitHub Pages</strong> &bull; Updated periodically via <strong>GitHub Actions</strong> &bull; Generated from verified test runs</p>
-      <p style="margin-top: 0.4rem;">Last updated: <code>2026-11-03 15:03:24 UTC</code> &bull; Formula: <code>RARMark = (0.6 &times; MT_Compress + 0.4 &times; MT_Decompress) / 10</code></p>
+      <p style="margin-top: 0.4rem;">Last updated: <code>2026-11-03 15:12:35 UTC</code> &bull; Formula: <code>RARMark = (0.6 &times; MT_Compress + 0.4 &times; MT_Decompress) / 10</code></p>
     </footer>
   </div>
 
