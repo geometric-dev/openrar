@@ -703,7 +703,7 @@ core::uint32 Compressor50::price_literal(core::byte b) const {
 core::uint32 Compressor50::price_match(size_t len, size_t dist) const {
     if (!price_model_.initialized) return (len >= 3) ? (14u << 8) : DP_INF;
     core::uint32 inc = length_increment(dist);
-    if (len < static_cast<size_t>(inc) + min_match_) return DP_INF;
+    if (len < min_match_ || len < static_cast<size_t>(inc) + 2) return DP_INF;
     core::uint32 base = static_cast<core::uint32>(len - inc);
     if (base > MAX_LZ_MATCH) base = MAX_LZ_MATCH;
 
@@ -778,7 +778,7 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
     if (match_len >= nice_len_ && match_candidate >= 0) {
         size_t mdist = static_cast<size_t>(cur - static_cast<core::uint64>(match_candidate));
         core::uint32 inc = length_increment(mdist);
-        if (match_len >= static_cast<size_t>(inc) + min_match_) {
+        if (match_len >= min_match_ && match_len >= static_cast<size_t>(inc) + 2) {
             return {1, static_cast<core::uint16>(std::min(match_len, avail)), mdist, 0};
         }
     }
@@ -839,7 +839,7 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
         size_t mlen = std::min(match_len, avail);
         size_t mdist = static_cast<size_t>(cur - static_cast<core::uint64>(match_candidate));
         core::uint32 inc = length_increment(mdist);
-        if (mlen >= static_cast<size_t>(inc) + min_match_) {
+        if (mlen >= min_match_ && mlen >= static_cast<size_t>(inc) + 2) {
             core::uint32 cost = price_match(mlen, mdist);
             size_t new_dist[4];
             new_dist[0] = mdist;
@@ -938,7 +938,7 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
         }
 
         // 3. Selective Fresh match search at offset 1 ONLY (Frugal Search)
-        if (i == 1 && (match_len >= 3 || rep_best_len >= 2) && avail_i >= 3) {
+        if (lazy_tests_ > 0 && i == 1 && (match_len >= 3 || rep_best_len >= 2) && avail_i >= 3) {
             MatchInfo mi = find_match(pos, std::min<core::uint32>(max_chain_, 16), nice_len_);
             if (mi.length >= 3 && mi.candidate >= 0) {
                 size_t mlen = std::min(mi.length, avail_i);
@@ -1267,7 +1267,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
 
         size_t cand_dist = static_cast<size_t>(pos - static_cast<core::uint64>(cand));
         core::uint32 inc = length_increment(cand_dist);
-        size_t min_legal_len = static_cast<size_t>(inc) + min_match_;
+        size_t min_legal_len = std::max<size_t>(min_match_, static_cast<size_t>(inc) + 2);
 
         // Distance-costed hurdle: for a distant candidate to beat best.length,
         // it must overcome the higher distance band extra bits overhead.
