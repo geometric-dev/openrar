@@ -15,10 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Enforced `DEFAULT_STREAM_CAP` (512 MiB native / 128 MiB 32-bit/WASM) across all unbounded `decompress_to_vector` and `StreamDecoder` entry points (Finding F1).
   - Thwarts memory-exhaustion attacks exploiting Slot 257 run-continuation amplification (1 bit → 4100 bytes).
 - **BufferArchive Stateless Extraction Ceilings (`buffer_archive.cpp`):**
-  - Implemented `HARD_MEMBER_CAP` (512 MiB native / 128 MiB 32-bit/WASM) in `BufferArchive::extract`, preventing decompression bomb allocation loops on malformed archives (Finding P0-1).
-  - Added cumulative total output ceilings (16 GiB native / 2 GiB 32-bit/WASM) across multi-entry archive extraction (Finding P0-2).
+  - Enforced `HARD_MEMBER_CAP` and `MAX_TOTAL_OUTPUT` non-disableable safety floors (64 GiB native / 2 GiB 32-bit/WASM) in `BufferArchive`, bounding stateless extraction and requiring explicit caller budgets via `RarExtractionLimits` (Findings P0-1, P0-2).
 - **Parallel Timeline & Prescan Memory Budgeting (`decompressor50.cpp`):**
-  - Deduplicated identical Huffman table descriptions across block boundaries in `prescan_member` and enforced `PRESCAN_MAX_DESCRIPTIONS` (4096), preventing memory amplification from adversarial 3-byte block headers (Finding F2).
+  - Deduplicated identical Huffman table descriptions across block boundaries in `prescan_member` and enforced `PRESCAN_MAX_DESCRIPTIONS` (16384), preventing memory amplification from adversarial 3-byte block headers (Finding F2).
   - Added `std::bad_alloc` exception handling in `ParallelDecoder` with graceful fallback to sequential decoding.
 - **Archive Comment Length & Truncation Clamping (`dll_api.cpp`):**
   - Bound archive comment decoding to `MAX_COMMENT_PAYLOAD` (16 MiB) with checked integer conversions, eliminating memory exhaustion and 32-bit integer truncation (Finding F6).
@@ -61,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Cloud Benchmarking & Ecosystem Infrastructure (v2.0.23)
 
 - **Cloud Benchmark Ingestion & Global Leaderboard (`openrar b --submit`):**
-  - Added `--submit` and `--system=<desc>` flags to `openrar b` for direct submission to the live benchmark API (`https://benchmark.openrar.workers.dev/submit`).
+  - Added `--submit` and `--system=<desc>` flags to `openrar b` for direct submission to the live benchmark API on the official GitHub Pages hardware leaderboard (`https://geometric-dev.github.io/openrar/`).
   - Added hardware memory bandwidth tracking and dynamic markdown leaderboard generation (`BENCHMARKS.md`).
   - Strict privacy enforcement: completely purged submitter usernames across the CLI, payloads, and aggregator.
 

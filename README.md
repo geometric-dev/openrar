@@ -28,10 +28,10 @@
 | **Extraction containment** | syscall-level path containment (write-through-handle), atomic extraction with journal manifests, collision rejection, `--json-summary` |
 | **Mapped read engine** | memory-mapped listing/header-scan (`--no-mmap` forces buffered; extraction always buffered) |
 | **Archive mutation** (`d`/`u`/`f`/`m`/`k`) | delete, update, freshen, move, lock — QO/locator stripped on mutation |
-| **CDC packing** (`-cdc`) | content-defined chunking drives solid-chain ordering (window-bounded reduction, measured against a plain-solid baseline) — ordinary RAR5 solid streams, WinRAR/UnRAR-verified |
+| **CDC packing** (`-cdc`) | content-defined chunking drives solid-chain ordering (window-bounded reduction, measured against a plain-solid baseline) — ordinary RAR5 solid streams, WinRAR-verified |
 | **Filter switches** (`-mc`) | `-mcE`/`-mcD`/`-mcL`/`-mcX` parsed and forwarded; DELTA/E8 applied by decoder |
 | **File versioning** (`-ver[n]`) | Versioned adds keep N versions of the same name (`FHEXTRA_VERSION`); extraction filter `-ver<idx>` |
-| **POSIX/macOS extended attributes** (`-ox`) | `FHEXTRA_XATTR` (0x08) records — `user.*`/`security.*`/`trusted.*` + macOS Finder-tag namespaces; `com.apple.ResourceFork` / `com.apple.FinderInfo` (content-class, restore Apple-hosts only); restore allow-listed namespaces (`--xattr-security` opts in to `security.*`/`trusted.*`); stock WinRAR/UnRAR skip records cleanly |
+| **POSIX/macOS extended attributes** (`-ox`) | `FHEXTRA_XATTR` (0x08) records — `user.*`/`security.*`/`trusted.*` + macOS Finder-tag namespaces; `com.apple.ResourceFork` / `com.apple.FinderInfo` (content-class, restore Apple-hosts only); restore allow-listed namespaces (`--xattr-security` opts in to `security.*`/`trusted.*`); stock WinRAR skips records cleanly |
 | **Mark of the Web / quarantine** (`-oz`) | propagation keyed on archive file's own Zone.Identifier ADS (Windows) / `com.apple.quarantine` (macOS); mark content generated locally — never parsed from archive-provided streams; `-oz-` disables |
 | **Interactive TUI** | dual-progress renderer (overall + current-file bars) on TTYs with terminal-injection sanitization for all rendered strings (comments, owner names, paths); cooperative ESC/q/^C cancellation (exit 255, clean temp sweeping); non-TTY (pipe/file/CI) renders plain per-file lines with zero escape sequences |
 | **Multi-Threaded Benchmark** (`b`/`bench`) | Built-in in-memory corpus benchmark, CPU topology auto-detection, single-thread and multi-thread compression/decompression throughput, RARMark rating, `--json` mode |
@@ -287,7 +287,7 @@ files migrate as one concatenated entry). Switches: `-m0..-m5`, `-md<n>`,
 `-p`/`-hp` (output encryption only), `-rr[N%]`, `-o+`/`-y`, `-df`,
 `--json-summary[=path]`. Output-shaping switches (`-s`, `-ts*`, `-v`, `-oi`,
 `-ep*`, `-z`, ...) are refused with exit 7 rather than silently ignored. The
-emitted RAR 5.0 archive is readable by WinRAR/UnRAR/7-Zip (interop Tracks
+emitted RAR 5.0 archive is readable by WinRAR/7-Zip (interop Tracks
 11-15); every entry is roundtrip-verified (BLAKE2sp) before `cv` reports
 success.
 
@@ -358,7 +358,7 @@ Windows 11, WinRAR 7.20 x64.
   corpus (no WinRAR equivalent).
 - **Honest losses:** WinRAR's `-m1` is slightly faster and ~18% tighter
   (structural — swept the full effort grid in v1.31); our `-m5` ratio is
-  ~3% looser; extraction trails UnRAR/WinRAR by ~2.3x on this workload
+  ~3% looser; extraction trails WinRAR by ~2.3x on this workload
   (the crash-safety contract, below).
 
 **Measurement protocol (v1.28).** Machine-collected numbers come from the
