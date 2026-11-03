@@ -1,0 +1,33 @@
+{
+  "id": "9f95e7ef-8b99-45b5-b433-b95bbe96c93b",
+  "slug": "intel-r-core-tm-i5-6440hq-cpu-2--4t-9f95e7",
+  "benchmark": "openrar_rarmark_v2",
+  "version": "2.0.23",
+  "system": "Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz",
+  "created_at": "2026-11-03 13:25:43",
+  "cpu": {
+    "brand": "Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz",
+    "arch": "x86_64",
+    "logical_cores": 4,
+    "simd_features": [
+      "AVX2 LZ",
+      "AVX2 BLAKE2sp",
+      "AES-NI",
+      "PCLMUL CRC"
+    ]
+  },
+  "config": {
+    "threads": 4,
+    "dict_size_bytes": 4194304,
+    "method": 3
+  },
+  "results": {
+    "memory_bandwidth_gbps": 7.95,
+    "st_compress_kbps": 8391.4,
+    "mt_compress_kbps": 28296.3,
+    "mt_decompress_kbps": 443890.7,
+    "speedup_ratio": 3.37,
+    "rarmark_score": 19453,
+    "decompression_verified": true
+  }
+}
