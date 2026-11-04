@@ -44,7 +44,7 @@ inline core::uint32 floor_log2(core::uint64 v) {
 }
 
 // 256-element Shannon log2 fractional table in 8.8 fixed point
-alignas(64) static const core::uint8 kLog2Table[256] = {
+alignas(64) static const core::uint8 LOG2_TABLE[256] = {
     0,   1,   3,   4,   6,   7,   9,   10,  11,  13,  14,  16,  17,  18,  20,  21,  22,  24,  25,
     26,  28,  29,  30,  32,  33,  34,  36,  37,  38,  40,  41,  42,  44,  45,  46,  47,  49,  50,
     51,  52,  54,  55,  56,  57,  59,  60,  61,  62,  63,  65,  66,  67,  68,  69,  71,  72,  73,
@@ -65,7 +65,7 @@ inline core::uint32 fixed_log2_8p8(core::uint32 v) {
     if (v <= 1) return 0;
     core::uint32 k = floor_log2(v);
     core::uint32 mantissa = (k >= 8) ? ((v >> (k - 8)) & 0xFF) : ((v << (8 - k)) & 0xFF);
-    return (k << 8) + kLog2Table[mantissa];
+    return (k << 8) + LOG2_TABLE[mantissa];
 }
 } // namespace
 
