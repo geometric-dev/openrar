@@ -509,9 +509,20 @@ private:
     PriceModel price_model_{};
 
     void init_price_model();
+    void init_empirical_prior();
     void update_price_model();
+    void refresh_price_model();
+    bool price_model_sampled_{false};
+    core::uint32 last_price_refresh_token_count_{0};
     core::uint32 price_literal(core::byte b) const;
     core::uint32 price_match(size_t len, size_t dist) const;
+    struct PrecomputedDistCost {
+        core::uint32 dist_cost{0};
+        core::uint32 inc{0};
+        bool valid{false};
+    };
+    PrecomputedDistCost precompute_dist_cost(size_t dist) const;
+    core::uint32 price_match_fast(size_t len, const PrecomputedDistCost& pdc) const;
     core::uint32 price_rep(core::uint32 rep_idx, size_t len) const;
     core::uint32 price_slot257() const;
 
@@ -525,7 +536,7 @@ private:
         size_t old_dist[4];             // Rep-state captured AT WRITE TIME
         size_t last_len{0};             // Shadow last_length_ captured AT WRITE TIME
     };
-    bool forward_arrival_enable_{true};
+    bool forward_arrival_enable_{false};
 
     // Forward-arrival engine
     struct ForwardArrivalDecision {

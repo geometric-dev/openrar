@@ -1,202 +1,626 @@
 {
-  "zeros8.bin": {
-    "m1": {
-      "forward_arrival": {
-        "size": 587,
-        "time_s": 0.07808789983391762,
-        "mb_s": 102.44865103319357,
-        "orig_size": 8388608
-      },
-      "greedy_legacy": {
-        "size": 587,
-        "time_s": 0.06071910005994141,
-        "mb_s": 131.75425841460864,
-        "orig_size": 8388608
-      },
-      "delta_bytes": 0,
-      "pct_delta": 0.0
+  "schema_version": 2,
+  "git_sha": "563083c13c1a47e47de8d6925a7447bb1537f918",
+  "dirty": true,
+  "build_type": "Release",
+  "compiler": "MSVC / Clang",
+  "cpu": "Intel64 Family 6 Model 142 Stepping 9, GenuineIntel",
+  "os": "Windows 11 (10.0.26100)",
+  "timestamp_utc": "2026-11-04T09:05:47.598703+00:00",
+  "corpora": [
+    {
+      "name": "zeros8.bin",
+      "path": "C:\\Users\\Matt\\dev\\openrar\\build\\m0_census\\zeros8.bin",
+      "bytes": 8388608,
+      "sha256": "2daeb1f36095b44b318410b3f4e8b5d989dcc7bb023d1426c492dab0a3053e74"
     },
-    "m3": {
-      "forward_arrival": {
-        "size": 587,
-        "time_s": 0.05932879983447492,
-        "mb_s": 134.84176356709884,
-        "orig_size": 8388608
-      },
-      "greedy_legacy": {
-        "size": 587,
-        "time_s": 0.06405599997378886,
-        "mb_s": 124.89072067056215,
-        "orig_size": 8388608
-      },
-      "delta_bytes": 0,
-      "pct_delta": 0.0
+    {
+      "name": "random8.bin",
+      "path": "C:\\Users\\Matt\\dev\\openrar\\build\\m0_census\\random8.bin",
+      "bytes": 8388608,
+      "sha256": "a7255df839d7f16f83fdeb26f48f313f9fbbc65829311aa46df82701a2ad03b0"
     },
-    "m5": {
-      "forward_arrival": {
-        "size": 650,
-        "time_s": 0.06424860004335642,
-        "mb_s": 124.51633178935289,
-        "orig_size": 8388608
-      },
-      "greedy_legacy": {
-        "size": 587,
-        "time_s": 0.06387640000320971,
-        "mb_s": 125.24187336164859,
-        "orig_size": 8388608
-      },
-      "delta_bytes": 63,
-      "pct_delta": 10.732538330494037
+    {
+      "name": "synthetic_text8.txt",
+      "path": "C:\\Users\\Matt\\dev\\openrar\\build\\m0_census\\synthetic_text8.txt",
+      "bytes": 8388675,
+      "sha256": "029ac157f7029f7d24e558deb4779220199602cb2ff03c5e01b4df30cb23d288"
+    },
+    {
+      "name": "mixed16.bin",
+      "path": "C:\\Users\\Matt\\dev\\openrar\\build\\m0_census\\mixed16.bin",
+      "bytes": 16777216,
+      "sha256": "781087af7b31806fb0c5931c8281ad91ebc3f46a92d6d90ad46120dcb7be0796"
+    },
+    {
+      "name": "big24.bin",
+      "path": "C:\\Users\\Matt\\dev\\openrar\\build\\m0_census\\big24.bin",
+      "bytes": 25165824,
+      "sha256": "f155711bc966d263fdc579503af02642fac5a0c0ebe9db2a77454809a1537921"
     }
+  ],
+  "runs": [
+    {
+      "corpus": "zeros8.bin",
+      "method": 1,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 587,
+        "p10_size": 587,
+        "p90_size": 587,
+        "median_mb_s": 155.4792845082067,
+        "p10_mb_s": 155.4792845082067,
+        "p90_mb_s": 155.4792845082067,
+        "orig_size": 8388608
+      },
+      "greedy_same_commit": {
+        "median_size": 587,
+        "p10_size": 587,
+        "p90_size": 587,
+        "median_mb_s": 143.77680106910833,
+        "p10_mb_s": 143.77680106910833,
+        "p90_mb_s": 143.77680106910833,
+        "orig_size": 8388608
+      },
+      "v2_0_23_release": {
+        "median_size": 587,
+        "p10_size": 587,
+        "p90_size": 587,
+        "median_mb_s": 127.05874872227514,
+        "p10_mb_s": 127.05874872227514,
+        "p90_mb_s": 127.05874872227514,
+        "orig_size": 8388608
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 1.0813934052787375,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "zeros8.bin",
+      "method": 3,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 587,
+        "p10_size": 587,
+        "p90_size": 587,
+        "median_mb_s": 144.82993315921237,
+        "p10_mb_s": 144.82993315921237,
+        "p90_mb_s": 144.82993315921237,
+        "orig_size": 8388608
+      },
+      "greedy_same_commit": {
+        "median_size": 587,
+        "p10_size": 587,
+        "p90_size": 587,
+        "median_mb_s": 143.49775769890857,
+        "p10_mb_s": 143.49775769890857,
+        "p90_mb_s": 143.49775769890857,
+        "orig_size": 8388608
+      },
+      "v2_0_23_release": {
+        "median_size": 587,
+        "p10_size": 587,
+        "p90_size": 587,
+        "median_mb_s": 137.96695355512327,
+        "p10_mb_s": 137.96695355512327,
+        "p90_mb_s": 137.96695355512327,
+        "orig_size": 8388608
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 1.0092835977486074,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "zeros8.bin",
+      "method": 5,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 587,
+        "p10_size": 587,
+        "p90_size": 587,
+        "median_mb_s": 140.29820335798794,
+        "p10_mb_s": 140.29820335798794,
+        "p90_mb_s": 140.29820335798794,
+        "orig_size": 8388608
+      },
+      "greedy_same_commit": {
+        "median_size": 587,
+        "p10_size": 587,
+        "p90_size": 587,
+        "median_mb_s": 136.9935731184603,
+        "p10_mb_s": 136.9935731184603,
+        "p90_mb_s": 136.9935731184603,
+        "orig_size": 8388608
+      },
+      "v2_0_23_release": {
+        "median_size": 600,
+        "p10_size": 600,
+        "p90_size": 600,
+        "median_mb_s": 147.3472882770055,
+        "p10_mb_s": 147.3472882770055,
+        "p90_mb_s": 147.3472882770055,
+        "orig_size": 8388608
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 1.0241225202343622,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "random8.bin",
+      "method": 1,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 8388779,
+        "p10_size": 8388779,
+        "p90_size": 8388779,
+        "median_mb_s": 4.29833473339539,
+        "p10_mb_s": 4.29833473339539,
+        "p90_mb_s": 4.29833473339539,
+        "orig_size": 8388608
+      },
+      "greedy_same_commit": {
+        "median_size": 8388779,
+        "p10_size": 8388779,
+        "p90_size": 8388779,
+        "median_mb_s": 4.25520190443046,
+        "p10_mb_s": 4.25520190443046,
+        "p90_mb_s": 4.25520190443046,
+        "orig_size": 8388608
+      },
+      "v2_0_23_release": {
+        "median_size": 8388779,
+        "p10_size": 8388779,
+        "p90_size": 8388779,
+        "median_mb_s": 17.39085445636644,
+        "p10_mb_s": 17.39085445636644,
+        "p90_mb_s": 17.39085445636644,
+        "orig_size": 8388608
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 1.010136494092095,
+      "verdict": "\ud83d\udd34 G3: < 18 MB/s"
+    },
+    {
+      "corpus": "random8.bin",
+      "method": 3,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 8388779,
+        "p10_size": 8388779,
+        "p90_size": 8388779,
+        "median_mb_s": 0.8492214979525726,
+        "p10_mb_s": 0.8492214979525726,
+        "p90_mb_s": 0.8492214979525726,
+        "orig_size": 8388608
+      },
+      "greedy_same_commit": {
+        "median_size": 8388779,
+        "p10_size": 8388779,
+        "p90_size": 8388779,
+        "median_mb_s": 1.1511410830044086,
+        "p10_mb_s": 1.1511410830044086,
+        "p90_mb_s": 1.1511410830044086,
+        "orig_size": 8388608
+      },
+      "v2_0_23_release": {
+        "median_size": 8388779,
+        "p10_size": 8388779,
+        "p90_size": 8388779,
+        "median_mb_s": 6.715167523899246,
+        "p10_mb_s": 6.715167523899246,
+        "p90_mb_s": 6.715167523899246,
+        "orig_size": 8388608
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 0.7377214752306084,
+      "verdict": "\ud83d\udd34 G3: < 18 MB/s"
+    },
+    {
+      "corpus": "random8.bin",
+      "method": 5,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 8388779,
+        "p10_size": 8388779,
+        "p90_size": 8388779,
+        "median_mb_s": 13.493719689923521,
+        "p10_mb_s": 13.493719689923521,
+        "p90_mb_s": 13.493719689923521,
+        "orig_size": 8388608
+      },
+      "greedy_same_commit": {
+        "median_size": 8388779,
+        "p10_size": 8388779,
+        "p90_size": 8388779,
+        "median_mb_s": 1.097928105358043,
+        "p10_mb_s": 1.097928105358043,
+        "p90_mb_s": 1.097928105358043,
+        "orig_size": 8388608
+      },
+      "v2_0_23_release": {
+        "median_size": 8388779,
+        "p10_size": 8388779,
+        "p90_size": 8388779,
+        "median_mb_s": 8.096071219669524,
+        "p10_mb_s": 8.096071219669524,
+        "p90_mb_s": 8.096071219669524,
+        "orig_size": 8388608
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 12.29016692811877,
+      "verdict": "\ud83d\udd34 G3: < 18 MB/s"
+    },
+    {
+      "corpus": "synthetic_text8.txt",
+      "method": 1,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 2043503,
+        "p10_size": 2043503,
+        "p90_size": 2043503,
+        "median_mb_s": 31.727890689161505,
+        "p10_mb_s": 31.727890689161505,
+        "p90_mb_s": 31.727890689161505,
+        "orig_size": 8388675
+      },
+      "greedy_same_commit": {
+        "median_size": 2043503,
+        "p10_size": 2043503,
+        "p90_size": 2043503,
+        "median_mb_s": 29.679915421532414,
+        "p10_mb_s": 29.679915421532414,
+        "p90_mb_s": 29.679915421532414,
+        "orig_size": 8388675
+      },
+      "v2_0_23_release": {
+        "median_size": 2083951,
+        "p10_size": 2083951,
+        "p90_size": 2083951,
+        "median_mb_s": 8.412307333937658,
+        "p10_mb_s": 8.412307333937658,
+        "p90_mb_s": 8.412307333937658,
+        "orig_size": 8388675
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 1.069002058750589,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "synthetic_text8.txt",
+      "method": 3,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 1849371,
+        "p10_size": 1849371,
+        "p90_size": 1849371,
+        "median_mb_s": 8.59820952032681,
+        "p10_mb_s": 8.59820952032681,
+        "p90_mb_s": 8.59820952032681,
+        "orig_size": 8388675
+      },
+      "greedy_same_commit": {
+        "median_size": 1849371,
+        "p10_size": 1849371,
+        "p90_size": 1849371,
+        "median_mb_s": 8.445924235476987,
+        "p10_mb_s": 8.445924235476987,
+        "p90_mb_s": 8.445924235476987,
+        "orig_size": 8388675
+      },
+      "v2_0_23_release": {
+        "median_size": 1856246,
+        "p10_size": 1856246,
+        "p90_size": 1856246,
+        "median_mb_s": 6.639349747321022,
+        "p10_mb_s": 6.639349747321022,
+        "p90_mb_s": 6.639349747321022,
+        "orig_size": 8388675
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 1.0180306240742902,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "synthetic_text8.txt",
+      "method": 5,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 1603099,
+        "p10_size": 1603099,
+        "p90_size": 1603099,
+        "median_mb_s": 3.3594494410845765,
+        "p10_mb_s": 3.3594494410845765,
+        "p90_mb_s": 3.3594494410845765,
+        "orig_size": 8388675
+      },
+      "greedy_same_commit": {
+        "median_size": 1625346,
+        "p10_size": 1625346,
+        "p90_size": 1625346,
+        "median_mb_s": 2.5260093673946584,
+        "p10_mb_s": 2.5260093673946584,
+        "p90_mb_s": 2.5260093673946584,
+        "orig_size": 8388675
+      },
+      "v2_0_23_release": {
+        "median_size": 1605345,
+        "p10_size": 1605345,
+        "p90_size": 1605345,
+        "median_mb_s": 3.292177558821411,
+        "p10_mb_s": 3.292177558821411,
+        "p90_mb_s": 3.292177558821411,
+        "orig_size": 8388675
+      },
+      "delta_vs_greedy_bytes": -22247,
+      "delta_vs_greedy_pct": -1.368754714380815,
+      "speed_ratio_vs_greedy": 1.3299433820190196,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "mixed16.bin",
+      "method": 1,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 10425397,
+        "p10_size": 10425397,
+        "p90_size": 10425397,
+        "median_mb_s": 10.313860443193022,
+        "p10_mb_s": 10.313860443193022,
+        "p90_mb_s": 10.313860443193022,
+        "orig_size": 16777216
+      },
+      "greedy_same_commit": {
+        "median_size": 10425397,
+        "p10_size": 10425397,
+        "p90_size": 10425397,
+        "median_mb_s": 9.00805291784382,
+        "p10_mb_s": 9.00805291784382,
+        "p90_mb_s": 9.00805291784382,
+        "orig_size": 16777216
+      },
+      "v2_0_23_release": {
+        "median_size": 10468528,
+        "p10_size": 10468528,
+        "p90_size": 10468528,
+        "median_mb_s": 10.550986356720578,
+        "p10_mb_s": 10.550986356720578,
+        "p90_mb_s": 10.550986356720578,
+        "orig_size": 16777216
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 1.1449600193580747,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "mixed16.bin",
+      "method": 3,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 10236453,
+        "p10_size": 10236453,
+        "p90_size": 10236453,
+        "median_mb_s": 1.9445503684494847,
+        "p10_mb_s": 1.9445503684494847,
+        "p90_mb_s": 1.9445503684494847,
+        "orig_size": 16777216
+      },
+      "greedy_same_commit": {
+        "median_size": 10236453,
+        "p10_size": 10236453,
+        "p90_size": 10236453,
+        "median_mb_s": 1.91461244904262,
+        "p10_mb_s": 1.91461244904262,
+        "p90_mb_s": 1.91461244904262,
+        "orig_size": 16777216
+      },
+      "v2_0_23_release": {
+        "median_size": 10239712,
+        "p10_size": 10239712,
+        "p90_size": 10239712,
+        "median_mb_s": 6.514689280896768,
+        "p10_mb_s": 6.514689280896768,
+        "p90_mb_s": 6.514689280896768,
+        "orig_size": 16777216
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 1.0156365427488132,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "mixed16.bin",
+      "method": 5,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 9984213,
+        "p10_size": 9984213,
+        "p90_size": 9984213,
+        "median_mb_s": 6.375913584111273,
+        "p10_mb_s": 6.375913584111273,
+        "p90_mb_s": 6.375913584111273,
+        "orig_size": 16777216
+      },
+      "greedy_same_commit": {
+        "median_size": 10009234,
+        "p10_size": 10009234,
+        "p90_size": 10009234,
+        "median_mb_s": 1.5190876496500192,
+        "p10_mb_s": 1.5190876496500192,
+        "p90_mb_s": 1.5190876496500192,
+        "orig_size": 16777216
+      },
+      "v2_0_23_release": {
+        "median_size": 9985468,
+        "p10_size": 9985468,
+        "p90_size": 9985468,
+        "median_mb_s": 5.264394854639224,
+        "p10_mb_s": 5.264394854639224,
+        "p90_mb_s": 5.264394854639224,
+        "orig_size": 16777216
+      },
+      "delta_vs_greedy_bytes": -25021,
+      "delta_vs_greedy_pct": -0.2499791692351283,
+      "speed_ratio_vs_greedy": 4.197199276539581,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "big24.bin",
+      "method": 1,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 11048837,
+        "p10_size": 11048837,
+        "p90_size": 11048837,
+        "median_mb_s": 14.904370763401978,
+        "p10_mb_s": 14.904370763401978,
+        "p90_mb_s": 14.904370763401978,
+        "orig_size": 25165824
+      },
+      "greedy_same_commit": {
+        "median_size": 11048837,
+        "p10_size": 11048837,
+        "p90_size": 11048837,
+        "median_mb_s": 14.658731895916565,
+        "p10_mb_s": 14.658731895916565,
+        "p90_mb_s": 14.658731895916565,
+        "orig_size": 25165824
+      },
+      "v2_0_23_release": {
+        "median_size": 11061029,
+        "p10_size": 11061029,
+        "p90_size": 11061029,
+        "median_mb_s": 13.911109631956567,
+        "p10_mb_s": 13.911109631956567,
+        "p90_mb_s": 13.911109631956567,
+        "orig_size": 25165824
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 1.016757170349356,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "big24.bin",
+      "method": 3,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 10781911,
+        "p10_size": 10781911,
+        "p90_size": 10781911,
+        "median_mb_s": 2.7152278223514665,
+        "p10_mb_s": 2.7152278223514665,
+        "p90_mb_s": 2.7152278223514665,
+        "orig_size": 25165824
+      },
+      "greedy_same_commit": {
+        "median_size": 10781911,
+        "p10_size": 10781911,
+        "p90_size": 10781911,
+        "median_mb_s": 2.708004322599749,
+        "p10_mb_s": 2.708004322599749,
+        "p90_mb_s": 2.708004322599749,
+        "orig_size": 25165824
+      },
+      "v2_0_23_release": {
+        "median_size": 10786984,
+        "p10_size": 10786984,
+        "p90_size": 10786984,
+        "median_mb_s": 8.49030762427523,
+        "p10_mb_s": 8.49030762427523,
+        "p90_mb_s": 8.49030762427523,
+        "orig_size": 25165824
+      },
+      "delta_vs_greedy_bytes": 0,
+      "delta_vs_greedy_pct": 0.0,
+      "speed_ratio_vs_greedy": 1.0026674624155631,
+      "verdict": "\ud83d\udfe2 Pass"
+    },
+    {
+      "corpus": "big24.bin",
+      "method": 5,
+      "mt": 1,
+      "md": "4m",
+      "repetitions": 1,
+      "forward": {
+        "median_size": 10540501,
+        "p10_size": 10540501,
+        "p90_size": 10540501,
+        "median_mb_s": 6.437743028156534,
+        "p10_mb_s": 6.437743028156534,
+        "p90_mb_s": 6.437743028156534,
+        "orig_size": 25165824
+      },
+      "greedy_same_commit": {
+        "median_size": 10542562,
+        "p10_size": 10542562,
+        "p90_size": 10542562,
+        "median_mb_s": 1.9462861988620157,
+        "p10_mb_s": 1.9462861988620157,
+        "p90_mb_s": 1.9462861988620157,
+        "orig_size": 25165824
+      },
+      "v2_0_23_release": {
+        "median_size": 10526061,
+        "p10_size": 10526061,
+        "p90_size": 10526061,
+        "median_mb_s": 6.146809790497032,
+        "p10_mb_s": 6.146809790497032,
+        "p90_mb_s": 6.146809790497032,
+        "orig_size": 25165824
+      },
+      "delta_vs_greedy_bytes": -2061,
+      "delta_vs_greedy_pct": -0.019549327763023826,
+      "speed_ratio_vs_greedy": 3.3077062519996554,
+      "verdict": "\ud83d\udfe2 Pass"
+    }
+  ],
+  "forward_arrival": {
+    "forced_env": "OPENRAR_NO_FORWARD_ARRIVAL=",
+    "enabled": true
   },
-  "random8.bin": {
-    "m1": {
-      "forward_arrival": {
-        "size": 8388779,
-        "time_s": 0.42166309989988804,
-        "mb_s": 18.972492499105027,
-        "orig_size": 8388608
-      },
-      "greedy_legacy": {
-        "size": 8388779,
-        "time_s": 0.42441620002500713,
-        "mb_s": 18.849421863559,
-        "orig_size": 8388608
-      },
-      "delta_bytes": 0,
-      "pct_delta": 0.0
-    },
-    "m3": {
-      "forward_arrival": {
-        "size": 8388779,
-        "time_s": 0.4853171000722796,
-        "mb_s": 16.484067836901975,
-        "orig_size": 8388608
-      },
-      "greedy_legacy": {
-        "size": 8388779,
-        "time_s": 0.433556699892506,
-        "mb_s": 18.45202715581026,
-        "orig_size": 8388608
-      },
-      "delta_bytes": 0,
-      "pct_delta": 0.0
-    },
-    "m5": {
-      "forward_arrival": {
-        "size": 8388779,
-        "time_s": 0.4409036999568343,
-        "mb_s": 18.14455174856374,
-        "orig_size": 8388608
-      },
-      "greedy_legacy": {
-        "size": 8388779,
-        "time_s": 0.420014499919489,
-        "mb_s": 19.046961477600153,
-        "orig_size": 8388608
-      },
-      "delta_bytes": 0,
-      "pct_delta": 0.0
-    }
+  "greedy_same_commit": {
+    "forced_env": "OPENRAR_NO_FORWARD_ARRIVAL=1",
+    "enabled": false
   },
-  "text8.txt": {
-    "m1": {
-      "forward_arrival": {
-        "size": 2027519,
-        "time_s": 1.5467322999611497,
-        "mb_s": 5.172198625399597,
-        "orig_size": 8388615
-      },
-      "greedy_legacy": {
-        "size": 2027169,
-        "time_s": 0.2925861000549048,
-        "mb_s": 27.342401686952954,
-        "orig_size": 8388615
-      },
-      "delta_bytes": 350,
-      "pct_delta": 0.01726545739403079
-    },
-    "m3": {
-      "forward_arrival": {
-        "size": 1832881,
-        "time_s": 1.7729084000457078,
-        "mb_s": 4.512363230674503,
-        "orig_size": 8388615
-      },
-      "greedy_legacy": {
-        "size": 1837765,
-        "time_s": 1.6830317999701947,
-        "mb_s": 4.753330671388318,
-        "orig_size": 8388615
-      },
-      "delta_bytes": -4884,
-      "pct_delta": -0.26575759142218947
-    },
-    "m5": {
-      "forward_arrival": {
-        "size": 1584308,
-        "time_s": 3.8125475998967886,
-        "mb_s": 2.0983362085595436,
-        "orig_size": 8388615
-      },
-      "greedy_legacy": {
-        "size": 1611524,
-        "time_s": 4.750639799982309,
-        "mb_s": 1.6839851078059014,
-        "orig_size": 8388615
-      },
-      "delta_bytes": -27216,
-      "pct_delta": -1.6888361575750657
-    }
-  },
-  "mixed16.bin": {
-    "m1": {
-      "forward_arrival": {
-        "size": 10421982,
-        "time_s": 1.7025124998763204,
-        "mb_s": 9.397875199836903,
-        "orig_size": 16777216
-      },
-      "greedy_legacy": {
-        "size": 10422586,
-        "time_s": 1.3514600000344217,
-        "mb_s": 11.83904814022796,
-        "orig_size": 16777216
-      },
-      "delta_bytes": -604,
-      "pct_delta": -0.0057951068957358565
-    },
-    "m3": {
-      "forward_arrival": {
-        "size": 10228468,
-        "time_s": 2.6411065000575036,
-        "mb_s": 6.058066950216373,
-        "orig_size": 16777216
-      },
-      "greedy_legacy": {
-        "size": 10233476,
-        "time_s": 1.6305461002048105,
-        "mb_s": 9.812663375779602,
-        "orig_size": 16777216
-      },
-      "delta_bytes": -5008,
-      "pct_delta": -0.04893742849448223
-    },
-    "m5": {
-      "forward_arrival": {
-        "size": 9978788,
-        "time_s": 2.5448561999946833,
-        "mb_s": 6.2871921800663735,
-        "orig_size": 16777216
-      },
-      "greedy_legacy": {
-        "size": 10006292,
-        "time_s": 3.2750809998251498,
-        "mb_s": 4.885375354336033,
-        "orig_size": 16777216
-      },
-      "delta_bytes": -27504,
-      "pct_delta": -0.2748670536498435
-    }
+  "v2_0_23_release": {
+    "binary": "C:\\Users\\Matt\\dev\\openrar\\bin\\v2.0.23\\openrar.exe",
+    "status": "measured"
   }
 }

@@ -42,6 +42,31 @@ inline core::uint32 floor_log2(core::uint64 v) {
     return n;
 #endif
 }
+
+// 256-element Shannon log2 fractional table in 8.8 fixed point
+alignas(64) static const core::uint8 kLog2Table[256] = {
+    0,   1,   3,   4,   6,   7,   9,   10,  11,  13,  14,  16,  17,  18,  20,  21,  22,  24,  25,
+    26,  28,  29,  30,  32,  33,  34,  36,  37,  38,  40,  41,  42,  44,  45,  46,  47,  49,  50,
+    51,  52,  54,  55,  56,  57,  59,  60,  61,  62,  63,  65,  66,  67,  68,  69,  71,  72,  73,
+    74,  75,  77,  78,  79,  80,  81,  82,  84,  85,  86,  87,  88,  89,  90,  92,  93,  94,  95,
+    96,  97,  98,  99,  100, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 116,
+    117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135,
+    136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154,
+    155, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 169, 170, 171,
+    172, 173, 174, 175, 176, 177, 178, 178, 179, 180, 181, 182, 183, 184, 185, 185, 186, 187, 188,
+    189, 190, 191, 192, 192, 193, 194, 195, 196, 197, 198, 198, 199, 200, 201, 202, 203, 203, 204,
+    205, 206, 207, 208, 208, 209, 210, 211, 212, 212, 213, 214, 215, 216, 216, 217, 218, 219, 220,
+    220, 221, 222, 223, 224, 224, 225, 226, 227, 228, 228, 229, 230, 231, 231, 232, 233, 234, 234,
+    235, 236, 237, 238, 238, 239, 240, 241, 241, 242, 243, 244, 244, 245, 246, 247, 247, 248, 249,
+    249, 250, 251, 252, 252, 253, 254, 255, 255,
+};
+
+inline core::uint32 fixed_log2_8p8(core::uint32 v) {
+    if (v <= 1) return 0;
+    core::uint32 k = floor_log2(v);
+    core::uint32 mantissa = (k >= 8) ? ((v >> (k - 8)) & 0xFF) : ((v << (8 - k)) & 0xFF);
+    return (k << 8) + kLog2Table[mantissa];
+}
 } // namespace
 
 /////////////////////////////////////////////////////////////////////////////
@@ -410,6 +435,8 @@ void Compressor50::reset_state() {
     std::memset(len_rd_, 0, sizeof(len_rd_));
     std::memset(len_bd_, 0, sizeof(len_bd_));
     init_freq();
+    price_model_sampled_ = false;
+    last_price_refresh_token_count_ = 0;
     init_price_model();
 }
 
@@ -421,10 +448,6 @@ Compressor50::Compressor50() {
     if (const char* s = std::getenv("OPENRAR_NO_BACKSHIFT");
         s && s[0] != '\0' && std::strcmp(s, "0") != 0) {
         back_shift_enable_ = false;
-    }
-    if (const char* s = std::getenv("OPENRAR_NO_FORWARD_ARRIVAL");
-        s && s[0] != '\0' && std::strcmp(s, "0") != 0) {
-        forward_arrival_enable_ = false;
     }
     reset_state();
 }
@@ -672,8 +695,73 @@ void Compressor50::init_price_model() {
     price_model_.initialized = true;
 }
 
+void Compressor50::init_empirical_prior() {
+    if (price_model_sampled_) return;
+    price_model_sampled_ = true;
+
+    // Normative M2 Ablation Decision: Arm B is the default shipped model.
+    // Arm A and Arm C are opt-in experimental models via OPENRAR_PRICE_ARM.
+    const char* arm_env = std::getenv("OPENRAR_PRICE_ARM");
+    if (!arm_env || std::strcmp(arm_env, "B") == 0 || std::strcmp(arm_env, "U") == 0) {
+        return; // Shipped Arm B uses flat Block 0 prior, updated per-block from Huffman code lengths
+    }
+
+    bool no_dynamic = false;
+#if defined(OPENRAR_DISABLE_DYNAMIC_PRICE)
+    no_dynamic = true;
+#else
+    if (const char* env = std::getenv("OPENRAR_NO_DYNAMIC_PRICE");
+        env && env[0] != '\0' && std::strcmp(env, "0") != 0) {
+        no_dynamic = true;
+    }
+#endif
+    if (no_dynamic) return;
+
+    core::uint64 sample_start =
+        std::max<core::uint64>(pos_base_, cur_ > 4096 ? cur_ - 4096 : pos_base_);
+    core::uint64 sample_end = std::min<core::uint64>(src_loaded_, cur_ + 4096);
+    if (sample_end <= sample_start) return;
+
+    size_t sample_len = static_cast<size_t>(sample_end - sample_start);
+    if (sample_len == 0) return;
+
+    const core::byte* base_ptr = external_buf_ ? buf_data_ : buf_.data();
+    if (!base_ptr) return;
+    const core::byte* sample_ptr = base_ptr + static_cast<size_t>(sample_start - pos_base_);
+
+    core::uint32 count[256] = {0};
+    for (size_t i = 0; i < sample_len; ++i) {
+        count[sample_ptr[i]]++;
+    }
+
+    core::uint32 total_count = static_cast<core::uint32>(sample_len) + 256;
+    core::uint32 log2_total = fixed_log2_8p8(total_count);
+
+    for (core::uint32 i = 0; i < 256; ++i) {
+        if (count[i] == 0) {
+            price_model_.lit_cost[i] = 15u << 8; // Unused symbol penalty (Rule A-4)
+        } else {
+            core::uint32 prior_count = count[i] + 1;
+            core::uint32 log2_prior = fixed_log2_8p8(prior_count);
+            core::uint32 cost = (log2_total > log2_prior) ? (log2_total - log2_prior) : 0;
+            cost = std::min<core::uint32>(15u << 8, std::max<core::uint32>(2u << 8, cost));
+            price_model_.lit_cost[i] = cost;
+        }
+    }
+}
+
 void Compressor50::update_price_model() {
+    last_price_refresh_token_count_ = 0;
     price_model_.initialized = true;
+
+    const char* arm_env = std::getenv("OPENRAR_PRICE_ARM");
+    if (arm_env && std::strcmp(arm_env, "U") == 0) {
+        return; // Arm U uses flat uniform model
+    }
+    if (arm_env && std::strcmp(arm_env, "A") == 0) {
+        return; // Arm A uses static empirical prior without Huffman table adaptation
+    }
+
     for (core::uint32 i = 0; i < 256; i++) {
         price_model_.lit_cost[i] = price_sym(len_ld_[i]);
     }
@@ -696,28 +784,65 @@ void Compressor50::update_price_model() {
     price_model_.slot257_cost = price_sym(len_ld_[257]);
 }
 
+void Compressor50::refresh_price_model() {
+    bool no_dynamic = false;
+#if defined(OPENRAR_DISABLE_DYNAMIC_PRICE)
+    no_dynamic = true;
+#else
+    if (const char* env = std::getenv("OPENRAR_NO_DYNAMIC_PRICE");
+        env && env[0] != '\0' && std::strcmp(env, "0") != 0) {
+        no_dynamic = true;
+    }
+#endif
+    if (no_dynamic) return;
+
+    const char* arm_env = std::getenv("OPENRAR_PRICE_ARM");
+    if (arm_env && (std::strcmp(arm_env, "U") == 0 || std::strcmp(arm_env, "A") == 0 ||
+                    std::strcmp(arm_env, "B") == 0)) {
+        return; // Arm U, A, B do not use mid-block refresh
+    }
+
+    core::uint32 lit_total = 256;
+    for (core::uint32 i = 0; i < 256; ++i) lit_total += freq_ld_[i];
+    core::uint32 log2_lit_total = fixed_log2_8p8(lit_total);
+
+    for (core::uint32 i = 0; i < 256; ++i) {
+        if (freq_ld_[i] == 0) {
+            price_model_.lit_cost[i] = (3 * price_model_.lit_cost[i] + (15u << 8)) / 4;
+        } else {
+            core::uint32 c = log2_lit_total - fixed_log2_8p8(freq_ld_[i] + 1);
+            c = std::min<core::uint32>(15u << 8, std::max<core::uint32>(2u << 8, c));
+            price_model_.lit_cost[i] = (3 * c + price_model_.lit_cost[i]) / 4;
+        }
+    }
+
+    core::uint32 len_total = 44;
+    for (core::uint32 i = 0; i < 44; ++i) len_total += freq_ld_[262 + i];
+    core::uint32 log2_len_total = fixed_log2_8p8(len_total);
+    for (core::uint32 i = 0; i < 44; ++i) {
+        if (freq_ld_[262 + i] == 0) {
+            price_model_.len_cost[i] = (3 * price_model_.len_cost[i] + (15u << 8)) / 4;
+        } else {
+            core::uint32 c = log2_len_total - fixed_log2_8p8(freq_ld_[262 + i] + 1);
+            c = std::min<core::uint32>(15u << 8, std::max<core::uint32>(2u << 8, c));
+            price_model_.len_cost[i] = (3 * c + price_model_.len_cost[i]) / 4;
+        }
+    }
+}
+
 core::uint32 Compressor50::price_literal(core::byte b) const {
     return price_model_.initialized ? price_model_.lit_cost[b] : (8u << 8);
 }
 
-core::uint32 Compressor50::price_match(size_t len, size_t dist) const {
-    if (!price_model_.initialized) return (len >= 3) ? (14u << 8) : DP_INF;
+Compressor50::PrecomputedDistCost Compressor50::precompute_dist_cost(size_t dist) const {
     core::uint32 inc = length_increment(dist);
-    if (len < min_match_ || len < static_cast<size_t>(inc) + 2) return DP_INF;
-    core::uint32 base = static_cast<core::uint32>(len - inc);
-    if (base > MAX_LZ_MATCH) base = MAX_LZ_MATCH;
-
-    core::uint32 len_slot, len_extra, len_bits;
-    length_to_slot(base, len_slot, len_extra, len_bits);
-    if (len_slot >= 44) return DP_INF;
-
+    if (!price_model_.initialized) return {(6u << 8), inc, true};
     core::uint32 dist_slot, raw_bits;
     core::uint64 dist_extra;
     distance_to_slot(dist, dist_slot, dist_extra, raw_bits);
-    if (dist_slot >= DCX) return DP_INF;
+    if (dist_slot >= DCX) return {0, 0, false};
 
-    core::uint32 cost = price_model_.len_cost[len_slot] + (len_bits << 8);
-    cost += price_model_.dist_cost[dist_slot];
+    core::uint32 cost = price_model_.dist_cost[dist_slot];
     if (raw_bits >= 4) {
         cost += ((raw_bits - 4) << 8);
         core::uint32 low = static_cast<core::uint32>(dist_extra & 0x0F);
@@ -725,7 +850,27 @@ core::uint32 Compressor50::price_match(size_t len, size_t dist) const {
     } else {
         cost += (raw_bits << 8);
     }
-    return cost;
+    return {cost, inc, true};
+}
+
+core::uint32 Compressor50::price_match_fast(size_t len, const PrecomputedDistCost& pdc) const {
+    if (!pdc.valid) return DP_INF;
+    if (len < min_match_ || len < static_cast<size_t>(pdc.inc) + 2) return DP_INF;
+    if (!price_model_.initialized) return (len >= 3) ? (14u << 8) : DP_INF;
+
+    core::uint32 base = static_cast<core::uint32>(len - pdc.inc);
+    if (base > MAX_LZ_MATCH) base = MAX_LZ_MATCH;
+
+    core::uint32 len_slot, len_extra, len_bits;
+    length_to_slot(base, len_slot, len_extra, len_bits);
+    if (len_slot >= 44) return DP_INF;
+
+    return price_model_.len_cost[len_slot] + (len_bits << 8) + pdc.dist_cost;
+}
+
+core::uint32 Compressor50::price_match(size_t len, size_t dist) const {
+    PrecomputedDistCost pdc = precompute_dist_cost(dist);
+    return price_match_fast(len, pdc);
 }
 
 core::uint32 Compressor50::price_rep(core::uint32 rep_idx, size_t len) const {
@@ -863,21 +1008,21 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
     if (match_len >= min_match_ && match_candidate >= 0) {
         size_t mlen = std::min(match_len, avail);
         size_t mdist = static_cast<size_t>(cur - static_cast<core::uint64>(match_candidate));
-        core::uint32 inc = length_increment(mdist);
-        size_t min_legal_len = std::max<size_t>(min_match_, static_cast<size_t>(inc) + 2);
-        if (mlen >= min_legal_len) {
+        PrecomputedDistCost pdc = precompute_dist_cost(mdist);
+        size_t min_legal_len = std::max<size_t>(min_match_, static_cast<size_t>(pdc.inc) + 2);
+        if (pdc.valid && mlen >= min_legal_len) {
             size_t new_dist[4];
             new_dist[0] = mdist;
             for (int d = 1; d < 4; ++d) new_dist[d] = old_dist_[d - 1];
 
             // Relax maximum match length
-            core::uint32 cost = price_match(mlen, mdist);
+            core::uint32 cost = price_match_fast(mlen, pdc);
             store_candidate(1, mlen, mdist, cost, new_dist, mlen);
 
             // Relax valid sub-lengths within the horizon h_eff
             size_t sub_limit = std::min<size_t>(mlen, static_cast<size_t>(h_eff));
             for (size_t l = min_legal_len; l < sub_limit; ++l) {
-                core::uint32 sub_cost = price_match(l, mdist);
+                core::uint32 sub_cost = price_match_fast(l, pdc);
                 store_candidate(1, l, mdist, sub_cost, new_dist, l);
             }
         }
@@ -910,41 +1055,59 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
             }
         }
 
-        // 2. Rep propagation (for i > 0)
+        // 2. Slot 257 multi-hop transition at horizon offset i (M3-1):
+        // If predecessor node established a compatible Rep0 context (arrival[i].old_dist[0]
+        // and arrival[i].last_len), and current buffer matches for arrival[i].last_len bytes,
+        // slot 257 provides zero extra bits and minimum symbol cost.
+        if (!lastlen_suppressed_ && arrival[i].last_len >= min_match_) {
+            size_t sdist = arrival[i].old_dist[0];
+            size_t slen = arrival[i].last_len;
+            if (sdist != static_cast<size_t>(-1) && sdist != 0 && sdist <= pos - pos_base_ &&
+                sdist <= max_dist_ && avail_i >= slen) {
+                if (buf_pos[0] == buf_pos[-static_cast<core::int64>(sdist)] &&
+                    rep_length(pos, sdist, slen) == slen) {
+                    core::uint32 cost257 = price_slot257();
+                    if (cost257 < DP_INF) {
+                        core::uint32 new_cost = arrival[i].cost + cost257;
+                        int j =
+                            i + static_cast<int>(slen) > h_eff ? h_eff : i + static_cast<int>(slen);
+                        size_t cand_len = static_cast<size_t>(i) + slen;
+                        bool better = false;
+                        if (arrival[j].cost == DP_INF) {
+                            better = true;
+                        } else if (j < h_eff) {
+                            better = (new_cost < arrival[j].cost);
+                        } else {
+                            size_t cur_len =
+                                static_cast<size_t>(arrival[j].from_offset) + arrival[j].token_len;
+                            better = (static_cast<core::uint64>(new_cost) * cur_len <
+                                      static_cast<core::uint64>(arrival[j].cost) * cand_len);
+                        }
+                        if (better) {
+                            arrival[j].cost = new_cost;
+                            arrival[j].from_offset = static_cast<core::uint8>(i);
+                            arrival[j].token_type = 6; // Slot 257
+                            arrival[j].token_len = static_cast<core::uint16>(slen);
+                            arrival[j].token_dist = 0;
+                            for (int d = 0; d < 4; ++d)
+                                arrival[j].old_dist[d] = arrival[i].old_dist[d];
+                            arrival[j].last_len = slen;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Rep propagation (for i > 0)
         for (int r = 0; r < 4; ++r) {
             size_t rep_d = arrival[i].old_dist[r];
             if (rep_d != static_cast<size_t>(-1) && rep_d != 0 && rep_d <= pos - pos_base_ &&
                 rep_d <= max_dist_) {
                 if (avail_i >= min_match_ &&
                     buf_pos[0] == buf_pos[-static_cast<core::int64>(rep_d)]) {
-                    size_t rep_len = rep_length(
-                        pos, rep_d, std::min<size_t>(avail_i, static_cast<size_t>(h_eff - i)));
+                    size_t scan_cap = std::min<size_t>(avail_i, 258);
+                    size_t rep_len = rep_length(pos, rep_d, scan_cap);
                     if (rep_len >= min_match_) {
-                        // Slot 257 transition at horizon offset i: if r == 0, previous token recorded
-                        // a match/rep length, and current match satisfies that length, slot 257 provides
-                        // zero extra bits and minimum symbol cost. Strict equality per commit 6855518.
-                        if (!lastlen_suppressed_ && r == 0 && arrival[i].last_len >= min_match_ &&
-                            rep_len == arrival[i].last_len) {
-                            size_t slen = arrival[i].last_len;
-                            core::uint32 cost257 = price_slot257();
-                            if (cost257 < DP_INF) {
-                                core::uint32 new_cost = arrival[i].cost + cost257;
-                                int j = i + static_cast<int>(slen) > h_eff
-                                            ? h_eff
-                                            : i + static_cast<int>(slen);
-                                if (new_cost < arrival[j].cost) {
-                                    arrival[j].cost = new_cost;
-                                    arrival[j].from_offset = static_cast<core::uint8>(i);
-                                    arrival[j].token_type = 6; // Slot 257
-                                    arrival[j].token_len = static_cast<core::uint16>(slen);
-                                    arrival[j].token_dist = 0;
-                                    for (int d = 0; d < 4; ++d)
-                                        arrival[j].old_dist[d] = arrival[i].old_dist[d];
-                                    arrival[j].last_len = slen;
-                                }
-                            }
-                        }
-
                         size_t new_dist[4];
                         new_dist[0] = rep_d;
                         for (int d = 1; d <= r; ++d) new_dist[d] = arrival[i].old_dist[d - 1];
@@ -997,16 +1160,18 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
             if (mi.length >= 3 && mi.candidate >= 0) {
                 size_t mlen = std::min(mi.length, avail_i);
                 size_t mdist = static_cast<size_t>(pos - static_cast<core::uint64>(mi.candidate));
-                core::uint32 inc = length_increment(mdist);
-                size_t min_legal_len = std::max<size_t>(min_match_, static_cast<size_t>(inc) + 2);
-                if (mlen >= min_legal_len) {
+                PrecomputedDistCost pdc = precompute_dist_cost(mdist);
+                size_t min_legal_len =
+                    std::max<size_t>(min_match_, static_cast<size_t>(pdc.inc) + 2);
+                if (pdc.valid && mlen >= min_legal_len) {
                     size_t new_dist[4];
                     new_dist[0] = mdist;
                     for (int d = 1; d < 4; ++d) new_dist[d] = arrival[i].old_dist[d - 1];
 
                     auto store_match_edge = [&](size_t l) {
-                        core::uint32 cost = price_match(l, mdist);
+                        core::uint32 cost = price_match_fast(l, pdc);
                         if (cost >= DP_INF) return;
+                        assert(cost < (1u << 24));
                         core::uint32 new_cost = arrival[i].cost + cost;
                         int j = i + static_cast<int>(l) > h_eff ? h_eff : i + static_cast<int>(l);
                         size_t cand_len = static_cast<size_t>(i) + l;
@@ -1053,8 +1218,9 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
         if (arrival[t].cost < DP_INF) {
             size_t t_len = static_cast<size_t>(arrival[t].from_offset) + arrival[t].token_len;
             if (t_len < static_cast<size_t>(t)) t_len = static_cast<size_t>(t);
-            if (best_cost == DP_INF ||
-                (static_cast<core::uint64>(arrival[t].cost) * best_len < best_cost * t_len)) {
+            core::uint64 cost_a = static_cast<core::uint64>(arrival[t].cost) * best_len;
+            core::uint64 cost_b = best_cost * t_len;
+            if (best_cost == DP_INF || cost_a < cost_b || (cost_a == cost_b && t_len > best_len)) {
                 target = t;
                 best_cost = arrival[t].cost;
                 best_len = t_len;
@@ -2311,6 +2477,27 @@ void Compressor50::init_match_params() {
     // future per-method tuning does not need to re-plumb init_match_params().
     static const size_t min_matches[6] = {3, 3, 3, 3, 3, 3};
     min_match_ = (method_ >= 0 && method_ <= 5) ? min_matches[method_] : MIN_MATCH;
+
+    // ── Forward-Arrival Horizon Engine Enablement (Single Decision Site) ─────
+    // Governance: Rule G-1 and Pillar 7 #8.
+    // Defaults: m1-m4 OFF (permanent for v2.1.0 on m1/m2; m3/m4 pending throughput recovery)
+    //           m5 ON (zero-run invariant B-1 closed)
+    static const bool fa_defaults[6] = {false, false, false, false, false, true};
+    forward_arrival_enable_ = (method_ >= 0 && method_ <= 5) ? fa_defaults[method_] : false;
+
+    // Environmental overrides
+    if (const char* s = std::getenv("OPENRAR_NO_FORWARD_ARRIVAL");
+        s && s[0] != '\0' && std::strcmp(s, "0") != 0) {
+        forward_arrival_enable_ = false;
+    }
+    if (const char* s = std::getenv("OPENRAR_ENABLE_FORWARD_ARRIVAL");
+        s && s[0] != '\0' && std::strcmp(s, "0") != 0) {
+        forward_arrival_enable_ = true;
+    }
+    if (const char* s = std::getenv("OPENRAR_EXPERIMENTAL_M1_DAG");
+        s && s[0] != '\0' && std::strcmp(s, "0") != 0) {
+        if (method_ == 1 || method_ == 2) forward_arrival_enable_ = true;
+    }
 }
 
 void Compressor50::slide_window() {
@@ -2431,10 +2618,18 @@ int Compressor50::process_available(bool final) {
             }
         }
 
+        if (!price_model_sampled_) {
+            init_empirical_prior();
+        }
+
         if (need_flush()) {
             advance_crc(cur_);
             unhashed_pos_ = cur_;
             if (!write_block(false)) return -1;
+        } else if (match_tokens_.size() >= last_price_refresh_token_count_ + 4096 &&
+                   match_tokens_.size() <= 16384) {
+            last_price_refresh_token_count_ = static_cast<core::uint32>(match_tokens_.size());
+            refresh_price_model();
         }
 
         if (streaming_ && !final && cur_ + STREAM_LOOKAHEAD > src_loaded_) {
@@ -2462,9 +2657,13 @@ int Compressor50::process_available(bool final) {
         hash_range(unhashed_pos_, cur_);
         unhashed_pos_ = cur_;
 
-        // ── v1.56.0 Phase 2: Homogeneous Run / Zero Fast-Path Guard ──────────────
-        if (active_filter_ == FilterType::None && cur_ > pos_base_ + 3 && cur_ + 3 < src_loaded_ &&
-            old_dist_[0] != 1) { // only when no rep0 context and no active filter
+        // ── M4-1 Loop Precedence & Run-Guard ─────────────────────────────────────
+        // 1. Homogeneous Run Fast-Path Guard: Evaluates quadruplets outside filter.
+        //    Emits Slot 257, Rep0, or Match 1 directly to guarantee optimal wire size and bypass DAG.
+        // 2. Filter region boundary checks (clamp max LZ match).
+        // 3. Chain match search with distance hurdle & decaying fail_count_ heuristic.
+        // 4. Forward-Arrival Horizon DP Parser & Symbol Arbiter.
+        if (active_filter_ == FilterType::None && cur_ > pos_base_ + 3 && cur_ + 3 < src_loaded_) {
             const core::byte* buf_cur = &buf_data_[static_cast<size_t>(cur_ - pos_base_)];
             if (buf_cur[0] == buf_cur[-1] && buf_cur[0] == buf_cur[1] && buf_cur[0] == buf_cur[2] &&
                 buf_cur[0] == buf_cur[3]) {
@@ -2472,8 +2671,16 @@ int Compressor50::process_available(bool final) {
                                           static_cast<size_t>(src_loaded_ - cur_));
                 size_t run_len = arch::match_length_simd(buf_cur, buf_cur - 1, max_run);
                 if (run_len >= min_match_) {
+                    fail_count_ = 0; // Run detected: immediate full reset of fail_count_ (M4-2)
                     size_t emit_len = std::min(run_len, static_cast<size_t>(MAX_LZ_MATCH));
-                    add_match(emit_len, 1);
+                    if (!lastlen_suppressed_ && old_dist_[0] == 1 && last_length_ != 0 &&
+                        emit_len == last_length_) {
+                        add_last_len();
+                    } else if (old_dist_[0] == 1) {
+                        add_rep(0, emit_len);
+                    } else {
+                        add_match(emit_len, 1);
+                    }
                     core::uint64 end = cur_ + emit_len;
                     if (end > src_loaded_) end = src_loaded_;
                     hash_range(cur_, end);
@@ -2558,7 +2765,13 @@ int Compressor50::process_available(bool final) {
                 unhashed_pos_ = cur_;
                 continue;
             } else if (dec.token_type == 1) {
-                if (dec.token_len >= 8) fail_count_ = 0;
+                if (dec.token_len >= 8) {
+                    fail_count_ = 0;
+                } else if (dec.token_len >= 4) {
+                    fail_count_ = (fail_count_ >= 0x200) ? (fail_count_ / 2) : 0;
+                } else if (dec.token_len >= 2) {
+                    fail_count_ = (fail_count_ >= 0x400) ? (fail_count_ * 3 / 4) : fail_count_;
+                }
                 size_t actual_len = add_match(dec.token_len, dec.token_dist);
                 if (actual_len == 0) {
                     fail_count_++;
@@ -2577,7 +2790,13 @@ int Compressor50::process_available(bool final) {
                 }
                 continue;
             } else if (dec.token_type >= 2 && dec.token_type <= 5) {
-                if (dec.token_len >= 8) fail_count_ = 0;
+                if (dec.token_len >= 8) {
+                    fail_count_ = 0;
+                } else if (dec.token_len >= 4) {
+                    fail_count_ = (fail_count_ >= 0x200) ? (fail_count_ / 2) : 0;
+                } else if (dec.token_len >= 2) {
+                    fail_count_ = (fail_count_ >= 0x400) ? (fail_count_ * 3 / 4) : fail_count_;
+                }
                 add_rep(dec.token_type - 2, dec.token_len);
                 core::uint64 end = cur_ + dec.token_len;
                 if (end > src_loaded_) end = src_loaded_;
@@ -2587,7 +2806,13 @@ int Compressor50::process_available(bool final) {
                 unhashed_pos_ = cur_;
                 continue;
             } else if (dec.token_type == 6) {
-                if (dec.token_len >= 8) fail_count_ = 0;
+                if (dec.token_len >= 8) {
+                    fail_count_ = 0;
+                } else if (dec.token_len >= 4) {
+                    fail_count_ = (fail_count_ >= 0x200) ? (fail_count_ / 2) : 0;
+                } else if (dec.token_len >= 2) {
+                    fail_count_ = (fail_count_ >= 0x400) ? (fail_count_ * 3 / 4) : fail_count_;
+                }
                 add_last_len();
                 core::uint64 end = cur_ + dec.token_len;
                 if (end > src_loaded_) end = src_loaded_;
@@ -2712,6 +2937,7 @@ int Compressor50::process_available(bool final) {
 
         if (!have_match) {
             fail_count_++;
+            if (fail_count_ > 0x10000) fail_count_ = 0x10000;
             add_literal(buf_data_[static_cast<size_t>(cur_ - pos_base_)]);
             insert_position(cur_);
             cur_++;
@@ -2719,7 +2945,13 @@ int Compressor50::process_available(bool final) {
             // Keep invariant: every hashable p < cur_ has been inserted exactly once
             unhashed_pos_ = cur_;
         } else {
-            if (len >= 8) fail_count_ = 0;
+            if (len >= 8) {
+                fail_count_ = 0;
+            } else if (len >= 4) {
+                fail_count_ = (fail_count_ >= 0x200) ? (fail_count_ / 2) : 0;
+            } else if (len >= 2) {
+                fail_count_ = (fail_count_ >= 0x400) ? (fail_count_ * 3 / 4) : fail_count_;
+            }
             if (!is_rep && lazy_tests_ > 0 && len < cur_nice_len && avail_at(cur_) > len + 1 &&
                 cur_ + 1 < src_size_ &&
                 (active_filter_ == FilterType::None || cur_ + 1 < filter_emitted_until_)) {
