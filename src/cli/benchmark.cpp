@@ -714,7 +714,7 @@ int display_cloud_leaderboard(const BenchmarkOptions& opt) {
     std::vector<Entry> entries;
     size_t pos = 0;
     while ((pos = response.find("\"rank\"", pos)) != std::string::npos) {
-        size_t end_pos = response.find("}", pos);
+        size_t end_pos = response.find('}', pos);
         if (end_pos == std::string::npos) break;
         size_t start_pos = response.rfind('{', pos);
         if (start_pos == std::string::npos) start_pos = pos;
