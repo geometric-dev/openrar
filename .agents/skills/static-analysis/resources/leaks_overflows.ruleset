@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RuleSet Name="OpenRAR leaks and overflows" Description="Scratch ruleset for leak / overflow triage" ToolsVersion="17.0">
+  <Rules AnalyzerId="Microsoft.Analyzers.NativeCodeAnalysis" RuleNamespace="Microsoft.Rules.Native">
+    <!-- null / uninitialised -->
+    <Rule Id="C6001" Action="Warning" />
+    <Rule Id="C6011" Action="Warning" />
+    <Rule Id="C6387" Action="Warning" />
+    <Rule Id="C6101" Action="Warning" />
+    <!-- buffer bounds -->
+    <Rule Id="C6053" Action="Warning" />
+    <Rule Id="C6054" Action="Warning" />
+    <Rule Id="C6057" Action="Warning" />
+    <Rule Id="C6059" Action="Warning" />
+    <Rule Id="C6200" Action="Warning" />
+    <Rule Id="C6201" Action="Warning" />
+    <Rule Id="C6202" Action="Warning" />
+    <Rule Id="C6203" Action="Warning" />
+    <Rule Id="C6204" Action="Warning" />
+    <Rule Id="C6262" Action="Warning" />
+    <Rule Id="C6263" Action="Warning" />
+    <Rule Id="C6305" Action="Warning" />
+    <Rule Id="C6383" Action="Warning" />
+    <Rule Id="C6384" Action="Warning" />
+    <Rule Id="C6385" Action="Warning" />
+    <Rule Id="C6386" Action="Warning" />
+    <Rule Id="C6330" Action="Warning" />
+    <!-- arithmetic overflow -->
+    <Rule Id="C6297" Action="Warning" />
+    <Rule Id="C6292" Action="Warning" />
+    <Rule Id="C6293" Action="Warning" />
+    <Rule Id="C6294" Action="Warning" />
+    <Rule Id="C6295" Action="Warning" />
+    <Rule Id="C6296" Action="Warning" />
+    <Rule Id="C6340" Action="Warning" />
+    <Rule Id="C26450" Action="Warning" />
+    <Rule Id="C26451" Action="Warning" />
+    <Rule Id="C26452" Action="Warning" />
+    <Rule Id="C26453" Action="Warning" />
+    <Rule Id="C26454" Action="Warning" />
+    <!-- leaks / ownership / lifetime -->
+    <Rule Id="C6014" Action="Warning" />
+    <Rule Id="C6211" Action="Warning" />
+    <Rule Id="C6308" Action="Warning" />
+    <Rule Id="C6278" Action="Warning" />
+    <Rule Id="C6279" Action="Warning" />
+    <Rule Id="C6280" Action="Warning" />
+    <Rule Id="C6283" Action="Warning" />
+    <Rule Id="C6335" Action="Warning" />
+    <Rule Id="C6248" Action="Warning" />
+    <Rule Id="C26800" Action="Warning" />
+    <Rule Id="C26815" Action="Warning" />
+    <Rule Id="C26816" Action="Warning" />
+    <Rule Id="C26817" Action="Warning" />
+    <Rule Id="C26830" Action="Warning" />
+    <Rule Id="C26831" Action="Warning" />
+    <Rule Id="C33001" Action="Warning" />
+    <Rule Id="C33004" Action="Warning" />
+    <Rule Id="C33005" Action="Warning" />
+  </Rules>
+</RuleSet>
