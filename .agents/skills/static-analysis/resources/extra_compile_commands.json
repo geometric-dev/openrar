@@ -1,0 +1,12 @@
+[
+  {
+    "directory": "./build/static-analysis",
+    "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\MSVC\\1451~1.362\\bin\\Hostx64\\x64\\cl.exe  /nologo /TP -DNOMINMAX -DUNICODE -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -IC:\\Users\\openrar\\dev\\openrar\\src -IC:\\Users\\openrar\\dev\\openrar\\src\\archive -IC:\\Users\\openrar\\dev\\openrar\\src\\cli -IC:\\Users\\openrar\\dev\\openrar\\src\\compress -IC:\\Users\\openrar\\dev\\openrar\\src\\core -IC:\\Users\\openrar\\dev\\openrar\\src\\crypto -IC:\\Users\\openrar\\dev\\openrar\\src\\format -IC:\\Users\\openrar\\dev\\openrar\\src\\io -IC:\\Users\\openrar\\dev\\openrar\\src\\recovery -IC:\\Users\\openrar\\dev\\openrar\\src\\dll -IC:\\Users\\openrar\\dev\\openrar\\include -IC:\\Users\\openrar\\dev\\openrar\\build\\static-analysis\\include -IC:\\Users\\openrar\\dev\\openrar\\build\\static-analysis\\include\\openrar /DWIN32 /D_WINDOWS /GR /EHsc /Zi /Ob0 /Od /RTC1 -std:c++17 -MDd /utf-8 /W4 /EHsc /GS /guard:cf /FoCMakeFiles\\openrar_core.dir\\src\\sandbox\\worker_main.cpp.obj /FdCMakeFiles\\openrar_core.dir\\openrar_core.pdb /FS -c C:\\Users\\openrar\\dev\\openrar\\src\\sandbox\\worker_main.cpp",
+    "file": "./src/sandbox/worker_main.cpp"
+  },
+  {
+    "directory": "./build/static-analysis",
+    "command": "C:\\PROGRA~1\\MIB055~1\\18\\COMMUN~1\\VC\\Tools\\MSVC\\1451~1.362\\bin\\Hostx64\\x64\\cl.exe  /nologo /TP -DNOMINMAX -DUNICODE -D_CRT_NONSTDC_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_UNICODE -IC:\\Users\\openrar\\dev\\openrar\\src -IC:\\Users\\openrar\\dev\\openrar\\src\\archive -IC:\\Users\\openrar\\dev\\openrar\\src\\cli -IC:\\Users\\openrar\\dev\\openrar\\src\\compress -IC:\\Users\\openrar\\dev\\openrar\\src\\core -IC:\\Users\\openrar\\dev\\openrar\\src\\crypto -IC:\\Users\\openrar\\dev\\openrar\\src\\format -IC:\\Users\\openrar\\dev\\openrar\\src\\io -IC:\\Users\\openrar\\dev\\openrar\\src\\recovery -IC:\\Users\\openrar\\dev\\openrar\\src\\dll -IC:\\Users\\openrar\\dev\\openrar\\include -IC:\\Users\\openrar\\dev\\openrar\\build\\static-analysis\\include -IC:\\Users\\openrar\\dev\\openrar\\build\\static-analysis\\include\\openrar -IC:\\Users\\openrar\\dev\\openrar\\src\\wasm /DWIN32 /D_WINDOWS /GR /EHsc /Zi /Ob0 /Od /RTC1 -std:c++17 -MDd /utf-8 /W4 /EHsc /GS /guard:cf /FoCMakeFiles\\openrar_wasm_api_check.dir\\src\\wasm\\archive_api.cpp.obj /FdCMakeFiles\\openrar_wasm_api_check.dir\\openrar_wasm_api_check.pdb /FS -c C:\\Users\\openrar\\dev\\openrar\\src\\wasm\\archive_api.cpp",
+    "file": "./src/wasm/archive_api.cpp"
+  }
+]
