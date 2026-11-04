@@ -4255,11 +4255,13 @@ static bool parse_mc_switch(const std::string& s, openrar::compress::FilterConfi
 }
 
 static bool is_known_cli_command(const std::string& c) {
+    if (c.rfind("rr", 0) == 0 || c.rfind("rv", 0) == 0) {
+        return true;
+    }
     return c == "a" || c == "x" || c == "e" || c == "t" || c == "l" || c == "v" || c == "lt" ||
            c == "lb" || c == "lta" || c == "la" || c == "b" || c == "bench" || c == "inspect" ||
            c == "diff" || c == "cmp" || c == "d" || c == "u" || c == "f" || c == "m" || c == "k" ||
-           c == "r" || c == "rr" || c == "s" || c == "sfx" || c == "S" || c == "SFX" || c == "p" ||
-           c == "cv";
+           c == "r" || c == "s" || c == "sfx" || c == "S" || c == "SFX" || c == "p" || c == "cv";
 }
 
 static int cli_main(int argc, char* argv[]) {

@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-04
+
+### Forward-Arrival DAG Parser (v2.1.0)
+
+- **Forward-Arrival Optimal Parsing Engine (`compressor50.cpp`, `compressor50.hpp`):**
+  - Implemented a forward-arrival dynamic-programming parser that evaluates match, rep, and literal edges across a sliding horizon of up to 16 positions, selecting minimum-cost token sequences for `-m5` compression.
+  - Single decision site in `Compressor50::init_match_params()` controls per-method enablement: `-m5` enabled by default; `-m1` through `-m4` permanently off. Runtime override via `OPENRAR_NO_FORWARD_ARRIVAL=1`.
+  - Saturating `DP_INF` arithmetic guards prevent cost overflow in arrival-node accumulation.
+
+### Price Model Ablation & Selection (v2.1.0)
+
+- **4-Arm Price Model Ablation (`tools/bench_m2_ablation.py`):**
+  - Evaluated four pricing strategies: Arm A (uniform slot costs), Arm B (per-block measured Huffman code lengths), Arm C (byte-entropy Shannon estimate), and Arm D (static frequency table).
+  - Selected Arm B as the shipped default for optimal size/throughput balance. Arms A and C available via `OPENRAR_PRICE_ARM=A|C`.
+  - All price arithmetic uses 8.8 fixed-point integers; no floating point on any code path.
+- **Coordinate Lower-Bound Clamp (`compressor50.cpp`):**
+  - Added `pos_base_` lower-bound clamp to the M2 sample window, preventing reads below the rebased position after `slide_window()`.
+
+### Slot 257 Multi-Hop Propagation (v2.1.0)
+
+- **Multi-Hop Slot 257 Through Predecessor Rep0 Context (`compressor50.cpp`):**
+  - Separated Slot 257 evaluation from the rep-propagation loop, allowing independent firing when a predecessor establishes compatible Rep0 context.
+  - Enforced distance hurdle before match candidate scans; maintained wire-legal admission floors.
+
+### Decaying fail_count_ & Run-Guard Improvements (v2.1.0)
+
+- **Smooth Multi-Tiered fail_count_ Decay (`compressor50.cpp`):**
+  - Implemented length-proportional decay preventing search starvation on mixed data.
+  - Capped `fail_count_` at `0x10000` to bound growth. Applied consistently across forward-arrival and greedy paths.
+  - Random-data throughput improved to 12.29x greedy baseline due to rapid skip recovery.
+- **Zero-Run Invariant Restoration:**
+  - Restored `zeros8.bin -m5` compressed size to 587 B (matching greedy baseline), fixing a run-guard exclusion regression.
+
+### Quality & Verification Infrastructure (v2.1.0)
+
+- **Dual-Baseline Fingerprinted Census (`tools/bench_m0_census.py`):**
+  - Schema v2 census harness measuring both greedy same-commit and external v2.0.23 release binary across all canonical corpora (zeros8, random8, text8, mixed16, big24).
+- **Interop Reference Verification (`tools/interop_reference.py`):**
+  - 30-stage manifest verified under UnRAR 7.20 oracle. Gate G1: 30/30 pass.
+- **108/108 Unit Tests (`tests/unit/compress_tests.cpp`):**
+  - Full behavioral (BT-01..BT-06) and negative (NT-01..NT-16) test suites covering round-trip integrity, determinism, streaming parity, price model bounds, filter boundaries, fail_count_ decay, refcap guards, sample memory bounds, and stale chain rejection.
+- **Static Analysis (Clang-Tidy LLVM 22.1.3):** Zero memory leaks, zero bounds violations, zero undefined behavior findings on all modified code.
+
+
 ## [2.0.23] - 2026-11-02
 
 ### Security & Decompression Bomb Protection (v2.0.23)
