@@ -2,6 +2,6 @@
 
 > [!NOTE]
 > The canonical and authoritative implementation plan for Milestone v2.1.0 is located at:
-> [`docs/milestones/v2.1.0-implementation-plan.md`](docs/milestones/v2.1.0-implementation-plan.md) (Revision 4 — Complete & Fully Verified).
+> [`docs/milestones/v2.1.0-implementation-plan.md`](docs/milestones/v2.1.0-implementation-plan.md) (Revision 6 — Measured Reconciliation).
 >
-> All phase deliverables (M0R, M1R, M2, M3, M4), dual-baseline specifications, failure-mode matrices, negative-test suites (BT-01..BT-06, NT-01..NT-20), and verification gates (G1–G7) are fully documented and signed off in that document.
+> **Status: shipped as the 2.1.1 correction release. The ratio-uplift gate (G4) is NOT met.** Revision 4 of that document marked everything complete and signed off; that was wrong, and Revision 6 replaces it with measured results against the v2.0.23 release. See the gate dashboard in §7.2.1 and the open decisions in §10.
