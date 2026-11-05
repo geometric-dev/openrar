@@ -467,9 +467,14 @@ void test_cli_overwrite_modes() {
     { std::ofstream(src) << "VERSION-ONE"; }
     REQUIRE(openrar::archive::ArchiveMutator::add_file_to_archive(arc, src, "cli_ov_src.txt"));
 
+    // stdin is redirected from the null device. The default (no -y / -o-) case reaches the
+    // overwrite prompt when stdin is a console; under std::system a developer's terminal (or a
+    // background shell with a live console) IS one, so without this the test blocks forever
+    // waiting for a keypress. CI happens to have a non-tty stdin, which is why it only
+    // hung locally.
     auto extract = [&](const char* extra_switch) {
         return std::system((get_cli_path() + " x " + arc.string() + " " + out.string() + " " +
-                            extra_switch + " > " DEVNULL " 2>&1")
+                            extra_switch + " < " DEVNULL " > " DEVNULL " 2>&1")
                                .c_str());
     };
     auto read_target = [&]() {
