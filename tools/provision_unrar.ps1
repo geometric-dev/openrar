@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 
 $PINNED_VERSIONS = @{
     "7.20" = @{
-        "Sha256" = "9f12d26d0b991bfd5c0b1156ba23ce0eb05847b2c0199d21469e8b9efcf8a192" # Canonical WinRAR/UnRAR 7.20 x64
+        "Sha256" = "e785a0c0dcf79385f0483c1eb2242e3937d0447f6b21dd158906e92757b46542" # Canonical WinRAR/UnRAR 7.20 x64
     }
 }
 
@@ -38,12 +38,20 @@ $Hash = (Get-FileHash -Path $Found -Algorithm SHA256).Hash.ToLowerInvariant()
 Write-Host "[ORACLE] Found UnRAR binary: $Found"
 Write-Host "[ORACLE] SHA-256: $Hash"
 
-# Check version output
-$VerOutput = & $Found 2>&1 | Select-String -Pattern "UNRAR (\d+\.\d+)"
-if ($VerOutput) {
-    Write-Host "[ORACLE] Detected version: $($VerOutput.Matches[0].Value)"
+$ExpectedHash = $PINNED_VERSIONS["7.20"].Sha256.ToLowerInvariant()
+if ($Hash -ne $ExpectedHash) {
+    Write-Error "[FATAL] Oracle SHA-256 mismatch! Found: $Hash, Expected: $ExpectedHash. Aborting."
+    exit 1
 }
 
-Write-Host "[ORACLE] Provisioning successful."
+# Check version output strictly 7.20
+$VerOutput = & $Found 2>&1 | Select-String -Pattern "UNRAR 7\.20"
+if (-not $VerOutput) {
+    Write-Error "[FATAL] Oracle version is not strictly UnRAR 7.20! Aborting."
+    exit 1
+}
+Write-Host "[ORACLE] Detected version: $($VerOutput.Matches[0].Value)"
+
+Write-Host "[ORACLE] Provisioning successful and verified fail-closed."
 exit 0
 
