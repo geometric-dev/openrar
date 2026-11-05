@@ -468,6 +468,15 @@ target_link_libraries(archive_api_tests PRIVATE
             endif()
         endif()
 
+        # Fail-closed golden recapture (NT-12 / Directive 5): OPENRAR_REFCAP=1
+        # must make the golden-hash gates exit exactly 2 and say why. The script
+        # asserts the exact status (a WILL_FAIL property would also accept a
+        # crash) and runs an un-capped control so it cannot pass vacuously.
+        add_test(NAME refcap_fail_closed
+            COMMAND ${Python3_EXECUTABLE}
+                    ${PROJECT_SOURCE_DIR}/tools/refcap_negative_test.py
+                    $<TARGET_FILE:compress_tests>)
+
         # Aggregator fail-closed contract (v1.44 M0): in-process negative
         # tests for tools/ctest_to_junit.py.
         add_test(NAME aggregator_selftest
