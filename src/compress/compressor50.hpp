@@ -527,7 +527,7 @@ private:
     core::uint32 price_slot257() const;
 
     // ── v1.56.0 Forward-Arrival Horizon Engine (H = 16 bytes, stack-allocated) ─────
-    struct ArrivalNode {
+    struct alignas(64) ArrivalNode {
         core::uint32 cost{0xFFFFFFFFu}; // Cumulative fixed-point cost (DP_INF if unreachable)
         core::uint8 from_offset{0};     // Predecessor index in [0, H]
         core::uint8 token_type{0};      // Literal, Match, Rep0..3, Slot257
@@ -535,7 +535,15 @@ private:
         size_t token_dist{0};           // Distance or rep index
         size_t old_dist[4];             // Rep-state captured AT WRITE TIME
         size_t last_len{0};             // Shadow last_length_ captured AT WRITE TIME
+        core::uint8 reserved[8]{0};     // Pad to 64 bytes for cache-line alignment (Invariant I-5)
     };
+    static_assert(sizeof(ArrivalNode) == 64,
+                  "ArrivalNode must be exactly 64 bytes (Invariant I-5)");
+    // Terminal horizon selection over arrival[1..h]: the reachable node with the
+    // lowest cost per covered byte wins, and an exact density tie goes to the
+    // longer covered span. Returns 1 when no node beyond offset 1 is better.
+    // Pure function of the nodes so the tie-break is unit-testable.
+    static int select_horizon_target(const ArrivalNode* arrival, int h);
     bool forward_arrival_enable_{false};
 
     // Forward-arrival engine
@@ -850,6 +858,16 @@ public:
     }
 
     core::int64 compress(bool last_block = true);
+
+    // Shipped per-method default for the forward-arrival parser (Rule G-1: the one
+    // decision site). init_match_params() applies the OPENRAR_*_FORWARD_ARRIVAL
+    // environment overrides on top of this value; nothing else may decide it.
+    static bool forward_arrival_default(int method);
+
+    // True when OPENRAR_PRICE_ARM is unset/empty or one of A, B, C, U. The library
+    // resolves any other value to the shipped Arm B instead of aborting its host;
+    // front ends (the CLI) use this to fail closed before starting a measurement.
+    static bool price_arm_env_valid();
 
     static bool compress_buffer(const core::byte* src, size_t src_size,
                                 std::vector<core::byte>& dest, int method = 3,
