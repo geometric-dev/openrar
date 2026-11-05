@@ -37,7 +37,7 @@ from ._native import (  # noqa: F401
 
 # Kept in lockstep with pyproject.toml by the CI version gate. This literal
 # had drifted to 1.30.0 while the project was at 1.40.5.
-__version__ = "2.1.0"
+__version__ = "2.1.1"
 
 
 class Archive:
