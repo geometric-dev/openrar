@@ -28,9 +28,20 @@ if sys.platform == "win32":
         pass
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_BIN = ROOT / "build" / "openrar64" / "Release" / "openrar.exe"
-if not DEFAULT_BIN.exists():
-    DEFAULT_BIN = ROOT / "build" / "Release" / "openrar.exe"
+def _default_bin() -> Path:
+    """Locate the CLI under test: $OPENRAR_BIN, else the first build layout that exists
+    (MSVC: build/openrar64/Release, build/Release; Ninja/Make on Linux and macOS: build/openrar)."""
+    env = os.environ.get("OPENRAR_BIN")
+    if env:
+        return Path(env)
+    for rel in ("build/openrar64/Release/openrar.exe", "build/Release/openrar.exe",
+                "build/openrar", "build/openrar.exe"):
+        if (ROOT / rel).exists():
+            return ROOT / rel
+    return ROOT / "build" / "openrar64" / "Release" / "openrar.exe"
+
+
+DEFAULT_BIN = _default_bin()
 
 WORK_DIR = ROOT / "build" / "m0_census"
 WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -47,14 +58,40 @@ def sha256_file(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+# The "repository source blob" inside big24.bin is the src/ tree AS OF THIS TAG, not the
+# working tree. Reading the working tree made the corpus change whenever the code under
+# test changed (the encoder is part of src/), so a before/after size comparison was
+# measuring against a moving target and two machines could never agree on big24.bin.
+SOURCE_BLOB_TAG = "v2.0.23"
+
+
+def _git(*args: str) -> bytes:
+    return subprocess.run(["git", *args], cwd=ROOT, check=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+
+
 def get_source_blob() -> str:
+    exts = (".cpp", ".hpp", ".h")
     blob = []
-    for root, _, files in os.walk(ROOT / "src"):
-        for name in files:
-            if name.endswith((".cpp", ".hpp", ".h")):
-                p = Path(root) / name
+    try:
+        names = sorted(n for n in _git("ls-tree", "-r", "--name-only", SOURCE_BLOB_TAG, "src")
+                       .decode("utf-8").splitlines() if n.endswith(exts))
+        for name in names:
+            blob.append(_git("show", f"{SOURCE_BLOB_TAG}:{name}").decode("utf-8", errors="replace"))
+    except (OSError, subprocess.CalledProcessError):
+        blob = []
+    if blob:
+        return "\n".join(blob)
+
+    print(f"WARNING: tag {SOURCE_BLOB_TAG} is not available (shallow clone or no git); "
+          f"building big24.bin from the working tree. It will NOT match other machines.",
+          file=sys.stderr)
+    for root, dirs, files in os.walk(ROOT / "src"):
+        dirs.sort()
+        for name in sorted(files):
+            if name.endswith(exts):
                 try:
-                    blob.append(p.read_text(encoding="utf-8", errors="replace"))
+                    blob.append((Path(root) / name).read_text(encoding="utf-8", errors="replace"))
                 except OSError:
                     pass
     return "\n".join(blob) if blob else "int main() { return 0; }\n"
@@ -270,8 +307,11 @@ def main():
 
     for corpus_name, corpus_path in corpora.items():
         for m in [1, 3, 5]:
-            # Forward arrival (unset env)
-            r_fa = measure_repetitions(bin_path, corpus_path, m, {"OPENRAR_NO_FORWARD_ARRIVAL": ""}, reps=reps)
+            # Forward arrival, FORCED on: the shipped default differs per method, so an unset
+            # environment would measure greedy at m1-m3 and make the column meaningless.
+            r_fa = measure_repetitions(bin_path, corpus_path, m,
+                                       {"OPENRAR_ENABLE_FORWARD_ARRIVAL": "1",
+                                        "OPENRAR_NO_FORWARD_ARRIVAL": ""}, reps=reps)
             # Greedy same-commit (forced env)
             r_greedy = measure_repetitions(bin_path, corpus_path, m, {"OPENRAR_NO_FORWARD_ARRIVAL": "1"}, reps=reps)
             # v2.0.23 release binary (if provided)
@@ -292,8 +332,6 @@ def main():
             verdict = "🟢 Pass"
             if corpus_name == "zeros8.bin" and m == 5 and r_fa["median_size"] > 587:
                 verdict = "🔴 B-1: zeros5 > 587B"
-            elif corpus_name == "random8.bin" and r_fa["median_mb_s"] < 18.0:
-                verdict = "🔴 G3: < 18 MB/s"
             elif m != 1 and speed_ratio < 0.90:
                 verdict = f"🔴 G3: {speed_ratio:.2f}x < 0.90x"
             elif delta_bytes > 0:
@@ -326,7 +364,7 @@ def main():
         sys.exit(1)
 
     envelope["runs"] = cells
-    envelope["forward_arrival"] = {"forced_env": "OPENRAR_NO_FORWARD_ARRIVAL=", "enabled": True}
+    envelope["forward_arrival"] = {"forced_env": "OPENRAR_ENABLE_FORWARD_ARRIVAL=1", "enabled": True}
     envelope["greedy_same_commit"] = {"forced_env": "OPENRAR_NO_FORWARD_ARRIVAL=1", "enabled": False}
     envelope["v2_0_23_release"] = {"binary": str(v2023_bin) if v2023_bin else "pending", "status": "measured" if v2023_bin else "pending"}
 

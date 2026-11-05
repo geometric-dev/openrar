@@ -6,14 +6,22 @@
 set -euo pipefail
 
 UNRAR_VERSION="7.20"
-UNRAR_SHA256="6b541334969bb128d54d588523c10a4dfb7d80f8ce91500f4f5a34e568bb9e60"
-TAR_URL="https://www.rarlab.com/rar/rarlinux-x64-${UNRAR_VERSION}.tar.gz"
+# rarlab names the file without the dot (rarlinux-x64-720.tar.gz). SHA-256 measured from that
+# download; the tarball ships rar/unrar and a whatsnew.txt whose newest entry is "Version 7.20".
+UNRAR_SHA256="d3e7fba3272385b1d0255ee332a1e8c1a6779bb5a5ff9d4d8ac2be846e49ca46"
+TAR_URL="https://www.rarlab.com/rar/rarlinux-x64-${UNRAR_VERSION//./}.tar.gz"
 INSTALL_DIR="/usr/local/bin"
 
 if command -v unrar >/dev/null 2>&1; then
-    echo "[ORACLE] Existing unrar binary detected at: $(which unrar)"
-    unrar | head -n 2
-    exit 0
+    # The banner is preceded by a blank line, so take the first NON-EMPTY line. `|| true`
+    # keeps `set -e/pipefail` from tripping on unrar's usage exit status or a closed pipe.
+    VER=$(unrar 2>&1 | awk 'NF { print; exit }' || true)
+    if echo "${VER}" | grep -q "UNRAR 7.20"; then
+        echo "[ORACLE] Existing verified unrar 7.20 binary detected at: $(which unrar)"
+        exit 0
+    else
+        echo "[ORACLE] Existing unrar is '${VER}', strictly UNRAR 7.20 required. Re-provisioning..."
+    fi
 fi
 
 echo "[ORACLE] Downloading UnRAR ${UNRAR_VERSION} from ${TAR_URL}..."
