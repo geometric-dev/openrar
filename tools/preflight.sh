@@ -96,6 +96,15 @@ else
     leg_skip "layer check (python not found)" lay
 fi
 
+# ── [tst] test assertion integrity lint (tools/test_assertion_lint.py) ───────
+if [ -n "$PY" ] && [ -f tools/test_assertion_lint.py ]; then
+    if "$PY" tools/test_assertion_lint.py >/dev/null 2>&1; then
+        leg_pass "test assertion integrity" tst
+    else
+        leg_fail "test assertion integrity" tst
+    fi
+fi
+
 # ── [win] MSVC Release build + full CTest ────────────────────────────────────
 if command -v cmake >/dev/null 2>&1 && [ "${PREFLIGHT_NO_WIN:-0}" != "1" ]; then
     if [ $QUICK -eq 1 ] && [ -d build ]; then

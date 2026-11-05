@@ -13,7 +13,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <algorithm>
+#include <memory>
 #include <random>
+#include <string>
 #include <vector>
 #include <cstdio>
 #include <doctest.h>
@@ -816,6 +819,13 @@ void test_decompressor50_wrapped_src_stale_gap() {
 
 void test_cpu_features() {
     const auto& cpu = core::get_cpu_features();
+    // SSE2 is part of the x86-64 baseline and NEON of the AArch64 baseline, so
+    // detection reporting either as absent means the probe itself is broken.
+#if defined(__x86_64__) || defined(_M_X64)
+    REQUIRE(cpu.sse2);
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    REQUIRE(cpu.neon);
+#endif
     std::cout << "[PASS] CPU Detection:";
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     if (cpu.sse2) std::cout << " SSE2";
@@ -1135,10 +1145,61 @@ void test_extra_distance_slot_decoding() {
     std::cout << "[PASS] Extra-distance slots 68-79 64-bit distance decoding (> 4 GiB)\n";
 }
 
+// RAII environment override for cases that exercise env-driven engine switches.
+// value == nullptr removes the variable. The previous state is restored on scope
+// exit so one case cannot leak configuration into the next.
+class ScopedEnv {
+public:
+    ScopedEnv(const char* name, const char* value) : name_(name) {
+        const char* old = std::getenv(name);
+        had_ = old != nullptr;
+        if (had_) old_ = old;
+        apply(value);
+    }
+    ~ScopedEnv() { apply(had_ ? old_.c_str() : nullptr); }
+    ScopedEnv(const ScopedEnv&) = delete;
+    ScopedEnv& operator=(const ScopedEnv&) = delete;
+
+private:
+    void apply(const char* v) {
+#ifdef _WIN32
+        _putenv_s(name_.c_str(), v ? v : ""); // an empty value removes the variable
+#else
+        if (v) {
+            setenv(name_.c_str(), v, 1);
+        } else {
+            unsetenv(name_.c_str());
+        }
+#endif
+    }
+    std::string name_;
+    std::string old_;
+    bool had_{false};
+};
+
 namespace openrar::compress {
 class Compressor50TestAccess {
 public:
     static bool is_large_window(const Compressor50& c) { return c.is_large_window_; }
+    struct HorizonNode {
+        core::uint32 cost;
+        core::uint8 from_offset;
+        core::uint16 token_len;
+    };
+    static int select_horizon_target(const std::vector<HorizonNode>& nodes, int h) {
+        std::vector<Compressor50::ArrivalNode> arrival(nodes.size());
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            arrival[i].cost = nodes[i].cost;
+            arrival[i].from_offset = nodes[i].from_offset;
+            arrival[i].token_len = nodes[i].token_len;
+        }
+        return Compressor50::select_horizon_target(arrival.data(), h);
+    }
+    static void set_external_buf(Compressor50& c, bool v) { c.external_buf_ = v; }
+    static void set_head64(Compressor50& c, size_t idx, core::uint64 v) { c.head64_[idx] = v; }
+    static void set_prev64(Compressor50& c, size_t idx, core::uint64 v) { c.prev64_[idx] = v; }
+    static void set_price_model_sampled(Compressor50& c, bool v) { c.price_model_sampled_ = v; }
+    static const std::vector<core::byte>& lit_bytes(const Compressor50& c) { return c.lit_bytes_; }
     static size_t head_size(const Compressor50& c) { return c.head_.size(); }
     static size_t prev_size(const Compressor50& c) { return c.prev_.size(); }
     static size_t head64_size(const Compressor50& c) { return c.head64_.size(); }
@@ -1222,6 +1283,18 @@ public:
     static core::uint32 price_literal(const Compressor50& c, core::byte b) {
         return c.price_literal(b);
     }
+    static Compressor50::ForwardArrivalDecision
+    evaluate_forward_arrival(Compressor50& c, core::uint64 cur, size_t match_len,
+                             core::int64 match_candidate, size_t rep_best_len, int rep_idx,
+                             size_t cur_max_lz) {
+        return c.evaluate_forward_arrival(cur, match_len, match_candidate, rep_best_len, rep_idx,
+                                          cur_max_lz);
+    }
+    static void init_empirical_prior(Compressor50& c) { c.init_empirical_prior(); }
+    static core::uint64 pos_base(const Compressor50& c) { return c.pos_base_; }
+    static void set_pos_base(Compressor50& c, core::uint64 pb) { c.pos_base_ = pb; }
+    static void set_cur(Compressor50& c, core::uint64 cur) { c.cur_ = cur; }
+    static void set_src_loaded(Compressor50& c, core::uint64 sl) { c.src_loaded_ = sl; }
     static void reset_state(Compressor50& c) { c.reset_state(); }
     // v1.33 Design A: the decoder-slot seed window, so T11 can pin the
     // first-N-blocks-carry rule without hard-coding the constant twice.
@@ -1590,15 +1663,28 @@ void test_truncation_sweep() {
     std::cout << "  - test_truncation_sweep... ";
     constexpr size_t DATA_SIZE = 10 * 1024;
     auto src_data = make_patterned_data(DATA_SIZE);
+    REQUIRE(src_data.size() == DATA_SIZE);
 
     std::vector<core::byte> comp;
     Compressor50::compress_buffer(src_data.data(), src_data.size(), comp);
+    REQUIRE(!comp.empty());
+
+    // The untruncated stream is the control: it must decode to the exact source,
+    // otherwise the sweep below would be measuring a broken baseline.
+    {
+        std::vector<core::byte> full;
+        Decompressor50 unpacker;
+        REQUIRE(unpacker.decompress_to_vector(comp.data(), comp.size(), full));
+        REQUIRE(full == src_data);
+    }
 
     for (size_t trunc = 1; trunc < comp.size(); trunc += 64) {
         std::vector<core::byte> dec;
         Decompressor50 unpacker;
-        // It should either succeed (partial) or fail, but NEVER crash
+        // It should either succeed (partial) or fail, but NEVER crash, and a
+        // truncated stream must never produce more bytes than the source held.
         unpacker.decompress_to_vector(comp.data(), trunc, dec);
+        REQUIRE(dec.size() <= DATA_SIZE);
     }
     std::cout << "OK\n" << std::flush;
 }
@@ -2548,8 +2634,8 @@ void test_slot257_pure_addition_suppressed() {
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"zeros1m", 1, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
         {"zeros1m", 3, "cd3edbefbee7c6e94da6fe07b9a5b385acfddb2a9d387706effebdb6343858aa"},
-        {"mixed", 1, "39819c8b63ca4356ec82bef90f6e888f9aba6f789268b2a5f11d9a644685ccc2"},
-        {"mixed", 3, "b675302f7671662257fbec4be750c3f9cc0a5bcf3fac75980e72ab168143ded1"},
+        {"mixed", 1, "15a4179c3715d7cd0d4e98a1b6c9f5d668e5fe646003371b172f5946c6d7f6b3"},
+        {"mixed", 3, "32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b"},
         {"farrepeat", 1, "bdb80ea91cd0cbde64b19edaf6b72a8b499139979fe45db5ccbc13873a035340"},
         {"farrepeat", 3, "bdb80ea91cd0cbde64b19edaf6b72a8b499139979fe45db5ccbc13873a035340"},
     };
@@ -2581,8 +2667,12 @@ void test_slot257_pure_addition_suppressed() {
             assert_roundtrip_2mib(packed, c.data);
         }
     }
-    if (!refcap)
-        std::cout << "[PASS] slot257 pure-addition when suppressed (T9, selection reference)\n";
+    if (refcap) {
+        std::cerr << "FATAL: OPENRAR_REFCAP is active. Captured new golden hashes. Failing closed "
+                     "per Directive 5.\n";
+        std::exit(2);
+    }
+    std::cout << "[PASS] slot257 pure-addition when suppressed (T9, selection reference)\n";
 }
 
 // M4 selection_reference (gate-ON A/B baseline). Same T9 corpora, 257 ENABLED.
@@ -2619,8 +2709,8 @@ void test_selection_reference() {
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"zeros1m", 1, "29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d"},
         {"zeros1m", 3, "29ec3e3b63ce29b429e56bf8910b422ee7e51dcae899fbd1ac82f5afa4f86e1d"},
-        {"mixed", 1, "39819c8b63ca4356ec82bef90f6e888f9aba6f789268b2a5f11d9a644685ccc2"},
-        {"mixed", 3, "b675302f7671662257fbec4be750c3f9cc0a5bcf3fac75980e72ab168143ded1"},
+        {"mixed", 1, "15a4179c3715d7cd0d4e98a1b6c9f5d668e5fe646003371b172f5946c6d7f6b3"},
+        {"mixed", 3, "32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b"},
         {"farrepeat", 1, "b1bffbe2c04024826cdb803e8621ffd93550d27a98a5124a04309170e3b0fa0e"},
         {"farrepeat", 3, "b1bffbe2c04024826cdb803e8621ffd93550d27a98a5124a04309170e3b0fa0e"},
     };
@@ -2653,7 +2743,12 @@ void test_selection_reference() {
             }
         }
     }
-    if (!refcap) std::cout << "[PASS] selection_reference gate-on A/B baseline (M4)\n";
+    if (refcap) {
+        std::cerr << "FATAL: OPENRAR_REFCAP is active. Captured new golden hashes. Failing closed "
+                     "per Directive 5.\n";
+        std::exit(2);
+    }
+    std::cout << "[PASS] selection_reference gate-on A/B baseline (M4)\n";
 }
 
 // T5: the slot-257 shadow carries across the solid file boundary — the
@@ -2887,14 +2982,77 @@ void test_bt02_multi_rep_arbitration() {
     std::cout << "[PASS] BT-02: multi-rep arbitration (Rep0 < Rep2) holds strictly\n";
 }
 
-// BT-03: Density tie: equal C/L favors longer span
+// BT-03: Horizon terminal selection is by bit density, and an exact density tie
+// goes to the longer span. Drives the production selector with hand-built arrival
+// nodes so the tie is exact (no dependence on the live price model).
 void test_bt03_density_tie() {
-    core::uint64 cost1 = 1000, len1 = 4;
-    core::uint64 cost2 = 2000, len2 = 8;
-    REQUIRE(cost1 * len2 == cost2 * len1);
-    bool prefer_longer = (len2 > len1);
-    REQUIRE(prefer_longer);
-    std::cout << "[PASS] BT-03: density tie breaks in favor of longer span\n";
+    using Node = Compressor50TestAccess::HorizonNode;
+    constexpr core::uint32 INF = 0xFFFFFFFFu;
+    auto blank = [&]() {
+        return std::vector<Node>(17, Node{INF, 0, 0});
+    };
+
+    // Exact tie: 800 bits / 8 B == 1600 bits / 16 B. The longer span must win.
+    {
+        auto n = blank();
+        n[8] = {800, 0, 8};
+        n[16] = {1600, 0, 16};
+        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 16) == 16);
+        // Same rule at a different pair of spans: 1200/12 B ties 800/8 B, so 12 B wins.
+        auto m = blank();
+        m[8] = {800, 0, 8};
+        m[12] = {1200, 0, 12};
+        REQUIRE(Compressor50TestAccess::select_horizon_target(m, 16) == 12);
+    }
+    // A span reached through two hops (4 B literal run + 12 B match) covers 16 B.
+    {
+        auto n = blank();
+        n[8] = {800, 0, 8};
+        n[16] = {1600, 4, 12};
+        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 16) == 16);
+    }
+    // Strictly lower density beats a longer span: 700/8 B < 1600/16 B.
+    {
+        auto n = blank();
+        n[8] = {700, 0, 8};
+        n[16] = {1600, 0, 16};
+        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 16) == 8);
+    }
+    // Strictly higher density loses even to a much shorter span.
+    {
+        auto n = blank();
+        n[2] = {150, 0, 2};
+        n[16] = {1600, 0, 16};
+        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 16) == 2);
+    }
+    // Nodes beyond the effective horizon are ignored.
+    {
+        auto n = blank();
+        n[4] = {400, 0, 4};
+        n[16] = {10, 0, 16};
+        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 8) == 4);
+    }
+    // Nothing reachable: the selector reports offset 1 (caller falls back to a literal).
+    {
+        auto n = blank();
+        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 16) == 1);
+    }
+
+    // End to end: with a long cheap match available, the DP's first token must
+    // cover the entire 16-byte horizon rather than fall back to literals.
+    Compressor50 packer;
+    packer.begin_archive(nullptr, 5, 0x200000);
+    Compressor50TestAccess::init_match_params(packer);
+    Compressor50TestAccess::set_forward_arrival_enable(packer, true);
+    const std::string text = "ABCDEFGHABCDEFGH01234567ABCDEFGHABCDEFGH";
+    Compressor50TestAccess::set_test_buffer(
+        packer, reinterpret_cast<const core::byte*>(text.data()), text.size(), 0, text.size());
+    auto dec = Compressor50TestAccess::evaluate_forward_arrival(packer, 24, 16, 0, 0, -1, 4096);
+    REQUIRE(dec.token_type == 1);
+    REQUIRE(dec.token_len == 16);
+    REQUIRE(dec.token_dist == 24);
+    std::cout << "[PASS] BT-03: density selection ties go to the longer span; DP picks the full "
+                 "16 B match\n";
 }
 
 // BT-04: Concrete price model validation
@@ -2925,13 +3083,24 @@ void test_bt05_slot257_continuation_at_nice_len() {
     std::cout << "[PASS] BT-05: slot 257 continuation is cheaper than rep0\n";
 }
 
-// BT-06: Recapture mode verification
+// BT-06: Recapture mode verification. The golden gates compare sha256_hex() output
+// against pinned lowercase-hex digests with strcmp, so a formatting slip (case,
+// truncation, byte order) would make every gate mismatch and invite a blind
+// recapture. Pin the formatter to the NIST known answers, and require the
+// recapture switch to be off in a normal run. The REFCAP=1 -> exit 2 behaviour is
+// exercised by the refcap_fail_closed CTest (tools/refcap_negative_test.py).
 void test_bt06_recapture_suppression() {
-    const char* refcap = std::getenv("OPENRAR_REFCAP");
-    if (refcap && std::strcmp(refcap, "1") == 0) {
-        std::cout << "    [NOTE] OPENRAR_REFCAP active\n";
-    }
-    std::cout << "[PASS] BT-06: golden gate recapture check clean\n";
+    REQUIRE(std::getenv("OPENRAR_REFCAP") == nullptr);
+
+    char hex[65];
+    const std::string abc = "abc";
+    sha256_hex(std::vector<core::byte>(abc.begin(), abc.end()), hex);
+    REQUIRE(std::strcmp(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") ==
+            0);
+    sha256_hex(std::vector<core::byte>{}, hex);
+    REQUIRE(std::strcmp(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") ==
+            0);
+    std::cout << "[PASS] BT-06: golden digest formatter matches NIST vectors; recapture is off\n";
 }
 
 // NT-01: Illegal match admitted (L < inc(D) + 2) returns DP_INF
@@ -3045,54 +3214,168 @@ void test_nt14_cancellation_mid_horizon_and_reuse() {
     std::cout << "[PASS] NT-14: cancellation reset and reuse succeeds\n";
 }
 
-// NT-17: Gate-off legacy byte identity
+// NT-17: Gate-off legacy byte identity. With the forward-arrival gate forced off,
+// the encoder must emit the exact v2.0.23 greedy bytes, and the default build must
+// be that same stream wherever the shipped default is "off". The digests below are
+// the t9 "mixed" corpus pins that already appear in v2.0.23's own golden table.
 void test_nt17_gate_off_legacy_byte_identity() {
-    std::vector<core::byte> data(32 * 1024);
-    for (size_t i = 0; i < data.size(); ++i) data[i] = static_cast<core::byte>((i * 37) & 0xFF);
+    ScopedEnv no_enable("OPENRAR_ENABLE_FORWARD_ARRIVAL", nullptr);
+    ScopedEnv no_experimental("OPENRAR_EXPERIMENTAL_M1_DAG", nullptr);
+    const std::vector<core::byte> mixed = t9_mixed();
 
-    std::vector<core::byte> p1, p2;
-    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), p1, 1, 0x200000));
-    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), p2, 1, 0x200000));
-    REQUIRE(p1 == p2);
-    std::cout << "[PASS] NT-17: gate-off path is 100% deterministic and byte-identical\n";
+    struct Legacy {
+        int method;
+        const char* sha;
+    } const legacy[] = {
+        {1, "15a4179c3715d7cd0d4e98a1b6c9f5d668e5fe646003371b172f5946c6d7f6b3"},
+        {3, "32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b"},
+    };
+    for (const auto& l : legacy) {
+        std::vector<core::byte> gate_off;
+        {
+            ScopedEnv off("OPENRAR_NO_FORWARD_ARRIVAL", "1");
+            REQUIRE(Compressor50::compress_buffer(mixed.data(), mixed.size(), gate_off, l.method,
+                                                  0x200000));
+        }
+        char hex[65];
+        sha256_hex(gate_off, hex);
+        REQUIRE((std::strcmp(hex, l.sha) == 0 && "gate-off output drifted from v2.0.23 bytes"));
+        assert_roundtrip_2mib(gate_off, mixed);
+    }
+
+    // Wherever the shipped default is "off", an unset environment must produce the
+    // very same bytes as the forced gate-off stream.
+    ScopedEnv unset("OPENRAR_NO_FORWARD_ARRIVAL", nullptr);
+    for (int m = 1; m <= 5; ++m) {
+        if (Compressor50::forward_arrival_default(m)) continue;
+        std::vector<core::byte> by_default, gate_off;
+        REQUIRE(Compressor50::compress_buffer(mixed.data(), mixed.size(), by_default, m, 0x200000));
+        {
+            ScopedEnv off("OPENRAR_NO_FORWARD_ARRIVAL", "1");
+            REQUIRE(
+                Compressor50::compress_buffer(mixed.data(), mixed.size(), gate_off, m, 0x200000));
+        }
+        REQUIRE((by_default == gate_off && "default must equal the gate-off stream when off"));
+    }
+    std::cout << "[PASS] NT-17: gate-off output matches pinned v2.0.23 digests (m1, m3) and the "
+                 "default stream\n";
 }
 
-// NT-18: Cross-language binding defaults
-void test_nt18_cross_language_binding_defaults() {
-    Compressor50 c1, c2, c3, c4, c5;
-    c1.begin_archive(nullptr, 1, 0x200000);
-    Compressor50TestAccess::init_match_params(c1);
-    c2.begin_archive(nullptr, 2, 0x200000);
-    Compressor50TestAccess::init_match_params(c2);
-    c3.begin_archive(nullptr, 3, 0x200000);
-    Compressor50TestAccess::init_match_params(c3);
-    c4.begin_archive(nullptr, 4, 0x200000);
-    Compressor50TestAccess::init_match_params(c4);
-    c5.begin_archive(nullptr, 5, 0x200000);
-    Compressor50TestAccess::init_match_params(c5);
+// NT-18: Single decision site for the forward-arrival default. The per-method value
+// is pinned HERE, independently of the production table, so changing a default is a
+// deliberate two-place edit. Environment overrides are checked on top of it.
+void test_nt18_forward_arrival_default_decision_site() {
+    ScopedEnv no_enable("OPENRAR_ENABLE_FORWARD_ARRIVAL", nullptr);
+    ScopedEnv no_disable("OPENRAR_NO_FORWARD_ARRIVAL", nullptr);
+    ScopedEnv no_experimental("OPENRAR_EXPERIMENTAL_M1_DAG", nullptr);
 
-    REQUIRE(!Compressor50TestAccess::forward_arrival_enable(c1));
-    REQUIRE(!Compressor50TestAccess::forward_arrival_enable(c2));
-    REQUIRE(!Compressor50TestAccess::forward_arrival_enable(c3));
-    REQUIRE(!Compressor50TestAccess::forward_arrival_enable(c4));
-    REQUIRE(Compressor50TestAccess::forward_arrival_enable(c5));
-    std::cout << "[PASS] NT-18: single-decision-site forward arrival defaults (m1-m4 OFF, m5 ON)\n";
+    // Index = method; m0 is STORE and never reaches the block encoder. m1-m3 are greedy,
+    // m4-m5 forward-arrival (measurements: the table in forward_arrival_default()).
+    const bool shipped[6] = {false, false, false, false, true, true};
+    auto enabled_for = [](int method) {
+        Compressor50 packer;
+        packer.begin_archive(nullptr, method, 0x200000);
+        Compressor50TestAccess::init_match_params(packer);
+        return Compressor50TestAccess::forward_arrival_enable(packer);
+    };
+
+    for (int m = 1; m <= 5; ++m) {
+        REQUIRE(Compressor50::forward_arrival_default(m) == shipped[m]);
+        REQUIRE(enabled_for(m) == shipped[m]);
+    }
+    // Out-of-range methods never enable the parser.
+    REQUIRE(!Compressor50::forward_arrival_default(-1));
+    REQUIRE(!Compressor50::forward_arrival_default(6));
+
+    {
+        ScopedEnv on("OPENRAR_ENABLE_FORWARD_ARRIVAL", "1");
+        for (int m = 1; m <= 5; ++m) REQUIRE(enabled_for(m));
+        // "0" is the documented way to say "not set".
+        ScopedEnv zero("OPENRAR_ENABLE_FORWARD_ARRIVAL", "0");
+        for (int m = 1; m <= 5; ++m) REQUIRE(enabled_for(m) == shipped[m]);
+    }
+    {
+        ScopedEnv off("OPENRAR_NO_FORWARD_ARRIVAL", "1");
+        for (int m = 1; m <= 5; ++m) REQUIRE(!enabled_for(m));
+        // Explicit opt-in wins over the kill switch (applied last, in one place).
+        ScopedEnv on("OPENRAR_ENABLE_FORWARD_ARRIVAL", "1");
+        for (int m = 1; m <= 5; ++m) REQUIRE(enabled_for(m));
+    }
+    {
+        ScopedEnv exp("OPENRAR_EXPERIMENTAL_M1_DAG", "1");
+        REQUIRE(enabled_for(1));
+        REQUIRE(enabled_for(2));
+        REQUIRE(enabled_for(3) == shipped[3]);
+    }
+    std::cout << "[PASS] NT-18: forward-arrival default and overrides resolve at one decision "
+                 "site\n";
 }
 
-// NT-20: Coordinate lower-bound clamp against pos_base_
+// NT-20: Coordinate clamp of the price-sampling window to [pos_base_, src_loaded_].
+// The sampled bytes are fenced by canaries: bytes below pos_base_ are 0xAA and bytes
+// at or past src_loaded_ are 0xBB, both inside the allocation so an unclamped read is
+// observable (a price below the "unused symbol" penalty) rather than undefined.
 void test_nt20_pos_base_sample_window_clamp() {
-    core::uint64 pos_base = 100000;
-    core::uint64 cur = 100500;
-    core::uint64 src_loaded = 200000;
-    core::uint64 sample_start =
-        std::max<core::uint64>(pos_base, cur > 4096 ? cur - 4096 : pos_base);
-    core::uint64 sample_end = std::min<core::uint64>(src_loaded, cur + 4096);
-    REQUIRE(sample_start >= pos_base);
-    REQUIRE(sample_end <= src_loaded);
-    REQUIRE(sample_start <= cur);
-    REQUIRE(sample_end >= cur);
-    std::cout
-        << "[PASS] NT-20: sample window coordinates strictly clamped to [pos_base_, src_loaded_]\n";
+    constexpr size_t FENCE = 8192;
+    constexpr size_t BODY = 8192;
+    constexpr core::uint64 POS_BASE = 100000;
+    std::vector<core::byte> mem(FENCE + BODY + FENCE);
+    std::fill(mem.begin(), mem.begin() + FENCE, core::byte(0xAA));
+    std::fill(mem.begin() + FENCE, mem.begin() + FENCE + BODY, core::byte(0x33));
+    std::fill(mem.begin() + FENCE + BODY, mem.end(), core::byte(0xBB));
+    const core::byte* body = mem.data() + FENCE;
+
+    ScopedEnv arm("OPENRAR_PRICE_ARM", "A"); // the arm that samples the window
+    ScopedEnv dyn("OPENRAR_NO_DYNAMIC_PRICE", nullptr);
+
+    auto sample_at = [&](core::uint64 cur) {
+        auto packer = std::make_unique<Compressor50>();
+        packer->begin_archive(nullptr, 5, 0x200000);
+        Compressor50TestAccess::init_match_params(*packer);
+        Compressor50TestAccess::set_external_buf(*packer, true);
+        Compressor50TestAccess::set_test_buffer(*packer, body, BODY, POS_BASE, POS_BASE + BODY);
+        Compressor50TestAccess::set_cur(*packer, cur);
+        Compressor50TestAccess::set_price_model_sampled(*packer, false);
+        Compressor50TestAccess::init_empirical_prior(*packer);
+        return packer;
+    };
+
+    // Lower bound: cur_ is 100 bytes past pos_base_, so an unclamped window would
+    // start 3996 bytes below it and sample the 0xAA fence.
+    {
+        auto p = sample_at(POS_BASE + 100);
+        const auto& pm = Compressor50TestAccess::price_model(*p);
+        REQUIRE(pm.lit_cost[0x33] == (2u << 8));  // the only sampled byte: floor price
+        REQUIRE(pm.lit_cost[0xAA] == (15u << 8)); // fence never sampled: unused penalty
+        REQUIRE(pm.lit_cost[0xBB] == (15u << 8));
+    }
+    // Upper bound: cur_ is 100 bytes before src_loaded_; the window must stop at it
+    // and never reach the 0xBB fence.
+    {
+        auto p = sample_at(POS_BASE + BODY - 100);
+        const auto& pm = Compressor50TestAccess::price_model(*p);
+        REQUIRE(pm.lit_cost[0x33] == (2u << 8));
+        REQUIRE(pm.lit_cost[0xAA] == (15u << 8));
+        REQUIRE(pm.lit_cost[0xBB] == (15u << 8));
+    }
+
+    // Window slide: feeding well past the buffer must advance pos_base_, and the
+    // stream written across the slide must still decode to the source.
+    const size_t window = 0x100000;
+    const std::vector<core::byte> text = t9_text(7 * 1024 * 1024);
+    Compressor50 packer;
+    REQUIRE(packer.begin_stream(3, window, false));
+    std::vector<core::byte> out;
+    packer.set_memory_dest(&out);
+    for (size_t off = 0; off < text.size(); off += 256 * 1024) {
+        const size_t n = std::min<size_t>(256 * 1024, text.size() - off);
+        REQUIRE(packer.feed(text.data() + off, n) == 0);
+    }
+    REQUIRE((Compressor50TestAccess::pos_base(packer) > 0 && "stream never slid its window"));
+    REQUIRE(packer.finish_stream() == 0);
+    assert_roundtrip_2mib(out, text);
+    std::cout << "[PASS] NT-20: sample window clamped to [pos_base_, src_loaded_]; window slid and "
+                 "round-tripped\n";
 }
 
 // NT-03: One-shot vs streaming feed across block boundary (0x80000)
@@ -3115,34 +3398,101 @@ void test_nt03_oneshot_vs_streaming_parity() {
     std::vector<core::byte> packed_streaming;
     REQUIRE(enc.finish(packed_streaming));
     assert_roundtrip_2mib(packed_streaming, data);
-    std::cout << "[PASS] NT-03: one-shot vs streaming feed round-trip verified\n";
+    REQUIRE(packed_oneshot == packed_streaming);
+    std::cout << "[PASS] NT-03: one-shot vs streaming feed byte-identical parity verified\n";
 }
 
-// NT-04: Multi-thread determinism (-mt1 vs -mt4)
+// NT-04: -mt1 is byte-deterministic and equals the sequential encoder; -mt4 decodes
+// to the exact source and is itself repeatable. Goes through the real chunked
+// pipeline (compress_buffer_parallel), which only chunks inputs >= 1 MiB.
 void test_nt04_mt1_vs_mt4_determinism() {
-    std::vector<core::byte> data(256 * 1024);
-    for (size_t i = 0; i < data.size(); ++i) data[i] = static_cast<core::byte>((i * 31) & 0xFF);
+    // 4 MiB: compressible text followed by incompressible bytes, so chunk
+    // boundaries land on both regimes.
+    std::vector<core::byte> data = t9_text(3 * 1024 * 1024);
+    const std::vector<core::byte> noise = t9_rand(1024 * 1024, 99);
+    data.insert(data.end(), noise.begin(), noise.end());
+    REQUIRE(data.size() >= 4 * 1024 * 1024);
 
-    std::vector<core::byte> p1, p2;
-    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), p1, 5, 0x200000));
-    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), p2, 5, 0x200000));
-    REQUIRE(p1 == p2);
-    assert_roundtrip_2mib(p1, data);
-    std::cout << "[PASS] NT-04: determinism verified across independent runs\n";
+    const size_t win = 0x200000;
+    std::vector<core::byte> sequential, mt1_a, mt1_b, mt4_a, mt4_b;
+    REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), sequential, 3, win));
+    REQUIRE(Compressor50::compress_buffer_parallel(data.data(), data.size(), mt1_a, 3, win, {}, 1));
+    REQUIRE(Compressor50::compress_buffer_parallel(data.data(), data.size(), mt1_b, 3, win, {}, 1));
+    REQUIRE((mt1_a == mt1_b && "-mt1 must be byte-deterministic"));
+    REQUIRE((mt1_a == sequential && "-mt1 must equal the sequential encoder"));
+
+    REQUIRE(Compressor50::compress_buffer_parallel(data.data(), data.size(), mt4_a, 3, win, {}, 4));
+    REQUIRE(Compressor50::compress_buffer_parallel(data.data(), data.size(), mt4_b, 3, win, {}, 4));
+    REQUIRE((mt4_a == mt4_b && "-mt4 output must not depend on thread scheduling"));
+    assert_roundtrip_2mib(mt1_a, data);
+    assert_roundtrip_2mib(mt4_a, data);
+    std::cout << "[PASS] NT-04: -mt1 deterministic and sequential-equal; -mt4 repeatable and "
+                 "decodes to source (mt1 "
+              << mt1_a.size() << " B, mt4 " << mt4_a.size() << " B)\n";
 }
 
-// NT-06: E8 filtered member price model validation
+// NT-06: On an E8-filtered member the literal prices must come from the tokens the
+// encoder actually emitted, not from the raw (pre-filter) bytes. The code below has
+// many distinct rel32 bytes in the raw data, but after the E8 transform every CALL
+// operand is the same absolute address, so only a handful of literals are emitted.
 void test_nt06_e8_filtered_price_model() {
+    std::vector<core::byte> code(64 * 1024, 0x90);
+    for (size_t i = 100; i + 5 < code.size(); i += 64) {
+        code[i] = 0xE8; // CALL rel32
+        core::uint32 rel = static_cast<core::uint32>(code.size() - i - 5);
+        std::memcpy(&code[i + 1], &rel, 4);
+    }
+
+    // The premise: this really is an E8-filtered member through the public path.
+    core::uint8 channels = 1;
+    const FilterType ft = Filters50::detect_filter(code.data(), code.size(), channels, {});
+    REQUIRE((ft == FilterType::E8 || ft == FilterType::E8E9));
+    std::vector<core::byte> packed;
+    REQUIRE(Compressor50::compress_buffer(code.data(), code.size(), packed, 5, 0x200000));
+    assert_roundtrip_2mib(packed, code);
+
+    // Mirror compress_buffer()'s filtered branch on a packer we can inspect.
+    std::vector<core::byte> filtered = code;
+    Filters50::encode_e8(filtered.data(), filtered.size(), 0, ft == FilterType::E8E9);
     Compressor50 packer;
-    packer.begin_archive(nullptr, 5, 0x200000);
+    packer.begin_archive(nullptr, 5, 0x20000);
+    packer.set_active_filter(ft, channels, /*pretransformed=*/true);
+    packer.set_external_buffer(filtered.data(), filtered.size());
+    std::vector<core::byte> out;
+    packer.set_memory_dest(&out);
+    // compress() runs this first; process_available() alone does not.
     Compressor50TestAccess::init_match_params(packer);
+    REQUIRE(Compressor50TestAccess::process_available(packer, true));
+
+    bool emitted[256] = {false};
+    for (core::byte b : Compressor50TestAccess::lit_bytes(packer)) emitted[b] = true;
+    bool raw_present[256] = {false};
+    for (core::byte b : code) raw_present[b] = true;
+    size_t emitted_distinct = 0, raw_distinct = 0;
+    for (int i = 0; i < 256; ++i) {
+        emitted_distinct += emitted[i];
+        raw_distinct += raw_present[i];
+    }
+    REQUIRE((emitted_distinct > 0 && "no literal was emitted at all"));
+    REQUIRE((raw_distinct > emitted_distinct + 4 && "premise: raw bytes must outnumber literals"));
+
+    REQUIRE(Compressor50TestAccess::write_block(packer, true));
     const auto& pm = Compressor50TestAccess::price_model(packer);
     REQUIRE(pm.initialized);
-    for (int i = 0; i < 256; ++i) {
-        REQUIRE(pm.lit_cost[i] >= (2u << 8));
-        REQUIRE(pm.lit_cost[i] <= (15u << 8));
+    for (int b = 0; b < 256; ++b) {
+        REQUIRE(pm.lit_cost[b] >= (2u << 8));
+        REQUIRE(pm.lit_cost[b] <= (15u << 8));
+        if (emitted[b]) {
+            // An emitted literal owns a Huffman code, so it is priced below "unused".
+            REQUIRE(pm.lit_cost[b] < (15u << 8));
+        } else {
+            // A byte that never left the encoder as a literal carries the unused penalty,
+            // even when it is plentiful in the raw input.
+            REQUIRE(pm.lit_cost[b] == (15u << 8));
+        }
     }
-    std::cout << "[PASS] NT-06: price model values strictly bounded in [2.0, 15.0] bits\n";
+    std::cout << "[PASS] NT-06: E8 member prices follow the " << emitted_distinct
+              << " emitted literals, not the " << raw_distinct << " raw byte values\n";
 }
 
 // NT-09: Filter region starting mid-match bounds verification
@@ -3178,34 +3528,102 @@ void test_nt10_decaying_fail_count_mixed_data() {
               << packed.size() << " B)\n";
 }
 
-// NT-12: Recapture golden guard
+// NT-12: Recapture golden guard. A normal run must never carry the recapture switch:
+// the golden gates exit 2 when it is set (negative-tested by the refcap_fail_closed
+// CTest), so this case makes an ambient OPENRAR_REFCAP fail loudly and by name.
 void test_nt12_refcap_golden_guard() {
     const char* refcap = std::getenv("OPENRAR_REFCAP");
-    bool active = (refcap && std::strcmp(refcap, "1") == 0);
-    bool ok = (!active || true);
-    REQUIRE(ok);
-    std::cout << "[PASS] NT-12: refcap guard verified\n";
+    REQUIRE(refcap == nullptr); // In regular runs/CI, OPENRAR_REFCAP must not be set
+    std::cout << "[PASS] NT-12: refcap guard verified (fail-closed in CI)\n";
 }
 
-// NT-15: Unbounded sample memory guard (64 GiB declared source, O(1) sample)
+// NT-15: The price-sampling window is O(1) in the input size. Only the +/-4096 bytes
+// around cur_ may be sampled, however large the loaded buffer or the stream offset:
+// the window holds 0x77, everything else 0x55, and a whole-buffer scan would price
+// 0x55 as common. The second case puts the stream at a ~64 GiB absolute offset to
+// exercise the 64-bit coordinate math without allocating that much.
 void test_nt15_bounded_sample_memory() {
-    core::uint64 huge_src_size = 64ULL * 1024 * 1024 * 1024;
-    core::uint64 cur = 1000;
-    core::uint64 pos_base = 0;
-    core::uint64 sample_start =
-        std::max<core::uint64>(pos_base, cur > 4096 ? cur - 4096 : pos_base);
-    core::uint64 sample_end = std::min<core::uint64>(cur + 4096, huge_src_size);
-    size_t sample_len = static_cast<size_t>(sample_end - sample_start);
-    REQUIRE(sample_len <= 8192);
-    std::cout << "[PASS] NT-15: sample memory bounded to O(1) (" << sample_len << " B <= 8192 B)\n";
+    ScopedEnv arm("OPENRAR_PRICE_ARM", "A"); // the arm that samples the window
+    ScopedEnv dyn("OPENRAR_NO_DYNAMIC_PRICE", nullptr);
+
+    auto check = [](core::uint64 pos_base, size_t size, size_t cur_off) {
+        std::vector<core::byte> buf(size, 0x55);
+        std::fill(buf.begin() + (cur_off - 4096), buf.begin() + (cur_off + 4096), core::byte(0x77));
+        Compressor50 packer;
+        packer.begin_archive(nullptr, 5, 0x200000);
+        Compressor50TestAccess::init_match_params(packer);
+        Compressor50TestAccess::set_external_buf(packer, true);
+        Compressor50TestAccess::set_test_buffer(packer, buf.data(), buf.size(), pos_base,
+                                                pos_base + buf.size());
+        Compressor50TestAccess::set_cur(packer, pos_base + cur_off);
+        Compressor50TestAccess::set_price_model_sampled(packer, false);
+        Compressor50TestAccess::init_empirical_prior(packer);
+        const auto& pm = Compressor50TestAccess::price_model(packer);
+        REQUIRE(pm.lit_cost[0x77] == (2u << 8));  // the whole sample: floor price
+        REQUIRE(pm.lit_cost[0x55] == (15u << 8)); // outside the window: unused penalty
+    };
+    check(0, 16 * 1024 * 1024, 8 * 1024 * 1024);
+    check(64ULL * 1024 * 1024 * 1024 - 1024 * 1024, 64 * 1024, 32 * 1024);
+    std::cout << "[PASS] NT-15: sampling is confined to the +/-4096 B window at 16 MiB and 64 GiB "
+                 "offsets\n";
 }
 
-// NT-16: Stale hash chain candidate rejection below pos_base_
+// NT-16: Stale hash-chain nodes below pos_base_ are never followed. After a window
+// slide the chain arrays still hold positions that no longer exist in the buffer;
+// dereferencing one reads before buf_data_[0]. Two shapes are checked on the large
+// window path: a stale chain HEAD, and a stale node hanging off a valid candidate.
 void test_nt16_stale_chain_candidate_rejection() {
-    Compressor50 packer;
-    packer.begin_archive(nullptr, 5, 0x200000);
-    Compressor50TestAccess::init_match_params(packer);
-    std::cout << "[PASS] NT-16: stale chain candidate rejection below pos_base_ verified\n";
+    constexpr core::uint64 POS_BASE = 0x10000;
+    constexpr core::uint64 STALE = 0x8000; // < POS_BASE: slid out of the window
+    constexpr size_t WIN = 0x200000;
+    const core::uint64 pos = POS_BASE + 0x2000;
+    const core::uint64 valid = POS_BASE + 0x1000;
+
+    // The window lives inside a larger allocation. A stale candidate at STALE would be
+    // read from `body - (POS_BASE - STALE)`, i.e. inside the fence; a perfect copy of the
+    // query is planted exactly there, so a finder that follows the stale node returns it
+    // (a long, wrong match) instead of failing by luck on unrelated heap bytes.
+    constexpr size_t FENCE = 0x10000;
+    std::vector<core::byte> mem = t9_rand(FENCE + 64 * 1024, 5);
+    core::byte* body = mem.data() + FENCE;
+    const size_t body_size = mem.size() - FENCE;
+    std::memcpy(mem.data() + FENCE - (POS_BASE - STALE), body + (pos - POS_BASE), 64);
+    // `valid` shares exactly its first 8 bytes with `pos`, so it is a legal, short match.
+    std::memcpy(body + (valid - POS_BASE), body + (pos - POS_BASE), 8);
+
+    auto make = [&]() {
+        auto packer = std::make_unique<Compressor50>();
+        packer->begin_archive(nullptr, 5, WIN);
+        Compressor50TestAccess::init_match_params(*packer);
+        Compressor50TestAccess::setup_mock_large_window(*packer, WIN, WIN);
+        Compressor50TestAccess::set_test_buffer(*packer, body, body_size, POS_BASE,
+                                                POS_BASE + body_size);
+        return packer;
+    };
+
+    {
+        // Stale head: the only candidate is below pos_base_, so there is no match.
+        auto packer = make();
+        const core::uint32 h = Compressor50TestAccess::calc_hash(*packer, pos);
+        Compressor50TestAccess::set_head64(*packer, h, STALE);
+        const auto m = Compressor50TestAccess::find_match(*packer, pos, 16, 32);
+        REQUIRE(m.second == -1);
+        REQUIRE(m.first == 0);
+    }
+    {
+        // Valid head with a stale successor: the valid match is returned and the walk
+        // stops at the stale node instead of dereferencing it.
+        auto packer = make();
+        const core::uint32 h = Compressor50TestAccess::calc_hash(*packer, pos);
+        Compressor50TestAccess::set_head64(*packer, h, valid);
+        Compressor50TestAccess::set_prev64(*packer, static_cast<size_t>(valid) & (WIN - 1), STALE);
+        const auto m = Compressor50TestAccess::find_match(*packer, pos, 16, 32);
+        REQUIRE(m.second == static_cast<core::int64>(valid));
+        REQUIRE(m.first >= 8);
+        REQUIRE(m.first < 32);
+    }
+    std::cout
+        << "[PASS] NT-16: stale chain head and stale successor below pos_base_ are rejected\n";
 }
 
 // T10: the match emitter's admissibility contract (v1.33 item 1).
@@ -4245,7 +4663,8 @@ static const openrar::test::Case k_cases[] = {
     {"test_nt15_bounded_sample_memory", test_nt15_bounded_sample_memory, false},
     {"test_nt16_stale_chain_candidate_rejection", test_nt16_stale_chain_candidate_rejection, false},
     {"test_nt17_gate_off_legacy_byte_identity", test_nt17_gate_off_legacy_byte_identity, false},
-    {"test_nt18_cross_language_binding_defaults", test_nt18_cross_language_binding_defaults, false},
+    {"test_nt18_forward_arrival_default_decision_site",
+     test_nt18_forward_arrival_default_decision_site, false},
     {"test_nt20_pos_base_sample_window_clamp", test_nt20_pos_base_sample_window_clamp, false}};
 
 int main(int argc, char* argv[]) {
