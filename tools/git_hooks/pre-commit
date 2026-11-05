@@ -41,7 +41,16 @@ if [ -n "$PYTHON" ] && [ -f "tools/anchor_lint.py" ]; then
     fi
 fi
 
-# 3. Clang-format check on staged C/C++ files (enforces clang-format 18)
+# 3. Test assertion integrity lint check
+if [ -n "$PYTHON" ] && [ -f "tools/test_assertion_lint.py" ]; then
+    if ! "$PYTHON" tools/test_assertion_lint.py >/dev/null 2>&1; then
+        echo "[pre-commit] ERROR: test_assertion_lint reported violations (tautological, empty, or fail-open tests)!"
+        echo "             Run 'python tools/test_assertion_lint.py' to inspect and fix."
+        exit 1
+    fi
+fi
+
+# 4. Clang-format check on staged C/C++ files (enforces clang-format 18)
 STAGED_CPP=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(cpp|hpp|h|c)$' || true)
 
 if [ -n "$STAGED_CPP" ]; then
