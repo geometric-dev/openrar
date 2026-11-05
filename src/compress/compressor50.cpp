@@ -668,10 +668,36 @@ void Compressor50::init_freq() {
 
 namespace {
 inline constexpr core::uint32 DP_INF = 0xFFFFFFFFu;
+// Homogeneous-run fast path of the forward-arrival parser: a dist-1 run at least this long
+// is emitted directly. It exists for saturated runs (zeros, 0xFF fills), where the DP
+// horizon would otherwise re-decide every 16 bytes. Shorter runs (indentation, padding)
+// stay in the DP so a longer match elsewhere can win: firing at 3+ cost ~4.8 KB on a
+// tiled-source corpus (big24 part 1, -m5) and nothing was gained on zeros8 (587 B either way).
+inline constexpr size_t RUN_GUARD_MIN_LEN = 258;
 inline core::uint32 price_sym(core::byte len) {
     return len ? (static_cast<core::uint32>(len) << 8) : (15u << 8);
 }
+
+inline bool is_price_arm(const char* e) {
+    return e[0] != '\0' && e[1] == '\0' &&
+           (e[0] == 'A' || e[0] == 'B' || e[0] == 'C' || e[0] == 'U');
+}
+
+// OPENRAR_PRICE_ARM selects an experimental pricing arm (M2 ablation): A, B, C or U.
+// Unset, empty or unrecognised all resolve to the shipped Arm B, so there is exactly
+// one meaning for "not an experiment". The library never terminates its host over an
+// environment typo (the bindings load it into Python/C# processes); front ends that
+// want a hard failure call Compressor50::price_arm_env_valid() up front, as the CLI does.
+inline char price_arm_from_env() {
+    const char* e = std::getenv("OPENRAR_PRICE_ARM");
+    return (e && is_price_arm(e)) ? e[0] : 'B';
+}
 } // namespace
+
+bool Compressor50::price_arm_env_valid() {
+    const char* e = std::getenv("OPENRAR_PRICE_ARM");
+    return !e || e[0] == '\0' || is_price_arm(e);
+}
 
 void Compressor50::init_price_model() {
     for (core::uint32 i = 0; i < 256; i++) {
@@ -701,8 +727,8 @@ void Compressor50::init_empirical_prior() {
 
     // Normative M2 Ablation Decision: Arm B is the default shipped model.
     // Arm A and Arm C are opt-in experimental models via OPENRAR_PRICE_ARM.
-    const char* arm_env = std::getenv("OPENRAR_PRICE_ARM");
-    if (!arm_env || std::strcmp(arm_env, "B") == 0 || std::strcmp(arm_env, "U") == 0) {
+    const char arm = price_arm_from_env();
+    if (arm == 'B' || arm == 'U') {
         return; // Shipped Arm B uses flat Block 0 prior, updated per-block from Huffman code lengths
     }
 
@@ -754,11 +780,11 @@ void Compressor50::update_price_model() {
     last_price_refresh_token_count_ = 0;
     price_model_.initialized = true;
 
-    const char* arm_env = std::getenv("OPENRAR_PRICE_ARM");
-    if (arm_env && std::strcmp(arm_env, "U") == 0) {
+    const char arm = price_arm_from_env();
+    if (arm == 'U') {
         return; // Arm U uses flat uniform model
     }
-    if (arm_env && std::strcmp(arm_env, "A") == 0) {
+    if (arm == 'A') {
         return; // Arm A uses static empirical prior without Huffman table adaptation
     }
 
@@ -796,10 +822,9 @@ void Compressor50::refresh_price_model() {
 #endif
     if (no_dynamic) return;
 
-    const char* arm_env = std::getenv("OPENRAR_PRICE_ARM");
-    if (arm_env && (std::strcmp(arm_env, "U") == 0 || std::strcmp(arm_env, "A") == 0 ||
-                    std::strcmp(arm_env, "B") == 0)) {
-        return; // Arm U, A, B do not use mid-block refresh
+    // Only Arm C uses mid-block refresh. Default Arm B and arms U, A do NOT.
+    if (price_arm_from_env() != 'C') {
+        return;
     }
 
     core::uint32 lit_total = 256;
@@ -891,14 +916,38 @@ core::uint32 Compressor50::price_slot257() const {
 }
 
 // ── v1.56.0 Forward-Arrival Horizon Engine (H = 16 bytes) ────────────────────────
+// Terminal selection over the arrival buffer: the reachable node in [1, h] with the
+// lowest cost per covered byte; an exact density tie goes to the longer span. Pure
+// function of the nodes (unit-tested by BT-03). Returns 1 when nothing beyond offset 1
+// is better, including when no node is reachable (the caller then emits a literal).
+int Compressor50::select_horizon_target(const ArrivalNode* arrival, int h) {
+    // Lowest bit density rho(t) = cost(t) / bytes_covered across reachable nodes in [1, h].
+    int target = 1;
+    core::uint64 best_cost = arrival[1].cost;
+    size_t best_len = static_cast<size_t>(arrival[1].from_offset) + arrival[1].token_len;
+    if (best_len < 1) best_len = 1;
+
+    for (int t = 2; t <= h; ++t) {
+        if (arrival[t].cost < DP_INF) {
+            size_t t_len = static_cast<size_t>(arrival[t].from_offset) + arrival[t].token_len;
+            if (t_len < static_cast<size_t>(t)) t_len = static_cast<size_t>(t);
+            core::uint64 cost_a = static_cast<core::uint64>(arrival[t].cost) * best_len;
+            core::uint64 cost_b = best_cost * t_len;
+            if (best_cost == DP_INF || cost_a < cost_b || (cost_a == cost_b && t_len > best_len)) {
+                target = t;
+                best_cost = arrival[t].cost;
+                best_len = t_len;
+            }
+        }
+    }
+    return target;
+}
+
 // Evaluates all token candidates at the current position and selects the optimal
 // one using dynamic programming over a 17-element arrival buffer (offsets 0..16).
 // Returns the optimal token decision (token_type, token_len, token_dist, cost).
 // Takes pre-computed match/rep candidates to avoid duplicate search.
 // Uses local arrival buffer to avoid member variable issues.
-// Modified evaluate_forward_arrival function with proper DP
-// This is a standalone replacement for the function in compressor50.cpp
-
 Compressor50::ForwardArrivalDecision
 Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
                                        core::int64 match_candidate, size_t rep_best_len,
@@ -909,6 +958,8 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
     if (avail == 0) return {0, 1, 0, 8u << 8};
 
     const core::byte* buf_cur = &buf_data_[static_cast<size_t>(cur - pos_base_)];
+    size_t improvement_copies = 0;
+    constexpr size_t MAX_IMPROVEMENTS_PER_POS = 48;
 
     // Nice-length cutoff: rep/slot257 has zero distance cost, so it strictly takes precedence over fresh match on equal length
     if (rep_best_len >= nice_len_ && rep_idx >= 0 && rep_best_len >= match_len) {
@@ -957,6 +1008,7 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
                       static_cast<core::uint64>(arrival[idx].cost) * token_len);
         }
         if (better) {
+            if (++improvement_copies > MAX_IMPROVEMENTS_PER_POS) return;
             arrival[idx].cost = cost;
             arrival[idx].from_offset = 0;
             arrival[idx].token_type = static_cast<core::uint8>(token_type);
@@ -1207,26 +1259,9 @@ Compressor50::evaluate_forward_arrival(core::uint64 cur, size_t match_len,
         }
     }
 
-    // Terminal Horizon Path Selection:
-    // Evaluate lowest bit density rho(t) = cost(t) / bytes_covered across reachable nodes in [1, h_eff].
-    int target = 1;
-    core::uint64 best_cost = arrival[1].cost;
-    size_t best_len = static_cast<size_t>(arrival[1].from_offset) + arrival[1].token_len;
-    if (best_len < 1) best_len = 1;
-
-    for (int t = 2; t <= h_eff; ++t) {
-        if (arrival[t].cost < DP_INF) {
-            size_t t_len = static_cast<size_t>(arrival[t].from_offset) + arrival[t].token_len;
-            if (t_len < static_cast<size_t>(t)) t_len = static_cast<size_t>(t);
-            core::uint64 cost_a = static_cast<core::uint64>(arrival[t].cost) * best_len;
-            core::uint64 cost_b = best_cost * t_len;
-            if (best_cost == DP_INF || cost_a < cost_b || (cost_a == cost_b && t_len > best_len)) {
-                target = t;
-                best_cost = arrival[t].cost;
-                best_len = t_len;
-            }
-        }
-    }
+    // Terminal Horizon Path Selection: lowest bit density across reachable nodes.
+    const int target = select_horizon_target(arrival, h_eff);
+    const core::uint64 best_cost = arrival[target].cost;
 
     if (best_cost == DP_INF) {
         return {0, 1, 0, lit0_cost};
@@ -1515,7 +1550,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
 
         size_t cand_dist = static_cast<size_t>(pos - static_cast<core::uint64>(cand));
         core::uint32 inc = length_increment(cand_dist);
-        size_t min_legal_len = std::max<size_t>(min_match_, static_cast<size_t>(inc) + 2);
+        size_t min_legal_len = static_cast<size_t>(inc) + min_match_;
 
         // Distance-costed hurdle: for a distant candidate to beat best.length,
         // it must overcome the higher distance band extra bits overhead.
@@ -2441,6 +2476,23 @@ bool Compressor50::write_block(bool last_block) {
     return wrote_ok;
 }
 
+bool Compressor50::forward_arrival_default(int method) {
+    // Governance: Rule G-1 (single decision function), Pillar 7 #8.
+    //
+    // Chosen from clean -mt1 measurements against the v2.0.23 release (sizes are
+    // deterministic, timings are min-of-3; see docs/milestones/v2.1.0-implementation-plan.md
+    // §7.2 for the table):
+    //   m1-m3  greedy. 1.2x-3.7x faster than v2.0.23 and 0.3-2.4% smaller on text and mixed
+    //          data. The forward-arrival parser is slower than v2.0.23 here (0.70x with the
+    //          offset-1 lookahead that would be needed to match it on source code), so it
+    //          cannot be the default. The one loss is big24 at m1/m2 (+0.13% / +0.16%).
+    //   m4-m5  forward-arrival. Greedy is larger than v2.0.23 on text and mixed (+0.05% to
+    //          +1.3%); forward-arrival is smaller on every cell except big24 at m5 (+0.03%),
+    //          at 0.76x-0.83x of v2.0.23's speed on text and faster on big24 and mixed.
+    static const bool fa_defaults[6] = {false, false, false, false, true, true};
+    return (method >= 0 && method <= 5) ? fa_defaults[method] : false;
+}
+
 void Compressor50::init_match_params() {
     // m5 depth 128 — the v1.31 M2 decision (pre-analysis R4, exercised):
     // the 512-deep walk WAS the m5 cost (85.2 s canonical); depth 128 runs
@@ -2479,11 +2531,10 @@ void Compressor50::init_match_params() {
     min_match_ = (method_ >= 0 && method_ <= 5) ? min_matches[method_] : MIN_MATCH;
 
     // ── Forward-Arrival Horizon Engine Enablement (Single Decision Site) ─────
-    // Governance: Rule G-1 and Pillar 7 #8.
-    // Defaults: m1-m4 OFF (permanent for v2.1.0 on m1/m2; m3/m4 pending throughput recovery)
-    //           m5 ON (zero-run invariant B-1 closed)
-    static const bool fa_defaults[6] = {false, false, false, false, false, true};
-    forward_arrival_enable_ = (method_ >= 0 && method_ <= 5) ? fa_defaults[method_] : false;
+    // Governance: Rule G-1 (the per-method default lives in forward_arrival_default()).
+    // OPENRAR_NO_FORWARD_ARRIVAL=1 forces the greedy parser and OPENRAR_ENABLE_FORWARD_ARRIVAL=1
+    // forces the forward-arrival parser at any method; the latter is applied last and wins.
+    forward_arrival_enable_ = forward_arrival_default(method_);
 
     // Environmental overrides
     if (const char* s = std::getenv("OPENRAR_NO_FORWARD_ARRIVAL");
@@ -2663,14 +2714,15 @@ int Compressor50::process_available(bool final) {
         // 2. Filter region boundary checks (clamp max LZ match).
         // 3. Chain match search with distance hurdle & decaying fail_count_ heuristic.
         // 4. Forward-Arrival Horizon DP Parser & Symbol Arbiter.
-        if (active_filter_ == FilterType::None && cur_ > pos_base_ + 3 && cur_ + 3 < src_loaded_) {
+        if (forward_arrival_enable_ && active_filter_ == FilterType::None && cur_ > pos_base_ + 3 &&
+            cur_ + 3 < src_loaded_) {
             const core::byte* buf_cur = &buf_data_[static_cast<size_t>(cur_ - pos_base_)];
             if (buf_cur[0] == buf_cur[-1] && buf_cur[0] == buf_cur[1] && buf_cur[0] == buf_cur[2] &&
                 buf_cur[0] == buf_cur[3]) {
                 size_t max_run = std::min(static_cast<size_t>(MAX_LZ_MATCH),
                                           static_cast<size_t>(src_loaded_ - cur_));
                 size_t run_len = arch::match_length_simd(buf_cur, buf_cur - 1, max_run);
-                if (run_len >= min_match_) {
+                if (run_len >= RUN_GUARD_MIN_LEN) {
                     fail_count_ = 0; // Run detected: immediate full reset of fail_count_ (M4-2)
                     size_t emit_len = std::min(run_len, static_cast<size_t>(MAX_LZ_MATCH));
                     if (!lastlen_suppressed_ && old_dist_[0] == 1 && last_length_ != 0 &&
@@ -2937,7 +2989,6 @@ int Compressor50::process_available(bool final) {
 
         if (!have_match) {
             fail_count_++;
-            if (fail_count_ > 0x10000) fail_count_ = 0x10000;
             add_literal(buf_data_[static_cast<size_t>(cur_ - pos_base_)]);
             insert_position(cur_);
             cur_++;
@@ -2945,13 +2996,7 @@ int Compressor50::process_available(bool final) {
             // Keep invariant: every hashable p < cur_ has been inserted exactly once
             unhashed_pos_ = cur_;
         } else {
-            if (len >= 8) {
-                fail_count_ = 0;
-            } else if (len >= 4) {
-                fail_count_ = (fail_count_ >= 0x200) ? (fail_count_ / 2) : 0;
-            } else if (len >= 2) {
-                fail_count_ = (fail_count_ >= 0x400) ? (fail_count_ * 3 / 4) : fail_count_;
-            }
+            if (len >= 8) fail_count_ = 0;
             if (!is_rep && lazy_tests_ > 0 && len < cur_nice_len && avail_at(cur_) > len + 1 &&
                 cur_ + 1 < src_size_ &&
                 (active_filter_ == FilterType::None || cur_ + 1 < filter_emitted_until_)) {
