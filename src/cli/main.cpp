@@ -12,6 +12,7 @@
 #include "../sandbox/spawn.hpp"
 #include "../sandbox/worker_broker.hpp"
 #include "../archive/archive_mutator.hpp"
+#include "../compress/compressor50.hpp"
 #include "../compress/filters50.hpp"
 #include "../compress/cdc_chunker.hpp"
 #include "../compress/cdc_planner.hpp"
@@ -4323,6 +4324,16 @@ static int cli_main(int argc, char* argv[]) {
     if (!is_known_cli_command(cmd)) {
         std::cerr << "Unknown command: " << cmd << "\n\n";
         openrar::cli::print_help();
+        return EXIT_USAGE;
+    }
+
+    // OPENRAR_PRICE_ARM is an experiment knob. The library resolves an unrecognised
+    // value to the shipped arm, so a misspelling would silently measure the wrong
+    // thing and make an ablation look like a null result. Refuse it up front.
+    if (!openrar::compress::Compressor50::price_arm_env_valid()) {
+        const char* arm = std::getenv("OPENRAR_PRICE_ARM");
+        std::cerr << "Error: invalid OPENRAR_PRICE_ARM '" << (arm ? arm : "")
+                  << "' (allowed: A, B, C, U)\n";
         return EXIT_USAGE;
     }
 
