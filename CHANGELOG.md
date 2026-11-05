@@ -7,7 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-11-05
+
+Correction release. **Upgrade from 2.1.0**: that release shipped a compression-speed defect and a
+larger-than-2.0.23 default at `-m5`.
+
+### Fixed
+
+- **Incompressible data was searched at every byte (`compressor50.cpp`).** The greedy parser capped
+  its failure counter at `0x10000`, which is exactly where the search-skip mask `& 2047` is zero, so
+  the skip never fired. On random data `-m5` ran at 0.35 MB/s (2.0.23: 6.4 MB/s); it now runs at
+  19-23 MB/s. The same defect made the unit suite take 164 s (now 10 s).
+- **`-m5` default regressed against 2.0.23.** Per-method defaults are now chosen from measurements
+  against the 2.0.23 release (see below).
+
+### Changed
+
+- **Parser defaults:** `-m1` to `-m3` use the greedy parser, `-m4` and `-m5` use the forward-arrival
+  parser. Output is smaller than 2.0.23 on every measured cell except `-m5` on the tiled-source
+  corpus (+0.028%). Force either parser with `OPENRAR_ENABLE_FORWARD_ARRIVAL=1` /
+  `OPENRAR_NO_FORWARD_ARRIVAL=1`.
+- **Forward-arrival run fast-path** now fires only for runs of 258 bytes or more.
+- **`OPENRAR_PRICE_ARM`:** unset, empty or unrecognised values mean the shipped Arm B. The library no
+  longer calls `exit()` on a bad value; the CLI rejects an unrecognised value with exit code 7.
+- **Speed vs 2.0.23 (same machine):** 1.4x-3.6x faster at `-m1` to `-m3`. At `-m4`/`-m5` text is the
+  slowest cell (0.76x at `-m4`, 0.83x at `-m5`); big24 is 1.06x and random data 2.9x.
+
+### Not delivered
+
+- The 2.1.0 ratio targets (15 KiB smaller at `-m3`, 25 KiB smaller at `-m5` on the big24 corpus) were
+  **not met**: measured 10.3 KiB smaller and 2.9 KiB larger. Carried to the next milestone.
+
+### Verification infrastructure
+
+- `tools/release_regression_guard.py`: fail-closed comparison against the 2.0.23 release binary
+  (size, speed, zero-run bound, integrity, determinism, alternate-parser round trips). New CI job
+  `release-regression-guard`; `release-assets` depends on it.
+- `refcap_fail_closed` CTest: `OPENRAR_REFCAP=1` must make the golden gates exit 2.
+- Interop manifest grew from 30 to 55 stages and now includes the non-default parser at every method.
+- `tools/provision_unrar.sh`: fixed the download URL and SHA-256 pin (it failed on every run).
+- Rewrote unit tests that could not fail (NT-04, 06, 15, 16, 17, 18, 20, BT-03, BT-06); added a lint
+  rule against `REQUIRE(&obj != nullptr)`.
+- `big24.bin` is now generated from the `src/` tree at tag `v2.0.23` instead of the working tree.
+
 ## [2.1.0] - 2026-11-04
+
+> **Superseded by 2.1.1.** The defaults and results described below did not hold up under
+> measurement: `-m5` ran the forward-arrival parser by default and was larger than 2.0.23 on the
+> big24 corpus, and incompressible data compressed up to 18x slower than in 2.0.23. The price-model
+> arms are A (static prior), B (per-block measured), C (mid-block refresh) and U (uniform), not the
+> list given here; Arms A and C are both worse than B.
 
 ### Forward-Arrival DAG Parser (v2.1.0)
 
