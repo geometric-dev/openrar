@@ -58,6 +58,27 @@ def sha256_file(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+
+# SHA-256 of every synthetic corpus, pinned. generate_corpora() used to trust any file that
+# existed at the right size, so a corpus written by an older recipe was measured as if it were
+# the current one: mixed16.bin sat on disk from 3 Nov (hash 781087af...) while its recipe, 8 MiB
+# of synthetic_text8.txt + 8 MiB of random8.bin, produces f835d53c... Every mixed16 figure
+# taken on that machine described a file nobody else could regenerate. A pinned corpus that does
+# not match its hash is rebuilt, and a rebuild that still does not match is an error.
+# big24.bin additionally depends on tag SOURCE_BLOB_TAG being present (see get_source_blob).
+CORPUS_SHA256 = {
+    "zeros8.bin": "2daeb1f36095b44b318410b3f4e8b5d989dcc7bb023d1426c492dab0a3053e74",
+    "random8.bin": "a7255df839d7f16f83fdeb26f48f313f9fbbc65829311aa46df82701a2ad03b0",
+    "synthetic_text8.txt": "029ac157f7029f7d24e558deb4779220199602cb2ff03c5e01b4df30cb23d288",
+    "mixed16.bin": "f835d53c2426e60f52f6682f610626486d43e6028cd84656faf9ed8570deda45",
+    "big24.bin": "4d4e12c9ec52a8ccfa2e4859bd167d5ca0834eb464c5ecc0343840205ed48bdf",
+}
+
+
+def _pinned_ok(path: Path) -> bool:
+    """True when `path` exists and matches its pinned SHA-256."""
+    return path.exists() and sha256_file(path) == CORPUS_SHA256[path.name]
+
 # The "repository source blob" inside big24.bin is the src/ tree AS OF THIS TAG, not the
 # working tree. Reading the working tree made the corpus change whenever the code under
 # test changed (the encoder is part of src/), so a before/after size comparison was
@@ -101,7 +122,7 @@ def generate_corpora() -> dict:
     
     # A. zeros8.bin (8 MiB)
     p_zeros = WORK_DIR / "zeros8.bin"
-    if not p_zeros.exists() or p_zeros.stat().st_size != 8 * 1024 * 1024:
+    if not _pinned_ok(p_zeros):
         print("Generating zeros8.bin (8 MiB)...")
         with open(p_zeros, "wb") as f:
             f.write(b"\x00" * (8 * 1024 * 1024))
@@ -109,7 +130,7 @@ def generate_corpora() -> dict:
 
     # B. random8.bin (8 MiB seeded PRNG)
     p_rand = WORK_DIR / "random8.bin"
-    if not p_rand.exists() or p_rand.stat().st_size != 8 * 1024 * 1024:
+    if not _pinned_ok(p_rand):
         print("Generating random8.bin (8 MiB)...")
         rng = random.Random(20261103)
         with open(p_rand, "wb") as f:
@@ -122,7 +143,7 @@ def generate_corpora() -> dict:
 
     # C. synthetic_text8.txt (8 MiB word salad, renamed from text8.txt per M0R-2)
     p_text = WORK_DIR / "synthetic_text8.txt"
-    if not p_text.exists() or p_text.stat().st_size < 8 * 1024 * 1024:
+    if not _pinned_ok(p_text):
         print("Generating synthetic_text8.txt (8 MiB)...")
         rng = random.Random(20261103)
         with open(p_text, "w", encoding="utf-8", newline="\n") as f:
@@ -133,7 +154,7 @@ def generate_corpora() -> dict:
 
     # D. mixed16.bin (16 MiB: 8 MiB text + 8 MiB random)
     p_mixed = WORK_DIR / "mixed16.bin"
-    if not p_mixed.exists() or p_mixed.stat().st_size != 16 * 1024 * 1024:
+    if not _pinned_ok(p_mixed):
         print("Generating mixed16.bin (16 MiB)...")
         with open(p_mixed, "wb") as f_out:
             with open(p_text, "rb") as f_in:
@@ -144,7 +165,7 @@ def generate_corpora() -> dict:
 
     # E. big24.bin (24 MiB: 8 MiB text + 8 MiB code + 8 MiB binary)
     p_big = WORK_DIR / "big24.bin"
-    if not p_big.exists() or p_big.stat().st_size != 24 * 1024 * 1024:
+    if not _pinned_ok(p_big):
         print("Generating big24.bin (24 MiB)...")
         src_blob = get_source_blob().encode("utf-8", errors="replace")
         with open(p_big, "wb") as f_out:
@@ -160,6 +181,13 @@ def generate_corpora() -> dict:
                 f_out.write(f_in.read(8 * 1024 * 1024))
     corpora["big24.bin"] = p_big
 
+    for name, path in corpora.items():
+        got = sha256_file(path)
+        if got != CORPUS_SHA256[name]:
+            raise RuntimeError(
+                f"corpus {name} does not match its pinned SHA-256 after regeneration "
+                f"(got {got[:16]}..., want {CORPUS_SHA256[name][:16]}...). For big24.bin this "
+                f"usually means tag {SOURCE_BLOB_TAG} is missing; fetch tags and retry.")
     return corpora
 
 def get_system_fingerprint(corpora: dict) -> dict:
