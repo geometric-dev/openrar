@@ -196,11 +196,7 @@ ZERO_RUN_LIMIT_BYTES = 587  # G2
 
 # Engine switches that must not leak in from the caller's shell.
 SCRUB_ENV = (
-    "OPENRAR_NO_FORWARD_ARRIVAL",
     "OPENRAR_ENABLE_FORWARD_ARRIVAL",
-    "OPENRAR_EXPERIMENTAL_M1_DAG",
-    "OPENRAR_PRICE_ARM",
-    "OPENRAR_NO_DYNAMIC_PRICE",
     "OPENRAR_REFCAP",
 )
 
@@ -435,30 +431,6 @@ def check_determinism(cur, corpora):
         print("  [PASS] -mt4 archive extracts to the source")
 
 
-def check_alternate_engines(cur, corpora, methods):
-    section("Alternate parser still round-trips (opt-in / kill-switch paths)")
-    corpus = corpora["synthetic_text8.txt"]
-    for m in methods:
-        for env, tag in (({"OPENRAR_ENABLE_FORWARD_ARRIVAL": "1"}, "forward-arrival forced on"),
-                         ({"OPENRAR_NO_FORWARD_ARRIVAL": "1"}, "greedy forced on")):
-            try:
-                size, _ = pack(cur, corpus, m, WORK_DIR / "alt.rar", env_extra=env)
-            except RuntimeError as e:
-                fail(f"engine {tag} -m{m}: {e}")
-                continue
-            if extract_matches(cur, WORK_DIR / "alt.rar", corpus, f"engine {tag} -m{m}"):
-                print(f"  [PASS] {tag:<26} -m{m}  {size:,} B round-trips")
-    zeros = corpora["zeros8.bin"]
-    try:
-        size, _ = pack(cur, zeros, 5, WORK_DIR / "alt.rar", env_extra={"OPENRAR_ENABLE_FORWARD_ARRIVAL": "1"})
-        if size > ZERO_RUN_LIMIT_BYTES:
-            fail(f"G2 with forward-arrival forced on: zeros8 -m5 = {size} B")
-        else:
-            print(f"  [PASS] G2 holds with forward-arrival forced on ({size} B)")
-    except RuntimeError as e:
-        fail(f"G2 forward-arrival: {e}")
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--binary", help="openrar under test (default: auto-detect under build/)")
@@ -511,7 +483,6 @@ def main():
         check_zero_run(cur, base, corpora, zero_methods)
         check_speed(cur, base, corpora, SPEED_CELLS)
         check_determinism(cur, corpora)
-        check_alternate_engines(cur, corpora, methods)
     except subprocess.TimeoutExpired as e:
         fail(f"timeout: {e}")
     finally:

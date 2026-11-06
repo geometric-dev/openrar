@@ -4327,14 +4327,11 @@ static int cli_main(int argc, char* argv[]) {
         return EXIT_USAGE;
     }
 
-    // OPENRAR_PRICE_ARM is an experiment knob. The library resolves an unrecognised
-    // value to the shipped arm, so a misspelling would silently measure the wrong
-    // thing and make an ablation look like a null result. Refuse it up front.
-    if (!openrar::compress::Compressor50::price_arm_env_valid()) {
-        const char* arm = std::getenv("OPENRAR_PRICE_ARM");
-        std::cerr << "Error: invalid OPENRAR_PRICE_ARM '" << (arm ? arm : "")
-                  << "' (allowed: A, B, C, U)\n";
-        return EXIT_USAGE;
+    // OPENRAR_ENABLE_FORWARD_ARRIVAL was deprecated in v2.1.1 and removed in v2.2.
+    // Emit a single warning on stderr and proceed with greedy parsing.
+    if (std::getenv("OPENRAR_ENABLE_FORWARD_ARRIVAL")) {
+        std::cerr << "Warning: OPENRAR_ENABLE_FORWARD_ARRIVAL was removed in v2.2; greedy parsing "
+                     "is always used.\n";
     }
 
     std::string arc_path;

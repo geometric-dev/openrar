@@ -495,70 +495,6 @@ private:
 
     std::vector<core::byte>* mem_out_{nullptr};
 
-    // ── v1.56.0 Cost-Aware Forward-Arrival Graph Parser & Symbol Arbiter ─────
-    // Fixed-point Shannon entropy price model (bits * 256).
-    struct PriceModel {
-        core::uint32 lit_cost[256];
-        core::uint32 len_cost[44];
-        core::uint32 dist_cost[DCX];
-        core::uint32 rep_cost[4][RC];
-        core::uint32 ldd_cost[16];
-        core::uint32 slot257_cost{3u << 8};
-        bool initialized{false};
-    };
-    PriceModel price_model_{};
-
-    void init_price_model();
-    void init_empirical_prior();
-    void update_price_model();
-    void refresh_price_model();
-    bool price_model_sampled_{false};
-    core::uint32 last_price_refresh_token_count_{0};
-    core::uint32 price_literal(core::byte b) const;
-    core::uint32 price_match(size_t len, size_t dist) const;
-    struct PrecomputedDistCost {
-        core::uint32 dist_cost{0};
-        core::uint32 inc{0};
-        bool valid{false};
-    };
-    PrecomputedDistCost precompute_dist_cost(size_t dist) const;
-    core::uint32 price_match_fast(size_t len, const PrecomputedDistCost& pdc) const;
-    core::uint32 price_rep(core::uint32 rep_idx, size_t len) const;
-    core::uint32 price_slot257() const;
-
-    // ── v1.56.0 Forward-Arrival Horizon Engine (H = 16 bytes, stack-allocated) ─────
-    struct alignas(64) ArrivalNode {
-        core::uint32 cost{0xFFFFFFFFu}; // Cumulative fixed-point cost (DP_INF if unreachable)
-        core::uint8 from_offset{0};     // Predecessor index in [0, H]
-        core::uint8 token_type{0};      // Literal, Match, Rep0..3, Slot257
-        core::uint16 token_len{0};      // Bytes covered
-        size_t token_dist{0};           // Distance or rep index
-        size_t old_dist[4];             // Rep-state captured AT WRITE TIME
-        size_t last_len{0};             // Shadow last_length_ captured AT WRITE TIME
-        core::uint8 reserved[8]{0};     // Pad to 64 bytes for cache-line alignment (Invariant I-5)
-    };
-    static_assert(sizeof(ArrivalNode) == 64,
-                  "ArrivalNode must be exactly 64 bytes (Invariant I-5)");
-    // Terminal horizon selection over arrival[1..h]: the reachable node with the
-    // lowest cost per covered byte wins, and an exact density tie goes to the
-    // longer covered span. Returns 1 when no node beyond offset 1 is better.
-    // Pure function of the nodes so the tie-break is unit-testable.
-    static int select_horizon_target(const ArrivalNode* arrival, int h);
-    bool forward_arrival_enable_{false};
-
-    // Forward-arrival engine
-    struct ForwardArrivalDecision {
-        core::uint32 token_type{0}; // 0=Literal, 1=Match, 2=Rep0, 3=Rep1, 4=Rep2, 5=Rep3, 6=LastLen
-        core::uint16 token_len{1};
-        size_t token_dist{0};
-        core::uint32 cost{0};
-    };
-    ForwardArrivalDecision evaluate_forward_arrival(core::uint64 cur, size_t match_len,
-                                                    core::int64 match_candidate,
-                                                    size_t rep_best_len, int rep_idx,
-                                                    size_t cur_max_lz);
-    void commit_arrival_token(const ForwardArrivalDecision& decision);
-
     void init_freq();
     void reset_old_dist() {
         for (core::uint32 i = 0; i < 4; i++) old_dist_[i] = static_cast<size_t>(-1);
@@ -801,15 +737,6 @@ public:
     void arb_probe_reset() { arb_probe_ = ArbiterProbeStats{}; }
     const ArbiterProbeStats& arb_probe_stats() const { return arb_probe_; }
     // Per-block size probe (research: parser-selection ceiling, plan section 7.2.2.4). Its
-    // controls are private and reachable only through the friend Compressor50ResearchAccess,
-    // which tools/blockceiling.cpp defines, so no production caller can reach them. Recording
-    // is log-only. Shrinking the flush thresholds is NOT: it changes the emitted stream.
-    struct BlockProbeRecord {
-        core::uint64 input_end{0};    // absolute stream offset the block ends at
-        core::uint64 packed_bytes{0}; // header + payload bytes written for the block
-        core::uint32 tokens{0};       // tokens in the block (literals + matches)
-    };
-
     // v1.44 A-6 back-shift control: measurement/tooling hook with the same
     // shape as set_lastlen_suppressed (tests + arbprobe timing A/B); the
     // constructor applies the OPENRAR_NO_BACKSHIFT environment once so the
@@ -869,16 +796,6 @@ public:
 
     core::int64 compress(bool last_block = true);
 
-    // Shipped per-method default for the forward-arrival parser (Rule G-1: the one
-    // decision site). init_match_params() applies the OPENRAR_*_FORWARD_ARRIVAL
-    // environment overrides on top of this value; nothing else may decide it.
-    static bool forward_arrival_default(int method);
-
-    // True when OPENRAR_PRICE_ARM is unset/empty or one of A, B, C, U. The library
-    // resolves any other value to the shipped Arm B instead of aborting its host;
-    // front ends (the CLI) use this to fail closed before starting a measurement.
-    static bool price_arm_env_valid();
-
     static bool compress_buffer(const core::byte* src, size_t src_size,
                                 std::vector<core::byte>& dest, int method = 3,
                                 size_t win_size = 0x200000, const FilterConfig& filter_cfg = {});
@@ -923,15 +840,6 @@ public:
     core::uint64 source_bytes_loaded() const { return src_loaded_; }
 
     friend class Compressor50TestAccess;
-    friend class Compressor50ResearchAccess;
-
-private:
-    // Block flush thresholds. These are the shipped constants; only the research accessor
-    // moves them (so the production path carries no extra mode branch).
-    size_t flush_token_limit_{32768};
-    core::uint64 flush_input_limit_{0x80000};
-    bool block_probe_on_{false};
-    std::vector<BlockProbeRecord> block_probe_;
 };
 
 inline size_t parallel_chunk_size(core::uint64 total_size, unsigned eff_threads,

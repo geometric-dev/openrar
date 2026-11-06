@@ -320,12 +320,6 @@ target_link_libraries(archive_api_tests PRIVATE
     target_link_libraries(arbprobe PRIVATE openrar_core)
     target_include_directories(arbprobe PRIVATE ${OPENRAR_INCLUDES})
 
-    # v2.2 research probe (not a test): per-region ceiling for choosing between the
-    # greedy and forward-arrival parsers (plan v2.1.0 §10 item 10).
-    add_executable(blockceiling tools/blockceiling.cpp)
-    target_link_libraries(blockceiling PRIVATE openrar_core)
-    target_include_directories(blockceiling PRIVATE ${OPENRAR_INCLUDES})
-
     # v1.39.0 Gate 0 probe (not a test): extraction durability cost
     # decomposition (docs/v1.39.0-pre-analysis.md).
     add_executable(durability_probe tools/durability_probe.cpp)
