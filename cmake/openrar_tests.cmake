@@ -49,9 +49,10 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(bitreader_stream_tests tests/unit/bitreader_stream_tests.cpp)
     add_openrar_test(parallel_compress_tests tests/unit/parallel_compress_tests.cpp)
 
-    # Streaming encoder gates: byte-identical vs one-shot, the historical
+    # Streaming encoder & decoder gates: byte-identical vs one-shot, the historical
     # iteration-3 crash regression, cancel/progress, flush sink.
     add_openrar_test(stream_encoder_tests tests/unit/stream_encoder_tests.cpp)
+    add_openrar_test(stream_decoder_tests tests/unit/stream_decoder_tests.cpp)
     add_openrar_test(crypto_tests tests/unit/crypto_tests.cpp)
     add_openrar_test(format_tests tests/unit/format_tests.cpp)
     add_openrar_test(io_tests tests/unit/io_tests.cpp)
