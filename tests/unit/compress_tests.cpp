@@ -1181,6 +1181,7 @@ namespace openrar::compress {
 class Compressor50TestAccess {
 public:
     static bool is_large_window(const Compressor50& c) { return c.is_large_window_; }
+    static core::uint32 lazy_tests(const Compressor50& c) { return c.lazy_tests_; }
     struct HorizonNode {
         core::uint32 cost;
         core::uint8 from_offset;
@@ -2628,7 +2629,9 @@ void test_slot257_pure_addition_suppressed() {
         // pre-M2 — the binary-tree finder changes match selection by design,
         // so no byte identity is asserted there.
         // v2.1.0 Track E Forward-Arrival relaxation and bit-density selection re-capture (OPENRAR_REFCAP=1).
-        {"text64k", 1, "c3b2561b60200827b090f6f6b1ed85515cf938ea1ea20c4bac99358cbb6f82b3"},
+        // v2.1.1: text64k m1 re-captured for lazy matching at m1/m2 (was c3b2561b...); every
+        // other digest below is unchanged, which is what pins the change to m1/m2 only.
+        {"text64k", 1, "e0ee201e518a5e77f1341e5b15a77efc9dbad6d958dedba5247758d955b0d02e"},
         {"text64k", 3, "91c101b563cfef69633b5caf071b08080303813e092fa3f35f0b6fb67e5d93e7"},
         {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
@@ -2703,7 +2706,8 @@ void test_selection_reference() {
         const char* sha;
     } expected[] = {
         // v2.1.0 Track E Forward-Arrival relaxation and bit-density selection re-capture (OPENRAR_REFCAP=1).
-        {"text64k", 1, "c3b2561b60200827b090f6f6b1ed85515cf938ea1ea20c4bac99358cbb6f82b3"},
+        // v2.1.1: text64k m1 re-captured for lazy matching at m1/m2 (was c3b2561b...).
+        {"text64k", 1, "e0ee201e518a5e77f1341e5b15a77efc9dbad6d958dedba5247758d955b0d02e"},
         {"text64k", 3, "91c101b563cfef69633b5caf071b08080303813e092fa3f35f0b6fb67e5d93e7"},
         {"rand256k", 1, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
         {"rand256k", 3, "bb60fca9790e03e97adbb8293e12caee3bccaff09bd78169ae0a7ed5f6f555a6"},
@@ -3214,10 +3218,15 @@ void test_nt14_cancellation_mid_horizon_and_reuse() {
     std::cout << "[PASS] NT-14: cancellation reset and reuse succeeds\n";
 }
 
-// NT-17: Gate-off legacy byte identity. With the forward-arrival gate forced off,
-// the encoder must emit the exact v2.0.23 greedy bytes, and the default build must
-// be that same stream wherever the shipped default is "off". The digests below are
-// the t9 "mixed" corpus pins that already appear in v2.0.23's own golden table.
+// NT-17: Gate-off byte identity. With the forward-arrival gate forced off, the encoder
+// must emit the pinned greedy bytes, and the default build must be that same stream
+// wherever the shipped default is "off" (since v2.1.1: every method).
+//   m3: the t9 "mixed" corpus pin that already appears in v2.0.23's own golden table, so
+//       the greedy path at m3 is byte-identical to v2.0.23's greedy fallback.
+//   m1: lazy matching was switched on at m1/m2 in v2.1.1 (plan §7.2.2), so m1 is no longer
+//       v2.0.23's greedy stream in general. This particular corpus happens to be
+//       insensitive to the lazy test, so its digest did not move; text64k m1 in
+//       test_slot257_pure_addition_suppressed is the pin that does (it changed).
 void test_nt17_gate_off_legacy_byte_identity() {
     ScopedEnv no_enable("OPENRAR_ENABLE_FORWARD_ARRIVAL", nullptr);
     ScopedEnv no_experimental("OPENRAR_EXPERIMENTAL_M1_DAG", nullptr);
@@ -3239,7 +3248,10 @@ void test_nt17_gate_off_legacy_byte_identity() {
         }
         char hex[65];
         sha256_hex(gate_off, hex);
-        REQUIRE((std::strcmp(hex, l.sha) == 0 && "gate-off output drifted from v2.0.23 bytes"));
+        if (std::strcmp(hex, l.sha) != 0) {
+            std::cerr << "NT-17 m" << l.method << " digest drifted: got " << hex << "\n";
+        }
+        REQUIRE((std::strcmp(hex, l.sha) == 0 && "gate-off output drifted from the pinned bytes"));
         assert_roundtrip_2mib(gate_off, mixed);
     }
 
@@ -3269,9 +3281,10 @@ void test_nt18_forward_arrival_default_decision_site() {
     ScopedEnv no_disable("OPENRAR_NO_FORWARD_ARRIVAL", nullptr);
     ScopedEnv no_experimental("OPENRAR_EXPERIMENTAL_M1_DAG", nullptr);
 
-    // Index = method; m0 is STORE and never reaches the block encoder. m1-m3 are greedy,
-    // m4-m5 forward-arrival (measurements: the table in forward_arrival_default()).
-    const bool shipped[6] = {false, false, false, false, true, true};
+    // Index = method; m0 is STORE and never reaches the block encoder. Every method is
+    // greedy since v2.1.1; forward-arrival is opt-in (measurements: the comment in
+    // forward_arrival_default()).
+    const bool shipped[6] = {false, false, false, false, false, false};
     auto enabled_for = [](int method) {
         Compressor50 packer;
         packer.begin_archive(nullptr, method, 0x200000);
@@ -3309,6 +3322,45 @@ void test_nt18_forward_arrival_default_decision_site() {
     }
     std::cout << "[PASS] NT-18: forward-arrival default and overrides resolve at one decision "
                  "site\n";
+}
+
+// NT-21 (v2.1.1): lazy matching is on at every method, and the m1/m2 streams it now
+// produces keep the one-shot == streaming byte identity and decode.
+// 2.1.1 shipped m1/m2 with lazy off, 2-3% larger than v2.0.23 on real files; the digest
+// pins above would catch a revert on one corpus, this pins the decision itself and
+// extends NT-03 (which only covers m3) to the two methods whose parse just changed.
+void test_nt21_lazy_all_methods_and_stream_parity() {
+    ScopedEnv no_experimental("OPENRAR_EXPERIMENTAL_M1_DAG", nullptr);
+    ScopedEnv no_enable("OPENRAR_ENABLE_FORWARD_ARRIVAL", nullptr);
+    ScopedEnv no_disable("OPENRAR_NO_FORWARD_ARRIVAL", nullptr);
+    for (int m = 1; m <= 5; ++m) {
+        Compressor50 packer;
+        packer.begin_archive(nullptr, m, 0x200000);
+        Compressor50TestAccess::init_match_params(packer);
+        REQUIRE((Compressor50TestAccess::lazy_tests(packer) == 1 &&
+                 "lazy matching must stay on at every method (plan section 7.2.2)"));
+    }
+
+    // 600 KiB crosses the 0x80000 block boundary; the first 100 bytes arrive one at a time.
+    const std::vector<core::byte> data = t9_text(600 * 1024);
+    for (int m : {1, 2}) {
+        std::vector<core::byte> oneshot;
+        REQUIRE(Compressor50::compress_buffer(data.data(), data.size(), oneshot, m, 0x200000));
+        assert_roundtrip_2mib(oneshot, data);
+
+        StreamEncoder enc(m, 0x200000);
+        size_t offset = 0;
+        while (offset < data.size()) {
+            const size_t chunk = (offset < 100) ? 1 : std::min<size_t>(4096, data.size() - offset);
+            REQUIRE(enc.feed(&data[offset], chunk));
+            offset += chunk;
+        }
+        std::vector<core::byte> streamed;
+        REQUIRE(enc.finish(streamed));
+        assert_roundtrip_2mib(streamed, data);
+        REQUIRE((oneshot == streamed && "lazy m1/m2: streaming must equal one-shot"));
+    }
+    std::cout << "[PASS] NT-21: lazy on at m1-m5; m1/m2 one-shot == streaming and round-trip\n";
 }
 
 // NT-20: Coordinate clamp of the price-sampling window to [pos_base_, src_loaded_].
@@ -4665,7 +4717,9 @@ static const openrar::test::Case k_cases[] = {
     {"test_nt17_gate_off_legacy_byte_identity", test_nt17_gate_off_legacy_byte_identity, false},
     {"test_nt18_forward_arrival_default_decision_site",
      test_nt18_forward_arrival_default_decision_site, false},
-    {"test_nt20_pos_base_sample_window_clamp", test_nt20_pos_base_sample_window_clamp, false}};
+    {"test_nt20_pos_base_sample_window_clamp", test_nt20_pos_base_sample_window_clamp, false},
+    {"test_nt21_lazy_all_methods_and_stream_parity", test_nt21_lazy_all_methods_and_stream_parity,
+     false}};
 
 int main(int argc, char* argv[]) {
     openrar::test::route_crt_asserts_to_stderr();
