@@ -11,11 +11,15 @@ script asserts the exact exit status and message, and first runs the same case
 WITHOUT the switch as a control so the test cannot pass just because the case
 is broken.
 
-Usage: refcap_negative_test.py <path to compress_tests executable>
+Usage: refcap_negative_test.py [--emulator=<argv prefix>] <path to compress_tests executable>
+
+The optional emulator prefix is needed on cross-compiled CTest legs, where the
+test binary targets another architecture and must be launched through QEMU.
 Exit status: 0 when every check holds, 1 otherwise.
 """
 
 import os
+import shlex
 import subprocess
 import sys
 
@@ -27,13 +31,13 @@ FATAL_TEXT = "OPENRAR_REFCAP is active"
 TIMEOUT_S = 600
 
 
-def run_case(exe, case, refcap):
+def run_case(exe, emulator, case, refcap):
     env = dict(os.environ)
     env.pop("OPENRAR_REFCAP", None)
     if refcap:
         env["OPENRAR_REFCAP"] = "1"
     return subprocess.run(
-        [exe, "--test-case=" + case],
+        emulator + [exe, "--test-case=" + case],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -43,23 +47,28 @@ def run_case(exe, case, refcap):
 
 
 def main():
-    if len(sys.argv) != 2:
+    args = sys.argv[1:]
+    emulator = []
+    if args and args[0].startswith("--emulator="):
+        emulator = shlex.split(args[0][len("--emulator="):])
+        args = args[1:]
+    if len(args) != 1:
         print(__doc__)
         return 1
-    exe = sys.argv[1]
+    exe = args[0]
     if not os.path.isfile(exe):
         print("[FAIL] test executable not found: %s" % exe)
         return 1
 
     failures = 0
     for case in GATE_CASES:
-        control = run_case(exe, case, refcap=False)
+        control = run_case(exe, emulator, case, refcap=False)
         if control.returncode != 0:
             print("[FAIL] control run of %s exited %d (expected 0)" % (case, control.returncode))
             failures += 1
             continue
 
-        capped = run_case(exe, case, refcap=True)
+        capped = run_case(exe, emulator, case, refcap=True)
         if capped.returncode != 2:
             print(
                 "[FAIL] %s with OPENRAR_REFCAP=1 exited %d (expected exactly 2)"
