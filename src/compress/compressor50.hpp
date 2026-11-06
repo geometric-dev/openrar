@@ -624,8 +624,10 @@ private:
     // branches are skipped. Same design role as the lastlen suppression hook.
     bool back_shift_enable_{true};
     template <bool LargeWindow>
-    MatchInfo find_match_impl(core::uint64 pos, core::uint32 max_chain, core::uint32 nice_len);
-    MatchInfo find_match(core::uint64 pos, core::uint32 max_chain, core::uint32 nice_len);
+    MatchInfo find_match_impl(core::uint64 pos, core::uint32 max_chain, core::uint32 nice_len,
+                              size_t min_target = 0);
+    MatchInfo find_match(core::uint64 pos, core::uint32 max_chain, core::uint32 nice_len,
+                         size_t min_target = 0);
     size_t match_length(core::uint64 pos, core::uint64 cand, size_t cap);
     size_t rep_length(core::uint64 pos, size_t dist, size_t cap);
 
