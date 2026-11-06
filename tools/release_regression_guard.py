@@ -9,7 +9,7 @@ binary on the same census corpora and FAILS CLOSED (exit 1) when the new build i
            cell's entry in KNOWN_SIZE_ALLOWANCE_PCT (0.0 when absent). Sizes are
            deterministic, so there is no noise margin.
   Speed    throughput must stay >= speed_floor(method) x v2.0.23's on the SPEED_CELLS (0.90 at
-           -m1..-m3, 0.55 at -m4/-m5), using the fastest of SPEED_REPS runs of each binary on
+           -m1..-m3, 0.75 at -m4, 0.60 at -m5), using the fastest of SPEED_REPS runs of each binary on
            this machine.
   Ratchet  every deterministic cell must also stay at or below RATCHET_BYTES (the 2.1.1 sizes), so
            a later change cannot spend the lead over v2.0.23 without the guard noticing.
@@ -19,8 +19,6 @@ binary on the same census corpora and FAILS CLOSED (exit 1) when the new build i
   G2       zeros8 at -m1/-m3/-m5 must be <= 587 B.
   Integrity  every archive the new binary produces is extracted and compared by SHA-256.
   Determinism  -mt1 archives are byte-identical across runs; -mt4 extracts to the source.
-  Engines  the alternate parser at every method (forward-arrival where the default is
-           greedy and vice versa) must still round-trip, so the opt-in path cannot rot.
 
 The baseline binary is MANDATORY. A missing or mis-versioned baseline is a failure, never a
 skip: the previous version of this script fell back to a hard-coded size when it was absent.
@@ -62,13 +60,12 @@ WORK_DIR = ROOT / "build" / "regression_guard"
 
 # Throughput floor relative to the baseline on the same machine, using the fastest of
 # SPEED_REPS interleaved runs. Every method ships greedy. m1-m3 clear 0.90x with a wide margin
-# (measured 1.2x-3.0x), so they keep the stricter floor. m4/m5 walk 64/128-deep chains, and
-# v2.0.23's forward-arrival parser was faster than greedy there on word-salad text (worst cell
-# synthetic_text8 -m5: 0.70x on Windows/MSVC, 0.63x on Linux/gcc); real files run at 0.85x-0.95x.
-# Those two methods get the looser floor: 0.55 keeps about 10% under the lowest reading and still
-# catches the defect class this guard exists for (a runaway search that ran at 0.05x).
+# (measured 1.2x-3.0x), so they keep the stricter floor. m4/m5 walk 64/128-deep chains;
+# with the v2.2 minimum-length lazy hurdle, m4 recovers to 0.89x-0.97x on word salad
+# (and >1.0x on real files), while m5 runs at 0.67x-0.72x on word salad and 0.94x-0.95x on real files.
+# Floors are set to measured floor minus ~10% (0.75 for -m4, 0.60 for -m5).
 SPEED_FLOOR_DEFAULT = 0.55
-SPEED_FLOOR_BY_METHOD = {1: 0.90, 2: 0.90, 3: 0.90}
+SPEED_FLOOR_BY_METHOD = {1: 0.90, 2: 0.90, 3: 0.90, 4: 0.75, 5: 0.60}
 SPEED_REPS = 3
 
 

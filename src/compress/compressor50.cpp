@@ -758,9 +758,10 @@ size_t Compressor50::match_length(core::uint64 pos, core::uint64 cand, size_t ca
 
 template <bool LargeWindow>
 Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::uint32 max_chain,
-                                                      core::uint32 nice_len) {
+                                                      core::uint32 nice_len, size_t min_target) {
     MatchInfo best = {0, -1};
     if (pos + 4 > src_loaded_ || pos < pos_base_) return best;
+    if (min_target > 0 && avail_at(pos) < min_target) return best;
 
     core::uint32 h = calc_hash(pos);
     core::int64 cand = -1;
@@ -879,6 +880,10 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
                 if (hurdle > req_len) req_len = hurdle;
             }
         }
+        if (min_target > 0) {
+            size_t hurdle = min_target;
+            if (hurdle > req_len) req_len = hurdle;
+        }
         if (req_len < min_legal_len) req_len = min_legal_len;
 
         if (limit < req_len) {
@@ -987,7 +992,8 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
                 ~SuppressArbOnce() { f_ = false; }
             };
             SuppressArbOnce arb_guard(arb_probe_suppress_);
-            MatchInfo ext = find_match_impl<LargeWindow>(pos, h1_probe_extra_chain_, nice_len);
+            MatchInfo ext =
+                find_match_impl<LargeWindow>(pos, h1_probe_extra_chain_, nice_len, min_target);
             h1_probe_on_ = true;
             if (ext.length > best.length) {
                 ++h1_probe_.recoverable;
@@ -1211,9 +1217,9 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
 }
 
 Compressor50::MatchInfo Compressor50::find_match(core::uint64 pos, core::uint32 max_chain,
-                                                 core::uint32 nice_len) {
-    if (is_large_window_) return find_match_impl<true>(pos, max_chain, nice_len);
-    return find_match_impl<false>(pos, max_chain, nice_len);
+                                                 core::uint32 nice_len, size_t min_target) {
+    if (is_large_window_) return find_match_impl<true>(pos, max_chain, nice_len, min_target);
+    return find_match_impl<false>(pos, max_chain, nice_len, min_target);
 }
 
 size_t Compressor50::rep_length(core::uint64 pos, size_t dist, size_t cap) {
@@ -2130,8 +2136,13 @@ int Compressor50::process_available(bool final) {
             if (!is_rep && lazy_tests_ > 0 && len < cur_nice_len && avail_at(cur_) > len + 1 &&
                 cur_ + 1 < src_size_ &&
                 (active_filter_ == FilterType::None || cur_ + 1 < filter_emitted_until_)) {
+                core::uint32 curr_inc = length_increment(dist);
+                size_t curr_net = (len >= curr_inc ? len - curr_inc : 0);
+                size_t min_target = curr_net + 2;
                 MatchInfo next = {0, -1};
-                if (search_chain > 0) next = find_match(cur_ + 1, search_chain, nice_len_);
+                if (search_chain > 0 && avail_at(cur_ + 1) >= min_target) {
+                    next = find_match(cur_ + 1, search_chain, nice_len_, min_target);
+                }
                 // M-06: a match at cur_+1 has one byte less of the current
                 // filter region left than a match at cur_. Clamping it to
                 // cur_max_lz (the region remainder at cur_) let the lazy test
@@ -2146,7 +2157,6 @@ int Compressor50::process_available(bool final) {
                 size_t next_dist = static_cast<size_t>(
                     next.candidate >= 0 ? cur_ + 1 - static_cast<core::uint64>(next.candidate) : 0);
                 core::uint32 next_inc = length_increment(next_dist);
-                core::uint32 curr_inc = length_increment(dist);
 
                 if ((next.length >= next_inc ? next.length - next_inc : 0) >
                     (len >= curr_inc ? len - curr_inc : 0) + 1) {
