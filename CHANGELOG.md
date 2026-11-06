@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.1.1] - 2026-11-05
 
-Correction release. **Upgrade from 2.1.0**: that release shipped a compression-speed defect and a
-larger-than-2.0.23 default at `-m5`.
+Correction release. **Upgrade from 2.1.0**: that release shipped a compression-speed defect and
+defaults that produced larger archives than 2.0.23 on real files.
 
 ### Fixed
 
@@ -18,25 +18,46 @@ larger-than-2.0.23 default at `-m5`.
   its failure counter at `0x10000`, which is exactly where the search-skip mask `& 2047` is zero, so
   the skip never fired. On random data `-m5` ran at 0.35 MB/s (2.0.23: 6.4 MB/s); it now runs at
   19-23 MB/s. The same defect made the unit suite take 164 s (now 10 s).
-- **`-m5` default regressed against 2.0.23.** Per-method defaults are now chosen from measurements
-  against the 2.0.23 release (see below).
+- **Output was larger than 2.0.23 on real files.** 2.0.23 ran its earlier forward-arrival parser at
+  every method; 2.1.0 replaced it, and its replacement was chosen from synthetic corpora (seeded word
+  salad, tiled source, PRNG bytes), where it looked smaller. On real C++ source, tests, markdown and
+  an x86-64 executable it was 0.4%-3% larger. Two changes fix that:
+  - **Lazy matching is now on at `-m1` and `-m2`** (it was already on at `-m3`-`-m5`). Against 2.0.23:
+    -0.05% to -0.98% on source, tests and markdown, +0.66% / +0.42% on the executable, and 1.4x-2.4x
+    faster.
+  - **`-m4` and `-m5` now use the greedy parser** (see Changed).
 
 ### Changed
 
-- **Parser defaults:** `-m1` to `-m3` use the greedy parser, `-m4` and `-m5` use the forward-arrival
-  parser. Output is smaller than 2.0.23 on every measured cell except `-m5` on the tiled-source
-  corpus (+0.028%). Force either parser with `OPENRAR_ENABLE_FORWARD_ARRIVAL=1` /
-  `OPENRAR_NO_FORWARD_ARRIVAL=1`.
+- **Parser default:** the greedy parser at every method. The forward-arrival parser stays available
+  with `OPENRAR_ENABLE_FORWARD_ARRIVAL=1`. Against 2.0.23 at `-m3`-`-m5`: 0.9%-2.0% smaller on
+  source, tests and markdown, 1.7%-23% smaller on a sample of XML, JSON, HTML, JS, log and text files
+  from outside this repository, and between 1.0% smaller and 0.9% larger on executables (Windows
+  DLLs and PE, Linux ELF).
+- **Known losses against 2.0.23, now explicit in the release guard:** seeded word-salad text at
+  `-m4`/`-m5` (+0.31% / +1.25%), the word-salad third of the big24 corpus at `-m5` (+0.10%), the
+  executable at every method (+0.10% to +0.66% for the Windows PE, +0.22% to +0.90% for a Linux
+  ELF), and `src/` compressed non-solid at `-m1` (+0.21%).
+  Solid and non-solid directory trees are otherwise 0.17%-1.9% smaller.
+- **Speed vs 2.0.23 (same machine, noisy):** 1.4x-3.6x faster at `-m1` to `-m3`. At `-m4`/`-m5` real
+  files run at 0.85x-0.95x and word-salad text at 0.63x-0.70x (the guard floor is 0.55x); big24 is
+  0.95x and random data 2.9x.
 - **Forward-arrival run fast-path** now fires only for runs of 258 bytes or more.
 - **`OPENRAR_PRICE_ARM`:** unset, empty or unrecognised values mean the shipped Arm B. The library no
   longer calls `exit()` on a bad value; the CLI rejects an unrecognised value with exit code 7.
-- **Speed vs 2.0.23 (same machine):** 1.4x-3.6x faster at `-m1` to `-m3`. At `-m4`/`-m5` text is the
-  slowest cell (0.76x at `-m4`, 0.83x at `-m5`); big24 is 1.06x and random data 2.9x.
+- `tools/release_regression_guard.py` now includes real-content corpora (the `src/`, `tests/` and
+  `docs/` trees at tag v2.0.23, and the baseline executable). Synthetic corpora alone passed a build
+  that was 2-3% larger than 2.0.23 on every real file.
+- New research probe `blockceiling` (per-block greedy vs forward-arrival ceiling). It measured that
+  choosing the parser per block gains under 1 KB beyond what the region already decides, so per-block
+  selection was not built.
 
 ### Not delivered
 
 - The 2.1.0 ratio targets (15 KiB smaller at `-m3`, 25 KiB smaller at `-m5` on the big24 corpus) were
-  **not met**: measured 10.3 KiB smaller and 2.9 KiB larger. Carried to the next milestone.
+  **not met** and are retired as written (plan section 10, item 11): measured 10.3 KiB smaller at
+  `-m3` and 10.2 KiB larger at `-m5`, the latter because the word-salad third of big24 favours the
+  parser that no longer ships by default. Real files got 1%-2% smaller.
 
 ### Verification infrastructure
 
@@ -49,6 +70,17 @@ larger-than-2.0.23 default at `-m5`.
 - Rewrote unit tests that could not fail (NT-04, 06, 15, 16, 17, 18, 20, BT-03, BT-06); added a lint
   rule against `REQUIRE(&obj != nullptr)`.
 - `big24.bin` is now generated from the `src/` tree at tag `v2.0.23` instead of the working tree.
+- NT-21 pins lazy matching on at every method and checks that `-m1`/`-m2` streaming output is
+  byte-identical to one-shot output (NT-03 only covered `-m3`).
+- The 55-stage UnRAR 7.20 interop run and 43 further real-file cells (four real corpora at every
+  method, `-mt1` and `-mt4`, plus solid trees) decode byte-identically.
+- The release guard also holds every deterministic cell to a ratchet (the sizes this release
+  produces), pins the SHA-256 of every corpus, and fails if a corpus does not regenerate to its pin.
+  The pins exposed that the `mixed16.bin` used for earlier measurements was a stale file from an
+  older recipe; every figure taken on it described data nobody else could regenerate.
+- Run on Linux (Ubuntu 24.04, gcc 13, `-Werror`) against the pinned v2.0.23 Linux release asset:
+  guard passes (sizes equal Windows to within a constant 8 B of container overhead), the 55-stage
+  UnRAR 7.20 interop harness passes, CTest 56/56, clang-format 18 clean.
 
 ## [2.1.0] - 2026-11-04
 
