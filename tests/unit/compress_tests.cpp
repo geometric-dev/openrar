@@ -1182,24 +1182,9 @@ class Compressor50TestAccess {
 public:
     static bool is_large_window(const Compressor50& c) { return c.is_large_window_; }
     static core::uint32 lazy_tests(const Compressor50& c) { return c.lazy_tests_; }
-    struct HorizonNode {
-        core::uint32 cost;
-        core::uint8 from_offset;
-        core::uint16 token_len;
-    };
-    static int select_horizon_target(const std::vector<HorizonNode>& nodes, int h) {
-        std::vector<Compressor50::ArrivalNode> arrival(nodes.size());
-        for (size_t i = 0; i < nodes.size(); ++i) {
-            arrival[i].cost = nodes[i].cost;
-            arrival[i].from_offset = nodes[i].from_offset;
-            arrival[i].token_len = nodes[i].token_len;
-        }
-        return Compressor50::select_horizon_target(arrival.data(), h);
-    }
     static void set_external_buf(Compressor50& c, bool v) { c.external_buf_ = v; }
     static void set_head64(Compressor50& c, size_t idx, core::uint64 v) { c.head64_[idx] = v; }
     static void set_prev64(Compressor50& c, size_t idx, core::uint64 v) { c.prev64_[idx] = v; }
-    static void set_price_model_sampled(Compressor50& c, bool v) { c.price_model_sampled_ = v; }
     static const std::vector<core::byte>& lit_bytes(const Compressor50& c) { return c.lit_bytes_; }
     static size_t head_size(const Compressor50& c) { return c.head_.size(); }
     static size_t prev_size(const Compressor50& c) { return c.prev_.size(); }
@@ -1248,9 +1233,6 @@ public:
         if (idx >= 0 && idx < 4) c.old_dist_[idx] = val;
     }
     static void set_last_length(Compressor50& c, size_t val) { c.last_length_ = val; }
-    static const Compressor50::PriceModel& price_model(const Compressor50& c) {
-        return c.price_model_;
-    }
     static const std::vector<Compressor50Token>& match_tokens(const Compressor50& c) {
         return c.match_tokens_;
     }
@@ -1270,28 +1252,6 @@ public:
         return c.add_match(length, distance);
     }
     static size_t match_token_count(const Compressor50& c) { return c.match_tokens_.size(); }
-    static bool forward_arrival_enable(const Compressor50& c) { return c.forward_arrival_enable_; }
-    static void set_forward_arrival_enable(Compressor50& c, bool v) {
-        c.forward_arrival_enable_ = v;
-    }
-    static core::uint32 price_match(const Compressor50& c, size_t len, size_t dist) {
-        return c.price_match(len, dist);
-    }
-    static core::uint32 price_rep(const Compressor50& c, core::uint32 rep_idx, size_t len) {
-        return c.price_rep(rep_idx, len);
-    }
-    static core::uint32 price_slot257(const Compressor50& c) { return c.price_slot257(); }
-    static core::uint32 price_literal(const Compressor50& c, core::byte b) {
-        return c.price_literal(b);
-    }
-    static Compressor50::ForwardArrivalDecision
-    evaluate_forward_arrival(Compressor50& c, core::uint64 cur, size_t match_len,
-                             core::int64 match_candidate, size_t rep_best_len, int rep_idx,
-                             size_t cur_max_lz) {
-        return c.evaluate_forward_arrival(cur, match_len, match_candidate, rep_best_len, rep_idx,
-                                          cur_max_lz);
-    }
-    static void init_empirical_prior(Compressor50& c) { c.init_empirical_prior(); }
     static core::uint64 pos_base(const Compressor50& c) { return c.pos_base_; }
     static void set_pos_base(Compressor50& c, core::uint64 pb) { c.pos_base_ = pb; }
     static void set_cur(Compressor50& c, core::uint64 cur) { c.cur_ = cur; }
@@ -2859,74 +2819,9 @@ void test_slot257_solid_carry() {
     std::cout << "[PASS] slot257 solid carry opens member 2 with a 257 (T5)\n";
 }
 
-// v1.56.0 Phase 4: Forward-Arrival Engine Unit Tests
+// Compression robustness tests (run hygiene & incompressible fallback)
 
-// Test 1: Entropy-based pricing prefers short rep over distant long match
-void test_forward_arrival_entropy_pricing() {
-    Compressor50 packer;
-    packer.begin_archive(nullptr, 1, 0x200000);
-    // Setup: build Huffman tables with known costs
-    Compressor50TestAccess::init_match_params(packer);
-    packer.set_external_buffer(reinterpret_cast<const openrar::core::byte*>("\0\0\0\0\0\0\0\0"), 8);
-    std::vector<openrar::core::byte> mem_dest;
-    packer.set_memory_dest(&mem_dest);
-    // Force table build
-    REQUIRE(Compressor50TestAccess::process_available(packer, true));
-    REQUIRE(Compressor50TestAccess::write_block(packer, true));
-    // Price model is now initialized
-
-    const auto& price_model = Compressor50TestAccess::price_model(packer);
-    REQUIRE(price_model.initialized);
-
-    // Verify price model has reasonable costs for all token types
-    // All costs should be non-zero (initialized from Huffman lengths)
-    for (int i = 0; i < 256; ++i) {
-        REQUIRE(price_model.lit_cost[i] > 0);
-    }
-    for (int i = 0; i < 44; ++i) {
-        REQUIRE(price_model.len_cost[i] > 0);
-    }
-    for (int r = 0; r < 4; ++r) {
-        for (openrar::core::uint32 s = 0; s < Compressor50::RC; ++s) {
-            REQUIRE(price_model.rep_cost[r][s] > 0);
-        }
-    }
-    REQUIRE(price_model.slot257_cost > 0);
-
-    std::cout << "[PASS] forward_arrival entropy pricing model initialized with valid costs\n";
-}
-
-// Test 2: Slot 257 only emitted on exact length continuation
-void test_forward_arrival_slot257_continuation() {
-    Compressor50 packer;
-    packer.begin_archive(nullptr, 1, 0x200000);
-    Compressor50TestAccess::init_match_params(packer);
-
-    // Set up rep0 context with last_length_ = 8
-    Compressor50TestAccess::set_old_dist(packer, 0, 1);
-    Compressor50TestAccess::set_last_length(packer, 8);
-
-    // Price model initialized
-    packer.set_external_buffer(reinterpret_cast<const openrar::core::byte*>("\0\0\0\0\0\0\0\0"), 8);
-    std::vector<openrar::core::byte> mem_dest;
-    packer.set_memory_dest(&mem_dest);
-    REQUIRE(Compressor50TestAccess::process_available(packer, true));
-    REQUIRE(Compressor50TestAccess::write_block(packer, true));
-
-    const auto& price_model = Compressor50TestAccess::price_model(packer);
-    REQUIRE(price_model.initialized);
-
-    // Exact continuation: slot 257 cheaper than rep0
-    openrar::core::uint32 slot257_cost = price_model.slot257_cost;
-    openrar::core::uint32 rep0_cost = price_model.rep_cost[0][8]; // len=8 -> slot 8
-    REQUIRE(slot257_cost < rep0_cost);
-
-    // Length mismatch: slot 257 = INF (not available), rep0 wins
-    // This is enforced by the forward-arrival engine logic
-    std::cout << "[PASS] forward_arrival slot257 continuation pricing\n";
-}
-
-// Test 3: 8 MiB zeros compress to <= 500 bytes (run hygiene)
+// Test 1: 8 MiB zeros compress to <= 500 bytes (run hygiene)
 void test_forward_arrival_run_hygiene() {
     std::vector<openrar::core::byte> zeros(8 * 1024 * 1024, 0);
     std::vector<openrar::core::byte> comp;
@@ -2955,137 +2850,8 @@ void test_forward_arrival_incompressible_fallback() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Behavioral Tests (BT-01 .. BT-06) & Negative Tests (NT-01 .. NT-20)
+// Behavioral Tests & Negative Tests
 // ─────────────────────────────────────────────────────────────────────────────
-
-// BT-01: Sub-length relaxation
-void test_bt01_sublength_relaxation() {
-    Compressor50 packer;
-    packer.begin_archive(nullptr, 5, 0x200000);
-    Compressor50TestAccess::init_match_params(packer);
-
-    // Verify sub-length relaxation: shorter lengths produce valid costs
-    core::uint32 c8 = Compressor50TestAccess::price_match(packer, 8, 8);
-    core::uint32 c7 = Compressor50TestAccess::price_match(packer, 7, 8);
-    REQUIRE(c8 < (1u << 24));
-    REQUIRE(c7 < (1u << 24));
-    std::cout << "[PASS] BT-01: sublength relaxation pricing verified\n";
-}
-
-// BT-02: Multi-rep arbitration (Rep0 wins over Rep2 for equal length)
-void test_bt02_multi_rep_arbitration() {
-    Compressor50 packer;
-    packer.begin_archive(nullptr, 5, 0x200000);
-    Compressor50TestAccess::init_match_params(packer);
-
-    for (size_t len = 2; len <= 8; ++len) {
-        core::uint32 c_rep0 = Compressor50TestAccess::price_rep(packer, 0, len);
-        core::uint32 c_rep2 = Compressor50TestAccess::price_rep(packer, 2, len);
-        REQUIRE(c_rep0 < c_rep2); // Rep0 is strictly cheaper than Rep2 (zero distance overhead)
-    }
-    std::cout << "[PASS] BT-02: multi-rep arbitration (Rep0 < Rep2) holds strictly\n";
-}
-
-// BT-03: Horizon terminal selection is by bit density, and an exact density tie
-// goes to the longer span. Drives the production selector with hand-built arrival
-// nodes so the tie is exact (no dependence on the live price model).
-void test_bt03_density_tie() {
-    using Node = Compressor50TestAccess::HorizonNode;
-    constexpr core::uint32 INF = 0xFFFFFFFFu;
-    auto blank = [&]() {
-        return std::vector<Node>(17, Node{INF, 0, 0});
-    };
-
-    // Exact tie: 800 bits / 8 B == 1600 bits / 16 B. The longer span must win.
-    {
-        auto n = blank();
-        n[8] = {800, 0, 8};
-        n[16] = {1600, 0, 16};
-        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 16) == 16);
-        // Same rule at a different pair of spans: 1200/12 B ties 800/8 B, so 12 B wins.
-        auto m = blank();
-        m[8] = {800, 0, 8};
-        m[12] = {1200, 0, 12};
-        REQUIRE(Compressor50TestAccess::select_horizon_target(m, 16) == 12);
-    }
-    // A span reached through two hops (4 B literal run + 12 B match) covers 16 B.
-    {
-        auto n = blank();
-        n[8] = {800, 0, 8};
-        n[16] = {1600, 4, 12};
-        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 16) == 16);
-    }
-    // Strictly lower density beats a longer span: 700/8 B < 1600/16 B.
-    {
-        auto n = blank();
-        n[8] = {700, 0, 8};
-        n[16] = {1600, 0, 16};
-        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 16) == 8);
-    }
-    // Strictly higher density loses even to a much shorter span.
-    {
-        auto n = blank();
-        n[2] = {150, 0, 2};
-        n[16] = {1600, 0, 16};
-        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 16) == 2);
-    }
-    // Nodes beyond the effective horizon are ignored.
-    {
-        auto n = blank();
-        n[4] = {400, 0, 4};
-        n[16] = {10, 0, 16};
-        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 8) == 4);
-    }
-    // Nothing reachable: the selector reports offset 1 (caller falls back to a literal).
-    {
-        auto n = blank();
-        REQUIRE(Compressor50TestAccess::select_horizon_target(n, 16) == 1);
-    }
-
-    // End to end: with a long cheap match available, the DP's first token must
-    // cover the entire 16-byte horizon rather than fall back to literals.
-    Compressor50 packer;
-    packer.begin_archive(nullptr, 5, 0x200000);
-    Compressor50TestAccess::init_match_params(packer);
-    Compressor50TestAccess::set_forward_arrival_enable(packer, true);
-    const std::string text = "ABCDEFGHABCDEFGH01234567ABCDEFGHABCDEFGH";
-    Compressor50TestAccess::set_test_buffer(
-        packer, reinterpret_cast<const core::byte*>(text.data()), text.size(), 0, text.size());
-    auto dec = Compressor50TestAccess::evaluate_forward_arrival(packer, 24, 16, 0, 0, -1, 4096);
-    REQUIRE(dec.token_type == 1);
-    REQUIRE(dec.token_len == 16);
-    REQUIRE(dec.token_dist == 24);
-    std::cout << "[PASS] BT-03: density selection ties go to the longer span; DP picks the full "
-                 "16 B match\n";
-}
-
-// BT-04: Concrete price model validation
-void test_bt04_concrete_price_model_validation() {
-    Compressor50 packer;
-    packer.begin_archive(nullptr, 5, 0x200000);
-    Compressor50TestAccess::init_match_params(packer);
-    const auto& pm = Compressor50TestAccess::price_model(packer);
-    REQUIRE(pm.initialized);
-    for (int i = 0; i < 256; ++i) {
-        REQUIRE(pm.lit_cost[i] >= (2u << 8));
-        REQUIRE(pm.lit_cost[i] <= (15u << 8));
-    }
-    REQUIRE(pm.slot257_cost <= (15u << 8));
-    std::cout << "[PASS] BT-04: concrete price model bounded in [2.0, 15.0] bits\n";
-}
-
-// BT-05: Slot 257 continuation
-void test_bt05_slot257_continuation_at_nice_len() {
-    Compressor50 packer;
-    packer.begin_archive(nullptr, 5, 0x200000);
-    Compressor50TestAccess::init_match_params(packer);
-    Compressor50TestAccess::set_old_dist(packer, 0, 1);
-    Compressor50TestAccess::set_last_length(packer, 16);
-    core::uint32 c257 = Compressor50TestAccess::price_slot257(packer);
-    core::uint32 crep0 = Compressor50TestAccess::price_rep(packer, 0, 16);
-    REQUIRE(c257 < crep0);
-    std::cout << "[PASS] BT-05: slot 257 continuation is cheaper than rep0\n";
-}
 
 // BT-06: Recapture mode verification. The golden gates compare sha256_hex() output
 // against pinned lowercase-hex digests with strcmp, so a formatting slip (case,
@@ -3105,20 +2871,6 @@ void test_bt06_recapture_suppression() {
     REQUIRE(std::strcmp(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") ==
             0);
     std::cout << "[PASS] BT-06: golden digest formatter matches NIST vectors; recapture is off\n";
-}
-
-// NT-01: Illegal match admitted (L < inc(D) + 2) returns DP_INF
-void test_nt01_illegal_match_admissibility_dp_inf() {
-    Compressor50 packer;
-    packer.begin_archive(nullptr, 5, 0x200000);
-    Compressor50TestAccess::init_match_params(packer);
-    core::uint32 p_illegal3 = Compressor50TestAccess::price_match(packer, 3, 0x100000);
-    core::uint32 p_illegal4 = Compressor50TestAccess::price_match(packer, 4, 0x100000);
-    core::uint32 p_legal5 = Compressor50TestAccess::price_match(packer, 5, 0x100000);
-    REQUIRE(p_illegal3 == 0xFFFFFFFFu);
-    REQUIRE(p_illegal4 == 0xFFFFFFFFu);
-    REQUIRE(p_legal5 < 0xFFFFFFFFu);
-    std::cout << "[PASS] NT-01: illegal match (len < inc + 2) returns DP_INF\n";
 }
 
 // NT-02: Corrupted distance symbol in archive is rejected by decoder
@@ -3142,16 +2894,6 @@ void test_nt02_corrupted_distance_rejection() {
         REQUIRE(!dec_ok);
     }
     std::cout << "[PASS] NT-02: corrupted payload detected and rejected\n";
-}
-
-// NT-05: Force DP_INF arithmetic overflow guard
-void test_nt05_dp_inf_arithmetic_overflow_guard() {
-    core::uint32 inf = 0xFFFFFFFFu;
-    core::uint32 cost = 500;
-    core::uint64 guarded =
-        (static_cast<core::uint64>(inf) + cost > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (inf + cost);
-    REQUIRE(guarded == 0xFFFFFFFFu);
-    std::cout << "[PASS] NT-05: DP_INF arithmetic saturates and does not overflow\n";
 }
 
 // NT-07: 8 MiB steady run-guard (0x41)
@@ -3218,9 +2960,7 @@ void test_nt14_cancellation_mid_horizon_and_reuse() {
     std::cout << "[PASS] NT-14: cancellation reset and reuse succeeds\n";
 }
 
-// NT-17: Gate-off byte identity. With the forward-arrival gate forced off, the encoder
-// must emit the pinned greedy bytes, and the default build must be that same stream
-// wherever the shipped default is "off" (since v2.1.1: every method).
+// NT-17: Greedy byte identity. The encoder must emit the pinned greedy bytes.
 //   m3: the t9 "mixed" corpus pin that already appears in v2.0.23's own golden table, so
 //       the greedy path at m3 is byte-identical to v2.0.23's greedy fallback.
 //   m1: lazy matching was switched on at m1/m2 in v2.1.1 (plan §7.2.2), so m1 is no longer
@@ -3228,8 +2968,6 @@ void test_nt14_cancellation_mid_horizon_and_reuse() {
 //       insensitive to the lazy test, so its digest did not move; text64k m1 in
 //       test_slot257_pure_addition_suppressed is the pin that does (it changed).
 void test_nt17_gate_off_legacy_byte_identity() {
-    ScopedEnv no_enable("OPENRAR_ENABLE_FORWARD_ARRIVAL", nullptr);
-    ScopedEnv no_experimental("OPENRAR_EXPERIMENTAL_M1_DAG", nullptr);
     const std::vector<core::byte> mixed = t9_mixed();
 
     struct Legacy {
@@ -3240,88 +2978,18 @@ void test_nt17_gate_off_legacy_byte_identity() {
         {3, "32fa0f7a175520e0cf2ef4ba9c5b80a1d135d686525e25bbfe171925a5a69f5b"},
     };
     for (const auto& l : legacy) {
-        std::vector<core::byte> gate_off;
-        {
-            ScopedEnv off("OPENRAR_NO_FORWARD_ARRIVAL", "1");
-            REQUIRE(Compressor50::compress_buffer(mixed.data(), mixed.size(), gate_off, l.method,
-                                                  0x200000));
-        }
+        std::vector<core::byte> packed;
+        REQUIRE(
+            Compressor50::compress_buffer(mixed.data(), mixed.size(), packed, l.method, 0x200000));
         char hex[65];
-        sha256_hex(gate_off, hex);
+        sha256_hex(packed, hex);
         if (std::strcmp(hex, l.sha) != 0) {
             std::cerr << "NT-17 m" << l.method << " digest drifted: got " << hex << "\n";
         }
-        REQUIRE((std::strcmp(hex, l.sha) == 0 && "gate-off output drifted from the pinned bytes"));
-        assert_roundtrip_2mib(gate_off, mixed);
+        REQUIRE((std::strcmp(hex, l.sha) == 0 && "greedy output drifted from the pinned bytes"));
+        assert_roundtrip_2mib(packed, mixed);
     }
-
-    // Wherever the shipped default is "off", an unset environment must produce the
-    // very same bytes as the forced gate-off stream.
-    ScopedEnv unset("OPENRAR_NO_FORWARD_ARRIVAL", nullptr);
-    for (int m = 1; m <= 5; ++m) {
-        if (Compressor50::forward_arrival_default(m)) continue;
-        std::vector<core::byte> by_default, gate_off;
-        REQUIRE(Compressor50::compress_buffer(mixed.data(), mixed.size(), by_default, m, 0x200000));
-        {
-            ScopedEnv off("OPENRAR_NO_FORWARD_ARRIVAL", "1");
-            REQUIRE(
-                Compressor50::compress_buffer(mixed.data(), mixed.size(), gate_off, m, 0x200000));
-        }
-        REQUIRE((by_default == gate_off && "default must equal the gate-off stream when off"));
-    }
-    std::cout << "[PASS] NT-17: gate-off output matches pinned v2.0.23 digests (m1, m3) and the "
-                 "default stream\n";
-}
-
-// NT-18: Single decision site for the forward-arrival default. The per-method value
-// is pinned HERE, independently of the production table, so changing a default is a
-// deliberate two-place edit. Environment overrides are checked on top of it.
-void test_nt18_forward_arrival_default_decision_site() {
-    ScopedEnv no_enable("OPENRAR_ENABLE_FORWARD_ARRIVAL", nullptr);
-    ScopedEnv no_disable("OPENRAR_NO_FORWARD_ARRIVAL", nullptr);
-    ScopedEnv no_experimental("OPENRAR_EXPERIMENTAL_M1_DAG", nullptr);
-
-    // Index = method; m0 is STORE and never reaches the block encoder. Every method is
-    // greedy since v2.1.1; forward-arrival is opt-in (measurements: the comment in
-    // forward_arrival_default()).
-    const bool shipped[6] = {false, false, false, false, false, false};
-    auto enabled_for = [](int method) {
-        Compressor50 packer;
-        packer.begin_archive(nullptr, method, 0x200000);
-        Compressor50TestAccess::init_match_params(packer);
-        return Compressor50TestAccess::forward_arrival_enable(packer);
-    };
-
-    for (int m = 1; m <= 5; ++m) {
-        REQUIRE(Compressor50::forward_arrival_default(m) == shipped[m]);
-        REQUIRE(enabled_for(m) == shipped[m]);
-    }
-    // Out-of-range methods never enable the parser.
-    REQUIRE(!Compressor50::forward_arrival_default(-1));
-    REQUIRE(!Compressor50::forward_arrival_default(6));
-
-    {
-        ScopedEnv on("OPENRAR_ENABLE_FORWARD_ARRIVAL", "1");
-        for (int m = 1; m <= 5; ++m) REQUIRE(enabled_for(m));
-        // "0" is the documented way to say "not set".
-        ScopedEnv zero("OPENRAR_ENABLE_FORWARD_ARRIVAL", "0");
-        for (int m = 1; m <= 5; ++m) REQUIRE(enabled_for(m) == shipped[m]);
-    }
-    {
-        ScopedEnv off("OPENRAR_NO_FORWARD_ARRIVAL", "1");
-        for (int m = 1; m <= 5; ++m) REQUIRE(!enabled_for(m));
-        // Explicit opt-in wins over the kill switch (applied last, in one place).
-        ScopedEnv on("OPENRAR_ENABLE_FORWARD_ARRIVAL", "1");
-        for (int m = 1; m <= 5; ++m) REQUIRE(enabled_for(m));
-    }
-    {
-        ScopedEnv exp("OPENRAR_EXPERIMENTAL_M1_DAG", "1");
-        REQUIRE(enabled_for(1));
-        REQUIRE(enabled_for(2));
-        REQUIRE(enabled_for(3) == shipped[3]);
-    }
-    std::cout << "[PASS] NT-18: forward-arrival default and overrides resolve at one decision "
-                 "site\n";
+    std::cout << "[PASS] NT-17: greedy output matches pinned v2.0.23 digests (m1, m3)\n";
 }
 
 // NT-21 (v2.1.1): lazy matching is on at every method, and the m1/m2 streams it now
@@ -3330,9 +2998,6 @@ void test_nt18_forward_arrival_default_decision_site() {
 // pins above would catch a revert on one corpus, this pins the decision itself and
 // extends NT-03 (which only covers m3) to the two methods whose parse just changed.
 void test_nt21_lazy_all_methods_and_stream_parity() {
-    ScopedEnv no_experimental("OPENRAR_EXPERIMENTAL_M1_DAG", nullptr);
-    ScopedEnv no_enable("OPENRAR_ENABLE_FORWARD_ARRIVAL", nullptr);
-    ScopedEnv no_disable("OPENRAR_NO_FORWARD_ARRIVAL", nullptr);
     for (int m = 1; m <= 5; ++m) {
         Compressor50 packer;
         packer.begin_archive(nullptr, m, 0x200000);
@@ -3361,73 +3026,6 @@ void test_nt21_lazy_all_methods_and_stream_parity() {
         REQUIRE((oneshot == streamed && "lazy m1/m2: streaming must equal one-shot"));
     }
     std::cout << "[PASS] NT-21: lazy on at m1-m5; m1/m2 one-shot == streaming and round-trip\n";
-}
-
-// NT-20: Coordinate clamp of the price-sampling window to [pos_base_, src_loaded_].
-// The sampled bytes are fenced by canaries: bytes below pos_base_ are 0xAA and bytes
-// at or past src_loaded_ are 0xBB, both inside the allocation so an unclamped read is
-// observable (a price below the "unused symbol" penalty) rather than undefined.
-void test_nt20_pos_base_sample_window_clamp() {
-    constexpr size_t FENCE = 8192;
-    constexpr size_t BODY = 8192;
-    constexpr core::uint64 POS_BASE = 100000;
-    std::vector<core::byte> mem(FENCE + BODY + FENCE);
-    std::fill(mem.begin(), mem.begin() + FENCE, core::byte(0xAA));
-    std::fill(mem.begin() + FENCE, mem.begin() + FENCE + BODY, core::byte(0x33));
-    std::fill(mem.begin() + FENCE + BODY, mem.end(), core::byte(0xBB));
-    const core::byte* body = mem.data() + FENCE;
-
-    ScopedEnv arm("OPENRAR_PRICE_ARM", "A"); // the arm that samples the window
-    ScopedEnv dyn("OPENRAR_NO_DYNAMIC_PRICE", nullptr);
-
-    auto sample_at = [&](core::uint64 cur) {
-        auto packer = std::make_unique<Compressor50>();
-        packer->begin_archive(nullptr, 5, 0x200000);
-        Compressor50TestAccess::init_match_params(*packer);
-        Compressor50TestAccess::set_external_buf(*packer, true);
-        Compressor50TestAccess::set_test_buffer(*packer, body, BODY, POS_BASE, POS_BASE + BODY);
-        Compressor50TestAccess::set_cur(*packer, cur);
-        Compressor50TestAccess::set_price_model_sampled(*packer, false);
-        Compressor50TestAccess::init_empirical_prior(*packer);
-        return packer;
-    };
-
-    // Lower bound: cur_ is 100 bytes past pos_base_, so an unclamped window would
-    // start 3996 bytes below it and sample the 0xAA fence.
-    {
-        auto p = sample_at(POS_BASE + 100);
-        const auto& pm = Compressor50TestAccess::price_model(*p);
-        REQUIRE(pm.lit_cost[0x33] == (2u << 8));  // the only sampled byte: floor price
-        REQUIRE(pm.lit_cost[0xAA] == (15u << 8)); // fence never sampled: unused penalty
-        REQUIRE(pm.lit_cost[0xBB] == (15u << 8));
-    }
-    // Upper bound: cur_ is 100 bytes before src_loaded_; the window must stop at it
-    // and never reach the 0xBB fence.
-    {
-        auto p = sample_at(POS_BASE + BODY - 100);
-        const auto& pm = Compressor50TestAccess::price_model(*p);
-        REQUIRE(pm.lit_cost[0x33] == (2u << 8));
-        REQUIRE(pm.lit_cost[0xAA] == (15u << 8));
-        REQUIRE(pm.lit_cost[0xBB] == (15u << 8));
-    }
-
-    // Window slide: feeding well past the buffer must advance pos_base_, and the
-    // stream written across the slide must still decode to the source.
-    const size_t window = 0x100000;
-    const std::vector<core::byte> text = t9_text(7 * 1024 * 1024);
-    Compressor50 packer;
-    REQUIRE(packer.begin_stream(3, window, false));
-    std::vector<core::byte> out;
-    packer.set_memory_dest(&out);
-    for (size_t off = 0; off < text.size(); off += 256 * 1024) {
-        const size_t n = std::min<size_t>(256 * 1024, text.size() - off);
-        REQUIRE(packer.feed(text.data() + off, n) == 0);
-    }
-    REQUIRE((Compressor50TestAccess::pos_base(packer) > 0 && "stream never slid its window"));
-    REQUIRE(packer.finish_stream() == 0);
-    assert_roundtrip_2mib(out, text);
-    std::cout << "[PASS] NT-20: sample window clamped to [pos_base_, src_loaded_]; window slid and "
-                 "round-tripped\n";
 }
 
 // NT-03: One-shot vs streaming feed across block boundary (0x80000)
@@ -3483,70 +3081,6 @@ void test_nt04_mt1_vs_mt4_determinism() {
               << mt1_a.size() << " B, mt4 " << mt4_a.size() << " B)\n";
 }
 
-// NT-06: On an E8-filtered member the literal prices must come from the tokens the
-// encoder actually emitted, not from the raw (pre-filter) bytes. The code below has
-// many distinct rel32 bytes in the raw data, but after the E8 transform every CALL
-// operand is the same absolute address, so only a handful of literals are emitted.
-void test_nt06_e8_filtered_price_model() {
-    std::vector<core::byte> code(64 * 1024, 0x90);
-    for (size_t i = 100; i + 5 < code.size(); i += 64) {
-        code[i] = 0xE8; // CALL rel32
-        core::uint32 rel = static_cast<core::uint32>(code.size() - i - 5);
-        std::memcpy(&code[i + 1], &rel, 4);
-    }
-
-    // The premise: this really is an E8-filtered member through the public path.
-    core::uint8 channels = 1;
-    const FilterType ft = Filters50::detect_filter(code.data(), code.size(), channels, {});
-    REQUIRE((ft == FilterType::E8 || ft == FilterType::E8E9));
-    std::vector<core::byte> packed;
-    REQUIRE(Compressor50::compress_buffer(code.data(), code.size(), packed, 5, 0x200000));
-    assert_roundtrip_2mib(packed, code);
-
-    // Mirror compress_buffer()'s filtered branch on a packer we can inspect.
-    std::vector<core::byte> filtered = code;
-    Filters50::encode_e8(filtered.data(), filtered.size(), 0, ft == FilterType::E8E9);
-    Compressor50 packer;
-    packer.begin_archive(nullptr, 5, 0x20000);
-    packer.set_active_filter(ft, channels, /*pretransformed=*/true);
-    packer.set_external_buffer(filtered.data(), filtered.size());
-    std::vector<core::byte> out;
-    packer.set_memory_dest(&out);
-    // compress() runs this first; process_available() alone does not.
-    Compressor50TestAccess::init_match_params(packer);
-    REQUIRE(Compressor50TestAccess::process_available(packer, true));
-
-    bool emitted[256] = {false};
-    for (core::byte b : Compressor50TestAccess::lit_bytes(packer)) emitted[b] = true;
-    bool raw_present[256] = {false};
-    for (core::byte b : code) raw_present[b] = true;
-    size_t emitted_distinct = 0, raw_distinct = 0;
-    for (int i = 0; i < 256; ++i) {
-        emitted_distinct += emitted[i];
-        raw_distinct += raw_present[i];
-    }
-    REQUIRE((emitted_distinct > 0 && "no literal was emitted at all"));
-    REQUIRE((raw_distinct > emitted_distinct + 4 && "premise: raw bytes must outnumber literals"));
-
-    REQUIRE(Compressor50TestAccess::write_block(packer, true));
-    const auto& pm = Compressor50TestAccess::price_model(packer);
-    REQUIRE(pm.initialized);
-    for (int b = 0; b < 256; ++b) {
-        REQUIRE(pm.lit_cost[b] >= (2u << 8));
-        REQUIRE(pm.lit_cost[b] <= (15u << 8));
-        if (emitted[b]) {
-            // An emitted literal owns a Huffman code, so it is priced below "unused".
-            REQUIRE(pm.lit_cost[b] < (15u << 8));
-        } else {
-            // A byte that never left the encoder as a literal carries the unused penalty,
-            // even when it is plentiful in the raw input.
-            REQUIRE(pm.lit_cost[b] == (15u << 8));
-        }
-    }
-    std::cout << "[PASS] NT-06: E8 member prices follow the " << emitted_distinct
-              << " emitted literals, not the " << raw_distinct << " raw byte values\n";
-}
-
 // NT-09: Filter region starting mid-match bounds verification
 void test_nt09_filter_region_mid_match_boundary() {
     std::vector<core::byte> data(128 * 1024, 0x90);
@@ -3587,37 +3121,6 @@ void test_nt12_refcap_golden_guard() {
     const char* refcap = std::getenv("OPENRAR_REFCAP");
     REQUIRE(refcap == nullptr); // In regular runs/CI, OPENRAR_REFCAP must not be set
     std::cout << "[PASS] NT-12: refcap guard verified (fail-closed in CI)\n";
-}
-
-// NT-15: The price-sampling window is O(1) in the input size. Only the +/-4096 bytes
-// around cur_ may be sampled, however large the loaded buffer or the stream offset:
-// the window holds 0x77, everything else 0x55, and a whole-buffer scan would price
-// 0x55 as common. The second case puts the stream at a ~64 GiB absolute offset to
-// exercise the 64-bit coordinate math without allocating that much.
-void test_nt15_bounded_sample_memory() {
-    ScopedEnv arm("OPENRAR_PRICE_ARM", "A"); // the arm that samples the window
-    ScopedEnv dyn("OPENRAR_NO_DYNAMIC_PRICE", nullptr);
-
-    auto check = [](core::uint64 pos_base, size_t size, size_t cur_off) {
-        std::vector<core::byte> buf(size, 0x55);
-        std::fill(buf.begin() + (cur_off - 4096), buf.begin() + (cur_off + 4096), core::byte(0x77));
-        Compressor50 packer;
-        packer.begin_archive(nullptr, 5, 0x200000);
-        Compressor50TestAccess::init_match_params(packer);
-        Compressor50TestAccess::set_external_buf(packer, true);
-        Compressor50TestAccess::set_test_buffer(packer, buf.data(), buf.size(), pos_base,
-                                                pos_base + buf.size());
-        Compressor50TestAccess::set_cur(packer, pos_base + cur_off);
-        Compressor50TestAccess::set_price_model_sampled(packer, false);
-        Compressor50TestAccess::init_empirical_prior(packer);
-        const auto& pm = Compressor50TestAccess::price_model(packer);
-        REQUIRE(pm.lit_cost[0x77] == (2u << 8));  // the whole sample: floor price
-        REQUIRE(pm.lit_cost[0x55] == (15u << 8)); // outside the window: unused penalty
-    };
-    check(0, 16 * 1024 * 1024, 8 * 1024 * 1024);
-    check(64ULL * 1024 * 1024 * 1024 - 1024 * 1024, 64 * 1024, 32 * 1024);
-    std::cout << "[PASS] NT-15: sampling is confined to the +/-4096 B window at 16 MiB and 64 GiB "
-                 "offsets\n";
 }
 
 // NT-16: Stale hash-chain nodes below pos_base_ are never followed. After a window
@@ -4678,9 +4181,7 @@ static const openrar::test::Case k_cases[] = {
     {"test_filter_delta_roundtrip", test_filter_delta_roundtrip, false},
     {"test_filter_improves_compression", test_filter_improves_compression, false},
     {"test_chunk_framing_spike", test_chunk_framing_spike, false},
-    // v1.56.0 Phase 4: Forward-Arrival Engine Unit Tests
-    {"test_forward_arrival_entropy_pricing", test_forward_arrival_entropy_pricing, false},
-    {"test_forward_arrival_slot257_continuation", test_forward_arrival_slot257_continuation, false},
+    // Robustness tests
     {"test_forward_arrival_run_hygiene", test_forward_arrival_run_hygiene, false},
     {"test_forward_arrival_incompressible_fallback", test_forward_arrival_incompressible_fallback,
      false},
@@ -4688,21 +4189,10 @@ static const openrar::test::Case k_cases[] = {
      false},
     {"test_prescan_member_dedup_and_cap", test_prescan_member_dedup_and_cap, false},
     // Milestone v2.1.0 Behavioral (BT) and Negative (NT) Tests
-    {"test_bt01_sublength_relaxation", test_bt01_sublength_relaxation, false},
-    {"test_bt02_multi_rep_arbitration", test_bt02_multi_rep_arbitration, false},
-    {"test_bt03_density_tie", test_bt03_density_tie, false},
-    {"test_bt04_concrete_price_model_validation", test_bt04_concrete_price_model_validation, false},
-    {"test_bt05_slot257_continuation_at_nice_len", test_bt05_slot257_continuation_at_nice_len,
-     false},
     {"test_bt06_recapture_suppression", test_bt06_recapture_suppression, false},
-    {"test_nt01_illegal_match_admissibility_dp_inf", test_nt01_illegal_match_admissibility_dp_inf,
-     false},
     {"test_nt02_corrupted_distance_rejection", test_nt02_corrupted_distance_rejection, false},
     {"test_nt03_oneshot_vs_streaming_parity", test_nt03_oneshot_vs_streaming_parity, false},
     {"test_nt04_mt1_vs_mt4_determinism", test_nt04_mt1_vs_mt4_determinism, false},
-    {"test_nt05_dp_inf_arithmetic_overflow_guard", test_nt05_dp_inf_arithmetic_overflow_guard,
-     false},
-    {"test_nt06_e8_filtered_price_model", test_nt06_e8_filtered_price_model, false},
     {"test_nt07_old_dist0_steady_run_guard", test_nt07_old_dist0_steady_run_guard, false},
     {"test_nt08_short_inputs_run_guard_skip", test_nt08_short_inputs_run_guard_skip, false},
     {"test_nt09_filter_region_mid_match_boundary", test_nt09_filter_region_mid_match_boundary,
@@ -4712,12 +4202,8 @@ static const openrar::test::Case k_cases[] = {
     {"test_nt12_refcap_golden_guard", test_nt12_refcap_golden_guard, false},
     {"test_nt14_cancellation_mid_horizon_and_reuse", test_nt14_cancellation_mid_horizon_and_reuse,
      false},
-    {"test_nt15_bounded_sample_memory", test_nt15_bounded_sample_memory, false},
     {"test_nt16_stale_chain_candidate_rejection", test_nt16_stale_chain_candidate_rejection, false},
     {"test_nt17_gate_off_legacy_byte_identity", test_nt17_gate_off_legacy_byte_identity, false},
-    {"test_nt18_forward_arrival_default_decision_site",
-     test_nt18_forward_arrival_default_decision_site, false},
-    {"test_nt20_pos_base_sample_window_clamp", test_nt20_pos_base_sample_window_clamp, false},
     {"test_nt21_lazy_all_methods_and_stream_parity", test_nt21_lazy_all_methods_and_stream_parity,
      false}};
 
