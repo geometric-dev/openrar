@@ -2088,7 +2088,7 @@ void Compressor50::add_last_len() {
 }
 
 bool Compressor50::need_flush() {
-    return token_seq_.size() >= 32768 || input_since_block_ >= 0x80000;
+    return token_seq_.size() >= flush_token_limit_ || input_since_block_ >= flush_input_limit_;
 }
 
 void Compressor50::make_tables() {
@@ -2467,6 +2467,14 @@ bool Compressor50::write_block(bool last_block) {
 
     packed_total_ += 2 + byte_count + data_size;
 
+    if (block_probe_on_) {
+        BlockProbeRecord rec;
+        rec.input_end = cur_;
+        rec.packed_bytes = 2 + byte_count + data_size;
+        rec.tokens = static_cast<core::uint32>(token_seq_.size());
+        block_probe_.push_back(rec);
+    }
+
     token_seq_.clear();
     lit_bytes_.clear();
     match_tokens_.clear();
@@ -2479,17 +2487,23 @@ bool Compressor50::write_block(bool last_block) {
 bool Compressor50::forward_arrival_default(int method) {
     // Governance: Rule G-1 (single decision function), Pillar 7 #8.
     //
-    // Chosen from clean -mt1 measurements against the v2.0.23 release (sizes are
-    // deterministic, timings are min-of-3; see docs/milestones/v2.1.0-implementation-plan.md
-    // §7.2 for the table):
-    //   m1-m3  greedy. 1.2x-3.7x faster than v2.0.23 and 0.3-2.4% smaller on text and mixed
-    //          data. The forward-arrival parser is slower than v2.0.23 here (0.70x with the
-    //          offset-1 lookahead that would be needed to match it on source code), so it
-    //          cannot be the default. The one loss is big24 at m1/m2 (+0.13% / +0.16%).
-    //   m4-m5  forward-arrival. Greedy is larger than v2.0.23 on text and mixed (+0.05% to
-    //          +1.3%); forward-arrival is smaller on every cell except big24 at m5 (+0.03%),
-    //          at 0.76x-0.83x of v2.0.23's speed on text and faster on big24 and mixed.
-    static const bool fa_defaults[6] = {false, false, false, false, true, true};
+    // Greedy (with lazy matching, see init_match_params) at EVERY method.
+    //
+    // Chosen from -mt1 measurements against the v2.0.23 release (sizes are deterministic;
+    // see docs/milestones/v2.1.0-implementation-plan.md section 7.2.2 for the tables).
+    // An earlier draft of this release picked forward-arrival for m4-m5 from synthetic
+    // corpora, where it wins on seeded word salad (-0.4% to -0.8% vs v2.0.23). On real files
+    // it loses: against v2.0.23 it was +0.9% to +1.0% on C++ source and tests, +0.1% on
+    // markdown and +1.3% on an x86-64 executable, while greedy is 1.0%-2.0% SMALLER than
+    // v2.0.23 on source, tests and markdown (+0.1% on the executable) and 1.7%-23% smaller on
+    // XML/JSON/HTML/JS/log text from outside this repository. The real-content corpora in
+    // tools/release_regression_guard.py are what exposed this.
+    //
+    // The cost is synthetic word salad at m4-m5 (+0.3% / +1.2% vs v2.0.23), recorded as
+    // explicit allowances in the guard. The forward-arrival parser stays reachable with
+    // OPENRAR_ENABLE_FORWARD_ARRIVAL=1; why it trails greedy on real data is open (plan
+    // section 10, item 12).
+    static const bool fa_defaults[6] = {false, false, false, false, false, false};
     return (method >= 0 && method <= 5) ? fa_defaults[method] : false;
 }
 
@@ -2513,11 +2527,16 @@ void Compressor50::init_match_params() {
     // m3 parameters are unchanged from v1.30.
     static const core::uint32 chains[6] = {0, 4, 8, 32, 64, 128};
     static const core::uint32 nices[6] = {0, 256, 512, 1024, 2048, 4096};
-    static const core::uint32 lazies[6] = {0, 0, 0, 1, 1, 1};
+    // Lazy matching at every method. v2.0.23 shipped the earlier forward-arrival parser at
+    // every method, and that parser looked one byte ahead. An earlier draft of this release
+    // had plain greedy at m1-m2 (lazy 0) and was 2-3% LARGER than v2.0.23 on every real file
+    // measured (C++ source, markdown, PE binary) while looking smaller on the synthetic
+    // corpora. One offset-1 test restores it: -0.05% to -1.0% vs v2.0.23 on source, tests and
+    // markdown, still 1.4-2.4x faster. NT-21 pins this table. Plan section 7.2.2.
+    static const core::uint32 lazies[6] = {0, 1, 1, 1, 1, 1};
     max_chain_ = chains[method_];
     nice_len_ = nices[method_];
     lazy_tests_ = lazies[method_];
-
     // Minimum emitted match length. v1.33 Design B admitted 2-byte matches at
     // m1-m3 on a claimed m1 -1.49%; the v1.33.1 re-gate could not reproduce
     // that win on any corpus available (canonical payload, two text

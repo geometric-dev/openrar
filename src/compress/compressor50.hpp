@@ -800,6 +800,16 @@ public:
     void arb_probe_enable(bool on) { arb_probe_on_ = on; }
     void arb_probe_reset() { arb_probe_ = ArbiterProbeStats{}; }
     const ArbiterProbeStats& arb_probe_stats() const { return arb_probe_; }
+    // Per-block size probe (research: parser-selection ceiling, plan section 7.2.2.4). Its
+    // controls are private and reachable only through the friend Compressor50ResearchAccess,
+    // which tools/blockceiling.cpp defines, so no production caller can reach them. Recording
+    // is log-only. Shrinking the flush thresholds is NOT: it changes the emitted stream.
+    struct BlockProbeRecord {
+        core::uint64 input_end{0};    // absolute stream offset the block ends at
+        core::uint64 packed_bytes{0}; // header + payload bytes written for the block
+        core::uint32 tokens{0};       // tokens in the block (literals + matches)
+    };
+
     // v1.44 A-6 back-shift control: measurement/tooling hook with the same
     // shape as set_lastlen_suppressed (tests + arbprobe timing A/B); the
     // constructor applies the OPENRAR_NO_BACKSHIFT environment once so the
@@ -913,6 +923,15 @@ public:
     core::uint64 source_bytes_loaded() const { return src_loaded_; }
 
     friend class Compressor50TestAccess;
+    friend class Compressor50ResearchAccess;
+
+private:
+    // Block flush thresholds. These are the shipped constants; only the research accessor
+    // moves them (so the production path carries no extra mode branch).
+    size_t flush_token_limit_{32768};
+    core::uint64 flush_input_limit_{0x80000};
+    bool block_probe_on_{false};
+    std::vector<BlockProbeRecord> block_probe_;
 };
 
 inline size_t parallel_chunk_size(core::uint64 total_size, unsigned eff_threads,
