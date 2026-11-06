@@ -119,18 +119,13 @@ def main():
 
     corpora = generate_corpora()
 
-    # Manifest: (method, threads, engine). "default" is whatever the build ships for that
-    # method. The forced engines make sure the parser that is NOT the default at a method is
-    # also decodable by the oracle, so the experimental path cannot silently produce streams
-    # only our own decoder accepts (G1 must cover every parser we can emit, not just one).
+    # Manifest: (method, threads, engine). In v2.2+, greedy parsing is the sole engine,
+    # so every stage runs against the default engine.
     ENGINE_ENV = {
         "default": {},
-        "fa": {"OPENRAR_ENABLE_FORWARD_ARRIVAL": "1"},
-        "greedy": {"OPENRAR_NO_FORWARD_ARRIVAL": "1"},
     }
     manifest = [(m, mt, "default") for m in (1, 3, 5) for mt in (1, 4)]
     manifest += [(4, 1, "default")]
-    manifest += [(m, 1, "fa") for m in (1, 3)] + [(m, 1, "greedy") for m in (4, 5)]
 
     out_dir = WORK_DIR / "interop_extracted"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -138,7 +133,12 @@ def main():
     stage_count = 0
     passed_count = 0
 
+    EXPECTED_STAGES = 35  # 5 corpora * 7 stages
     manifest_count = len(corpora) * len(manifest)
+    if manifest_count != EXPECTED_STAGES:
+        print(f"[FATAL] Manifest count is {manifest_count}, expected {EXPECTED_STAGES}. Gate G1 FAILS CLOSED.")
+        sys.exit(1)
+
     print(f"Executing {manifest_count} interop manifest stages...\n")
 
     for c_name, c_path in corpora.items():
@@ -155,8 +155,8 @@ def main():
             print(f"{tag} 🟢 PASS: {stage_name} (oracle UnRAR 7.20 verified)")
 
     print(f"\nstages={stage_count}")
-    if stage_count != manifest_count or passed_count != manifest_count:
-        print(f"[FATAL] Incomplete manifest run ({passed_count}/{manifest_count}). Gate G1 FAILS CLOSED.")
+    if stage_count != EXPECTED_STAGES or passed_count != EXPECTED_STAGES:
+        print(f"[FATAL] Incomplete manifest run ({passed_count}/{EXPECTED_STAGES}). Gate G1 FAILS CLOSED.")
         sys.exit(1)
 
     print(f"[OK] Gate G1 PASSED: all {manifest_count} stages decoded byte-identically under UnRAR 7.20.")

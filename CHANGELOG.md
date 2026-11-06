@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Forward-arrival parsing engine and dynamic pricing model:** Removed valuate_forward_arrival, init_empirical_prior, 
+efresh_price_model, struct PriceModel, price_literal, price_match, price_rep, price_slot257, and probe state from Compressor50. Greedy with lazy matching is now the sole parsing engine across all compression methods (-m1 through -m5).
+- **Environment knobs:** Removed OPENRAR_NO_FORWARD_ARRIVAL, OPENRAR_EXPERIMENTAL_M1_DAG, OPENRAR_PRICE_ARM, and OPENRAR_NO_DYNAMIC_PRICE. Setting OPENRAR_ENABLE_FORWARD_ARRIVAL now emits a single deprecation warning on stderr from the CLI and is ignored by the library.
+- **Obsolete tooling:** Retired 	ools/blockceiling.cpp and 	ools/bench_m2_ablation.py.
+
 ## [2.1.1] - 2026-11-05
 
 Correction release. **Upgrade from 2.1.0**: that release shipped a compression-speed defect and
