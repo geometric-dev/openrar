@@ -902,13 +902,60 @@ jobs:
       - name: Run the guard
         run: python3 tools/release_regression_guard.py --binary build/openrar
 
+  windows-regression-guard:
+    # W3: Windows release regression guard (Directive 14 & Roadmap v2.2)
+    # Runs tools/release_regression_guard.py on windows-2022 against the pinned v2.0.23 release binary.
+    name: Windows release regression guard (vs v2.0.23)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      BASELINE_TAG: v2.0.23
+      BASELINE_ASSET: openrar-2.0.23-windows-msvc-x64.zip
+      BASELINE_SHA256: cabad680ace93dd947969b50a0c347a8641de86c8b957b3a5fb64ce90a3f03de
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.4.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Configure CMake (Windows MSVC)
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+      - name: Build openrar (Release)
+        run: |
+          cmake --build build --config Release --target openrar
+      - name: Fetch the pinned v2.0.23 release binary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p baseline
+          gh release download "${BASELINE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${BASELINE_ASSET}" --dir baseline
+          echo "${BASELINE_SHA256}  baseline/${BASELINE_ASSET}" | sha256sum -c -
+          unzip -o -q "baseline/${BASELINE_ASSET}" -d baseline/unpacked
+          BIN=$(find baseline/unpacked -type f -name openrar.exe | head -n 1)
+          test -n "${BIN}" || { echo "no openrar.exe binary inside ${BASELINE_ASSET}"; exit 1; }
+          "${BIN}" --version
+          echo "OPENRAR_BASELINE_BIN=${PWD}/${BIN}" >> "${GITHUB_ENV}"
+      - name: Run the guard
+        shell: bash
+        run: |
+          EXE="./build/openrar64/Release/openrar.exe"
+          if [ ! -f "$EXE" ]; then EXE="./build/Release/openrar.exe"; fi
+          python3 tools/release_regression_guard.py --binary "$EXE"
+
   release-assets:
     name: Attach release artifacts
     # Runs only for version tags: packages everything the run built and
     # attaches it to the GitHub release named after the tag (creating the
     # release with generated notes if it does not exist yet).
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-and-test, linux-arm64-qemu, wasm, sanitizers, tsan, simd-validation, csharp, python-sdk, release-regression-guard, oracle-interop]
+    needs: [build-and-test, linux-arm64-qemu, wasm, sanitizers, tsan, simd-validation, csharp, python-sdk, release-regression-guard, windows-regression-guard, oracle-interop]
     runs-on: ubuntu-latest
     permissions:
       contents: write
