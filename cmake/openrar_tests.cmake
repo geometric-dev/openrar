@@ -478,9 +478,17 @@ target_link_libraries(archive_api_tests PRIVATE
         # must make the golden-hash gates exit exactly 2 and say why. The script
         # asserts the exact status (a WILL_FAIL property would also accept a
         # crash) and runs an un-capped control so it cannot pass vacuously.
+        # Cross-compiled legs must launch the child through the emulator, or
+        # exec fails with ENOEXEC and the control run exits 255.
+        set(_refcap_emu_arg)
+        if(CMAKE_CROSSCOMPILING_EMULATOR)
+            string(JOIN " " _refcap_emu ${CMAKE_CROSSCOMPILING_EMULATOR})
+            set(_refcap_emu_arg "--emulator=${_refcap_emu}")
+        endif()
         add_test(NAME refcap_fail_closed
             COMMAND ${Python3_EXECUTABLE}
                     ${PROJECT_SOURCE_DIR}/tools/refcap_negative_test.py
+                    ${_refcap_emu_arg}
                     $<TARGET_FILE:compress_tests>)
 
         # Aggregator fail-closed contract (v1.44 M0): in-process negative
