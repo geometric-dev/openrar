@@ -64,7 +64,9 @@ defaults that produced larger archives than 2.0.23 on real files.
 - `tools/release_regression_guard.py`: fail-closed comparison against the 2.0.23 release binary
   (size, speed, zero-run bound, integrity, determinism, alternate-parser round trips). New CI job
   `release-regression-guard`; `release-assets` depends on it.
-- `refcap_fail_closed` CTest: `OPENRAR_REFCAP=1` must make the golden gates exit 2.
+- `refcap_fail_closed` CTest: `OPENRAR_REFCAP=1` must make the golden gates exit 2. The harness now
+  takes the cross-compiling emulator prefix, so the ARM64 leg launches the child through QEMU instead
+  of failing with `ENOEXEC` (exit 255).
 - Interop manifest grew from 30 to 55 stages and now includes the non-default parser at every method.
 - `tools/provision_unrar.sh`: fixed the download URL and SHA-256 pin (it failed on every run).
 - Rewrote unit tests that could not fail (NT-04, 06, 15, 16, 17, 18, 20, BT-03, BT-06); added a lint
