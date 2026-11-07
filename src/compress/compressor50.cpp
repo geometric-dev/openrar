@@ -881,7 +881,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
             }
         }
         if (min_target > 0) {
-            size_t hurdle = min_target;
+            size_t hurdle = min_target + inc;
             if (hurdle > req_len) req_len = hurdle;
         }
         if (req_len < min_legal_len) req_len = min_legal_len;
