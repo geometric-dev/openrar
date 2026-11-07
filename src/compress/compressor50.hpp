@@ -635,7 +635,10 @@ private:
                                core::uint32& bits);
     static void distance_to_slot(size_t distance, core::uint32& slot, core::uint64& extra,
                                  core::uint32& raw_bits);
-    static core::uint32 length_increment(size_t distance);
+    static inline core::uint32 length_increment(size_t distance) noexcept {
+        return static_cast<core::uint32>((distance > 0x100) + (distance > 0x2000) +
+                                         (distance > 0x40000));
+    }
 
     void add_literal(core::byte b);
     // Emit a fresh-match token and return the number of input bytes the emitted
