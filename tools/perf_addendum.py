@@ -37,7 +37,8 @@ def bench(label, args, disable_ext, runs=2):
         if os.path.exists(os.path.join(OUT, arc)):
             os.remove(os.path.join(OUT, arc))
         times.append(run([OPENRAR, "a", arc, "-q"] + args + [PAYLOAD], env=env))
-    run([OPENRAR, "t", arc, "-q"], env=env)
+    t_args = [a for a in args if a.startswith("-p")]
+    run([OPENRAR, "t", arc, "-q"] + t_args, env=env)
     return min(times)
 
 rows = [
