@@ -738,7 +738,7 @@ public:
     void arb_probe_enable(bool on) { arb_probe_on_ = on; }
     void arb_probe_reset() { arb_probe_ = ArbiterProbeStats{}; }
     const ArbiterProbeStats& arb_probe_stats() const { return arb_probe_; }
-    // Per-block size probe (research: parser-selection ceiling, plan section 7.2.2.4). Its
+
     // v1.44 A-6 back-shift control: measurement/tooling hook with the same
     // shape as set_lastlen_suppressed (tests + arbprobe timing A/B); the
     // constructor applies the OPENRAR_NO_BACKSHIFT environment once so the

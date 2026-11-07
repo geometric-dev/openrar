@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-OpenRAR v2.1.0 Track E - Milestone M0R Census Harness (Schema v2)
-Fingerprinted measurement harness providing dual baseline verification:
-  - Baseline A: Greedy (same commit) via OPENRAR_NO_FORWARD_ARRIVAL=1
-  - Baseline B: v2.0.23 release binary (external reference)
+OpenRAR Census & Benchmark Measurement Harness
 Measures compression size and throughput across -m1, -m3, -m5
-on canonical corpora (zeros8, random8, synthetic_text8, mixed16, big24).
+on canonical corpora (zeros8, random8, synthetic_text8, mixed16, big24)
+against the v2.0.23 release binary baseline.
 """
 
 import os
@@ -327,48 +325,35 @@ def main():
     corpora = generate_corpora()
     envelope = get_system_fingerprint(corpora)
 
-    all_identical = True
     cells = []
 
-    print(f"\n{'Corpus':<20} | {'m':<2} | {'Forward (B)':<12} | {'Greedy (same) (B)':<17} | {'v2.0.23 (B)':<12} | {'Δ vs Greedy':<12} | {'Speed':<7} | {'Verdict'}")
-    print("-" * 105)
+    print(f"\n{'Corpus':<20} | {'m':<2} | {'Current (B)':<12} | {'v2.0.23 (B)':<12} | {'Δ vs v2.0.23':<15} | {'Speed (MB/s)':<12} | {'Verdict'}")
+    print("-" * 95)
 
     for corpus_name, corpus_path in corpora.items():
         for m in [1, 3, 5]:
-            # Forward arrival, FORCED on: the shipped default differs per method, so an unset
-            # environment would measure greedy at m1-m3 and make the column meaningless.
-            r_fa = measure_repetitions(bin_path, corpus_path, m,
-                                       {"OPENRAR_ENABLE_FORWARD_ARRIVAL": "1",
-                                        "OPENRAR_NO_FORWARD_ARRIVAL": ""}, reps=reps)
-            # Greedy same-commit (forced env)
-            r_greedy = measure_repetitions(bin_path, corpus_path, m, {"OPENRAR_NO_FORWARD_ARRIVAL": "1"}, reps=reps)
-            # v2.0.23 release binary (if provided)
+            r_cur = measure_repetitions(bin_path, corpus_path, m, reps=reps)
             r_v2023 = measure_repetitions(v2023_bin, corpus_path, m, reps=reps) if v2023_bin else None
 
-            if not r_fa or not r_greedy:
+            if not r_cur:
                 print(f"[FATAL] Benchmark execution failed for {corpus_name} -m{m}")
                 sys.exit(1)
 
-            if r_fa["median_size"] != r_greedy["median_size"]:
-                all_identical = False
-
-            delta_bytes = r_fa["median_size"] - r_greedy["median_size"]
-            pct_delta = (delta_bytes / r_greedy["median_size"]) * 100 if r_greedy["median_size"] > 0 else 0
-            speed_ratio = r_fa["median_mb_s"] / r_greedy["median_mb_s"] if r_greedy["median_mb_s"] > 0 else 0
+            delta_bytes = (r_cur["median_size"] - r_v2023["median_size"]) if r_v2023 else 0
+            pct_delta = (delta_bytes / r_v2023["median_size"]) * 100 if (r_v2023 and r_v2023["median_size"] > 0) else 0
+            speed_ratio = (r_cur["median_mb_s"] / r_v2023["median_mb_s"]) if (r_v2023 and r_v2023["median_mb_s"] > 0) else 0
 
             # Gating verdict
             verdict = "🟢 Pass"
-            if corpus_name == "zeros8.bin" and m == 5 and r_fa["median_size"] > 587:
+            if corpus_name == "zeros8.bin" and m == 5 and r_cur["median_size"] > 587:
                 verdict = "🔴 B-1: zeros5 > 587B"
-            elif m != 1 and speed_ratio < 0.90:
-                verdict = f"🔴 G3: {speed_ratio:.2f}x < 0.90x"
-            elif delta_bytes > 0:
+            elif r_v2023 and delta_bytes > 0:
                 verdict = f"🔴 Size +{delta_bytes}B"
 
             v2023_str = f"{r_v2023['median_size']:,}" if r_v2023 else "N/A"
-            delta_str = f"{delta_bytes:+,} ({pct_delta:+.2f}%)"
+            delta_str = f"{delta_bytes:+,} ({pct_delta:+.2f}%)" if r_v2023 else "N/A"
 
-            print(f"{corpus_name:<20} | {m:<2} | {r_fa['median_size']:<12,} | {r_greedy['median_size']:<17,} | {v2023_str:<12} | {delta_str:<12} | {speed_ratio:<6.2f}x | {verdict}")
+            print(f"{corpus_name:<20} | {m:<2} | {r_cur['median_size']:<12,} | {v2023_str:<12} | {delta_str:<15} | {r_cur['median_mb_s']:<10.2f}   | {verdict}")
 
             cells.append({
                 "corpus": corpus_name,
@@ -376,24 +361,16 @@ def main():
                 "mt": 1,
                 "md": "4m",
                 "repetitions": reps,
-                "forward": r_fa,
-                "greedy_same_commit": r_greedy,
+                "current": r_cur,
                 "v2_0_23_release": r_v2023,
-                "delta_vs_greedy_bytes": delta_bytes,
-                "delta_vs_greedy_pct": pct_delta,
-                "speed_ratio_vs_greedy": speed_ratio,
+                "delta_vs_v2023_bytes": delta_bytes,
+                "delta_vs_v2023_pct": pct_delta,
+                "speed_ratio_vs_v2023": speed_ratio,
                 "verdict": verdict
             })
 
-    # Fail-closed check (NT-13): if all cells are identical, baseline switch failed
-    if all_identical:
-        print("\n[FATAL NT-13] Forward-arrival and Greedy same-commit columns are byte-identical across ALL cells!")
-        print("OPENRAR_NO_FORWARD_ARRIVAL environment variable was not respected by the engine. Aborting fail-closed.")
-        sys.exit(1)
-
     envelope["runs"] = cells
-    envelope["forward_arrival"] = {"forced_env": "OPENRAR_ENABLE_FORWARD_ARRIVAL=1", "enabled": True}
-    envelope["greedy_same_commit"] = {"forced_env": "OPENRAR_NO_FORWARD_ARRIVAL=1", "enabled": False}
+    envelope["current_binary"] = str(bin_path)
     envelope["v2_0_23_release"] = {"binary": str(v2023_bin) if v2023_bin else "pending", "status": "measured" if v2023_bin else "pending"}
 
     report_json = ROOT / "docs" / "milestones" / "v2.1.0-m0-census-report.json"

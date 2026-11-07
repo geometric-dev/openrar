@@ -2822,16 +2822,16 @@ void test_slot257_solid_carry() {
 // Compression robustness tests (run hygiene & incompressible fallback)
 
 // Test 1: 8 MiB zeros compress to <= 500 bytes (run hygiene)
-void test_forward_arrival_run_hygiene() {
+void test_compressor_run_hygiene() {
     std::vector<openrar::core::byte> zeros(8 * 1024 * 1024, 0);
     std::vector<openrar::core::byte> comp;
     REQUIRE(Compressor50::compress_buffer(zeros.data(), zeros.size(), comp, 3, 0x200000, {}));
     REQUIRE(comp.size() <= 500);
-    std::cout << "[PASS] forward_arrival run hygiene: 8 MiB zeros -> " << comp.size() << " bytes\n";
+    std::cout << "[PASS] compressor run hygiene: 8 MiB zeros -> " << comp.size() << " bytes\n";
 }
 
 // Test 4: Incompressible fallback triggers fast literal path
-void test_forward_arrival_incompressible_fallback() {
+void test_compressor_incompressible_fallback() {
     std::vector<openrar::core::byte> rand_data(1024 * 1024);
     std::mt19937 rng(42);
     std::uniform_int_distribution<int> dist(0, 255);
@@ -2846,7 +2846,7 @@ void test_forward_arrival_incompressible_fallback() {
     // Should complete in reasonable time (fail_count heuristic prevents O(n^2))
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
     REQUIRE(duration < 5000); // < 5 seconds for 1 MiB random
-    std::cout << "[PASS] forward_arrival incompressible fallback: " << duration << " ms\n";
+    std::cout << "[PASS] compressor incompressible fallback: " << duration << " ms\n";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4182,9 +4182,8 @@ static const openrar::test::Case k_cases[] = {
     {"test_filter_improves_compression", test_filter_improves_compression, false},
     {"test_chunk_framing_spike", test_chunk_framing_spike, false},
     // Robustness tests
-    {"test_forward_arrival_run_hygiene", test_forward_arrival_run_hygiene, false},
-    {"test_forward_arrival_incompressible_fallback", test_forward_arrival_incompressible_fallback,
-     false},
+    {"test_compressor_run_hygiene", test_compressor_run_hygiene, false},
+    {"test_compressor_incompressible_fallback", test_compressor_incompressible_fallback, false},
     {"test_decompress_to_vector_default_stream_cap", test_decompress_to_vector_default_stream_cap,
      false},
     {"test_prescan_member_dedup_and_cap", test_prescan_member_dedup_and_cap, false},
