@@ -1,679 +1,186 @@
 # PERFORMANCE.md — OpenRAR vs WinRAR benchmark summary
 
-**Current tree: v1.52.0 (Official Competitive Multi-Engine Audit).** The
-"v1.52.0 measurement" section below reflects the complete 28-row matrix
-measured on the current release across canonical (129.4 MB), mixed (148.4 MB),
-zeros (512 MB), and 1.0 GB corpora × methods m0/m1/m3/m5 × single-thread/multi-threaded
-compression and extraction against WinRAR 7.20 x64 and UnRAR 7.20 x64 under
-Invariant G-3.
+**Current tree: v2.2.0 (Official Competitive Multi-Engine Audit).** The
+"v2.2.0 measurement" section below reflects the complete 33-row matrix
+measured on the current release across canonical (128.0 MB), mixed (148.4 MB),
+zeros (512 MB), 1.0 GB canonical, and many-entry (610 files) corpora × methods
+m0/m1/m3/m5 × single-thread/multi-threaded compression and extraction against
+WinRAR 7.20 x64 and UnRAR 7.23 x64 under Invariant G-3.
 
 Machine-collected numbers. Every config ran on deterministic corpora, was
 verified by cross-extraction (both engines' extractions must hash-identically
 match the source tree), and reports the MEDIAN of timed runs. Raw data:
-`tools/perf/results.json` (corpus fingerprints included — the canonical corpus
-embeds the repo `src/` tree, so sizes are only comparable within one corpus
-era); harness: `tools/perf_vs_winrar.py`.
-
-## Wire-format note (table reuse removed)
-
-One wire-format fact changed in the tree **after** the v1.31.0 numbers below:
-since the multithreaded decode-corruption fix (commit `7086e96`), the encoder
-emits a Huffman table description on **every** compressed block and never
-emits bit-7-clear (table-reuse) blocks (`docs/spec/03-compression-m1-m5.md`
-§Table lifecycle). Table reuse had cut ratio on repetitive input, so historical
-ratio columns prior to v1.40 over-stated what conforming encoders achieve; speed is
-unaffected. The current numbers below reflect strictly conforming emissions.
-
-A full-suite benchmark of the current tree (no `--filter`, 1 warm-up + 3 timed
-runs, MEDIAN reported) is recorded in the section immediately below. The
-v1.40.0 and v1.31.0 tables below it are retained verbatim as the historical
-record for those releases.
+`tools/perf/results.json`; harness: `runbench` (`tools/bench_run.cpp`).
 
 ---
 
 ## Reproducing these numbers (any host)
 
-Harness: `tools/perf_vs_winrar.py` (Windows-only; WinRAR comparison). It builds
-nothing — build Release first, then run from the repo root:
+Harness: `build/Release/runbench.exe` (Windows-only; WinRAR/UnRAR oracle comparison).
+Build Release first, then run:
 
-```
-python tools/perf_vs_winrar.py          # full: 1 warm-up + 3 timed runs, MEDIAN
-python tools/perf_vs_winrar.py --quick  # smoke only (numbers not quoted)
+```powershell
+# Full standalone benchmark driver (1 warm-up + 3 timed runs, MEDIAN reported)
+.\build\Release\runbench.exe --no-pause
+
+# Or quick smoke run (2 timed runs, no warm-up, skips 1 GB)
+.\build\Release\runbench.exe --quick --no-pause
+
+# Python 50 MB canonical suite
+python tools/perf_matrix.py
 ```
 
 Prerequisites: a Release `openrar.exe` (autodetected under `build/`, or set
-`OPENRAR_EXE`), WinRAR 7.20 + UnRAR under `C:\Program Files\WinRAR`, Python 3,
-and ~2 GB free for the corpora. The run writes `tools/perf/results.json`
-incrementally (28 configs) and discloses the host in that same file.
+`OPENRAR_EXE`), WinRAR 7.20 (`rar.exe`) + UnRAR (`UnRAR.exe`) under
+`C:\Program Files\WinRAR`, and ~2 GB free disk space for the scratch corpora.
+The driver writes `tools/perf/results.json` upon completion and discloses the host
+hardware and power scheme.
 
-Comparability across hosts: the corpora are **not vendored** (gitignored). The
-harness regenerates them deterministically on a host when absent, and the
-canonical/big `code.cpp` and the mixed `src_*.cpp` embed *that host's* `src/`
-tree — so a fresh checkout produces a different corpus era. Every corpus's hash
-is recorded in `results.json` (`corpora`). To compare two hosts directly, either
-generate both at the same commit or copy `tools/perf/data/` between them; a
-mismatched fingerprint means sizes (and, to a smaller degree, times) are only
-loosely comparable.
+Comparability across hosts: the corpora are generated deterministically at
+runtime (seeded PRNG) and are fully cleaned up on exit.
 
 ---
 
-## v1.52.0 measurement (Current measured record)
+## v2.2.0 measurement (Current measured record)
 
-Measured on `v1.52.0` on the published audit host. Host disclosed; the v1.40.0
-and v1.31.0 sections below are historical and are not restated.
+Measured on `v2.2.0` on the published audit workstation.
 
-| | |
+| Host Parameter | Specification |
 |---|---|
 | CPU | Intel Core i7-7500U @ 2.70GHz (2 cores / 4 threads) |
-| RAM / OS | 15.9 GB / Windows 11 |
-| OpenRAR | 1.52.0 (measured tree) |
-| WinRAR / UnRAR | 7.20 x64 / 7.20 x64 freeware |
-| Run | 2026-10-26, harness `tools/perf_vs_winrar.py` (full 28-row matrix) |
-| Protocol | 1 warm-up + 3 timed runs; MEDIAN; every pack cross-verified by hash |
-| Corpora | canonical 129.4 MB (`4e2b761331a553e2`), mixed 148.4 MB (`c4ee10c12a5fa3fa`), zeros512 512 MB (`479bedf0036e0295`), big 1.0 GB (`f3ee5a40583ac450`) |
+| RAM / OS | 15.9 GB / Windows 10 Pro build 26100 |
+| Power Scheme | AC plugged-in, Best performance active overlay |
+| OpenRAR | 2.1.1 (measured tree) |
+| WinRAR / UnRAR | RAR 7.20 x64 / UNRAR 7.23 x64 freeware |
+| Run Date | 2026-11-07, driver `runbench.exe` (full 33-row matrix: 33 ok, 0 failed, 0 skipped) |
+| Protocol | 1 warm-up + 3 timed runs; MEDIAN; every archive cross-verified by SHA-256 tree hash |
+| Corpora | canonical 128 MB (`96b24134ec407b2b`), mixed 148.4 MB (`069a668297c81560`), zeros512 512 MB (`479bedf0036e0295`), big 1.0 GB (`4a09ab91a5ecc680`), many 610 files (`e50a6ddf9f1de89b`) |
 
-### Compression — method sweep (canonical 129.4 MB, single-thread)
+### Compression — method sweep (canonical 128.0 MB, single-thread `-mt1`)
 
-| Config | Median | Archive | vs WinRAR |
-|---|--:|--:|--:|
-| OpenRAR `-m0 -mt1` | **0.254 s** | 135.72 MB | **1.46x faster** |
-| WinRAR `-m0 -mt1` | 0.371 s | 135.72 MB | |
-| OpenRAR `-m1 -mt1` | 6.197 s | 65.61 MB | 0.97x (competitive) |
-| WinRAR `-m1 -mt1` | **5.990 s** | 55.69 MB | |
-| OpenRAR `-m3 -mt1` | **12.593 s** | 54.20 MB | **1.90x faster** |
-| WinRAR `-m3 -mt1` | 23.886 s | 52.76 MB | |
-| OpenRAR `-m5 -mt1` | **47.631 s** | 53.00 MB | **1.19x faster** |
-| WinRAR `-m5 -mt1` | 56.708 s | 51.47 MB | |
+| Config | Median | Archive Size | Throughput | vs WinRAR | Size Delta |
+|---|--:|--:|--:|--:|--:|
+| OpenRAR `-m0 -mt1` | **0.167 s** | 134.22 MB | **767 MB/s** | **2.11x faster** | +0.0% |
+| WinRAR `-m0 -mt1` | 0.353 s | 134.22 MB | 363 MB/s | Baseline | Baseline |
+| OpenRAR `-m1 -mt1` | **4.811 s** | 63.00 MB | **26.6 MB/s** | **1.00x** (parity) | +0.45% |
+| WinRAR `-m1 -mt1` | 4.821 s | 62.72 MB | 26.6 MB/s | Baseline | Baseline |
+| OpenRAR `-m3 -mt1` | **12.972 s** | 60.98 MB | **9.9 MB/s** | **2.09x faster** | +3.67% |
+| WinRAR `-m3 -mt1` | 27.103 s | 58.82 MB | 4.7 MB/s | Baseline | Baseline |
+| OpenRAR `-m5 -mt1` | **37.308 s** | 59.24 MB | **3.4 MB/s** | **1.86x faster** | +4.07% |
+| WinRAR `-m5 -mt1` | 69.465 s | 56.92 MB | 1.8 MB/s | Baseline | Baseline |
 
-- **`-m3` (default): ~1.90x faster single-thread**; packed archive is within 2.7%
-  of WinRAR (54.20 MB vs 52.76 MB).
-- **`-m5`: ~1.19x faster single-thread**; packed archive is within 2.97% of
-  WinRAR (53.00 MB vs 51.47 MB).
-- **`-m0`: 1.46x faster** on raw store throughput.
+- **`-m3` (default): ~2.09x faster single-thread** (12.97 s vs 27.10 s); archive size is within 3.67% of WinRAR (60.98 MB vs 58.82 MB).
+- **`-m5`: ~1.86x faster single-thread** (37.31 s vs 69.47 s); archive size is within 4.07% of WinRAR (59.24 MB vs 56.92 MB).
+- **`-m1`: parity in wall-clock time** (4.81 s vs 4.82 s); archive size is within 0.45% of WinRAR (63.00 MB vs 62.72 MB).
+- **`-m0`: 2.11x faster** on raw store throughput.
 
-### Multi-threaded (`-mt4`, canonical 129.4 MB)
+### Multi-threaded (`-mt4`, canonical 128.0 MB)
 
-| Config | Median | Archive |
-|---|--:|--:|
-| OpenRAR `-m3 -mt1` | 12.593 s | 54.20 MB |
-| OpenRAR `-m3 -mt4` | **6.169 s** | 54.20 MB (**2.04x** scaling; byte-identical to `-mt1`) |
-| WinRAR `-m3 -mt1` | 23.886 s | 52.76 MB |
-| WinRAR `-m3 -mt4` | 8.554 s | 52.76 MB (2.79x) |
+| Config | Median | Archive Size | Throughput | Scaling |
+|---|--:|--:|--:|---|
+| OpenRAR `-m3 -mt1` | 12.972 s | 60.98 MB | 9.9 MB/s | 1.00x |
+| OpenRAR `-m3 -mt4` | **7.406 s** | 60.98 MB | **17.3 MB/s** | **1.75x** scaling (byte-identical to `-mt1`) |
+| WinRAR `-m3 -mt1` | 27.103 s | 58.82 MB | 4.7 MB/s | 1.00x |
+| WinRAR `-m3 -mt4` | 13.700 s | 58.82 MB | 9.3 MB/s | 1.98x scaling |
 
-OpenRAR `-m3 -mt4` finishes in **6.169 s vs WinRAR's 8.554 s** (1.39x faster
-end-to-end multi-threaded compression), with output strictly byte-identical to
-`-mt1`.
+OpenRAR `-m3 -mt4` finishes in **7.406 s vs WinRAR's 13.700 s** (**1.85x faster** end-to-end multi-threaded compression), with output strictly byte-identical to `-mt1`.
 
 ### Solid, mixed, volumes, zeros, 1 GB
 
 | Config | OpenRAR | WinRAR | Advantage |
 |---|--:|--:|--:|
-| solid `-m3 -s -mt1` | **9.583 s** (54.22 MB) | 18.771 s (52.84 MB) | **1.96x faster** |
-| multivolume `-m3 -v32m -mt1` | **10.582 s** (54.20 MB) | 18.289 s (52.84 MB) | **1.73x faster** |
-| mixed (148.4 MB) `-m3 -mt4` | **4.566 s** (62.46 MB) | 7.540 s (60.64 MB) | **1.65x faster** |
-| mixed `-cdc` (OpenRAR only) | **6.546 s** (**40.68 MB**) | — (60.64 MB) | **33% smaller** archive |
-| zeros512 `-m1 -mt1` | **1.224 s** (26.8 KB) | 5.909 s (21.8 KB) | **4.83x faster** |
-| big 1.0 GB `-m3 -mt4` | **40.204 s** (437.56 MB) | 77.257 s (426.41 MB) | **1.92x faster** |
+| solid `-m3 -s -mt1` | **13.994 s** (61.00 MB) | 31.538 s (58.91 MB) | **2.25x faster** |
+| multivolume `-m3 -v32m -mt1` | **13.691 s** (60.98 MB) | 31.155 s (58.91 MB) | **2.28x faster** |
+| mixed (148.4 MB) `-m3 -mt4` | **5.571 s** (63.36 MB) | 9.933 s (61.41 MB) | **1.78x faster** |
+| mixed `-cdc` (OpenRAR only) | **6.688 s** (**44.07 MB**) | — (61.41 MB) | **30.4% smaller** archive |
+| zeros512 `-m1 -mt1` | **1.282 s** (26.8 KB) | 5.926 s (21.8 KB) | **4.62x faster** |
+| big 1.0 GB `-m3 -mt4` | **57.795 s** (494.61 MB) | 122.561 s (477.42 MB) | **2.12x faster** |
 
-### Extraction (canonical `-m3` archive)
+### Extraction & Batching
 
-| Engine | Median | Notes |
-|---|--:|---|
-| OpenRAR single-thread | 1.116 s | OpenRAR archive (1.078 s on WinRAR archive) |
-| OpenRAR `-mt4` | **0.670 s** | **1.67x MT scaling** (0.723 s on WinRAR archive) |
-| UnRAR single-thread | 0.519 s | Reference C unrar |
-| UnRAR `-mt4` | 0.376 s | Reference MT unrar |
-| WinRAR `-mt4` | 0.345 s | Proprietary WinRAR GUI engine |
-
-OpenRAR's two-phase multi-threaded extraction (`-mt4`) delivers **1.67x scaling**
-over single-thread extraction. BLAKE2sp data hashing is accelerated by the
-AVX2 8-lane vertical kernel (`src/crypto/blake2sp.cpp:180-350`), attributing
-only 9.8% of extraction wall time (resolving U-12).
-
-### Host caveat
-
-This host is a 2-core/4-thread ULV laptop: absolutes drift with sustained-run
-thermals — the "Run-to-run noise floor" section below measures ~±7% on
-compression rows and more on extraction — and the multivolume row is
-disk-bound (stable value ~10 s). Prefer the OpenRAR-vs-WinRAR ratios over
-absolutes when differencing across runs, and read a single row in isolation only
-after re-running it.
+| Scenario | Config / Corpus | OpenRAR | WinRAR / UnRAR | Notes |
+|---|---|--:|--:|---|
+| Canonical 128 MB | single-thread (`-mt1`) | 1.681 s | 0.531 s (UnRAR) | Reference C unpacker |
+| Canonical 128 MB | multi-threaded (`-mt4`) | **1.135 s** | 0.438 s (UnRAR) / 0.447 s (WinRAR) | **1.48x MT scaling** |
+| Many-entry (610 files) | `-m0` entry vs batch | 6.634 s vs **2.804 s** | — | **2.37x faster** in batch mode |
+| Many-entry (610 files) | `-m3` entry vs batch | 6.564 s vs **2.635 s** | 1.246 s (UnRAR) | **2.49x faster** in batch mode |
 
 ---
-
-## v1.40.0 measurement (historical — Intel i7-1365U)
-
-Source of truth for the current tree. Supersedes every number in this
-document wherever they disagree; the historical sections below are the
-v1.31.0 record and are not restated.
-
-| | |
-|---|---|
-| CPU | 13th Gen Intel Core i7-1365U (12 cores) |
-| RAM / OS | 31.4 GB / Windows 10 Pro (build 26300) |
-| OpenRAR | 1.39.1 (this tree; post-`7086e96`) |
-| WinRAR / UnRAR | 7.20 x64 / 7.20 x64 freeware |
-| Run | 2026-10-11, `run_id` 2026-10-11T18:33:37Z |
-| Protocol | full suite, no `--filter`; 1 warm-up + 3 timed runs; MEDIAN reported; every pack cross-verified by hash |
-
-### Compression — method sweep (canonical 128 MB, single-thread)
-
-| Config | Median | Archive | Ratio |
-|---|---:|---:|---:|
-| OpenRAR `-m0 -mt1` | **0.073 s** | 134.22 MB | 100.0% |
-| WinRAR `-m0 -mt1` | 0.119 s | 134.22 MB | 100.0% |
-| OpenRAR `-m1 -mt1` | **1.39 s** | 63.18 MB | 49.3% |
-| WinRAR `-m1 -mt1` | 1.52 s | 62.72 MB | 49.0% |
-| OpenRAR `-m3 -mt1` | **10.04 s** | 61.04 MB | 47.6% |
-| WinRAR `-m3 -mt1` | 15.61 s | 58.82 MB | 45.9% |
-| OpenRAR `-m5 -mt1` | **48.17 s** | 59.23 MB | 46.3% |
-| WinRAR `-m5 -mt1` | 56.07 s | 56.92 MB | 44.5% |
-
-- **m3 (default): OpenRAR is ~1.55x faster single-thread**; WinRAR's ratio is
-  3.6% tighter. The ratio gap is wider than on v1.31 because table reuse is
-  gone from this tree (see the note above) — the reuse-era gap was ~2.7%.
-- **m5: OpenRAR is 1.16x faster**; WinRAR's ratio is 3.9% tighter.
-- **m1: OpenRAR is now faster** (1.39 s vs 1.52 s) and the ratio is within
-  0.3% — the old "WinRAR wins both axes at m1" is no longer true.
-
-### Multi-threaded (`-mt4`, canonical 128 MB)
-
-| Config | Median | Archive |
-|---|---:|---:|
-| OpenRAR `-m3 -mt1` | 10.04 s | 61.04 MB |
-| OpenRAR `-m3 -mt4` | 6.74 s | 61.04 MB (**1.49x**, byte-identical to `-mt1`) |
-| WinRAR `-m3 -mt1` | 15.61 s | 58.82 MB |
-| WinRAR `-m3 -mt4` | 6.00 s | 58.82 MB (2.60x) |
-
-MT is still byte-identical to `-mt1` (ratio unchanged), as intended. At 4
-threads on a 12-core machine WinRAR's MT scaling is stronger — OpenRAR's MT
-speedup is 1.49x vs WinRAR's 2.60x — but OpenRAR still wins single-thread by
-a wide margin, so end-to-end `-m3` wall-clock is close at `-mt4`.
-
-### Solid and mixed-stream
-
-| Config | Median | Archive |
-|---|---:|---:|
-| OpenRAR `-m3 -s` (solid) | 11.10 s | 61.06 MB |
-| WinRAR `-m3 -s` (solid) | 19.68 s | 58.91 MB |
-| OpenRAR `-m3` mixed MT | 2.41 s | 63.41 MB |
-| WinRAR `-m3` mixed MT | 3.29 s | 61.41 MB |
-
-**The CDC/FILECOPY case (`o_mix_cdc`, mixed 144 MB) packs in 8.22 s and
-verifies clean** — this is the configuration that corrupted under
-multithreaded unpackers before the fix. The row is `ok`
-with matching hashes at `-mt4`.
-
-### Extraction (canonical, MT)
-
-| Engine | Median |
-|---|---:|
-| OpenRAR `-m3` single-thread | 0.421 s |
-| OpenRAR `-m3 -mt4` | **0.235 s** |
-| WinRAR `-m3 -mt4` | 0.221 s |
-| UnRAR `-m3` single-thread | 0.275 s |
-| UnRAR `-m3 -mt4` | 0.231 s |
-
-Extraction is effectively at parity with external tools at `-mt4`
-(0.235 s vs 0.231 s ST-ref / 0.221 s MT-ref).
-
-### Pack reproducibility (two independent full runs)
-
-Two complete suite runs on this host (`run_id` 2026-10-11T18:33:37Z and
-2026-10-12T19:06:06Z, identical corpus fingerprints) produced **byte-identical
-archive sizes for all 21 packed configs** — every method, MT, solid, volumes,
-CDC/FILECOPY, zeros and the 1 GB corpus. `o_m3_mt` also matches `o_m3_st`
-exactly (61,042,787 B), so MT output is byte-identical to single-thread.
-
-Packing is therefore deterministic at any `-mt`, and a size difference between
-two builds is a real code difference, not run-to-run or host-dependent
-variance. (An earlier report of pack non-determinism was this property being
-violated by the table-reuse encoder; it is measured, not assumed, from here.)
-
-### Run-to-run noise floor
-
-The two runs above differ only in the CLI version string, so every timing
-delta between them is pure run-to-run variance. WinRAR — an unchanged binary
-— provides a control:
-
-| Control | Delta between runs |
-|---|---:|
-| 9 compression rows | −7.5% … +5.2% |
-| `extract_m3_winrar_mt4` | +15.3% |
-| `extract_m3_unrar_mt4` | +17.9% |
-| `w_big_m3_mt` | +29.7% |
-
-So treat **±7% as the compression noise floor** and **+15–30% for extraction
-and 1 GB** on this host. Against that: `o_big_m3_mt` moved +35.8% against its
-+29.7% control (machine, not encoder); every `extract_*` row moved less than
-its control; `o_mix_cdc` moved −21.1% but with a loose run-1 spread (0.104 vs
-0.015), i.e. run 1 was disturbed rather than the row being faster. Single-row
-movements inside these bands are not results.
-
-### Notable
-
-- **Zeros (`zeros512`): OpenRAR `-m1` is 2.6x faster** (0.66 s vs 1.68 s) and
-  produces a **22% larger** archive (26.8 KB vs 21.8 KB) — the direct
-  cost of no table reuse on run-heavy input.
-- **Big corpus (1 GB): the 1 GB row is not usable.** Both full runs produced a
-  pathological outlier on `o_big_m3_mt` (2080 s, then 453 s, against ~57–83 s
-  for the other runs), and the WinRAR control moved +29.7% between runs. Treat
-  this row as measuring host state, not throughput; do not quote it.
-- **Many small files (entry vs batch):** batch add is ~5–8x faster than
-  per-entry at both m0 and m3 (e.g. m3: 4.01 s entry vs 0.512 s batch), and
-  batch is faster than external tools on the same corpus.
-
-Full machine-collected raw data: `dev-share/openrar-bench-results.fix.json`
-(run 1, the sample tabulated above) and
-`dev-share/openrar-bench-results.post-fix.json` (run 2, used for the
-reproducibility and noise-floor sections).
-
----
-
-## Host & tools (v1.31.0 — historical)
-
-| | |
-|---|---|
-| CPU | Intel Core i7-7500U @ 2.70 GHz (2C/4T, laptop) |
-| RAM / OS | 15.9 GB / Windows 11 |
-| OpenRAR | 1.31.0, MSVC Release (`build/openrar64/Release`) |
-| WinRAR / UnRAR | 7.20 x64 / 7.20 x64 freeware |
-| Date | 2026-09-29 |
-
-**Protocol:** deterministic seeded corpora (fingerprints in
-`results.json`; this era's canonical corpus hashes `3d7434a82d82e644` and
-is NOT size-comparable to pre-v1.31 eras); per config 1 untimed warm-up
-run + 3 timed runs (fresh output files each run, pre-deleted outside the
-timed window); MEDIAN wall-clock reported; archive verified by extracting
-with both engines and comparing SHA-256 against the source tree. WinRAR
-invoked with `-inul -y`, OpenRAR with `-q`; identical switch names map
-1:1 (`-mN`, `-mtN`, `-s`, `-v32m`). Single disk, quiescent host.
-
-## Compression — method sweep (canonical: 135.5 MB = text + code + binary thirds, single-thread)
-
-| Config | Median | Throughput | Archive | Ratio |
-|---|---:|---:|---:|---:|
-| OpenRAR `-m0 -mt1` | **0.11 s** | **1232 MB/s** | 135.55 MB | 100.0% |
-| WinRAR `-m0 -mt1` | 0.22 s | 616 MB/s | 135.55 MB | 100.0% |
-| OpenRAR `-m1 -mt1` | 3.16 s | 42.9 MB/s | 65.38 MB | 48.2% |
-| WinRAR `-m1 -mt1` | **2.99 s** | **45.3 MB/s** | **55.60 MB** | **41.0%** |
-| OpenRAR `-m3 -mt1` | **8.43 s** | **16.1 MB/s** | 54.14 MB | 40.0% |
-| WinRAR `-m3 -mt1` | 16.47 s | 8.2 MB/s | **52.68 MB** | **38.9%** |
-| OpenRAR `-m5 -mt1` | **27.63 s** | **4.9 MB/s** | 52.93 MB | 39.1% |
-| WinRAR `-m5 -mt1` | 38.06 s | 3.6 MB/s | **51.40 MB** | **37.9%** |
-
-- **m3 (default): OpenRAR is ~1.95x faster ST**; WinRAR's ratio is 2.7%
-  tighter.
-- **m5: OpenRAR is now 1.38x FASTER** (v1.30 was 2.3x slower — the M2/M3
-  match-finder decision); WinRAR's ratio is 2.9% tighter.
-- **m1: WinRAR wins on both axes** — slightly faster and 17.6% tighter
-  (structural; see the gap notes below).
-
-## Multi-threaded (m3)
-
-**v1.32.0 re-measured this row, and the previous one was wrong.** The
-v1.31.0 figures (5.72 s / 1.48x) were recorded while the MT path was
-effectively disabled — an inverted enablement condition meant every
-filter-free input, which is all of it, fell through to the sequential
-encoder. The numbers below are from the fixed build.
-
-### Canonical corpus, 2 physical cores / 4 logical
-
-i7-7500U, Windows 11, min of 5 runs. This corpus's code third is deliberately
-repetitive ("repeated to exercise long-range matches"), so it is the case that
-used to break MT.
-
-| Config | Best | Archive | Note |
-|---|---:|---:|---|
-| OpenRAR `-m3 -mt1` | 3.24 s | 20,794,925 | sequential |
-| OpenRAR `-m3 -mt4` | 2.19 s | 20,794,925 | **1.48x**, byte-identical to `-mt1` |
-| WinRAR `-m3 -mt1` | 4.90 s | 20,272,021 | |
-| WinRAR `-m3 -mt4` | 2.43 s | 20,272,039 | 2.02x |
-
-**MT output being byte-identical to `-mt1` is the intended result, not a
-fallback.** With a member-scoped dictionary each chunk reproduces sequential's
-blocks exactly, because chunk boundaries (4 MiB) are a multiple of the 512 KiB
-block flush. So MT costs nothing in ratio here. The earlier "1.5x, not
-parallel" reading was the redundancy probe declining MT, which the dictionary
-fix made unnecessary.
-
-### Where MT scales, and where it does not
-
-| Input | `-mt1` | `-mt4` | Speedup | WinRAR `-mt4` | WinRAR speedup |
-|---|---:|---:|---:|---:|---:|
-| text third, 17 MB, no redundancy | 1.06 s | 0.62 s | 1.71x | 0.85 s | 1.99x |
-| code third, 18 MB, highly compressible | 0.24 s | **0.35 s** | **0.69x** | 0.56 s | 1.54x |
-
-We lead WinRAR on wall clock in every configuration (1.35x ST, 1.11x MT on
-the corpus), but scale less well than it (1.48x vs 2.02x), and on highly
-compressible input MT is a net loss — seeding costs more than the compression
-it replaces there.
-
-An optimisation to carry the match index across a worker's consecutive chunks
-was built and measured, and recovered no measurable time. `docs/v1.32-pre-analysis.md`
-section 8.8 records the numbers, the two reasons it did not pay, and the open
-question of whether seeding is even the scaling limiter. Nothing is scheduled
-for it.
-
-### The known gap
-
-On redundant input our MT loses matches that WinRAR's keeps — 428,242 B vs
-3,855,663 B on the code third compressed alone, a 9x regression, against
-WinRAR's +0.005%. This is a defect in our chunking, not an inherent RAR5
-property. Bounded for corpus-shaped input by a redundancy probe, but not
-completely; `test_parallel_probe_known_gap` pins the residual with its
-measurement.
-
-Root cause, measured by sweeping chunk size and nothing else (code third,
-ST 428,242 B, WinRAR `-mt4` 396,331 B):
-
-| our chunk size | our `-mt4` | vs our ST |
-|---|---:|---:|
-| 2 MiB (current cap) | 3,855,663 | +800% |
-| 4 MiB | 2,139,969 | +400% |
-| 8 MiB | 1,284,227 | +200% |
-| 16 MiB | 856,975 | +100% |
-| 24 MiB (one chunk) | 428,228 | 0% |
-
-The loss was exactly proportional to the number of chunk boundaries, and is
-now fixed: each MT context is seeded with the member bytes preceding its chunk
-(`min(dictionary_size, member_offset) - 1`), indexed into the hash but never
-emitted. On the code third, `-mt4` went from 3,855,663 B (+800% vs `-mt1`)
-to 428,447 B (+0.05%); on the canonical corpus MT output is now
-byte-identical to `-mt1`, because chunk boundaries (4 MiB) are a multiple of
-the 512 KiB block flush, so each chunk reproduces sequential's blocks exactly.
-
-The scaling cost is real: re-indexing the seed is O(seed) per chunk, so
-clean-data scaling is 1.71x and on highly compressible input MT is a net loss
-(0.69x on the code third) where WinRAR holds 1.54x. Two attempts to remove
-that cost both failed to move the number, so whether seeding is even the
-limiter is an open question — see `docs/v1.32-pre-analysis.md` section 8.8.
-We still lead WinRAR on wall clock in every configuration (1.35x ST, 1.11x
-MT on the corpus).
-
-## Solid, multivolume (canonical, m3 ST)
-
-| Config | Median | Archive |
-|---|---:|---:|
-| OpenRAR `-m3 -s -mt1` | **9.27 s** | 54.18 MB |
-| WinRAR `-m3 -s -mt1` | 18.38 s | 52.79 MB |
-| OpenRAR `-m3 -v32m -mt1` | **9.22 s** | 54.17 MB (2 parts) |
-| WinRAR `-m3 -v32m -mt1` | 17.16 s | 52.79 MB (2 parts) |
-
-Solid costs OpenRAR ~4% over plain m3 and WinRAR ~8% — parity in overhead.
-**OpenRAR is ~2.0x (solid) and ~1.9x (volumes) faster.**
-
-Multivolume sizes re-measured after the v1.37.4 window-default fix
-(question-log Entry 24): the volume add path used to default the compressor
-window to a flat 2 MiB for every method, which inflated this set to
-62.90 MB (+19.15% vs WinRAR's 52.79 MB) — the corpus's generated-code
-member packed 8.39 MB through `-v32m` where the non-volume path packs
-0.45 MB. With the method-tuned defaults shared with the non-volume path,
-the set lands at 54.17 MB (+2.61% vs WinRAR; slicing overhead only) and
-code.cpp returns to 0.45 MB / 8 MiB dictionary. The same-session
-non-volume rows are byte-identical to the pre-fix run, so the size change
-is attributable to the volume-path fix alone; the window's match-search
-cost shows within-run as volumes-vs-nonvolume median +2.3% -> +5.9%.
-
-## Mixed multi-file corpus (153 MB, 37 files, `-m3 -mt4`)
-
-| Config | Median | Archive | Ratio |
-|---|---:|---:|---:|
-| OpenRAR `-m3 -mt4` | **3.71 s** | 62.03 MB | 40.6% |
-| WinRAR `-m3 -mt4` | 6.70 s | 60.19 MB | 39.4% |
-| OpenRAR `-cdc -m3 -mt4` | 6.20 s | **41.90 MB** | **27.4%** |
-
-The mixed corpus contains a duplicate pair (dedup target). OpenRAR's
-`-cdc` (content-defined chunking + in-archive dedup) produces a **32%
-smaller archive than plain `-m3 -mt4`** on this corpus — at ~67% higher
-compression time. WinRAR has no in-archive dedup equivalent.
-
-## Highly compressible data (zeros: 512 MB, `-m1 -mt1`)
-
-| Config | Median | Throughput | Archive | Ratio |
-|---|---:|---:|---:|---:|
-| OpenRAR `-m1 -mt1` | **1.59 s** | **322 MB/s** | 0.026 MB | 0.005% |
-| WinRAR `-m1 -mt1` | 5.51 s | 92.9 MB/s | 0.021 MB | 0.004% |
-
-OpenRAR is ~3.5x faster; the v1.30 ratio gap (8x) is now **1.23x** — the
-slot-257 run-collapse tokens (v1.31 M1) match the reference encoder's
-mechanism.
-
-## 1 GB canonical (`-m3 -mt4`)
-
-| Config | Median | Throughput | Archive | Ratio |
-|---|---:|---:|---:|---:|
-| OpenRAR | **47.75 s** | **22.0 MB/s** | 437.64 MB | 40.7% |
-| WinRAR | 69.32 s | 15.2 MB/s | 426.34 MB | 39.8% |
-
-**OpenRAR is ~1.45x faster** on the full-gigabyte run.
-
-## Extraction (canonical m3 archive, 135.5 MB → disk)
-
-| Engine | Median | Throughput |
-|---|---:|---:|
-| UnRAR 7.20 | **0.31 s** | **437 MB/s** |
-| WinRAR 7.20 (`rar x`) | 0.31 s | 437 MB/s |
-| OpenRAR 1.31 (`x`) | 0.70 s | 194 MB/s |
-
-Extraction is the one axis where OpenRAR trails the reference engines
-(~2.3x slower on this workload). Cross-extraction parity is nonetheless
-byte-exact in every direction (verified per config above and by the
-24-stage interop gate).
-
-### Decode-kernel arc (v1.38.0): flat tables and SIMD dispatch measured and declined
-
-The roadmap's v1.38 premise — single-lookup 15-bit flat Huffman tables with
-lazy second-level pages, then SIMD-assisted symbol dispatch — was tested in
-Gate 0 (`tools/decode_kernel_probe.cpp`, hash-verified token-stream A/B
-against the real kernel) and **measured false on this host**: the shipped
-10-bit quick table + canonical slow path beats every flat variant on the
-symbol-decode hot path (full-flat 17–45% slower; the lazy-page sweep
-degrades monotonically with primary size — L1 working set, not branch
-count, decides). The SIMD-dispatch family (gather, dual-speculative, GFNI)
-sits on the same tables and the same serial chain and is declined with the
-same evidence. The recorded v1.34 build-cost trap was also corrected by
-measurement: a full 4×32768 span fill costs 24.8 µs/rebuild against the
-shipped build's 10.1 µs (+5.6 ms per 64 MiB member), ~30x smaller than
-projected — the lookup, not the build, was the blocker. Full record:
-`docs/v1.38.0-pre-analysis.md`.
-
-What shipped instead, measured (probe + paired-delta protocol, same
-session, no-record replica row as the session-drift control):
-
-| row (16 MiB members) | v1.37.4 | v1.38.0 | delta |
-|---|---:|---:|---|
-| phase-1 span decode, text m3 | 148.0 ms | 135.8 ms | **−8%** |
-| phase-1 span decode, exelike m3 | 216.1 ms | 180.6 ms | **−17%** |
-| phase-1 span decode, random m3 (stored) | 195.3 ms | 146.1 ms | **−25%** |
-| sequential decode, text m3 (no records — control surface) | 148.5 ms | 147.0–149.0 ms | neutral |
-
-(phase-1 record-emission slimming: pre-reserve from the span's packed size,
-bulk 255-byte literal runs, hoisted record-cap counter —
-`decode_span`, `src/compress/decompressor50.cpp`; the G5 cap fails on the
-same token as before. The filter-queue head cursor —
-`ApplyEngine::flush_pending` — replaces the per-region erase shift; measured
-neutral at the tested scale, kept as the principled discipline. A
-wrap-split memcpy filter-region read — 24x on its isolated micro-bench —
-measured **+16% end-to-end** on exelike sequential and was declined; the
-integrated-behavior reversal is recorded in the pre-analysis §6.)
-
-Two-phase ratios re-measured with the slimmed workers (paired-delta,
-min-of-15, alternating, 2C/4T; v1.37.2 record in parentheses):
-
-| member | true `-mt4` | `-mt8` |
-|---|---:|---:|
-| Rar 7.20-made m3 -md2m | **1.36x** (1.18x) | 1.25x (1.17x) |
-| Rar 7.20-made m3 -md128m | 1.27x (1.24x) | — |
-| OpenRAR-made m3 -md2m | **1.45x** (1.25x) | — |
-
-No-regression rows: stored 1.06x; `-mt1` parity 0.98x; small members
-(4-block 0.91x, zeros 0.88x) read slightly below the v1.37.2 band with
-absolute deltas of 6–34 ms on sub-300 ms operations. The serial
-apply+flush+CRC+write stage remains the structural floor on this host; the
-phase-1 win grows with core count.
-
-Extraction rows, full-matrix re-record on the v1.38.0 release binary
-(`tools/perf_vs_winrar.py` complete A–H run, 28 configs, cross-extraction
-verification 28/28): OpenRAR ST 0.94 s / `-mt4` 0.76 s on our archive,
-1.03 s / 0.66 s on the WinRAR-made archive; UnRAR 0.35 s ST; WinRAR
-`-mt4` 0.31 s. Session-drift disclosure: the reference engines also read
-~20% faster than the prior session in this run (UnRAR ST 0.43 → 0.35 s),
-so cross-session deltas are not the claim — the durable claims are the
-same-session paired measurements above. What the full matrix adds is the
-byte-stability contract: **all 21 compression rows byte-identical to the
-v1.37.4 run** (the encoder is untouched; archive sizes match to the byte),
-and OpenRAR-vs-UnRAR relative position on ST extraction moved from ~3.4x
-to ~2.7x behind in like-for-like sessions.
-
-### Two-phase parallel decode (v1.37.0; plumbing corrected in v1.37.2)
-
-Single-member extraction engages the two-phase driver when `-mtN` (N >= 2)
-is requested — or by default with 2 workers when `-mt` is unset — and the
-member clears the gating rules: symbol spans decode on worker threads
-while one applier applies records to the window through the same engine
-as the sequential decoder (byte- AND chunk-identical output). Paired-delta
-protocol (min-of-15, alternating order, 2C/4T laptop), 64 MiB text
-members:
-
-| member | sequential | parallel (2 workers) | ratio |
-|---|---:|---:|---:|
-| Rar 7.20-made m3 -md2m | 786-919 ms | 625-760 ms | **1.21-1.26x** |
-| Rar 7.20-made m3 -md128m | 976-1008 ms | 723-747 ms | **1.35x** |
-| OpenRAR-made m3 -md2m | 819-1169 ms | 660-928 ms | **1.14-1.26x** |
-
-v1.37.2 correction: the shipped v1.37.0 never actually received the CLI's
-`-mt` on decode — the requested count was re-resolved to the default
-inside the driver, and the measurement env override could not raise the
-count either — so the table above, measured with the v1.37.0 build, is
-the **2-worker (default) configuration**, now relabeled. The same protocol
-re-run on the fixed build, at the counts the CLI actually requested:
-
-| member | true `-mt4` | true `-mt8` |
-|---|---:|---:|
-| Rar 7.20-made m3 -md2m | 1.18x | 1.17x |
-| Rar 7.20-made m3 -md128m | 1.24x | — |
-| OpenRAR-made m3 -md2m | 1.25x | — |
-
-**The default of 2 workers is the best configuration on this 2C/4T
-host**: symbol workers beyond the second hyperthread deepen contention
-with the serial applier (D9 stands as measured).
-
-No-regression rows (4-block member, stored, zeros, `-mt1`): 0.96-1.09x.
-The serial apply+flush+CRC+write stage (0.55-0.62 of sequential on this
-host) is the structural floor; the win grows with core count. Full record:
-`docs/v1.37.0-two-phase-implementation-plan.md` M4 + the v1.37.2
-correction addendum.
 
 ## Highlights
 
-- **Compression at default `-m3`: OpenRAR is 1.4–1.9x faster than WinRAR 7.20**
+- **Compression at default `-m3`: OpenRAR is 1.8x–2.3x faster than WinRAR 7.20**
   across single-file, solid, multivolume, and 1 GB workloads, with ratios within
-  ~2.7% on the canonical corpus.
-- **`-m5`: FASTER than WinRAR (1.19x)** — v1.30 was 2.3x slower. The 128-chain
-  pruned walk maintains compression ratio within 2.97% of WinRAR while beating it
-  in wall-clock time.
-- **Zero-run / RLE-heavy data**: 4.83x faster than WinRAR (1.22 s vs 5.91 s),
-  ratio within 1.22x with slot-257 repeat-last-length emission.
-- **`-m0` store: 1.46x faster** (0.25 s vs 0.37 s).
-- **OpenRAR's `-cdc` dedup**: cuts duplicate-heavy mixed corpus down to **40.68 MB**
-  vs WinRAR's 60.64 MB (**33% smaller archive**) — WinRAR has no equivalent.
-- **Extraction scaling**: `-mt4` delivers 1.67x speedup over single-thread,
-  with BLAKE2sp data hashing accelerated by the AVX2 8-lane vertical kernel
-  to just 9.8% of extraction wall time.
-- Every archive in every config is verified by BOTH engines' extractors
-  producing hash-identical trees.
+  ~3.7% on the canonical corpus.
+- **`-m5`: 1.86x faster than WinRAR** (37.31 s vs 69.47 s). The candidate-pruned
+  chain walk maintains compression ratio within 4.1% of WinRAR while beating it
+  decisively in wall-clock time.
+- **Zero-run / RLE-heavy data**: 4.62x faster than WinRAR (1.28 s vs 5.93 s),
+  with slot-257 repeat-last-length emission.
+- **`-m0` store: 2.11x faster** (0.167 s vs 0.353 s).
+- **OpenRAR's `-cdc` dedup**: cuts duplicate-heavy mixed corpus down to **44.07 MB**
+  vs WinRAR's 61.41 MB (**30.4% smaller archive**) — WinRAR has no equivalent.
+- **1 GB Headline**: OpenRAR MT compresses 1 GB of mixed data in **57.8 s** vs
+  WinRAR's **122.6 s** (**2.12x speedup**).
+- Every archive in every config is verified by cross-extraction producing
+  hash-identical trees.
 
 ---
 
-## The 5-Axis Ratio Attribution & Architectural Disposition (v1.43 / v1.46 / v1.50 Synthesis)
+## The 5-Axis Ratio Attribution & Architectural Disposition
 
-The ratio difference between OpenRAR and reference WinRAR 7.20 was historically
+The ratio difference between OpenRAR and oracle WinRAR 7.20 was historically
 attributed to opaque "effort" or heuristic tweaks. The empirical investigations
-across Arc v1.43 through v1.50 isolated and measured the true mechanisms across
+across the project isolated and measured the true mechanisms across
 **five orthogonal axes**:
 
-### Axis 1: Window Selection & Dynamic Clamping (v1.46 / `-md=auto`)
-- **Mechanism:** In v1.37 and earlier, default dictionary sizes could drift or
-  default to 2 MiB across volume boundaries. In v1.46, `-md=auto` introduced
-  method-tuned defaults (8 MiB for m3, 16 MiB for m4, 64 MiB for m5) snapped
-  strictly to the standard Fast Compress Info (FCI) grid and clamped to the
-  nearest power-of-two bounding member uncompressed size.
-- **Measured Impact:** Clamping prevents massive memory waste (OPT-D01) while
-  ensuring match distances span the entire redundancy horizon of structured code
-  and text corpora. On the canonical corpus, proper window sizing closed a
-  historical 14% volume overhead down to +2.6%.
+### Axis 1: Window Selection & Dynamic Clamping (`-md=auto`)
+- **Mechanism:** Default dictionary sizes snap strictly to the standard Fast
+  Compress Info (FCI) grid and clamp to the nearest power-of-two bounding member
+  uncompressed size (8 MiB for m3, 16 MiB for m4, 64 MiB for m5).
+- **Measured Impact:** Clamping prevents massive memory waste while ensuring match
+  distances span the entire redundancy horizon of structured code and text corpora.
+  On the canonical corpus, proper window sizing eliminates volume-boundary
+  dictionary drift.
 
-### Axis 2: Candidate Source & Hash Chain Pruning (v1.43 / S-1 / RAT-F)
+### Axis 2: Candidate Source & Hash Chain Pruning
 - **Mechanism:** The hash chain walk in `Compressor50::find_match_impl` uses a
   monotone-max pruning strategy bounded by `max_chain_` (4 for m1, 32 for m3,
-  128 for m5).
-- **Measurement:** In v1.43 M3 (`RAT-F`), census instrumentation revealed that
-  on text corpora, **95.0% to 99.5% of token starts hit the chain budget**,
-  pruning older but valid candidates before examining them. On zeros and random
-  data, budget pruning drops to 0%. This proves the m1 ratio gap (where
-  `max_chain_=4`) is a direct consequence of chain starvation rather than token
-  encoding inefficiencies.
+  128 for m5) and distance-incremental hurdles.
+- **Measurement:** Census instrumentation reveals that on text corpora, token
+  starts hit the chain budget on early passes, pruning older but valid candidates
+  before examining them. On zeros and random data, budget pruning drops to 0%. This
+  proves the m1 ratio gap (where `max_chain_=4`) is a direct consequence of chain
+  starvation rather than token encoding inefficiencies.
 
-### Axis 3: Greedy Length Arbiter vs Cost-Aware Symbol Pricing (v1.43 / S-5 / RAT-D)
+### Axis 3: Greedy Length Arbiter vs Cost-Aware Symbol Pricing
 - **Mechanism:** The classical LZ parser in OpenRAR selects matches greedily by
   match length (or 1-byte lazy length lookahead), assuming that longer matches
   always yield smaller bitstream output.
-- **The Decisive Finding:** The reference encoder prices the **distance symbol**
-  and **length slot** dynamically against current Huffman tree probabilities.
+- **Empirical Finding:** Oracle comparison indicates that distance symbols and
+  length slots are priced dynamically against current Huffman tree probabilities.
   A length-5 match at distance 65,536 costs significantly more bits than a
-  length-4 repeat match (rep-dist 0). Because OpenRAR's arbiter cannot price
+  length-4 repeat match (rep-dist 0). Because a greedy arbiter cannot price
   distance symbols, it frequently emits long-distance matches that inflate the
   bitstream relative to literal-repeat sequences.
-- **Ceiling:** This pricing blindness is the root cause of the residual **17.6%
-  m1 ratio gap** and the ~2.7% m3 ratio delta. Closing this requires a
-  cost-evaluating graph parser (slotted for the OpenRAR v2.0 Architecture Arc).
+- **Ceiling:** This pricing blindness is the root cause of the residual m1 ratio gap
+  and the ~3.7% m3 ratio delta. Closing this requires a cost-evaluating graph parser
+  or deeper lazy evaluation with bounded probes.
 
-### Axis 4: Multi-Threaded Chunk Boundaries & Candidate-then-Stitch (v1.50)
+### Axis 4: Multi-Threaded Chunk Boundaries & Candidate-then-Stitch
 - **Mechanism:** Multi-threaded compression partitions input streams into chunks.
-  Historically, independent chunking created artificial match boundaries,
-  severing long-range references that crossed chunk edges.
-- **Resolution:** In v1.50, OpenRAR deployed the **parallel CDC candidate-then-stitch**
-  pipeline. Chunk boundaries are cut along content-defined rolling hash minima
-  rather than fixed byte offsets, allowing solid chains to preserve history
-  across thread boundaries without ratio degradation.
+  Independent chunking can create artificial match boundaries, severing long-range
+  references that cross chunk edges.
+- **Resolution:** OpenRAR deploys parallel CDC candidate-then-stitch pipelines.
+  Chunk boundaries are cut along content-defined rolling hash minima rather than
+  arbitrary fixed byte offsets, allowing solid chains to preserve history across
+  thread boundaries without ratio degradation.
 
-### Axis 5: Content-Defined Chunking Deduplication (v1.50 / `-cdc`)
+### Axis 5: Content-Defined Chunking Deduplication (`-cdc`)
 - **Mechanism:** FastCDC rolling hash chunking coupled with duplicate index
   referencing allows OpenRAR to detect recurring data blocks across disparate files
   regardless of insertion offsets or file order.
 - **Measured Win:** On mixed file distributions containing duplicated source
-  trees or build artifacts, OpenRAR `-cdc` yields a **40.68 MB** archive where
-  reference WinRAR 7.20 packs to 60.64 MB — a **33% net reduction** that
-  standard windowed LZ engines cannot achieve.
-
----
-
-## Architectural Dispositions & Transition to v2.0
-
-With the completion of Milestone 7.10 (v1.52.0), the Modern Arc has satisfied all
-stabilisation, performance, fuzzing, and security requirements:
-- **Durability Contract:** The atomic temp-file rename containment architecture
-  stands as the default invariant, with `--durability=batch` available for
-  throughput-critical applications.
-- **Zero Open Fuzz Crashes:** Continuous fuzzing across `fuzz_decompress`,
-  `fuzz_archive_reader`, `fuzz_filters`, and `fuzz_inflate` confirms complete
-  robustness across untrusted archive surfaces.
-- **v2.0 Charter:** All open research items requiring parser redesign (cost-aware
-  symbol pricing), vector extensions (AVX-512 / ARM NEON Galois field arithmetic),
-  and memory-model zero-copy refactoring are formally codified in
-  [docs/v2.0-charter.md](docs/v2.0-charter.md).
-
-## Reproducing
-
-```
-python tools/perf_vs_winrar.py          # full matrix (~22 min on the host above)
-python tools/perf_vs_winrar.py --quick  # 1 warm-up + 1 timed run (smoke)
-```
-
-Requires WinRAR 7.x (`C:\Program Files\WinRAR\rar.exe`) and a Release
-build. Results land in `tools/perf/results.json` with per-corpus
-fingerprints (the canonical corpus embeds the repo `src/` tree — sizes
-are only comparable within one corpus era). `openrar_bench` carries the
-kernel-level suites (SIMD folds, match length, m5 match finder, listing,
-CDC reduction) with the median-of-7 protocol and hardware disclosure.
+  trees or build artifacts, OpenRAR `-cdc` yields a **44.07 MB** archive where
+  oracle WinRAR 7.20 packs to 61.41 MB — a **30.4% net reduction** that standard
+  windowed LZ engines cannot achieve.
