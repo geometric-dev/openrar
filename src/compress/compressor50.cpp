@@ -783,7 +783,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
 
     core::uint32 p4 = 0;
     if (limit >= 4) {
-        std::memcpy(&p4, buf_pos, 4);
+        p4 = core::load_le32(buf_pos);
     }
 
     // RAT-F (v1.43 M3): classify WHY the walk below stopped. 0=unset, 1=(a)
@@ -872,17 +872,16 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
         // Distance-costed hurdle: for a distant candidate to beat best.length,
         // it must overcome the higher distance band extra bits overhead.
         size_t req_len = best.length > 0 ? (best.length + 1) : min_legal_len;
-        if (best.length > 0) {
+        if (min_target > 0) {
+            size_t hurdle = min_target + inc;
+            if (hurdle > req_len) req_len = hurdle;
+        } else if (best.length > 0) {
             size_t best_dist = static_cast<size_t>(pos - static_cast<core::uint64>(best.candidate));
             core::uint32 best_inc = length_increment(best_dist);
             if (inc > best_inc) {
                 size_t hurdle = best.length + static_cast<size_t>(inc - best_inc);
                 if (hurdle > req_len) req_len = hurdle;
             }
-        }
-        if (min_target > 0) {
-            size_t hurdle = min_target + inc;
-            if (hurdle > req_len) req_len = hurdle;
         }
         if (req_len < min_legal_len) req_len = min_legal_len;
 
@@ -905,9 +904,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
 
         size_t len = 0;
         if (limit >= 4) {
-            core::uint32 c4;
-            std::memcpy(&c4, buf_cand, 4);
-            if (c4 != p4) {
+            if (core::load_le32(buf_cand) != p4) {
                 cand = next_cand;
                 continue;
             }
@@ -933,12 +930,15 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
         if (len > best.length) {
             best.length = len;
             best.candidate = cand;
+            if (min_target > 0 && len >= min_target + inc) {
+                break;
+            }
             if (len >= nice_len || len >= limit) {
                 h1_reason = 3;
                 break;
             }
         }
-        if (!arb_probe_suppress_) {
+        if (!arb_probe_suppress_ && min_target == 0) {
             const size_t band_d = static_cast<size_t>(static_cast<core::uint64>(pos) -
                                                       static_cast<core::uint64>(cand));
             const core::uint32 band = length_increment(band_d);
@@ -1040,7 +1040,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
     //      class was empty on every instrumented corpus, so it must remain a
     //      no-op there — the zeros/rand/farrepeat digests are the executable
     //      canaries (REFCAP).
-    if (!arb_probe_suppress_) {
+    if (!arb_probe_suppress_ && min_target == 0) {
         constexpr core::uint32 BACKSHIFT_MIN_BITS = 8;
         // v1.44 review hardening: most branches below only ever prove the
         // floor for candidates WE placed (slot candidates carry their own
@@ -1139,7 +1139,7 @@ Compressor50::MatchInfo Compressor50::find_match_impl(core::uint64 pos, core::ui
     // filtered-class. v1.44: this block runs AFTER the shipped back-shift,
     // so an eligible site self-cancels (delta 0 < threshold) and the counts
     // are the residual the shipped rule leaves on the table.
-    if (arb_probe_on_ && !arb_probe_suppress_) {
+    if (arb_probe_on_ && !arb_probe_suppress_ && min_target == 0) {
         // H-11: two hardware bit scans instead of two serial shift loops.
         auto price_fresh = [](size_t len, core::uint32 inc, size_t dist) -> core::uint32 {
             const core::uint32 m = floor_log2(len - inc);
@@ -1232,17 +1232,6 @@ size_t Compressor50::rep_length(core::uint64 pos, size_t dist, size_t cap) {
     return arch::match_length_simd(p, q, cap);
 }
 
-core::uint32 Compressor50::length_increment(size_t distance) {
-    core::uint32 inc = 0;
-    if (distance > 0x100) {
-        inc++;
-        if (distance > 0x2000) {
-            inc++;
-            if (distance > 0x40000) inc++;
-        }
-    }
-    return inc;
-}
 
 struct LengthSlotEntry {
     core::byte slot;

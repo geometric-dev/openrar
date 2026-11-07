@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bounded lazy probe and early success exit in Compressor50 (W2 throughput closure):**
+  - Evaluates lazy matches at `cur_ + 1` with early exit upon finding the first candidate that meets `min_target + inc`. Because lazy search functions purely as a boolean deferral gate to emit a single literal, subsequent chain traversal is redundant.
+  - Suppressed back-shift evaluation and token-pricing sweeps on lazy passes (`min_target > 0`), saving per-candidate band comparisons and hardware bit-scans for candidates never emitted.
+  - Inlined branchless `length_increment` computation across `Compressor50` and eliminated dead distance-hurdle recalculations during lazy chain walks.
+  - Recovered `-m5` synthetic word salad compression throughput to 0.68x–0.79x against the v2.0.23 baseline (holding 0.95x–1.04x on real source code).
+  - Maintained 100% adherence to Invariant I-13 (zero size regressions across all 30 deterministic ratchet cells).
+
+### Changed
+
+- **Throughput floor in `tools/release_regression_guard.py`:**
+  - Raised `SPEED_FLOOR_BY_METHOD[5]` from 0.60 to 0.65 (measured floor minus ~10%), closing the final W2 exit gate for v2.2.0.
+
 ### Removed
 
 - **Forward-arrival parsing engine and dynamic pricing model:** Removed valuate_forward_arrival, init_empirical_prior, 

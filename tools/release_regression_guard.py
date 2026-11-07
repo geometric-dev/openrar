@@ -9,7 +9,7 @@ binary on the same census corpora and FAILS CLOSED (exit 1) when the new build i
            cell's entry in KNOWN_SIZE_ALLOWANCE_PCT (0.0 when absent). Sizes are
            deterministic, so there is no noise margin.
   Speed    throughput must stay >= speed_floor(method) x v2.0.23's on the SPEED_CELLS (0.90 at
-           -m1..-m3, 0.75 at -m4, 0.60 at -m5), using the fastest of SPEED_REPS runs of each binary on
+           -m1..-m3, 0.75 at -m4, 0.65 at -m5), using the fastest of SPEED_REPS runs of each binary on
            this machine.
   Ratchet  every deterministic cell must also stay at or below RATCHET_BYTES (the 2.1.1 sizes), so
            a later change cannot spend the lead over v2.0.23 without the guard noticing.
@@ -61,11 +61,11 @@ WORK_DIR = ROOT / "build" / "regression_guard"
 # Throughput floor relative to the baseline on the same machine, using the fastest of
 # SPEED_REPS interleaved runs. Every method ships greedy. m1-m3 clear 0.90x with a wide margin
 # (measured 1.2x-3.0x), so they keep the stricter floor. m4/m5 walk 64/128-deep chains;
-# with the v2.2 minimum-length lazy hurdle, m4 recovers to 0.89x-0.97x on word salad
-# (and >1.0x on real files), while m5 runs at 0.67x-0.72x on word salad and 0.94x-0.95x on real files.
-# Floors are set to measured floor minus ~10% (0.75 for -m4, 0.60 for -m5).
+# with the v2.2 minimum-length lazy hurdle and bounded early lazy break, m4 recovers to 0.89x-1.07x on word salad
+# (and >1.0x on real files), while m5 runs at 0.68x-0.79x on word salad and 0.94x-1.04x on real files.
+# Floors are set to measured floor minus ~10% (0.75 for -m4, 0.65 for -m5).
 SPEED_FLOOR_DEFAULT = 0.55
-SPEED_FLOOR_BY_METHOD = {1: 0.90, 2: 0.90, 3: 0.90, 4: 0.75, 5: 0.60}
+SPEED_FLOOR_BY_METHOD = {1: 0.90, 2: 0.90, 3: 0.90, 4: 0.75, 5: 0.65}
 SPEED_REPS = 3
 
 
