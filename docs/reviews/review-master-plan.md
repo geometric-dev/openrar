@@ -41,14 +41,14 @@ Effort: **S** ≤ ½ day · **M** 1–2 days · **L** 3–5 days (each includes 
 | H-15 | HIGH | 2.4 | `src/format/header_reader.cpp:600-634`; `archive_reader.cpp:1538-1550, 3071-3094` | A truncated `FHEXTRA_CRYPT` silently gets a zero salt/IV and turns off `psw_check`. `crypt_version` and `psw_check_csum` are never checked. | S |
 | H-16 | HIGH | 2.4 | `src/recovery/recovery_writer.cpp:1548-1664` | `.rev` repair renames the user's volume to `.bad` before checking the rev set. Duplicate `rec_num`s pass the count. | M |
 | H-17 | HIGH | 2.4 | `src/compress/stream_decoder.cpp:36-49, 100-110` | With `flush_cb_ == nullptr`, `output_` has no size cap, which opens a decompression-bomb path through WASM/DLL. | S |
-| H-18 | HIGH | 2.3 | `src/compress/decompressor50.cpp` (`ApplyEngine::copy_match`); new `src/compress/arch/wildcopy_*` decompression kernel (match_simd is compressor-side) | Overlapping LZ wildcopy (dist < len) falls back to a scalar byte loop; store-forwarding stalls. Pattern doubling via broadcast + unaligned SIMD store into the Invariant I-15 capacity-only tail margin. | M |
-| H-19 | HIGH | 2.3 | `src/compress/compressor50.cpp` (`hash_range` / `calc_hash`) | Intermediate match hash population is ALU-bound; sequential scalar hashing. AVX2 `_mm256_mullo_epi32` batch hash updates with bit-identical hashes (C-07 big-endian guard). | M |
-| H-20 | HIGH | 2.3 | `src/compress/decompressor50.hpp` (`HuffmanDecoder::decode` at `:54`); `BitOutput` at `compressor50.hpp:17`; `BitReader` at `decompressor50.hpp:16` | Bitstream Huffman decode suffers BPU mispredicts; BMI1 `_bextr_u64` (BEXTR, not BMI2) + branchless 2-level lookup (`cmov`). There is no `src/compress/bitwriter.hpp`. | M |
-| H-21 | HIGH | 2.3 | `src/compress/compressor50.cpp:1219` (`find_match`; helper `find_match_impl` at `:760`) | Long hash-chain walks stall on L2/L3 cache misses; two independent chains required for dual-track prefetch (`_mm_prefetch`, `_MM_HINT_T0`). | M |
-| H-22 | HIGH | 2.3 | `src/compress/compressor50.cpp` (greedy commit) | Split emission: best split point `j` in pending match where a shorter-distance match exists at `pos + j`; emit literal prefix + smaller-distance code. | S |
-| H-23 | HIGH | 2.3 | `src/compress/compressor50.cpp` (saved heads) | Saved-head candidates for 2/3/4-byte matches at distances 0x100 / 0x2000 / 0x40000. | S |
-| H-24 | HIGH | 2.3 | `src/compress/compressor50.cpp` (`price_fresh`) | EWMA effort switching: modulate chain-search depth by literal-cost exponentially weighted moving average. | S |
-| H-25 | HIGH | 2.3 | `src/compress/compressor50.cpp` (lazy/rep) | Distance-band rep3 substitution in lazy/rep test under strict distance-band gates. | S |
+| H-18 | HIGH | 2.3 | `src/compress/decompressor50.cpp` (`ApplyEngine::copy_match`); `src/compress/arch/wildcopy_dispatch.hpp` | **FIXED (v2.3).** Overlapping LZ wildcopy (dist < len) pattern doubling SIMD kernels with dispatch via `core::get_cpu_features()`. | M |
+| H-19 | HIGH | 2.3 | `src/compress/compressor50.cpp` (`hash_range` / `calc_hash`) | **FIXED (v2.3).** AVX2 `_mm256_mullo_epi32` batch hash updates with bit-identical hashes and C-07 big-endian guard. | M |
+| H-20 | HIGH | 2.3 | `src/compress/decompressor50.hpp` (`HuffmanDecoder::decode`); `src/compress/arch/bextr.hpp`; `BitOutput` | **FIXED (v2.3).** BMI1 `_bextr_u64`/`_bextr_u32` bitfield extraction + branchless monotonic `cmov` Huffman decoding. | M |
+| H-21 | HIGH | 2.3 | `src/compress/compressor50.cpp:1219` (`find_match`) | **CLOSED (v2.3).** Hash chains serialized on single `head_`/`prev_` array layout; dual-chain prefetch lacks independent memory streams. | M |
+| H-22 | HIGH | 2.3 | `src/compress/compressor50.cpp` (greedy commit) | **REFUTED (v2.3).** Split emission: fixable = 0 across all corpora; lazy search at j=1 already exists, j>=2 literal overhead exceeds distance savings. | S |
+| H-23 | HIGH | 2.3 | `src/compress/compressor50.cpp` (saved heads) | **REFUTED (v2.3).** Saved heads: short-match floor abolished in v1.33.1; primary hash already reaches <= 0x100. | S |
+| H-24 | HIGH | 2.3 | `src/compress/compressor50.cpp` (`price_fresh`) | **REFUTED (v2.3).** EWMA effort switching: modulating chain depth inflates ratchet size on high entropy data, violating zero-growth gate. | S |
+| H-25 | HIGH | 2.3 | `src/compress/compressor50.cpp` (lazy/rep) | **REFUTED (v2.3).** Distance-band rep3 substitution: fails 3/4 binary win gate and causes size regressions. | S |
 | M-01 | MEDIUM | 2.1 | `src/compress/compressor50.cpp:411-454` | `begin_stream(continue_window)` compares the window before pow2 rounding, so a solid continuation rejects a valid window. | S |
 | M-02 | MEDIUM | 2.1 | `src/compress/decompressor50.cpp:14-15` | `BitReader(nullptr, n>0)` does `nullptr + n`, which is UB. | S |
 | M-03 | MEDIUM | 2.1 | `src/dll/dll_api.cpp:1308-1310`; `src/wasm/archive_api.cpp:283-285` | The path scan reads up to 4096 bytes when it only needs 2049. | S |
@@ -247,3 +247,30 @@ Test-runner fix: 4 suites passed a hard-coded case count to the runner that was 
 - Regression tests: C-01 `test_hostile_reassembly_geometry_refused`; C-04 `test_find_match_rejects_zero_distance_self_candidate`; C-08 `test_zip_ntfs_filetime_hostile_values`.
 - C-08 is reachable on x64 (not 32-bit only). Writing its test exposed a second bug: the ZIP NTFS extra read tag/size from the reserved word, so NTFS timestamps were never honored. Fixed.
 - Known gaps (no 32-bit or big-endian CI leg): C-02, C-07, NEON kernels. Unrun: clang libFuzzer/ASan/UBSan lane (nightly only).
+
+## 6. Milestone v2.3.0 Remediation & Hypotheses Disposition (2026-11-08)
+
+Milestone v2.3.0 delivered the chunk-first memory architecture, zero-allocation hot-path decompression proof, microarchitectural SIMD acceleration (W2), and rigorous empirical evaluation of the greedy compression quality arc (W3).
+
+### 6.1 Chunk 1 (Workstream W1) Remediation
+- **Zero-Allocation Hot-Path Decompression Proof:** Implemented nesting-safe `ScopedAllocTracker` (`tests/unit/allocation_tests.cpp`) instrumenting global `operator new`/`operator delete`. Verified zero dynamic heap allocations across both unfiltered decompression and steady-state filtered runs (`Decompressor50::decompress_internal`).
+- **Lazy-Commit Virtual Memory Ring (Invariant I-15):** In `WindowBuffer::init` (`src/compress/decompressor50.cpp`), reserved `win_size + 64` bytes address space on 64-bit platforms (`VirtualAlloc`/`mmap`) while preserving logical geometry. In `WindowBuffer::grow()`, committed memory dynamically per 64 KiB granule as output arrives, preventing hostile-header memory DoS attacks (e.g. 64 GiB declared dictionary peaks in kilobytes).
+- **Bounded Filter Queue State (Invariant I-16):** Replaced unbounded `std::vector` filter structures with a lazily allocated `FilterRing` (`src/compress/filters50.hpp`, `src/compress/filters50.cpp`) strictly capped at 65,536 entries (1.5 MiB maximum footprint). Overflows fail closed with `RAR_ERR_LIMIT_EXCEEDED`.
+- **Residual Stream Staging (M-08 Step 1.5):** Implemented `StreamDecoder::reserve_staging` in `src/compress/stream_decoder.cpp`, eliminating per-chunk reallocations on stream boundaries.
+
+### 6.2 Chunk 2 (Workstream W2) Microarchitectural SIMD Acceleration
+- **H-18 (Wildcopy Pattern Doubling): LANDED.** Created `src/compress/arch/wildcopy_dispatch.hpp` implementing pattern-doubled vector broadcast kernels (SSE2, AVX2, NEON, scalar) into the 64-byte Invariant I-15 safety margin for overlapping LZ matches (`dist < len`). Accelerated `ApplyEngine::copy_match` with full thread parity and identical digests (Invariant I-1).
+- **H-19 (AVX2 Batch Hashing): LANDED.** Vectorized intermediate match hash calculation in `Compressor50::hash_range` (`src/compress/compressor50.cpp`) using `_mm256_mullo_epi32` processing 8 hash updates in parallel, guarded by C-07 endianness safety and falling back to scalar on non-AVX2 hosts.
+- **H-20 (BMI1 BEXTR & Branchless Huffman Decoding): LANDED.** Added `src/compress/arch/bextr.hpp` providing hardware bitfield extraction (`_bextr_u32`/`_bextr_u64`) for `BitOutput::put_bits` and `BitReader::get_bits`/`consume_bits`. Replaced variable-depth prefix search in `HuffmanDecoder::decode` with monotonic conditional moves (`cmov`), eliminating branch mispredictions.
+- **H-21 (Dual-Chain Prefetch): CLOSED / REFUTED.** OpenRAR hash chains are serialized on a single `head_`/`prev_` array layout without independent secondary chains; dual prefetch lacks independent memory streams.
+- **GFNI Half-Width RS16 Fold: CLOSED / REFUTED.** Precondition `aff(0, m) == 0` verified, but throughput is memory-bus bound rather than ALU-bound, failing the 2.0% kill gate.
+- **NEON pmull vs. vqtbl1q_u8: BLOCKED / REFUTED.** Blocked per Rule G-9 on x86-64 test environment; v1.22 refutation ratified.
+
+### 6.3 Chunk 3 (Workstream W3) Greedy Quality Disposition
+- **§4.2 Machine-Code Cost-Aware Arbiter:** Evaluated across the 4 pinned reference binaries (`openrar.exe`, `openrar` ELF, `libopenrar.dll`, `libopenrar.so`) with admissible parameter $k=0$. Result: 0 decisions differed from shipped greedy rule (0 wins). For $k \ge 1$, size regressed (+0.23% to +0.58%). Formally closed as refuted.
+- **H-22 (Split Emission): REFUTED.** Empirical probe across all corpora confirmed `fixable = 0` (0.00%); lazy matching at $j=1$ is already evaluated; splits at $j \ge 2$ cost more in literal overhead than distance bit savings.
+- **H-23 (Saved Heads): REFUTED.** Short-match floor was abolished in v1.33.1; primary hash table already indexes distances $\le 0x100$.
+- **H-24 (EWMA Effort Switching): REFUTED.** Modulating search depth increases ratchet size on high entropy data, violating zero-growth gate.
+- **H-25 (Rep3 Substitution): REFUTED.** Fails $3/4$ binary win gate and causes regressions.
+- **Hard Stop Attribution:** Residual machine-code compression gap relative to legacy forward-arrival parsing is definitively attributed to entropy-coding dynamics and filter interaction, not greedy match candidate acquisition. Greedy quality arc formally closed.
+
