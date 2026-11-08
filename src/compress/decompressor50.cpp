@@ -1,4 +1,5 @@
 #include "decompressor50.hpp"
+#include "arch/wildcopy_dispatch.hpp"
 #include <iostream>
 #include <algorithm>
 #include <cstring>
@@ -647,27 +648,26 @@ bool Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
         return true;
     }
 
-    if (distance == 1 && win_pos_ + length <= win_size_) {
-        std::memset(&window_[win_pos_], window_[src], length);
-        win_pos_ = wrap_up(win_pos_ + length);
-        if (win_pos_ == 0) first_win_done_ = true;
-        return true;
-    }
-
     // Linear (non-circular) distance between source and destination regions in
-    // the window buffer. memcpy is only valid when the regions do not overlap,
-    // i.e. when this gap is >= the copy length. Note the circular `distance`
-    // is NOT the right guard: after a wrap (win_pos_ < distance) the source
-    // sits AHEAD of the destination and the true gap is win_size_ - distance.
-    size_t gap = (src < win_pos_) ? (win_pos_ - src) : (src - win_pos_);
+    // the window buffer.
+    const size_t gap = (src < win_pos_) ? (win_pos_ - src) : (src - win_pos_);
 
-    if (src + length <= win_size_ && win_pos_ + length <= win_size_ && gap >= length) {
-        std::memcpy(&window_[win_pos_], &window_[src], length);
+    // Fast contiguous path (no wrap on either src or dst)
+    if (src + length <= win_size_ && win_pos_ + length <= win_size_) {
+        if (src < win_pos_) {
+            static const auto wildcopy_fn = arch::select_wildcopy_kernel();
+            wildcopy_fn(&window_[win_pos_], &window_[src], distance, length, false);
+        } else if (gap >= length) {
+            std::memcpy(&window_[win_pos_], &window_[src], length);
+        } else {
+            std::memmove(&window_[win_pos_], &window_[src], length);
+        }
         win_pos_ = wrap_up(win_pos_ + length);
         if (win_pos_ == 0) first_win_done_ = true;
         return true;
     }
 
+    // Circular window wrapping path: split into contiguous non-wrapping chunks
     while (length > 0) {
         size_t chunk = length;
         if (chunk > win_size_ - win_pos_) chunk = win_size_ - win_pos_;
@@ -691,6 +691,7 @@ bool Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
             }
             chunk = done;
         }
+
         win_pos_ = wrap_up(win_pos_ + chunk);
         src = wrap_up(src + chunk);
         length -= chunk;
