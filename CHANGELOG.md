@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.2.0] - 2026-11-08
+## [2.3.0] - 2026-11-08
+
+### Added
+
+- **Zero-allocation hot-path decompression architecture (Chunk 1 / W1):**
+  - Proved zero dynamic heap allocations on hot-path decompression via `ScopedAllocTracker` in `tests/unit/allocation_tests.cpp` across unfiltered and steady-state filtered runs in `Decompressor50::decompress_internal` (`src/compress/decompressor50.cpp`).
+  - Implemented lazy-commit virtual memory ring with Invariant I-15 safety margin in `WindowBuffer::init` and `WindowBuffer::grow` (`src/compress/decompressor50.cpp`), reserving `win_size + 64` address space while preserving logical geometry, and committing memory per 64 KiB granule as output arrives to prevent hostile-header memory exhaustion DoS.
+  - Implemented bounded `FilterRing` in `src/compress/filters50.hpp` and `src/compress/filters50.cpp` (Invariant I-16), capping pending filter queue capacity at 65,536 entries (1.5 MiB maximum footprint) with fail-closed error mapping to `RAR_ERR_LIMIT_EXCEEDED` (`AllocationResult::LimitExceeded`).
+  - Added residual stream staging via `StreamDecoder::reserve_staging` in `src/compress/stream_decoder.cpp`, hoisting callback creation and avoiding queue reallocations across block boundaries (M-08 Step 1.5).
+- **Microarchitectural hardware acceleration and ISA recovery (Chunk 2 / W2):**
+  - Implemented overlapping LZ wildcopy kernel with pattern doubling in `src/compress/arch/wildcopy_dispatch.hpp` dispatched through `core::get_cpu_features()`, accelerating `ApplyEngine::copy_match` in `src/compress/decompressor50.cpp` with 100% thread parity and bit-identical digests (Invariant I-1).
+  - Implemented AVX2 8-wide batch hashing in `Compressor50::hash_range` (`src/compress/compressor50.cpp`) using `_mm256_mullo_epi32` vector multiplication with scalar fallback and C-07 big-endian guard.
+  - Implemented BMI1 hardware bitfield extraction in `src/compress/arch/bextr.hpp` using `_bextr_u32` / `_bextr_u64` in `BitOutput::put_bits` (`src/compress/compressor50.hpp`) and `BitReader::get_bits`/`consume_bits` (`src/compress/decompressor50.cpp`, `decompressor50.hpp`).
+  - Implemented branchless monotonic conditional-move Huffman decoding in `HuffmanDecoder::decode` (`src/compress/decompressor50.hpp`), replacing prefix search loops with `cmov` sequences and eliminating branch misprediction stalls.
+  - Added CPUID detection for BMI1 bitstream support in `src/core/cpu.cpp` and `src/core/cpu.hpp`.
+
+### Changed
+
+- **Greedy quality completion and architectural closure (Chunk 3 / W3):**
+  - Formally evaluated and closed the §4.2 Machine-Code Cost-Aware Arbiter across all 4 reference binaries under $k=0$ (0 win decisions; $k \ge 1$ caused size regressions), and refuted Split Emission (H-22), Saved Heads (H-23), EWMA Effort Switching (H-24), and Rep3 Substitution (H-25).
+  - Formally attributed residual machine-code compression gap relative to legacy forward-arrival parsing to entropy-coding dynamics and filter interaction, establishing complete closure of the greedy quality optimization arc.
+- **Hardware Hypotheses Disposition:**
+  - Evaluated and closed dual-chain match prefetching (H-21), GFNI half-width RS16 fold, and NEON pmull according to milestone kill gates and Rule G-9.
+
 
 ### Added
 
