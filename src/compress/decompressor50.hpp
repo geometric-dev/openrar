@@ -7,9 +7,10 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
-#include <functional>
 
 namespace openrar::compress {
 
@@ -104,7 +105,8 @@ public:
 
     // Set the maximum size (the declared window). Reserves address space
     // when the virtual-memory path applies. False if the reservation fails.
-    bool init(size_t max_bytes);
+    // tail_margin reserves extra capacity beyond max_bytes (capacity-only, I-15).
+    bool init(size_t max_bytes, size_t tail_margin = 64);
     // Ensure size() >= n (n <= max). False on allocation/commit failure,
     // leaving the buffer unchanged.
     bool grow_to(size_t n);
@@ -113,6 +115,10 @@ public:
     core::byte* data() { return base_; }
     const core::byte* data() const { return base_; }
     size_t size() const { return size_; }
+    size_t committed() const { return vm_ ? committed_ : vec_.capacity(); }
+    size_t logical_size() const { return logical_; }
+    size_t tail_margin() const { return tail_margin_; }
+    size_t reserved() const { return reserved_; }
     core::byte& operator[](size_t i) { return base_[i]; }
     const core::byte& operator[](size_t i) const { return base_[i]; }
 
@@ -123,25 +129,76 @@ private:
         size_ = o.size_;
         reserved_ = o.reserved_;
         committed_ = o.committed_;
+        logical_ = o.logical_;
+        tail_margin_ = o.tail_margin_;
         vm_ = o.vm_;
         o.base_ = nullptr;
-        o.size_ = o.reserved_ = o.committed_ = 0;
+        o.size_ = o.reserved_ = o.committed_ = o.logical_ = o.tail_margin_ = 0;
         o.vm_ = false;
     }
     std::vector<core::byte, default_init_allocator<core::byte>> vec_; // non-VM storage
     core::byte* base_{nullptr};
-    size_t size_{0};      // usable bytes
-    size_t reserved_{0};  // VM: reserved address space
-    size_t committed_{0}; // VM: committed bytes (page-rounded, >= size_)
+    size_t size_{0};        // usable logical bytes (<= logical_)
+    size_t reserved_{0};    // VM: reserved address space (logical_ + tail_margin_)
+    size_t committed_{0};   // VM: committed bytes (page-rounded, >= size_)
+    size_t logical_{0};     // declared logical window size
+    size_t tail_margin_{0}; // capacity-only margin (I-15)
     bool vm_{false};
 };
 
+// Compact 24-byte filter descriptor (Invariant I-16)
 struct FilterEntry {
-    core::uint8 type{0};
-    core::uint8 channels{0};
     core::uint64 block_start{0}; // absolute output position (see flush_pending)
     core::uint64 file_offset{0}; // linear file position for E8/ARM point fixup
     core::uint32 block_length{0};
+    core::uint8 type{0};
+    core::uint8 channels{0};
+};
+static_assert(sizeof(FilterEntry) == 24, "filter ring envelope assumes 24-byte entries (I-16)");
+
+// Fixed-capacity circular queue for pending filters (Invariant I-16).
+// Power-of-two capacity ensures lock-free / branchless modulo indexing.
+template <size_t Capacity = 65536> class FixedFilterQueue {
+    static_assert((Capacity & (Capacity - 1)) == 0, "ring capacity must be a power of two");
+
+public:
+    bool push(const FilterEntry& e) noexcept {
+        if (count_ == Capacity) return false; // fail-closed; no overwrite
+        ring_[tail_ & (Capacity - 1)] = e;
+        ++tail_;
+        ++count_;
+        return true;
+    }
+    const FilterEntry& peek() const noexcept { return ring_[head_ & (Capacity - 1)]; }
+    const FilterEntry& back() const noexcept { return ring_[(tail_ - 1) & (Capacity - 1)]; }
+    bool pop(FilterEntry& out) noexcept {
+        if (count_ == 0) return false;
+        out = peek();
+        ++head_;
+        --count_;
+        return true;
+    }
+    bool pop() noexcept {
+        if (count_ == 0) return false;
+        ++head_;
+        --count_;
+        return true;
+    }
+    size_t size() const noexcept { return count_; }
+    bool empty() const noexcept { return count_ == 0; }
+    void clear() noexcept { head_ = tail_ = count_ = 0; }
+
+    template <typename F> void for_each(F&& fn) const {
+        for (size_t i = 0; i < count_; ++i) {
+            fn(ring_[(head_ + i) & (Capacity - 1)]);
+        }
+    }
+
+private:
+    FilterEntry ring_[Capacity];
+    size_t head_{0};
+    size_t tail_{0};
+    size_t count_{0};
 };
 
 enum class DecompressErrorCode {
@@ -218,6 +275,37 @@ public:
     }
     size_t win_size() const { return engine_.win_size_; }
     size_t declared_win() const { return declared_win_; }
+
+    // Test hooks (untracked steady-state and memory verification)
+    bool prepare_window_for_test() {
+        if (!engine_.ensure_window_alloc()) return false;
+        return engine_.grow(engine_.win_size_ - engine_.win_pos_);
+    }
+    void reset() {
+        file_base_ = 0;
+        member_start_ = 0;
+        last_error_ = DecompressErrorCode::Ok;
+        last_error_str_.clear();
+        engine_.reset_window();
+        std::fill(std::begin(old_dist_), std::end(old_dist_), static_cast<size_t>(-1));
+        std::fill(std::begin(table_), std::end(table_), static_cast<core::byte>(0));
+        last_length_ = 0;
+        tables_ready_ = false;
+    }
+    const WindowBuffer& window_buffer() const { return engine_.window_; }
+    bool test_push_filter(const FilterEntry& fe) {
+        if (!engine_.ensure_filters()) {
+            last_error_ = DecompressErrorCode::AllocationFailed;
+            last_error_str_ = "filter queue allocation failed";
+            return false;
+        }
+        if (!engine_.filters_->push(fe)) {
+            last_error_ = DecompressErrorCode::LimitExceeded;
+            last_error_str_ = "Filter table capacity exceeded";
+            return false;
+        }
+        return true;
+    }
 
     // Callback type for streaming decompressed output.
     // The callback is invoked with contiguous chunks of unpacked data.
@@ -503,9 +591,9 @@ private:
         bool first_win_done_{false};
         bool window_ready_{false};
         // filter queue + flush cursor (last_flushed_ is call-local; reset
-        // by begin_call, exactly like the sequential decoder's call-local)
-        std::vector<FilterEntry> filters_;
-        size_t filters_head_{0}; // consumed-prefix cursor (v1.38.0 M2)
+        // by begin_call, exactly like the sequential decoder's call-local).
+        // Heap-allocated lazily on first filter token (Invariant I-16); 0 bytes for unfiltered.
+        std::unique_ptr<FixedFilterQueue<65536>> filters_;
         size_t last_flushed_{0};
         // Bounded persistent scratch buffers for filter application (OPT-19);
         // capped to <= 1 MiB retained capacity per docs/invariants.md §2.
@@ -518,6 +606,16 @@ private:
         // is suppressed for matches whose dictionary range intersects one.
         std::vector<std::pair<size_t, size_t>> val_regions_;
 #endif
+
+        ApplyEngine();
+        ~ApplyEngine() noexcept;
+        ApplyEngine(ApplyEngine&& o) noexcept;
+        ApplyEngine& operator=(ApplyEngine&& o) noexcept;
+        ApplyEngine(const ApplyEngine&) = delete;
+        ApplyEngine& operator=(const ApplyEngine&) = delete;
+
+        bool ensure_filters();
+        void release_filters() noexcept;
 
         void init(size_t win_size);
         inline size_t wrap_up(size_t pos) const {
@@ -558,8 +656,8 @@ private:
         bool flush_pending(bool flush_all, core::uint64 base_at_entry, size_t total_written,
                            size_t dest_size, OutputCallback cb);
         inline bool has_completed_filter(core::uint64 base_at_entry, size_t total_written) const {
-            if (filters_head_ >= filters_.size()) return false;
-            const auto& f = filters_[filters_head_];
+            if (!filters_ || filters_->empty()) return false;
+            const auto& f = filters_->peek();
             const core::uint64 abs = base_at_entry + static_cast<core::uint64>(total_written);
             return f.block_start <= abs &&
                    static_cast<core::uint64>(f.block_length) <= abs - f.block_start;
@@ -612,6 +710,9 @@ private:
     std::string last_error_str_;
     size_t declared_win_{DEFAULT_WIN_SIZE};
 };
+
+static_assert(sizeof(Decompressor50) <= 64 * 1024,
+              "Decompressor50 per-instance state must be bounded within 64 KiB (Invariant I-16)");
 
 } // namespace openrar::compress
 

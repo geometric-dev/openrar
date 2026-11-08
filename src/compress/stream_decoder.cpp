@@ -238,7 +238,7 @@ void StreamDecoder::reset() {
     in_queue_.clear();
     in_head_ = 0;
     output_.clear();
-    decompressor_ = Decompressor50(win_size_);
+    decompressor_.reset();
     started_ = false;
     finished_ = false;
     aborted_ = false;

@@ -53,6 +53,7 @@ if(NOT EMSCRIPTEN)
     # iteration-3 crash regression, cancel/progress, flush sink.
     add_openrar_test(stream_encoder_tests tests/unit/stream_encoder_tests.cpp)
     add_openrar_test(stream_decoder_tests tests/unit/stream_decoder_tests.cpp)
+    add_openrar_test(allocation_tests tests/unit/allocation_tests.cpp)
     add_openrar_test(crypto_tests tests/unit/crypto_tests.cpp)
     add_openrar_test(format_tests tests/unit/format_tests.cpp)
     add_openrar_test(io_tests tests/unit/io_tests.cpp)

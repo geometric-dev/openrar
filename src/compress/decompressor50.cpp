@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cassert>
 #include <cstdint>
+#include <mutex>
 
 // WindowBuffer's reserve/commit path.
 #if defined(_WIN32)
@@ -375,46 +376,137 @@ constexpr bool WINDOW_VM = false;
 // Below this, a vector (and its occasional copy) is cheaper than a mapping.
 constexpr size_t WINDOW_VM_THRESHOLD = 64u << 20;
 constexpr size_t WINDOW_COMMIT_GRANULE = 1u << 20;
+
+// Process-wide pool of reusable FilterQueue instances (Invariant I-16)
+class FilterQueuePool {
+public:
+    static std::unique_ptr<FixedFilterQueue<65536>> acquire() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!pool_.empty()) {
+            auto ptr = std::move(pool_.back());
+            pool_.pop_back();
+            ptr->clear();
+            return ptr;
+        }
+        return std::make_unique<FixedFilterQueue<65536>>();
+    }
+    static void release(std::unique_ptr<FixedFilterQueue<65536>> ptr) {
+        if (!ptr) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (pool_.size() < 8) {
+            ptr->clear();
+            pool_.push_back(std::move(ptr));
+        }
+    }
+
+private:
+    inline static std::mutex mutex_;
+    inline static std::vector<std::unique_ptr<FixedFilterQueue<65536>>> pool_;
+};
 } // namespace
 
-bool WindowBuffer::init(size_t max_bytes) {
+Decompressor50::ApplyEngine::ApplyEngine() = default;
+
+Decompressor50::ApplyEngine::~ApplyEngine() noexcept {
+    release_filters();
+}
+
+Decompressor50::ApplyEngine::ApplyEngine(ApplyEngine&& o) noexcept
+    : win_size_(o.win_size_), win_mask_(o.win_mask_), win_pow2_(o.win_pow2_),
+      window_(std::move(o.window_)), cap_(o.cap_), win_pos_(o.win_pos_),
+      first_win_done_(o.first_win_done_), window_ready_(o.window_ready_),
+      filters_(std::move(o.filters_)), last_flushed_(o.last_flushed_),
+      filter_scratch_(std::move(o.filter_scratch_)), delta_scratch_(std::move(o.delta_scratch_)) {
+    o.win_size_ = o.win_mask_ = o.cap_ = o.win_pos_ = o.last_flushed_ = 0;
+    o.win_pow2_ = o.first_win_done_ = o.window_ready_ = false;
+}
+
+Decompressor50::ApplyEngine& Decompressor50::ApplyEngine::operator=(ApplyEngine&& o) noexcept {
+    if (this != &o) {
+        release_filters();
+        win_size_ = o.win_size_;
+        win_mask_ = o.win_mask_;
+        win_pow2_ = o.win_pow2_;
+        window_ = std::move(o.window_);
+        cap_ = o.cap_;
+        win_pos_ = o.win_pos_;
+        first_win_done_ = o.first_win_done_;
+        window_ready_ = o.window_ready_;
+        filters_ = std::move(o.filters_);
+        last_flushed_ = o.last_flushed_;
+        filter_scratch_ = std::move(o.filter_scratch_);
+        delta_scratch_ = std::move(o.delta_scratch_);
+        o.win_size_ = o.win_mask_ = o.cap_ = o.win_pos_ = o.last_flushed_ = 0;
+        o.win_pow2_ = o.first_win_done_ = o.window_ready_ = false;
+    }
+    return *this;
+}
+
+bool Decompressor50::ApplyEngine::ensure_filters() {
+    if (!filters_) {
+        filters_ = FilterQueuePool::acquire();
+    }
+    return filters_ != nullptr;
+}
+
+void Decompressor50::ApplyEngine::release_filters() noexcept {
+    if (filters_) {
+        FilterQueuePool::release(std::move(filters_));
+    }
+}
+
+bool WindowBuffer::init(size_t max_bytes, size_t tail_margin) {
     release();
+    logical_ = max_bytes;
+    tail_margin_ = tail_margin;
+    const size_t total_alloc = max_bytes + tail_margin;
     if (WINDOW_VM && max_bytes > WINDOW_VM_THRESHOLD) {
 #if defined(_WIN32)
-        void* p = VirtualAlloc(nullptr, max_bytes, MEM_RESERVE, PAGE_NOACCESS);
+        void* p = VirtualAlloc(nullptr, total_alloc, MEM_RESERVE, PAGE_NOACCESS);
         if (p == nullptr) return false;
 #elif SIZE_MAX > 0xFFFFFFFFu && !defined(__EMSCRIPTEN__) && !defined(__wasm__)
-        void* p =
-            mmap(nullptr, max_bytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        void* p = mmap(nullptr, total_alloc, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                       -1, 0);
         if (p == MAP_FAILED) return false;
 #else
         void* p = nullptr;
         return false;
 #endif
         base_ = static_cast<core::byte*>(p);
-        reserved_ = max_bytes;
+        reserved_ = total_alloc;
         vm_ = true;
+    } else {
+        try {
+            vec_.reserve(total_alloc);
+        } catch (...) {
+            // Reserve failure is non-fatal: fallback will grow dynamically via resize
+        }
     }
     return true;
 }
 
 bool WindowBuffer::grow_to(size_t n) {
     if (n <= size_) return true;
+    if (n > logical_) return false;
     if (!vm_) {
         try {
-            vec_.resize(n);
+            // Commit trailing margin on final window boundary (Invariant I-15)
+            const size_t alloc_target = (n == logical_) ? logical_ + tail_margin_ : n;
+            vec_.resize(alloc_target);
         } catch (...) {
             return false; // strong guarantee: vec_ unchanged
         }
         base_ = vec_.data();
-        size_ = vec_.size();
+        size_ = n;
         return true;
     }
-    if (n > reserved_) return false;
     if (n > committed_) {
         // Commit whole granules; committed pages read as zero.
         size_t target =
             (n + WINDOW_COMMIT_GRANULE - 1) / WINDOW_COMMIT_GRANULE * WINDOW_COMMIT_GRANULE;
+        if (n == logical_ || target < n + tail_margin_) {
+            target = std::max(target, n + tail_margin_);
+        }
         if (target > reserved_) target = reserved_;
         const size_t delta = target - committed_;
 #if defined(_WIN32)
@@ -446,13 +538,14 @@ void WindowBuffer::release() noexcept {
     } catch (...) {
     }
     base_ = nullptr;
-    size_ = reserved_ = committed_ = 0;
+    size_ = reserved_ = committed_ = logical_ = tail_margin_ = 0;
     vm_ = false;
 }
 
 bool Decompressor50::ApplyEngine::ensure_window_alloc() {
     if (window_ready_ || win_size_ == 0) return true;
-    if (!window_.init(win_size_) || !window_.grow_to(std::min(win_size_, INITIAL_WINDOW))) {
+    if (!window_.init(win_size_, /*tail_margin=*/64) ||
+        !window_.grow_to(std::min(win_size_, INITIAL_WINDOW))) {
         window_.release();
         cap_ = 0;
         return false;
@@ -483,6 +576,9 @@ bool Decompressor50::ApplyEngine::grow(size_t n) {
 void Decompressor50::ApplyEngine::reset_window() {
     win_pos_ = 0;
     first_win_done_ = false;
+    if (filters_) {
+        filters_->clear();
+    }
 }
 
 bool Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
@@ -637,8 +733,8 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
         return f.block_start > base_at_entry ? static_cast<size_t>(f.block_start - base_at_entry)
                                              : 0;
     };
-    while (filters_head_ < filters_.size()) {
-        const auto& f = filters_[filters_head_];
+    while (filters_ && !filters_->empty()) {
+        const auto& f = filters_->peek();
         const bool region_complete =
             f.block_start <= abs_pos() &&
             static_cast<core::uint64>(f.block_length) <= abs_pos() - f.block_start;
@@ -703,11 +799,11 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
                 if (cb && !cb(emit_ptr, len)) return false;
                 last_flushed_ += len - prior;
             }
-            ++filters_head_;
+            filters_->pop();
         } else {
             if (flush_all) {
                 if (f.block_length != 0) return false;
-                ++filters_head_;
+                filters_->pop();
                 continue;
             } else {
                 break;
@@ -726,24 +822,15 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
         delta_scratch_.shrink_to_fit();
     }
 
-    // v1.38.0 M2: compact the consumed prefix once per flush call (each
-    // region used to pay an O(pending) erase shift). The push-side overlap
-    // check compares against the last PUSHED region; compacting here keeps
-    // filters_.empty()/.back() semantics identical to the erased queue.
-    if (filters_head_) {
-        filters_.erase(filters_.begin(), filters_.begin() + filters_head_);
-        filters_head_ = 0;
-    }
-
     // Flush any plain bytes up to the safe limit (before the next pending filter):
     size_t safe_limit = total_written;
-    if (!flush_all) {
-        for (const auto& f : filters_) {
+    if (!flush_all && filters_) {
+        filters_->for_each([&](const FilterEntry& f) {
             size_t region_local = local_region_start(f);
             if (region_local < safe_limit) {
                 safe_limit = region_local;
             }
-        }
+        });
     }
 
     return flush_plain_up_to(safe_limit, total_written, dest_size, cb);
@@ -950,8 +1037,9 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
     // when each region's data completes. StreamDecoder resets by constructing
     // a fresh Decompressor50 per file, so no region leaks across files.
     if (!single_block || !solid) {
-        engine_.filters_.clear();
-        engine_.filters_head_ = 0;
+        if (engine_.filters_) {
+            engine_.filters_->clear();
+        }
     }
     core::uint64 base_at_entry = solid ? file_base_ : 0;
     // A solid chain accumulates the unpacked bytes of every PRIOR member, so
@@ -1132,25 +1220,29 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
             // Legitimate encoders emit disjoint, ordered regions. Overlapping
             // or backward regions would let a crafted stream emit transform
             // output beyond the region data and out of frame order.
-            if (!engine_.filters_.empty()) {
-                const FilterEntry& prev = engine_.filters_.back();
+            if (engine_.filters_ && !engine_.filters_->empty()) {
+                const FilterEntry& prev = engine_.filters_->back();
                 if (fe.block_start < prev.block_start ||
                     fe.block_start - prev.block_start < prev.block_length) {
                     return false;
                 }
             }
-            // Queue bound: with disjoint regions enforced, per-region work is
-            // bounded by the region length itself, so this only bounds queue
-            // memory (65536 entries ~= 2 MiB) — large filtered files emit one
-            // region per ~1 MiB and legitimately exceed the old 8192 cap.
-            if (engine_.filters_.size() - engine_.filters_head_ >= 65536) return false;
+            if (!engine_.ensure_filters()) {
+                last_error_ = DecompressErrorCode::AllocationFailed;
+                last_error_str_ = "filter queue allocation failed";
+                return false;
+            }
+            if (!engine_.filters_->push(fe)) {
+                last_error_ = DecompressErrorCode::LimitExceeded;
+                last_error_str_ = "Filter table capacity exceeded";
+                return false;
+            }
 #ifdef OPENRAR_CROSS_VALIDATE
             if (engine_.val_src_ != nullptr) {
                 engine_.val_regions_.emplace_back(static_cast<size_t>(fe.block_start),
                                                   fe.block_length);
             }
 #endif
-            engine_.filters_.push_back(fe);
             continue;
         }
         if (slot == 257) {
@@ -1642,8 +1734,7 @@ bool Decompressor50::apply_begin() {
     // minus table state (tables are span-worker concerns; the applier owns
     // only window, filter queue, flush cursor, and rep state).
     engine_.reset_window();
-    engine_.filters_.clear();
-    engine_.filters_head_ = 0;
+    if (engine_.filters_) engine_.filters_->clear();
     engine_.begin_call();
     filters_total_len_ = 0;
     std::fill(std::begin(old_dist_), std::end(old_dist_), static_cast<size_t>(-1));
@@ -1818,20 +1909,20 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
         // Legitimate encoders emit disjoint, ordered regions; overlap or
         // backward regions let a crafted stream emit transform output out
         // of frame order (the sequential rejection, verbatim).
-        if (!engine_.filters_.empty()) {
-            const FilterEntry& prev = engine_.filters_.back();
+        if (engine_.filters_ && !engine_.filters_->empty()) {
+            const FilterEntry& prev = engine_.filters_->back();
             if (fe.block_start < prev.block_start ||
                 fe.block_start - prev.block_start < prev.block_length) {
                 return false;
             }
         }
-        if (engine_.filters_.size() - engine_.filters_head_ >= 65536) return false;
+        if (!engine_.ensure_filters()) return false;
+        if (!engine_.filters_->push(fe)) return false;
 #ifdef OPENRAR_CROSS_VALIDATE
         if (engine_.val_src_ != nullptr) {
             engine_.val_regions_.emplace_back(static_cast<size_t>(fe.block_start), fe.block_length);
         }
 #endif
-        engine_.filters_.push_back(fe);
     }
 
     if (is_last) {
