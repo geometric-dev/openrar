@@ -44,8 +44,10 @@ strictly independent of uncompressed entry size:
 
 - stored (plain or encrypted): ≤ 64 KiB I/O buffer + ≤ 256 KiB decrypt
   slice ⇒ ≤ ~1 MiB working-set increase;
-- compressed (plain or encrypted): dictionary window (≤ 32 MiB RAR5 / ≤ 64
-  MiB RAR7) + ≤ 256 KiB slice buffer;
+- compressed (plain or encrypted): dictionary window (declared up to the
+  implementation `ALLOC_LIMIT` — 64 GiB on 64-bit native, 1 GiB on
+  32-bit/WASM — but **committed lazily**, so a hostile huge declaration over
+  a tiny payload costs kilobytes; see §9) + ≤ 256 KiB slice buffer;
 - the only unbounded-by-entry-size surface left is the frozen buffer API and
   the capped `handle_extract` (OPENRAR_MAX_HEAP_EXTRACT_SIZE = 256 MiB).
 - Chunked AES-256-CBC carries the CBC IV across slices (each slice's last 16
@@ -152,3 +154,57 @@ strictly independent of uncompressed entry size:
   `buffer_archive` and `openrar_stream_create` explicit caller-chosen
   windows). Those are headerless codec surfaces with their own frozen
   defaults, not archive-member packing.
+
+## 8. Window buffer tail margin (Invariant I-15)
+
+- All sliding-window memory allocations (`WindowBuffer`) must reserve a
+  mandatory 64-byte trailing safety margin beyond the declared window size
+  (`capacity = win_size + 64`). Unaligned 16-byte and 32-byte SIMD wildcopy
+  stores that overshoot a match end must land in committed memory rather
+  than in uncommitted address space.
+- **The margin is capacity-only.** The logical dictionary remains exactly
+  `win_size`: `win_size_`, `win_mask_`, wrap arithmetic, distance checks,
+  `flush_cadence()`, and the archive header value never include the 64
+  bytes. The ring never addresses an index `>= win_size`.
+- Applies to both the VM-reserved path (64-bit native: `VirtualAlloc` /
+  `mmap` `PROT_NONE` reservation committed lazily) and the fallback vector
+  allocation path. The final commit target includes the margin explicitly
+  (`max(round_up(win_size, granule), win_size + 64)`), so a near-end
+  overshoot is always writable even when `win_size` is an exact granule
+  multiple; the margin is never part of the circular geometry.
+- Pinned by: the SIMD wildcopy tail-margin / overshoot unit tests and the
+  reserved-ring zero-growth test in `tests/unit/stream_decoder_tests.cpp`.
+
+## 9. Lazy window commit & bounded per-instance state (Invariant I-16)
+
+- **(a) Lazy commit is mandatory.** A VM-reserved window reserves address
+  space at `init()` and commits pages on demand in `grow_to()`. Committing
+  the whole declared window at init is forbidden: a hostile 64 GiB header
+  over a tiny payload must still allocate/commit kilobytes. Setting
+  `cap_ = win_size` without a matching commit is an access violation and is
+  equally forbidden. `grow()` commits the next range and never
+  reallocates; it must never be replaced by a no-op that lets a write reach
+  `PAGE_NOACCESS`.
+- **(b) Per-instance fixed state is small and heap-owned.** No
+  multi-megabyte inline arrays in `Decompressor50` or `StreamDecoder`. The
+  65,536-entry pending-filter envelope is a lazily allocated (or pooled)
+  heap ring created on first filter use; a no-filter decoder holds only a
+  pointer. `FilterEntry` is compacted to 24 bytes, so the worst-case ring
+  is 1.5 MiB (not 2 MiB inline); if compaction is infeasible, the 2 MiB
+  envelope is an explicitly recorded re-baseline, never a silent inline
+  array. Filter scratchpads are lazily sized to the actual block, capped at
+  1 MiB per buffer, and their retained capacity is released above the cap.
+- **(c) Build-time and test pins.** `static_assert(sizeof(FilterEntry) ==
+  24)`, a power-of-two ring-capacity assertion, object-size assertions for
+  `Decompressor50`/`StreamDecoder`, and a stack-usage test that constructs
+  a decoder on a small stack. The zero-allocation proof is scoped per the
+  plan's claim matrix: `Decompressor50` with a flush sink is the claim of
+  record; the `StreamDecoder` claim requires a flush sink and pre-reserved
+  staging.
+- **Error mapping:** filter-queue overflow fails closed with
+  `DecompressErrorCode::LimitExceeded`, surfaced as
+  `RAR_ERR_LIMIT_EXCEEDED`; window reserve/commit failure remains
+  `AllocationFailed` → `RAR_ERR_NOMEM`.
+- Pinned by: hostile-declaration peak-commit, filter-overflow fail-closed
+  and reset, object-size/stack-usage, and the allocation-tracker tests
+  named in `docs/milestones/v2.3.0-implementation-plan.md` §5.4.
