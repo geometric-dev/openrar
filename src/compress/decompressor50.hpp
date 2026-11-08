@@ -3,6 +3,7 @@
 
 #include "../core/default_init_allocator.hpp"
 #include "../core/types.hpp"
+#include "arch/bextr.hpp"
 #include "filters50.hpp"
 #include <array>
 #include <cstddef>
@@ -50,6 +51,7 @@ private:
     core::uint64 size_{0};
     core::uint64 fetched_{0};
     bool truncated_{false};
+    bool bmi1_{core::get_cpu_features().bmi1};
 };
 
 class HuffmanDecoder {
