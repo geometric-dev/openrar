@@ -1031,6 +1031,52 @@ void test_wildcopy_simd_parity() {
         << "[PASS] wildcopy SIMD bit-identical parity against scalar (dist 1..64, len 1..256)\n";
 }
 
+void test_hash_range_avx2_parity() {
+    alignas(64) core::byte buf[1024];
+    std::mt19937_64 rng(0x98765432ULL);
+    for (size_t i = 0; i < sizeof(buf); ++i) {
+        buf[i] = static_cast<core::byte>(rng() & 0xFF);
+    }
+
+    auto scalar_hash = [](const core::byte* d) -> core::uint32 {
+        constexpr core::uint32 HASH_BITS = 17;
+        const core::uint32 val = core::load_le32(d);
+        return (val * 0x9e3779b1u) >> (32 - HASH_BITS);
+    };
+
+#if (defined(_MSC_VER) && (defined(_M_AMD64) || defined(_M_X64))) ||                               \
+    ((defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__)))
+    if (core::get_cpu_features().avx2) {
+        constexpr core::uint32 HASH_BITS = 17;
+        alignas(32) static const uint8_t MASK[32] = {0, 1, 2, 3, 1, 2, 3, 4, 2, 3, 4,
+                                                     5, 3, 4, 5, 6, 4, 5, 6, 7, 5, 6,
+                                                     7, 8, 6, 7, 8, 9, 7, 8, 9, 10};
+        const __m256i vmask = _mm256_load_si256(reinterpret_cast<const __m256i*>(MASK));
+        const __m256i mul_const = _mm256_set1_epi32(static_cast<int>(0x9e3779b1u));
+
+        for (size_t offset = 0; offset + 16 <= sizeof(buf); ++offset) {
+            const __m128i raw16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&buf[offset]));
+            const __m256i raw256 = _mm256_broadcastsi128_si256(raw16);
+            const __m256i words = _mm256_shuffle_epi8(raw256, vmask);
+            const __m256i prod = _mm256_mullo_epi32(words, mul_const);
+            const __m256i hash_vec = _mm256_srli_epi32(prod, 32 - HASH_BITS);
+
+            alignas(32) core::uint32 simd_h[8];
+            _mm256_store_si256(reinterpret_cast<__m256i*>(simd_h), hash_vec);
+
+            for (size_t i = 0; i < 8; ++i) {
+                core::uint32 expected = scalar_hash(&buf[offset + i]);
+                REQUIRE(simd_h[i] == expected);
+            }
+        }
+        std::cout << "[PASS] H-19 AVX2 batch hash bit-identical parity against scalar across 1000 "
+                     "offsets\n";
+        return;
+    }
+#endif
+    std::cout << "[SKIP] AVX2 not available for H-19 hash batch test\n";
+}
+
 void test_decompressor_lazy_alloc() {
     size_t initial_rss = get_peak_rss();
 
@@ -4178,6 +4224,7 @@ static const openrar::test::Case k_cases[] = {
     {"test_huffman_builder_adversarial", test_huffman_builder_adversarial, false},
     {"test_match_length_tail_caps", test_match_length_tail_caps, false},
     {"test_wildcopy_simd_parity", test_wildcopy_simd_parity, false},
+    {"test_hash_range_avx2_parity", test_hash_range_avx2_parity, false},
     {"test_decompressor_lazy_alloc", test_decompressor_lazy_alloc, false},
     {"test_bit_reader_get_bits64", test_bit_reader_get_bits64, false},
     {"test_token_holds_every_distance_slot", test_token_holds_every_distance_slot, false},
