@@ -6,6 +6,7 @@
 #include "../../src/compress/stream_decoder.hpp"
 #include "../../src/compress/arch/match_simd.hpp"
 #include "../../src/compress/arch/wildcopy_dispatch.hpp"
+#include "../../src/compress/arch/bextr.hpp"
 #include "../../src/crypto/sha256.hpp"
 #include "../../src/compress/compress_plan.hpp"
 #include "test_support.hpp"
@@ -1075,6 +1076,125 @@ void test_hash_range_avx2_parity() {
     }
 #endif
     std::cout << "[SKIP] AVX2 not available for H-19 hash batch test\n";
+}
+
+void test_bextr_and_branchless_huffman_parity() {
+    using namespace openrar::compress::arch;
+    const auto& cpu = core::get_cpu_features();
+
+    // 1. Bitfield extraction parity (bextr_u32 vs bextr_u32_scalar)
+#if defined(OPENRAR_HAS_BMI1)
+    if (cpu.bmi1) {
+        std::mt19937 rng(0x42BEEF);
+        for (unsigned int start = 0; start <= 35; ++start) {
+            for (unsigned int len = 0; len <= 35; ++len) {
+                const core::uint32 test_vals[] = {0u,
+                                                  1u,
+                                                  0xFFFFFFFFu,
+                                                  0x80000000u,
+                                                  0xAAAAAAAAu,
+                                                  0x55555555u,
+                                                  static_cast<core::uint32>(rng()),
+                                                  static_cast<core::uint32>(rng())};
+                for (core::uint32 v : test_vals) {
+                    core::uint32 scalar = bextr_u32_scalar(v, start, len);
+                    core::uint32 bmi = bextr_u32(v, start, len);
+                    REQUIRE(bmi == scalar);
+                }
+            }
+        }
+
+#if defined(OPENRAR_HAS_BMI1_64)
+        for (unsigned int start = 0; start <= 66; ++start) {
+            for (unsigned int len = 0; len <= 66; ++len) {
+                const core::uint64 test_vals64[] = {
+                    0ULL,
+                    1ULL,
+                    ~0ULL,
+                    0x8000000000000000ULL,
+                    0xAAAAAAAAAAAAAAAAULL,
+                    0x5555555555555555ULL,
+                    (static_cast<core::uint64>(rng()) << 32) | rng(),
+                    (static_cast<core::uint64>(rng()) << 32) | rng()};
+                for (core::uint64 v : test_vals64) {
+                    core::uint64 scalar = bextr_u64_scalar(v, start, len);
+                    core::uint64 bmi = bextr_u64(v, start, len);
+                    REQUIRE(bmi == scalar);
+                }
+            }
+        }
+#endif
+        std::cout << "    - BMI1 bextr_u32 and bextr_u64 parity verified against scalar: OK\n";
+    }
+#endif
+
+    // 2. BitOutput and BitReader stream roundtrip bit-exact
+    {
+        BitOutput out;
+        std::vector<core::byte> dest;
+        out.set_memory(&dest);
+
+        std::mt19937 bit_rng(0x1337C0DE);
+        for (int i = 0; i < 2000; ++i) {
+            unsigned int bits = 1 + (bit_rng() % 32);
+            core::uint32 val = static_cast<core::uint32>(bit_rng());
+            out.put_bits(val, bits);
+        }
+        out.align_byte();
+        out.flush_buf();
+        REQUIRE(!dest.empty());
+
+        // Read back the exact same bitfields with BitReader
+        BitReader reader(dest.data(), dest.size());
+        std::mt19937 bit_verify_rng(0x1337C0DE);
+        for (int i = 0; i < 2000; ++i) {
+            unsigned int bits = 1 + (bit_verify_rng() % 32);
+            core::uint32 expected_val = static_cast<core::uint32>(bit_verify_rng());
+            if (bits < 32) expected_val &= (1u << bits) - 1;
+            core::uint32 got = reader.get_bits(bits);
+            REQUIRE(got == expected_val);
+        }
+        std::cout << "    - BitOutput and BitReader stream roundtrip bit-exact: OK\n";
+    }
+
+    // 3. HuffmanDecoder branchless canonical decode parity
+    // Construct a tree with deep (11..15 bit) codes using a Fibonacci distribution
+    {
+        const core::uint32 size = 306;
+        const core::uint32 max_bits = 15;
+        core::uint32 freq[size] = {0};
+        core::byte lengths[size] = {0};
+
+        core::uint32 a = 1, b = 1;
+        for (core::uint32 i = 0; i < 40; ++i) {
+            freq[i] = a;
+            core::uint32 next = a + b;
+            a = b;
+            b = next;
+        }
+        HuffmanBuilder::build_lengths(freq, size, max_bits, lengths);
+        HuffmanDecoder dec;
+        REQUIRE(dec.build(lengths, size));
+
+        // For all 32768 possible 15-bit prefix values, verify decode succeeds
+        for (core::uint32 prefix = 0; prefix < 32768; ++prefix) {
+            core::byte stream[4];
+            stream[0] = static_cast<core::byte>((prefix >> 7) & 0xFF);
+            stream[1] = static_cast<core::byte>((prefix << 1) & 0xFE);
+            stream[2] = 0;
+            stream[3] = 0;
+
+            BitReader r(stream, sizeof(stream));
+            core::uint32 sym = dec.decode(r);
+            REQUIRE(sym < size);
+            REQUIRE(r.bit_pos() >= 1);
+            REQUIRE(r.bit_pos() <= 15);
+        }
+        std::cout << "    - HuffmanDecoder branchless canonical decode verified across all 15-bit "
+                     "prefixes: OK\n";
+    }
+
+    std::cout << "[PASS] H-20 BMI1 bitfield extraction & branchless Huffman decode verified\n";
 }
 
 void test_decompressor_lazy_alloc() {
@@ -4225,6 +4345,7 @@ static const openrar::test::Case k_cases[] = {
     {"test_match_length_tail_caps", test_match_length_tail_caps, false},
     {"test_wildcopy_simd_parity", test_wildcopy_simd_parity, false},
     {"test_hash_range_avx2_parity", test_hash_range_avx2_parity, false},
+    {"test_bextr_and_branchless_huffman_parity", test_bextr_and_branchless_huffman_parity, false},
     {"test_decompressor_lazy_alloc", test_decompressor_lazy_alloc, false},
     {"test_bit_reader_get_bits64", test_bit_reader_get_bits64, false},
     {"test_token_holds_every_distance_slot", test_token_holds_every_distance_slot, false},

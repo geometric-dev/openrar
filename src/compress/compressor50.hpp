@@ -5,6 +5,7 @@
 #include "../core/types.hpp"
 #include "../crypto/crc32.hpp"
 #include "../io/file_stream.hpp"
+#include "arch/bextr.hpp"
 #include "filters50.hpp"
 
 #include <vector>
@@ -39,6 +40,7 @@ private:
     core::uint64 block_bits_{0};
     core::uint64 acc_{0};
     core::uint32 acc_bits_{0};
+    bool bmi1_{core::get_cpu_features().bmi1};
     // Set when a flush to dest_file_ wrote fewer bytes than requested; the
     // compressor checks this instead of reporting success on a short write
     // (sweep finding M5).
@@ -86,6 +88,7 @@ public:
         block_bits_ = o.block_bits_;
         acc_ = o.acc_;
         acc_bits_ = o.acc_bits_;
+        bmi1_ = o.bmi1_;
         write_failed_ = o.write_failed_;
         std::vector<core::byte>& v = active();
         base_ = v.data();
@@ -104,6 +107,7 @@ public:
         block_bits_ = o.block_bits_;
         acc_ = o.acc_;
         acc_bits_ = o.acc_bits_;
+        bmi1_ = o.bmi1_;
         write_failed_ = o.write_failed_;
         std::vector<core::byte>& v = active();
         base_ = v.data();
@@ -134,8 +138,16 @@ public:
         assert(num_bits <= 32);
         if (num_bits == 0) return;
         block_bits_ += num_bits;
-        acc_ = (acc_ << num_bits) |
-               (num_bits >= 32 ? value : (value & ((core::uint32(1) << num_bits) - 1)));
+#if defined(OPENRAR_HAS_BMI1)
+        if (bmi1_) {
+            value = arch::bextr_u32(value, 0, num_bits);
+            acc_ = (acc_ << num_bits) | value;
+        } else
+#endif
+        {
+            acc_ = (acc_ << num_bits) |
+                   (num_bits >= 32 ? value : (value & ((core::uint32(1) << num_bits) - 1)));
+        }
         acc_bits_ += num_bits;
         assert(acc_bits_ <= 64);
         if (acc_bits_ >= 32) {
@@ -151,7 +163,14 @@ public:
             std::memcpy(wp_, &val, 4);
             wp_ += 4;
             acc_bits_ -= 32;
-            acc_ &= (acc_bits_ ? (core::uint64(1) << acc_bits_) - 1 : 0);
+#if defined(OPENRAR_HAS_BMI1_64)
+            if (bmi1_) {
+                acc_ = arch::bextr_u64(acc_, 0, acc_bits_);
+            } else
+#endif
+            {
+                acc_ &= (acc_bits_ ? (core::uint64(1) << acc_bits_) - 1 : 0);
+            }
             if (mem_dest_ == nullptr && logical_size() >= OUTBUF_SIZE) flush_buf();
         }
     }

@@ -140,6 +140,7 @@ CpuFeatures detect_cpu_features() {
         // requirement is YMM state, not ZMM.
         f.vaes = f.avx2 && (ecx & (1 << 9)) != 0;
         f.vpclmulqdq = f.avx2 && (ecx & (1 << 10)) != 0;
+        f.bmi1 = (ebx & (1 << 3)) != 0;
     }
 
 #elif defined(__aarch64__) || defined(_M_ARM64)
@@ -236,6 +237,7 @@ AccelerationReport describe_acceleration() {
     if (f.aes_ni) r.tags.push_back("AES-NI");
     if (f.sha_ni) r.tags.push_back("SHA-NI");
     if (f.pclmulqdq) r.tags.push_back("PCLMUL CRC");
+    if (f.bmi1) r.tags.push_back("BMI1 Bitstream");
 #elif defined(__aarch64__) || defined(_M_ARM64)
     const CpuFeatures& f = get_cpu_features();
     if (f.neon) {

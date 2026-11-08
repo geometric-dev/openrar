@@ -158,6 +158,12 @@ core::uint32 BitReader::get_bits(unsigned int count) {
         n_ -= count;
         consumed_ += count;
         core::uint32 val = static_cast<core::uint32>(acc_ >> n_);
+#if defined(OPENRAR_HAS_BMI1_64)
+        if (bmi1_) {
+            acc_ = arch::bextr_u64(acc_, 0, n_);
+            return val;
+        }
+#endif
         acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
         return val;
     }
@@ -175,6 +181,13 @@ core::uint64 BitReader::get_bits64(unsigned int count) {
     if (count > 64) count = 64;
     if (n_ < count) refill();
     if (n_ >= count) {
+#if defined(OPENRAR_HAS_BMI1_64)
+        if (bmi1_) {
+            core::uint64 val = arch::bextr_u64(acc_, n_ - count, count);
+            consume_bits(count);
+            return val;
+        }
+#endif
         core::uint64 val =
             (count == 64) ? acc_ : ((acc_ >> (n_ - count)) & ((core::uint64(1) << count) - 1));
         consume_bits(count);
@@ -196,6 +209,12 @@ void BitReader::consume_bits(unsigned int count) {
     if (n_ >= count) {
         consumed_ += count;
         n_ -= count;
+#if defined(OPENRAR_HAS_BMI1_64)
+        if (bmi1_) {
+            acc_ = arch::bextr_u64(acc_, 0, n_);
+            return;
+        }
+#endif
         acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
         return;
     }
@@ -208,7 +227,14 @@ void BitReader::consume_bits(unsigned int count) {
         unsigned int take = std::min(count, n_);
         consumed_ += take;
         n_ -= take;
-        acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
+#if defined(OPENRAR_HAS_BMI1_64)
+        if (bmi1_) {
+            acc_ = arch::bextr_u64(acc_, 0, n_);
+        } else
+#endif
+        {
+            acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
+        }
         count -= take;
     }
 }
@@ -300,21 +326,21 @@ core::uint32 HuffmanDecoder::decode(BitReader& reader) const {
         reader.consume_bits(len);
         return e & 0xFFFF;
     }
-    // Slow path: left aligned 15 bits
+    // Slow path: left aligned 15 bits. Branchless canonical prefix decode (H-20):
+    // decode_len_ is monotonically non-decreasing, so evaluating the conditions
+    // from 14 down to 11 via conditional moves eliminates variable-depth BPU stalls.
     core::uint32 bitfield = reader.peek_bits(15) << 1; // left align 15 in 16
     bitfield &= 0xFFFE;
     unsigned int bits = 15;
-    for (unsigned int i = QUICK_BITS + 1; i < 15; ++i) {
-        if (bitfield < decode_len_[i]) {
-            bits = i;
-            break;
-        }
-    }
+    if (bitfield < decode_len_[14]) bits = 14;
+    if (bitfield < decode_len_[13]) bits = 13;
+    if (bitfield < decode_len_[12]) bits = 12;
+    if (bitfield < decode_len_[11]) bits = 11;
     reader.consume_bits(bits);
     core::uint32 dist = bitfield - decode_len_[bits - 1];
     dist >>= (16 - bits);
     core::uint32 pos = decode_pos_[bits] + dist;
-    if (pos >= max_num_) pos = 0;
+    pos = (pos >= max_num_) ? 0 : pos;
     return decode_num_[pos];
 }
 
