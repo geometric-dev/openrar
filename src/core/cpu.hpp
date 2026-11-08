@@ -21,6 +21,7 @@ struct CpuFeatures {
     bool gfni{false}; // GFNI (leaf 7 ECX bit 8), gated on ZMM OS state
     bool vaes{false};
     bool vpclmulqdq{false};
+    bool bmi1{false};
 
     // ARM / ARM64 features
     bool neon{false};
