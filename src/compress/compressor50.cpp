@@ -1,6 +1,7 @@
 #include "compressor50.hpp"
 #include "arch/match_simd.hpp"
 #include "../core/thread_pool.hpp"
+#include "../core/cpu.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -9,6 +10,11 @@
 #include <memory>
 #if defined(_MSC_VER)
 #include <intrin.h>
+#endif
+#if (defined(_MSC_VER) && (defined(_M_AMD64) || defined(_M_X64))) ||                               \
+    ((defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__)))
+#include <immintrin.h>
+#define OPENRAR_HAS_AVX2_HASH 1
 #endif
 
 namespace openrar::compress {
@@ -718,9 +724,61 @@ void Compressor50::insert_position(core::uint64 pos) {
     }
 }
 
+#if defined(OPENRAR_HAS_AVX2_HASH) && !defined(OPENRAR_BIG_ENDIAN)
+alignas(32) inline constexpr uint8_t HASH_SHUFFLE_MASK256[32] = {0, 1, 2, 3, 1, 2, 3, 4, 2, 3, 4,
+                                                                 5, 3, 4, 5, 6, 4, 5, 6, 7, 5, 6,
+                                                                 7, 8, 6, 7, 8, 9, 7, 8, 9, 10};
+#endif
+
 inline void Compressor50::hash_range(core::uint64 from, core::uint64 to) {
+    const size_t win_mask = win_size_ - 1;
+
+#if defined(OPENRAR_HAS_AVX2_HASH) && !defined(OPENRAR_BIG_ENDIAN)
+    if (core::get_cpu_features().avx2) {
+        const __m256i mask =
+            _mm256_load_si256(reinterpret_cast<const __m256i*>(HASH_SHUFFLE_MASK256));
+        const __m256i mul_const = _mm256_set1_epi32(static_cast<int>(0x9e3779b1u));
+        alignas(32) core::uint32 h[8];
+
+        if (!is_large_window_) {
+            while (from + 8 <= to && from + 16 <= src_loaded_) {
+                const __m128i raw16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(
+                    &buf_data_[static_cast<size_t>(from - pos_base_)]));
+                const __m256i raw256 = _mm256_broadcastsi128_si256(raw16);
+                const __m256i words = _mm256_shuffle_epi8(raw256, mask);
+                const __m256i prod = _mm256_mullo_epi32(words, mul_const);
+                const __m256i hash_vec = _mm256_srli_epi32(prod, 32 - HASH_BITS);
+                _mm256_store_si256(reinterpret_cast<__m256i*>(h), hash_vec);
+
+                for (size_t i = 0; i < 8; ++i) {
+                    const core::uint32 pos = static_cast<core::uint32>(from + i);
+                    prev_[static_cast<size_t>(pos & win_mask)] = head_[h[i]];
+                    head_[h[i]] = pos;
+                }
+                from += 8;
+            }
+        } else {
+            while (from + 8 <= to && from + 16 <= src_loaded_) {
+                const __m128i raw16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(
+                    &buf_data_[static_cast<size_t>(from - pos_base_)]));
+                const __m256i raw256 = _mm256_broadcastsi128_si256(raw16);
+                const __m256i words = _mm256_shuffle_epi8(raw256, mask);
+                const __m256i prod = _mm256_mullo_epi32(words, mul_const);
+                const __m256i hash_vec = _mm256_srli_epi32(prod, 32 - HASH_BITS);
+                _mm256_store_si256(reinterpret_cast<__m256i*>(h), hash_vec);
+
+                for (size_t i = 0; i < 8; ++i) {
+                    const core::uint64 pos = from + i;
+                    prev64_[static_cast<size_t>(pos & win_mask)] = head64_[h[i]];
+                    head64_[h[i]] = pos;
+                }
+                from += 8;
+            }
+        }
+    }
+#endif
+
     if (!is_large_window_) {
-        const size_t win_mask = win_size_ - 1;
         while (from + 4 <= to && from + 8 <= src_loaded_) {
             // C-07: q >> 8k must expose the word at offset +k, which only
             // holds for a little-endian value.
