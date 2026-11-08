@@ -5,6 +5,7 @@
 #include "../../src/compress/stream_encoder.hpp"
 #include "../../src/compress/stream_decoder.hpp"
 #include "../../src/compress/arch/match_simd.hpp"
+#include "../../src/compress/arch/wildcopy_dispatch.hpp"
 #include "../../src/crypto/sha256.hpp"
 #include "../../src/compress/compress_plan.hpp"
 #include "test_support.hpp"
@@ -988,6 +989,46 @@ void test_match_length_tail_caps() {
         }
     }
     std::cout << "[PASS] match_length tail covers every byte of the cap\n";
+}
+
+void test_wildcopy_simd_parity() {
+    using namespace openrar::compress::arch;
+    const WildcopyFn simd_fn = select_wildcopy_kernel();
+
+    alignas(64) core::byte src_buf[1024];
+    alignas(64) core::byte dst_scalar[1024];
+    alignas(64) core::byte dst_simd[1024];
+
+    std::mt19937_64 rng(0x12345678ULL);
+    for (size_t i = 0; i < sizeof(src_buf); ++i) {
+        src_buf[i] = static_cast<core::byte>(rng() & 0xFF);
+    }
+
+    // Comprehensive differential test across distances 1..64 and lengths 1..256
+    for (size_t dist = 1; dist <= 64; ++dist) {
+        for (size_t len = 1; len <= 256; ++len) {
+            std::memset(dst_scalar, 0xAA, sizeof(dst_scalar));
+            std::memset(dst_simd, 0xAA, sizeof(dst_simd));
+
+            // Copy initial dist bytes to simulate valid history
+            std::memcpy(dst_scalar, src_buf, dist);
+            std::memcpy(dst_simd, src_buf, dist);
+
+            // Execute scalar pattern doubling
+            wildcopy_scalar(dst_scalar + dist, dst_scalar, dist, len, false);
+
+            // Execute SIMD kernel
+            simd_fn(dst_simd + dist, dst_simd, dist, len, false);
+
+            // Verify bit-identical results
+            REQUIRE(std::memcmp(dst_scalar + dist, dst_simd + dist, len) == 0);
+
+            // Verify strictly 0 overshoot past dist + len
+            REQUIRE(dst_simd[dist + len] == 0xAA);
+        }
+    }
+    std::cout
+        << "[PASS] wildcopy SIMD bit-identical parity against scalar (dist 1..64, len 1..256)\n";
 }
 
 void test_decompressor_lazy_alloc() {
@@ -4136,6 +4177,7 @@ static const openrar::test::Case k_cases[] = {
     {"test_huffman_builder_shrink", test_huffman_builder_shrink, false},
     {"test_huffman_builder_adversarial", test_huffman_builder_adversarial, false},
     {"test_match_length_tail_caps", test_match_length_tail_caps, false},
+    {"test_wildcopy_simd_parity", test_wildcopy_simd_parity, false},
     {"test_decompressor_lazy_alloc", test_decompressor_lazy_alloc, false},
     {"test_bit_reader_get_bits64", test_bit_reader_get_bits64, false},
     {"test_token_holds_every_distance_slot", test_token_holds_every_distance_slot, false},
