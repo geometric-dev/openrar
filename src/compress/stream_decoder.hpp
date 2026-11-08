@@ -58,6 +58,10 @@ public:
         flush_user_ = user;
     }
 
+    // Pre-reserve input staging scratch to eliminate allocations on streaming paths (Step 1.5)
+    void reserve_staging(size_t max_tail_bytes) { in_queue_.reserve(max_tail_bytes); }
+    bool prepare_window_for_test() { return decompressor_.prepare_window_for_test(); }
+
     // H-17: ceiling on output retained in-process when no flush sink is set
     // (aligned with Decompressor50::DEFAULT_STREAM_CAP to prevent unbounded retention).
     static constexpr core::uint64 MAX_RETAINED_OUTPUT = Decompressor50::DEFAULT_STREAM_CAP;
@@ -91,6 +95,9 @@ private:
     int (*flush_cb_)(void*, const core::byte*, size_t){nullptr};
     void* flush_user_{nullptr};
 };
+
+static_assert(sizeof(StreamDecoder) <= 64 * 1024,
+              "StreamDecoder per-instance state must be bounded within 64 KiB (Invariant I-16)");
 
 } // namespace openrar::compress
 
