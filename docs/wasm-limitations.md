@@ -224,6 +224,7 @@ Memory usage within the WASM module adheres to a three-tier classification:
 
 - Default peak engine footprint: method 3, `window_log2` 4 (1 MiB window) consumes $\approx 5 \times 1\text{ MiB} = 5\text{ MiB}$ peak engine memory.
 - Dynamic engine allocations are released deterministically at the conclusion of compression.
+- **Filter state (v2.3, Invariant I-16):** filter post-processing is lazily allocated per decoder — a compact 24-byte `FilterEntry` ring of at most 65,536 entries (1.5 MiB worst case) plus scratchpads sized to the actual block and capped at 1 MiB each. A no-filter archive allocates none of this. The 1.5 MiB static/module ceiling above is not a working-set budget and does not include these dynamic allocations.
 
 ### 4.4 No `Archive` deduplication / hardlinks / symlinks
 
