@@ -47,4 +47,5 @@ For active project roadmaps and living specifications, refer back to the [OpenRA
 | **v2.0.23** | Decompression Bomb Hardening, Bounded C ABI & Static Analysis | [Release Notes](v2.0.23-release-notes.md) |
 | **v2.1.1** | Real-Content Reconciliation & Greedy Default Ratchet | [Pre-Analysis](v2.1.0-pre-analysis.md) · [Implementation Plan](v2.1.0-implementation-plan.md) |
 | **v2.2.0** | Greedy Consolidation, -m4/-m5 Speed & Stream Write-Buffer | [Implementation Plan](v2.2.0-implementation-plan.md) · [Multi-Release Roadmap](v2.2-v2.4-roadmap.md) |
+| **v2.3.0** | Zero-Copy Completion, Zero-Allocation Decompression & Mechanical Sympathy | [Implementation Plan](v2.3.0-implementation-plan.md) · [Multi-Release Roadmap](v2.2-v2.4-roadmap.md) |
 | **v2.x Research** | Microarchitectural SIMD & Assembly Optimizations | [Research Agenda](v2.x-low-level-simd-assembly-research.md) · [Multi-Release Roadmap](v2.2-v2.4-roadmap.md) |
