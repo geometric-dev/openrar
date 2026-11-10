@@ -448,6 +448,38 @@ void filter_queue_overflow_fail_closed() {
     CHECK(dec.last_error() == DecompressErrorCode::Ok);
 }
 
+void window_commit_boundaries_aligned() {
+    using namespace openrar;
+    using namespace openrar::compress;
+
+    // Regression: grow_to() used to commit exactly n + tail_margin at a granule boundary,
+    // leaving committed_ = k * granule + 64. The next commit then started at an unaligned
+    // address, which mprotect() rejects (EINVAL) - every VM-path decode past ~2 MiB failed
+    // with AllocationFailed on Linux/macOS. VirtualAlloc rounds silently, so Windows hid it;
+    // asserting alignment here makes the defect visible on every platform.
+    const size_t kMiB = 1024 * 1024;
+    WindowBuffer w;
+    CHECK(w.init(128 * kMiB, 64)); // > 64 MiB: reserved address space (VM path) on 64-bit
+    if (w.reserved() == 0) return; // vector fallback (32-bit / WASM): no commit granules
+
+    // Step through exact granule boundaries, the sizes that triggered the defect.
+    for (size_t n = kMiB; n <= 16 * kMiB; n += kMiB) {
+        CHECK(w.grow_to(n));
+        CHECK(w.committed() >= n + 64); // I-15: margin committed behind the last usable byte
+        CHECK_EQ(w.committed() % 4096, 0u);
+    }
+    // Growth by the decoder's geometric pattern (256 KiB doubling) must also never fail.
+    WindowBuffer g;
+    CHECK(g.init(128 * kMiB, 64));
+    for (size_t n = 256 * 1024; n <= 128 * kMiB; n *= 2) {
+        CHECK(g.grow_to(n));
+    }
+    // Final window: the margin is committed and clamped to the reservation.
+    CHECK(g.grow_to(128 * kMiB));
+    CHECK(g.committed() >= 128 * kMiB + 64);
+    CHECK(g.committed() <= g.reserved());
+}
+
 struct StackThreadContext {
     bool success{false};
     std::vector<openrar::core::byte> comp;
@@ -534,6 +566,7 @@ int main(int argc, char* argv[]) {
         OPENRAR_CASE(allocation_zero_decompressor),
         OPENRAR_CASE(allocation_stream_steady_state),
         OPENRAR_CASE(window_hostile_declaration_peak),
+        OPENRAR_CASE(window_commit_boundaries_aligned),
         OPENRAR_CASE(filter_queue_overflow_fail_closed),
         OPENRAR_CASE(stack_usage_small_stack),
     };

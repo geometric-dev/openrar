@@ -205,7 +205,7 @@ def get_system_fingerprint(corpora: dict) -> dict:
     for name, path in corpora.items():
         corpus_meta.append({
             "name": name,
-            "path": str(path),
+            "path": f"build/m0_census/{name}",
             "bytes": path.stat().st_size,
             "sha256": sha256_file(path)
         })
@@ -370,10 +370,11 @@ def main():
             })
 
     envelope["runs"] = cells
-    envelope["current_binary"] = str(bin_path)
-    envelope["v2_0_23_release"] = {"binary": str(v2023_bin) if v2023_bin else "pending", "status": "measured" if v2023_bin else "pending"}
+    envelope["current_binary"] = bin_path.name
+    envelope["v2_0_23_release"] = {"binary": v2023_bin.name if v2023_bin else "pending", "status": "measured" if v2023_bin else "pending"}
 
-    report_json = ROOT / "docs" / "milestones" / "v2.1.0-m0-census-report.json"
+    report_json = ROOT / "build" / "m0-census-report.json"
+    report_json.parent.mkdir(parents=True, exist_ok=True)
     with open(report_json, "w", encoding="utf-8") as f:
         json.dump(envelope, f, indent=2)
 
