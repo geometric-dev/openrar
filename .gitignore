@@ -48,6 +48,7 @@ tests/out_*/
 
 # Generated coverage output
 tools/coverage-report.json
+*census*.json
 
 # WASM build outputs. These land INSIDE the npm package (wasm/js/dist/) so
 # the published tarball can actually resolve the './dist/*.js' its glue

@@ -158,12 +158,6 @@ core::uint32 BitReader::get_bits(unsigned int count) {
         n_ -= count;
         consumed_ += count;
         core::uint32 val = static_cast<core::uint32>(acc_ >> n_);
-#if defined(OPENRAR_HAS_BMI1_64)
-        if (bmi1_) {
-            acc_ = arch::bextr_u64(acc_, 0, n_);
-            return val;
-        }
-#endif
         acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
         return val;
     }
@@ -181,13 +175,6 @@ core::uint64 BitReader::get_bits64(unsigned int count) {
     if (count > 64) count = 64;
     if (n_ < count) refill();
     if (n_ >= count) {
-#if defined(OPENRAR_HAS_BMI1_64)
-        if (bmi1_) {
-            core::uint64 val = arch::bextr_u64(acc_, n_ - count, count);
-            consume_bits(count);
-            return val;
-        }
-#endif
         core::uint64 val =
             (count == 64) ? acc_ : ((acc_ >> (n_ - count)) & ((core::uint64(1) << count) - 1));
         consume_bits(count);
@@ -209,12 +196,6 @@ void BitReader::consume_bits(unsigned int count) {
     if (n_ >= count) {
         consumed_ += count;
         n_ -= count;
-#if defined(OPENRAR_HAS_BMI1_64)
-        if (bmi1_) {
-            acc_ = arch::bextr_u64(acc_, 0, n_);
-            return;
-        }
-#endif
         acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
         return;
     }
@@ -227,14 +208,7 @@ void BitReader::consume_bits(unsigned int count) {
         unsigned int take = std::min(count, n_);
         consumed_ += take;
         n_ -= take;
-#if defined(OPENRAR_HAS_BMI1_64)
-        if (bmi1_) {
-            acc_ = arch::bextr_u64(acc_, 0, n_);
-        } else
-#endif
-        {
-            acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
-        }
+        acc_ &= (n_ ? (core::uint64(1) << n_) - 1 : 0);
         count -= take;
     }
 }
@@ -527,13 +501,16 @@ bool WindowBuffer::grow_to(size_t n) {
         size_ = n;
         return true;
     }
-    if (n > committed_) {
+    if (n + tail_margin_ > committed_) {
         // Commit whole granules; committed pages read as zero.
-        size_t target =
-            (n + WINDOW_COMMIT_GRANULE - 1) / WINDOW_COMMIT_GRANULE * WINDOW_COMMIT_GRANULE;
-        if (n == logical_ || target < n + tail_margin_) {
-            target = std::max(target, n + tail_margin_);
-        }
+        // The I-15 margin must be committed behind the last usable byte, so round the
+        // margin-INCLUSIVE end up to a whole granule. Every intermediate commit boundary then
+        // stays page-aligned: the next grow starts its commit at committed_, and POSIX
+        // mprotect() rejects an unaligned start address with EINVAL (VirtualAlloc rounds it
+        // silently, which is why committing n + margin exactly only broke off Windows). Only
+        // the final clamp to reserved_ can be unaligned, and nothing is committed after it.
+        size_t target = (n + tail_margin_ + WINDOW_COMMIT_GRANULE - 1) / WINDOW_COMMIT_GRANULE *
+                        WINDOW_COMMIT_GRANULE;
         if (target > reserved_) target = reserved_;
         const size_t delta = target - committed_;
 #if defined(_WIN32)

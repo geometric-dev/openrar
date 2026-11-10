@@ -24,7 +24,22 @@
 #include <immintrin.h>
 #include <tmmintrin.h>
 #define OPENRAR_HAS_X86_WILDCOPY 1
-#elif (defined(__aarch64__) || defined(__ARM_NEON) || defined(_M_ARM64)) &&                        \
+#endif
+
+// GCC/Clang refuse to inline SSSE3/AVX2 intrinsics into functions compiled for the baseline
+// x86-64 target, and the build does not pass -mssse3/-mavx2 globally (runtime dispatch must
+// stay safe on older CPUs). Each kernel therefore carries a function-level target attribute,
+// the same convention as match_simd.hpp. MSVC needs nothing.
+#if defined(OPENRAR_HAS_X86_WILDCOPY) && (defined(__GNUC__) || defined(__clang__))
+#define OPENRAR_WILDCOPY_TARGET_SSSE3 __attribute__((target("ssse3")))
+#define OPENRAR_WILDCOPY_TARGET_AVX2 __attribute__((target("avx2")))
+#else
+#define OPENRAR_WILDCOPY_TARGET_SSSE3
+#define OPENRAR_WILDCOPY_TARGET_AVX2
+#endif
+
+#if !defined(OPENRAR_HAS_X86_WILDCOPY) &&                                                          \
+    (defined(__aarch64__) || defined(__ARM_NEON) || defined(_M_ARM64)) &&                          \
     !defined(OPENRAR_BIG_ENDIAN)
 #include <arm_neon.h>
 #define OPENRAR_HAS_NEON_WILDCOPY 1
@@ -87,6 +102,7 @@ alignas(16) inline constexpr uint8_t SHUFFLE_MASKS[16][16] = {
     {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0} // 15
 };
 
+OPENRAR_WILDCOPY_TARGET_SSSE3
 inline void wildcopy_ssse3(core::byte* dst, const core::byte* src, size_t distance, size_t length,
                            [[maybe_unused]] bool can_overshoot) noexcept {
     if (distance == 1) {
@@ -209,6 +225,7 @@ inline void wildcopy_ssse3(core::byte* dst, const core::byte* src, size_t distan
     }
 }
 
+OPENRAR_WILDCOPY_TARGET_AVX2
 inline void wildcopy_avx2(core::byte* dst, const core::byte* src, size_t distance, size_t length,
                           bool can_overshoot) noexcept {
     // If distance >= 32 and length >= 32, copy in 32-byte vector increments

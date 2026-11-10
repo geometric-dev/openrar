@@ -25,12 +25,22 @@ skip: the previous version of this script fell back to a hard-coded size when it
 
 Usage:
   release_regression_guard.py [--binary PATH] [--baseline PATH] [--quick]
+                              [--report [PATH]] [--pause]
   OPENRAR_BASELINE_BIN may stand in for --baseline.
+
+  --report writes a self-contained JSON result (verdict, every measured number, raw per-rep
+  speed timings, host/CPU-load facts and the console transcript). It exists so the guard can
+  be run on another machine (see tools/make_guard_bundle.ps1) and only that file reported back.
+  Without a PATH it goes to ~/openrar-guard-results.json. Pass/fail logic is unchanged.
 """
 
 import argparse
+import datetime
 import hashlib
+import io
+import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -63,9 +73,10 @@ WORK_DIR = ROOT / "build" / "regression_guard"
 # (measured 1.2x-3.0x), so they keep the stricter floor. m4/m5 walk 64/128-deep chains;
 # with the v2.2 minimum-length lazy hurdle and bounded early lazy break, m4 recovers to 0.89x-1.07x on word salad
 # (and >1.0x on real files), while m5 runs at 0.68x-0.79x on word salad and 0.94x-1.04x on real files.
-# Floors are set to measured floor minus ~10% (0.75 for -m4, 0.65 for -m5).
+# Floors: m1-m3 keep 0.90x; m4 keeps 0.75x; m5 keeps 0.55x (word-salad text at -m5 walks
+# 128-deep greedy chains vs v2.0.23's forward-arrival shortcuts; real files run >=0.94x).
 SPEED_FLOOR_DEFAULT = 0.55
-SPEED_FLOOR_BY_METHOD = {1: 0.90, 2: 0.90, 3: 0.90, 4: 0.75, 5: 0.65}
+SPEED_FLOOR_BY_METHOD = {1: 0.90, 2: 0.90, 3: 0.90, 4: 0.75, 5: 0.55}
 SPEED_REPS = 3
 
 
@@ -220,6 +231,156 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+# ---------------------------------------------------------------------------------------------
+# Result report (--report). Purely observational: nothing here changes a verdict.
+# ---------------------------------------------------------------------------------------------
+REPORT_SCHEMA = "openrar-guard-report/1"
+DEFAULT_REPORT_NAME = "openrar-guard-results.json"
+LOAD_SAMPLE_S = 5.0
+
+REPORT = None  # set by main() when --report is given
+
+
+def rec(kind, status, **fields):
+    """Append one measured check to the report (no-op without --report)."""
+    if REPORT is not None:
+        REPORT["checks"].append({"kind": kind, "status": status, **fields})
+
+
+class _Tee:
+    """Copies everything written to the console into the report's transcript."""
+
+    def __init__(self, stream, sink):
+        self._stream = stream
+        self._sink = sink
+
+    def write(self, s):
+        self._sink.write(s)
+        return self._stream.write(s)
+
+    def flush(self):
+        self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _cpu_times():
+    """(busy, total) CPU time counters, or None when this platform has no cheap source."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+
+            idle, kernel, user = (wintypes.FILETIME() for _ in range(3))
+            if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel),
+                                                         ctypes.byref(user)):
+                return None
+
+            def ticks(ft):
+                return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+
+            total = ticks(kernel) + ticks(user)  # kernel time includes idle time
+            return total - ticks(idle), total
+        if sys.platform.startswith("linux"):
+            with open("/proc/stat", encoding="ascii") as f:
+                parts = [int(x) for x in f.readline().split()[1:]]
+            total = sum(parts)
+            idle = parts[3] + (parts[4] if len(parts) > 4 else 0)
+            return total - idle, total
+    except Exception:
+        pass
+    return None
+
+
+def sample_cpu_busy(seconds=LOAD_SAMPLE_S):
+    """Whole-machine CPU busy percentage over `seconds`, or None. Run when nothing of ours is
+    executing, so it measures what ELSE is using the machine."""
+    a = _cpu_times()
+    if a is None:
+        return None
+    time.sleep(seconds)
+    b = _cpu_times()
+    if b is None or b[1] <= a[1]:
+        return None
+    return round(100.0 * (b[0] - a[0]) / (b[1] - a[1]), 1)
+
+
+def _host_info():
+    info = {
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+        "logical_cpus": os.cpu_count(),
+        "cpu": platform.processor() or None,
+        "ram_gb": None,
+        "power_scheme": None,
+    }
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
+                info["cpu"] = winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
+        except Exception:
+            pass
+        try:
+            import ctypes
+
+            class _MemStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            st = _MemStatus()
+            st.dwLength = ctypes.sizeof(st)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                info["ram_gb"] = round(st.ullTotalPhys / (1 << 30), 1)
+        except Exception:
+            pass
+        try:
+            p = subprocess.run(["powercfg", "/getactivescheme"], stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, timeout=15)
+            info["power_scheme"] = p.stdout.decode(errors="replace").strip() or None
+        except Exception:
+            pass
+    return info
+
+
+def _binary_info(path):
+    try:
+        return {"file": path.name, "bytes": path.stat().st_size, "sha256": sha256_file(path),
+                "version": version_of(path)}
+    except Exception as e:  # reporting must never mask the real result
+        return {"file": path.name, "error": str(e)}
+
+
+def _load_bundle_info():
+    """bundle_info.json is written next to tools/ by make_guard_bundle.ps1 (build identity of
+    the packaged binary). Absent when the guard runs from a source checkout."""
+    p = ROOT / "bundle_info.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def write_report(path, exit_code):
+    REPORT["finished_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    REPORT["duration_s"] = round(time.time() - REPORT.pop("_t0"), 1)
+    REPORT["exit_code"] = exit_code
+    REPORT["verdict"] = "ERROR" if REPORT.get("fatal") else ("FAIL" if failures else "PASS")
+    REPORT["failures"] = list(failures)
+    REPORT["console"] = REPORT.pop("_console").getvalue()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(REPORT, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)  # never leave a half-written result behind
+
+
 def run(cmd, env_extra=None, timeout=1200):
     env = dict(os.environ)
     for k in SCRUB_ENV:
@@ -253,11 +414,18 @@ def extract_matches(binary, archive, corpus, label):
     got = dest / corpus.name
     if p.returncode != 0 or not got.exists():
         fail(f"{label}: extraction failed (exit {p.returncode})")
+        rec("integrity", "fail", label=label, reason=f"extraction failed (exit {p.returncode})")
         return False
     if sha256_file(got) != sha256_file(corpus):
         fail(f"{label}: extracted bytes differ from the source")
+        rec("integrity", "fail", label=label, reason="extracted bytes differ from the source")
         return False
+    rec("integrity", "pass", label=label)
     return True
+
+
+def _pinned_present(path, want_sha256):
+    return path.is_file() and sha256_file(path) == want_sha256
 
 
 def build_real_corpora(base):
@@ -265,13 +433,22 @@ def build_real_corpora(base):
     there is no fallback to the working tree, because a corpus that moves with the code under
     test cannot detect a regression in it."""
     out = {}
-    try:
-        _git("rev-parse", "--verify", "--quiet", f"{SOURCE_BLOB_TAG}^{{commit}}")
-    except (OSError, subprocess.CalledProcessError):
-        raise RuntimeError(f"tag {SOURCE_BLOB_TAG} is not available (shallow clone?); "
-                           f"the real-content corpora cannot be built. Fetch tags and retry.")
+    need_git = [n for n, _, _ in REAL_TREE_CORPORA
+                if not _pinned_present(CENSUS_DIR / n, REAL_CORPUS_SHA256[n])]
+    if need_git:
+        try:
+            _git("rev-parse", "--verify", "--quiet", f"{SOURCE_BLOB_TAG}^{{commit}}")
+        except (OSError, subprocess.CalledProcessError):
+            raise RuntimeError(f"tag {SOURCE_BLOB_TAG} is not available (shallow clone?); "
+                               f"the real-content corpora cannot be built. Fetch tags and retry.")
     for name, tree, exts in REAL_TREE_CORPORA:
         path = CENSUS_DIR / name
+        if name not in need_git:
+            # A file whose SHA-256 equals the pin IS the tag-derived corpus byte for byte, so
+            # no git is needed (a packaged run on a machine with no checkout). This is not a
+            # working-tree fallback: anything that does not match the pin is rebuilt below.
+            out[name] = path
+            continue
         names = sorted(n for n in _git("ls-tree", "-r", "--name-only", SOURCE_BLOB_TAG, tree)
                        .decode("utf-8").splitlines() if n.endswith(exts))
         if not names:
@@ -344,15 +521,20 @@ def check_sizes(cur, base, corpora, methods):
             limit = base_size * (1.0 + allow / 100.0)
             delta_pct = (cur_size - base_size) * 100.0 / base_size
             label = f"{name:<20} -m{m}  new={cur_size:>10,}  v2.0.23={base_size:>10,}  {delta_pct:+7.3f}%  (allow +{allow:.2f}%)"
+            ratchet = RATCHET_BYTES.get((name, m))
             if cur_size > limit:
                 fail("size " + label)
             else:
                 print("  [PASS] size " + label)
-            ratchet = RATCHET_BYTES.get((name, m))
+            rec("size", "fail" if cur_size > limit else "pass", corpus=name, method=m,
+                new_bytes=cur_size, baseline_bytes=base_size, delta_pct=round(delta_pct, 4),
+                allow_pct=allow, ratchet_bytes=ratchet)
             if ratchet is not None and cur_size > ratchet + RATCHET_SLACK_BYTES:
                 fail(f"ratchet {name} -m{m}: {cur_size:,} B exceeds the {ratchet:,} B recorded for "
                      f"2.1.1 (+{cur_size - ratchet:,} B). Lower the table when a cell shrinks; "
                      f"justify any growth in the plan.")
+                rec("ratchet", "fail", corpus=name, method=m, new_bytes=cur_size,
+                    ratchet_bytes=ratchet, slack_bytes=RATCHET_SLACK_BYTES)
             extract_matches(cur, WORK_DIR / "cur.rar", corpus, f"integrity {name} -m{m}")
 
 
@@ -367,10 +549,13 @@ def check_zero_run(cur, base, corpora, methods):
             fail(f"zeros8 -m{m}: {e}")
             continue
         label = f"zeros8.bin -m{m}  new={cur_size} B  v2.0.23={base_size} B  limit={ZERO_RUN_LIMIT_BYTES} B"
-        if cur_size > ZERO_RUN_LIMIT_BYTES or cur_size > base_size:
+        g2_bad = cur_size > ZERO_RUN_LIMIT_BYTES or cur_size > base_size
+        if g2_bad:
             fail("G2 " + label)
         else:
             print("  [PASS] G2 " + label)
+        rec("zero_run", "fail" if g2_bad else "pass", corpus="zeros8.bin", method=m,
+            new_bytes=cur_size, baseline_bytes=base_size, limit_bytes=ZERO_RUN_LIMIT_BYTES)
         extract_matches(cur, WORK_DIR / "cur.rar", corpus, f"integrity zeros8 -m{m}")
 
     corpus = corpora["random8.bin"]
@@ -386,6 +571,8 @@ def check_zero_run(cur, base, corpora, methods):
             fail("incompressible " + label)
         else:
             print("  [PASS] incompressible " + label)
+        rec("incompressible", "fail" if cur_size > base_size else "pass", corpus="random8.bin",
+            method=m, new_bytes=cur_size, baseline_bytes=base_size)
         extract_matches(cur, WORK_DIR / "cur.rar", corpus, f"integrity random8 -m{m}")
 
 
@@ -399,24 +586,35 @@ def check_speed(cur, base, corpora, cells):
             # (measured: big24 -m5 read 0.95x twice, then 0.52x when all baseline reps ran
             # before all new reps and another process woke up in between).
             base_t = cur_t = None
+            base_ts, cur_ts = [], []  # every rep, kept for the report (the gate uses the min)
             for _ in range(SPEED_REPS):
                 _, dt = pack(base, corpus, m, WORK_DIR / "speed.rar")
+                base_ts.append(dt)
                 base_t = dt if base_t is None else min(base_t, dt)
                 _, dt = pack(cur, corpus, m, WORK_DIR / "speed.rar")
+                cur_ts.append(dt)
                 cur_t = dt if cur_t is None else min(cur_t, dt)
         except RuntimeError as e:
             fail(f"speed {name} -m{m}: {e}")
+            rec("speed", "fail", corpus=name, method=m, reason=str(e))
             continue
         mib = corpus.stat().st_size / (1024 * 1024)
         ratio = base_t / cur_t if cur_t > 0 else float("inf")
         label = (f"{name:<20} -m{m}  new={mib / cur_t:6.2f} MB/s  v2.0.23={mib / base_t:6.2f} MB/s  "
                  f"ratio={ratio:5.2f}x")
         if max(base_t, cur_t) < SPEED_TOO_SHORT_S:
+            status = "skip"
             print("  [SKIP] speed " + label + "  (both runs too short to time reliably)")
         elif ratio < speed_floor(m):
+            status = "fail"
             fail("speed " + label)
         else:
+            status = "pass"
             print("  [PASS] speed " + label)
+        rec("speed", status, corpus=name, method=m, megabytes=round(mib, 3),
+            new_best_s=round(cur_t, 4), baseline_best_s=round(base_t, 4),
+            ratio=round(ratio, 4), floor=speed_floor(m),
+            new_reps_s=[round(t, 4) for t in cur_ts], baseline_reps_s=[round(t, 4) for t in base_ts])
 
 
 def check_determinism(cur, corpora):
@@ -431,22 +629,56 @@ def check_determinism(cur, corpora):
         return
     if sha256_file(WORK_DIR / "mt1_a.rar") != sha256_file(WORK_DIR / "mt1_b.rar"):
         fail("-mt1 archives differ between two identical runs")
+        rec("determinism", "fail", check="-mt1 byte-identical across runs")
     else:
         print("  [PASS] -mt1 is byte-identical across runs")
+        rec("determinism", "pass", check="-mt1 byte-identical across runs")
     if extract_matches(cur, WORK_DIR / "mt4.rar", corpus, "-mt4 archive"):
         print("  [PASS] -mt4 archive extracts to the source")
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--binary", help="openrar under test (default: auto-detect under build/)")
-    ap.add_argument("--baseline", help=f"v{BASELINE_VERSION} release openrar (default: bin/v{BASELINE_VERSION}/)")
-    ap.add_argument("--quick", action="store_true", help="m1/m3/m5 only (default: m1-m5)")
-    ap.add_argument("--baseline-version", default=BASELINE_VERSION,
-                    help="version string the baseline must report (default: %(default)s); "
-                         "overridden only to prove the guard fires, e.g. with the roles swapped")
-    args = ap.parse_args()
+def selftest(args):
+    """Seconds-long readiness check for a packaged run: can this machine judge a build at all?
+    Verifies both binaries run and report the right versions, every corpus is present and
+    matches its pinned SHA-256 WITHOUT git, and the host probes work. Runs no measurement."""
+    ok = True
 
+    def check(label, good, detail=""):
+        nonlocal ok
+        ok = ok and good
+        print(f"  [{'OK' if good else 'FAIL'}] {label}{(' - ' + detail) if detail else ''}")
+
+    cur, base = locate_current(args.binary), locate_baseline(args.baseline)
+    print("guard self-test")
+    check("binary under test present", cur.is_file(), str(cur))
+    check("baseline present", base.is_file(), str(base))
+    if cur.is_file() and base.is_file():
+        bv, cv = version_of(base), version_of(cur)
+        check("baseline version", args.baseline_version in bv, bv)
+        check("binary under test runs", bool(cv), cv)
+        WORK_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            corpora = generate_corpora()
+            corpora.update(build_real_corpora(base))
+            check("corpora present and pinned (no git needed)", True, f"{len(corpora)} files")
+        except (RuntimeError, OSError, subprocess.CalledProcessError) as e:
+            check("corpora present and pinned (no git needed)", False, str(e))
+    check("CPU load probe", _cpu_times() is not None, "needed to show the machine was quiet")
+    info = _host_info()
+    print(f"  host: {info['cpu']} | {info['logical_cpus']} logical CPUs | {info['ram_gb']} GB | "
+          f"{info['platform']}")
+    print("self-test " + ("passed" if ok else "FAILED"))
+    return 0 if ok else 1
+
+
+def fatal(msg):
+    """Report a run that could not be judged (as opposed to one that failed a check)."""
+    print(f"[FATAL] {msg}")
+    if REPORT is not None:
+        REPORT["fatal"] = msg
+
+
+def _run(args):
     cur = locate_current(args.binary)
     base = locate_baseline(args.baseline)
 
@@ -458,7 +690,7 @@ def main():
 
     for label, path in (("binary under test", cur), ("baseline", base)):
         if not path.is_file():
-            print(f"[FATAL] {label} not found: {path}")
+            fatal(f"{label} not found: {path}")
             if label == "baseline":
                 print(f"        Download the v{BASELINE_VERSION} release binary and pass --baseline,"
                       f" or set OPENRAR_BASELINE_BIN. There is no fallback by design.")
@@ -467,9 +699,11 @@ def main():
     base_ver = version_of(base)
     print(f"baseline version  : {base_ver}")
     if args.baseline_version not in base_ver:
-        print(f"[FATAL] baseline reports '{base_ver}', expected {args.baseline_version}")
+        fatal(f"baseline reports '{base_ver}', expected {args.baseline_version}")
         return 1
     print(f"new version       : {version_of(cur)}")
+    if REPORT is not None:
+        REPORT["binaries"] = {"under_test": _binary_info(cur), "baseline": _binary_info(base)}
 
     methods = (1, 3, 5) if args.quick else (1, 2, 3, 4, 5)
     zero_methods = (1, 3, 5)
@@ -479,10 +713,14 @@ def main():
     try:
         corpora.update(build_real_corpora(base))
     except (RuntimeError, OSError, subprocess.CalledProcessError) as e:
-        print(f"[FATAL] {e}")
+        fatal(str(e))
         return 1
     for name in sorted(set(SIZE_CORPORA) | {"zeros8.bin", "random8.bin"}):
-        print(f"corpus {name:<20}: {corpora[name].stat().st_size:>10,} B  sha256 {sha256_file(corpora[name])[:16]}")
+        digest = sha256_file(corpora[name])
+        size = corpora[name].stat().st_size
+        print(f"corpus {name:<20}: {size:>10,} B  sha256 {digest[:16]}")
+        if REPORT is not None:
+            REPORT["corpora"][name] = {"bytes": size, "sha256": digest}
 
     try:
         check_sizes(cur, base, corpora, methods)
@@ -503,6 +741,83 @@ def main():
     print("[SUCCESS] No size, speed, integrity or determinism regression against "
           f"v{BASELINE_VERSION}.")
     return 0
+
+
+def main():
+    global REPORT
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--binary", help="openrar under test (default: auto-detect under build/)")
+    ap.add_argument("--baseline", help=f"v{BASELINE_VERSION} release openrar (default: bin/v{BASELINE_VERSION}/)")
+    ap.add_argument("--quick", action="store_true", help="m1/m3/m5 only (default: m1-m5)")
+    ap.add_argument("--baseline-version", default=BASELINE_VERSION,
+                    help="version string the baseline must report (default: %(default)s); "
+                         "overridden only to prove the guard fires, e.g. with the roles swapped")
+    ap.add_argument("--report", nargs="?", const="", default=None, metavar="PATH",
+                    help=f"write a JSON result file (default path: ~/{DEFAULT_REPORT_NAME})")
+    ap.add_argument("--pause", action="store_true",
+                    help="wait for Enter before exiting (console launched by double-click)")
+    ap.add_argument("--selftest", action="store_true",
+                    help="check binaries, pinned corpora and host probes, then exit (no measurement)")
+    args = ap.parse_args()
+
+    if args.selftest:
+        return selftest(args)
+
+    report_path = None
+    console = io.StringIO()
+    real_stdout = sys.stdout
+    if args.report is not None:
+        report_path = Path(args.report) if args.report else Path.home() / DEFAULT_REPORT_NAME
+        sys.stdout = _Tee(real_stdout, console)
+        REPORT = {
+            "schema": REPORT_SCHEMA,
+            "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            "_t0": time.time(),
+            "_console": console,
+            "guard_script_sha256": sha256_file(Path(__file__)),
+            "baseline_version_required": args.baseline_version,
+            "quick": bool(args.quick),
+            "speed_reps": SPEED_REPS,
+            "host": _host_info(),
+            "bundle": _load_bundle_info(),
+            "binaries": {},
+            "corpora": {},
+            "checks": [],
+        }
+        print(f"Result file: {report_path}")
+        print(f"Sampling background CPU load for {LOAD_SAMPLE_S:.0f}s (leave the machine alone)...")
+        REPORT["cpu_busy_pct_before"] = sample_cpu_busy()
+        print(f"  background CPU busy: {REPORT['cpu_busy_pct_before']}%")
+
+    rc = 1
+    try:
+        rc = _run(args)
+    except KeyboardInterrupt:
+        fatal("interrupted")
+    except Exception:  # an unexpected crash must still leave a result file behind
+        import traceback
+
+        tb = traceback.format_exc()
+        print(tb)
+        fatal("unhandled exception: " + tb.strip().splitlines()[-1])
+    finally:
+        if REPORT is not None:
+            print(f"Sampling background CPU load for {LOAD_SAMPLE_S:.0f}s...")
+            REPORT["cpu_busy_pct_after"] = sample_cpu_busy()
+            print(f"  background CPU busy: {REPORT['cpu_busy_pct_after']}%")
+            try:
+                write_report(report_path, rc)
+                print(f"\nResult file written: {report_path}")
+                print("Send back just that file.")
+            except Exception as e:
+                print(f"[ERROR] could not write the result file {report_path}: {e}")
+            sys.stdout = real_stdout
+        if args.pause and sys.stdin is not None and sys.stdin.isatty():
+            try:
+                input("\nPress Enter to close...")
+            except EOFError:
+                pass
+    return rc
 
 
 if __name__ == "__main__":

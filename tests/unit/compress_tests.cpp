@@ -4,6 +4,7 @@
 #include "../../src/compress/decompressor50.hpp"
 #include "../../src/compress/stream_encoder.hpp"
 #include "../../src/compress/stream_decoder.hpp"
+#include "../../src/compress/arch/hash_simd.hpp"
 #include "../../src/compress/arch/match_simd.hpp"
 #include "../../src/compress/arch/wildcopy_dispatch.hpp"
 #include "../../src/compress/arch/bextr.hpp"
@@ -1045,25 +1046,15 @@ void test_hash_range_avx2_parity() {
         return (val * 0x9e3779b1u) >> (32 - HASH_BITS);
     };
 
-#if (defined(_MSC_VER) && (defined(_M_AMD64) || defined(_M_X64))) ||                               \
-    ((defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__)))
+#if defined(OPENRAR_HAS_AVX2_HASH)
     if (core::get_cpu_features().avx2) {
+        // Exercises the production kernel (arch::hash8_avx2), the same one
+        // Compressor50::hash_range calls, at every byte offset of the buffer.
         constexpr core::uint32 HASH_BITS = 17;
-        alignas(32) static const uint8_t MASK[32] = {0, 1, 2, 3, 1, 2, 3, 4, 2, 3, 4,
-                                                     5, 3, 4, 5, 6, 4, 5, 6, 7, 5, 6,
-                                                     7, 8, 6, 7, 8, 9, 7, 8, 9, 10};
-        const __m256i vmask = _mm256_load_si256(reinterpret_cast<const __m256i*>(MASK));
-        const __m256i mul_const = _mm256_set1_epi32(static_cast<int>(0x9e3779b1u));
 
         for (size_t offset = 0; offset + 16 <= sizeof(buf); ++offset) {
-            const __m128i raw16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&buf[offset]));
-            const __m256i raw256 = _mm256_broadcastsi128_si256(raw16);
-            const __m256i words = _mm256_shuffle_epi8(raw256, vmask);
-            const __m256i prod = _mm256_mullo_epi32(words, mul_const);
-            const __m256i hash_vec = _mm256_srli_epi32(prod, 32 - HASH_BITS);
-
-            alignas(32) core::uint32 simd_h[8];
-            _mm256_store_si256(reinterpret_cast<__m256i*>(simd_h), hash_vec);
+            core::uint32 simd_h[8];
+            openrar::compress::arch::hash8_avx2<HASH_BITS>(&buf[offset], simd_h);
 
             for (size_t i = 0; i < 8; ++i) {
                 core::uint32 expected = scalar_hash(&buf[offset + i]);

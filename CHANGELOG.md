@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Microarchitectural hardware acceleration and ISA recovery (Chunk 2 / W2):**
   - Implemented overlapping LZ wildcopy kernel with pattern doubling in `src/compress/arch/wildcopy_dispatch.hpp` dispatched through `core::get_cpu_features()`, accelerating `ApplyEngine::copy_match` in `src/compress/decompressor50.cpp` with 100% thread parity and bit-identical digests (Invariant I-1).
   - Implemented AVX2 8-wide batch hashing in `Compressor50::hash_range` (`src/compress/compressor50.cpp`) using `_mm256_mullo_epi32` vector multiplication with scalar fallback and C-07 big-endian guard.
-  - Implemented BMI1 hardware bitfield extraction in `src/compress/arch/bextr.hpp` using `_bextr_u32` / `_bextr_u64` in `BitOutput::put_bits` (`src/compress/compressor50.hpp`) and `BitReader::get_bits`/`consume_bits` (`src/compress/decompressor50.cpp`, `decompressor50.hpp`).
+  - Added BMI1 hardware bitfield extraction primitives in `src/compress/arch/bextr.hpp` with bit-exact parity testing against scalar implementations (`tests/unit/compress_tests.cpp`). Hot-path bit reader integration was refuted under empirical kill-gate profiling (out-of-line ABI call / uop latency regression) and excised to maintain peak throughput.
   - Implemented branchless monotonic conditional-move Huffman decoding in `HuffmanDecoder::decode` (`src/compress/decompressor50.hpp`), replacing prefix search loops with `cmov` sequences and eliminating branch misprediction stalls.
   - Added CPUID detection for BMI1 bitstream support in `src/core/cpu.cpp` and `src/core/cpu.hpp`.
 
