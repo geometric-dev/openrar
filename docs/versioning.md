@@ -107,18 +107,78 @@ soname/dll file version automatically. Embedders keep probing
 `openrar_version() == OPENRAR_DLL_API_VERSION` at startup per
 `docs/dll-integration-spec.md`.
 
+## Branch Naming & Experiment Promotion Policy
+
+To prevent premature release commitment, history pollution, and shipping unverified regressions, the repository strictly decouples exploratory research from released code:
+
+1. **Prohibition of Prospective Version Branches:**
+   - **Never name an exploratory or developmental branch after a prospective release version** (e.g., branches named `v2.1`, `v2.2`, or `v2.3` used as development sandboxes are strictly prohibited).
+   - Naming an unproven branch after a version creates premature psychological and administrative lock-in, encouraging the premature stamping and tagging of broken or regressing code.
+
+2. **Experiment Branches (`exp/<topic>`):**
+   - All speculative optimizations, algorithm prototypes, and microarchitectural trials must live on dedicated research branches prefixed with `exp/` (e.g., `exp/bextr-bitreader`, `exp/simd-wildcopy`, `exp/batch-hash-avx2`).
+   - Every active experiment branch is recorded in the Roadmap (§11 Discovery & Experiment Register) with its designated kill gate.
+   - Experiment branches are **fully disposable, squashable, and rebaseable**.
+   - If a candidate fails its kill gate (as occurred with the forward-arrival parser in Arc 2.1 or BEXTR in H-20), the branch is squashed and archived under `archive/exp-<topic>` or pruned completely. **Failed experiments must never leave residual debt in trunk or release branches.**
+
+3. **Feature Promotion (`feat/<topic>` → `master`):**
+   - Only when an experiment passes all kill gates and demonstrates verified, reproducible improvements against baseline (`v2.0.23`) is it promoted.
+   - The candidate is squashed into atomic, production-quality commits on a `feat/<topic>` branch with complete test and benchmark receipts, then merged to `master`.
+
+4. **Release Branches (`release/vX.Y`):**
+   - Release staging branches (e.g., `release/v2.3`) are cut exclusively from `master` when a milestone's promoted features are complete and entering final stabilization.
+   - Release tags (`vX.Y.Z`) and CMake version bumps are permitted **only after** passing the 4-leg Release Qualification Gate.
+
+---
+
+## Release Qualification Gate ("Worthwhile Update" Enforcement)
+
+A version must never be stamped as a production release, version-bumped in `CMakeLists.txt`, or tagged in git until it has completed and passed the **Release Qualification Gate (RQG)** against the certified baseline (`v2.0.23` or the latest qualified GA release).
+
+Releases are strictly gated on proving a **meaningful, verified net improvement** without introducing regressions or inferior logic. Development and experimental work (e.g., hypothesis spikes, experimental parsers, ISA prototypes) must remain on feature or development branches; they must never be released to consumers without empirical qualification.
+
+Every release candidate must pass all four qualification legs:
+
+1. **Hard Correctness & Interop (Fail-Closed):**
+   - 100% pass across the full test matrix (`ctest` across all 56+ suites).
+   - Bit-exact roundtrip parity across all 30 golden test cells across methods `-m0` through `-m5`.
+   - External oracle decompression parity (`unrar`, `7-zip`) verified on reference archives.
+
+2. **Non-Regression Guard (`tools/release_regression_guard.py`):**
+   - Candidate binary must be evaluated against the certified baseline (`v2.0.23`).
+   - Must achieve `[SUCCESS]` with zero unexplained size regressions.
+   - Ratchet ceiling: no size regression on deterministic corpora without prior registration in the hypothesis register.
+   - Throughput floors strictly enforced: `-m1`..`-m3` $\ge 90\%$, `-m4` $\ge 75\%$, `-m5` $\ge 65\%$ of baseline.
+
+3. **Empirical Optimization Receipts & Kill-Gate Adjudication:**
+   - Any feature claiming microarchitectural speedup (SIMD, BMI, prefetching, wildcopy) must include empirical benchmark logs ("the receipts") on reference hardware across **all supported compilers** (MSVC, GCC, Clang).
+   - If a mechanism introduces out-of-line ABI call overhead, instruction latency stalls, or regresses throughput on any supported compiler (as occurred with BEXTR in H-20), the kill gate triggers: the optimization is **refuted and excised**, not shipped.
+   - Decompression throughput must meet or exceed baseline across text and binary corpora.
+
+4. **Memory & Lifecycle Invariants:**
+   - Invariants I-15 & I-16 verified: zero dynamic memory allocations on the decompression hot path (`ScopedAllocTracker`), and lazy committed virtual memory buffers.
+   - Sanitizer clean: AddressSanitizer (ASan), UndefinedBehaviorSanitizer (UBSan), and ThreadSanitizer (TSan) pass with zero defects.
+
+---
+
 ## Release procedure
 
-1. Read the counter and add 1 (the release commit counts itself — see
+1. **Execute Pre-Release Qualification:**
+   Run the qualification test suite and regression guard against the certified baseline:
+   ```powershell
+   python tools\release_regression_guard.py --baseline bin\v2.0.23\openrar.exe --report
+   ```
+   Confirm that all 4 legs of the Release Qualification Gate pass with zero regressions. If any gate fails, stop; do not proceed with versioning.
+2. Read the counter and add 1 (the release commit counts itself — see
    "The release commit counts itself" above):
    `git rev-list --count vX.Y.0..HEAD` + 1 (adjust the anchor
    tag for the active MAJOR.MINOR line).
-2. Draft the new `CHANGELOG.md` section for `vX.Y.<counter>` from the commit
+3. Draft the new `CHANGELOG.md` section for `vX.Y.<counter>` from the commit
    range since the last release tag (highlights only). For patch releases, the
    notes must reflect all changes since the last minor version (e.g., `2.0.1`
    contains `2.0.0` + `2.0.1`), ensuring the release notes provide a complete view.
-3. Synchronize all 8 version manifests via `python tools/bump_version.py <version>`.
-4. Commit as `release: vX.Y.<counter>`, tag `vX.Y.<counter>`, and push both.
+4. Synchronize all 8 version manifests via `python tools/bump_version.py <version>`.
+5. Commit as `release: vX.Y.<counter>`, tag `vX.Y.<counter>`, and push both.
    Pushing the tag runs the full CI matrix (the `v*` tag trigger) and its
    `release-assets` job packages every artifact of that run — per-platform
    native binaries (shared library `.dll`/`.so`/`.dylib`, import lib where
@@ -131,7 +191,7 @@ soname/dll file version automatically. Embedders keep probing
    section embedded directly as its notes.  
    **Crucial:** Release notes must directly contain the relevant notes, highlights,
    and fix summaries from `CHANGELOG.md` in full — never just link to the changelog file.
-5. **Wait for CI — do not push-and-pray.** Before treating the release as
+6. **Wait for CI — do not push-and-pray.** Before treating the release as
    done, and before reporting success to anyone, run:
 
    ```powershell
