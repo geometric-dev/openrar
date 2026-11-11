@@ -138,6 +138,10 @@ Every candidate is evaluated strictly against its kill gate. Only candidates tha
 | **EXP-PREFETCH** (H-21) | Dual-chain prefetching during match finding | `exp/dual-chain-prefetch` | Throughput $+4\%$ at `-m5` on large dictionary | **REFUTED & SQUASHED (KILLED)**: Hash chains are single-array serialized (`head_`/`prev_`); no independent memory streams. | Dropped |
 | **EXP-GFNI-RS16** | GFNI half-width RS16 fold | `feat/gfni-rs16` | Recovery throughput $+2.0\%$ | **REFUTED & PARKED**: Memory-bus bound, no compute leverage. | Archived |
 | **EXP-DAG-PARSER** | Forward-arrival DAG parser | `arc/v2.1.0-forward-arrival-parser` | Win ratio over greedy on real corpora | **REFUTED & EXCISED (KILLED)**: Lost on real data; deleted in v2.2.0. Stored in `arc/` for historical audit. | Historical record |
+| **EXP-DELTA3-RGB** | SSSE3 9-mask & NEON 3-channel interleaved delta filter | `exp/simd-delta3-rgb` | Encode & decode speedup $\ge 2.5\times$, 100% bit-exact across channels & odd tails | **PROMOTED (WINNER)**: $+366\%$ encode ($886 \rightarrow 4,131\text{ MB/s}$), $+365\%$ decode ($830 \rightarrow 3,863\text{ MB/s}$), 100% bit-exact parity. | Merged to `main` |
+| **EXP-SOLID-REORDER** | Heuristic extension/content-grouped solid packing | `exp/solid-file-reordering` | Archive size reduction $\ge 2.0\%$ on multi-file source/asset trees, 0 decompression overhead, 0 format changes | **IN PROGRESS** | Pending evaluation |
+| **EXP-M5-ADAPTIVE** | Adaptive search depth & early cutoff on low-entropy repeats | `exp/m5-adaptive-probe` | `-m5` compression throughput $+15\%$ with $<0.1\%$ compression ratio loss | **PLANNED** | Pending evaluation |
+| **EXP-FUZZ-STRESS** | Enterprise continuous fuzzing & Invariant I-15/I-16 stress | `exp/continuous-fuzz-harness` | Zero leaks, 0 crashes across 8 engines, 100% I-15/I-16 compliance | **PLANNED** | Pending evaluation |
 
 ---
 
