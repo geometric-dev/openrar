@@ -16,6 +16,7 @@
 #include "../compress/filters50.hpp"
 #include "../compress/cdc_chunker.hpp"
 #include "../compress/cdc_planner.hpp"
+#include "../compress/solid_order_planner.hpp"
 #include "../archive/rar_errors.hpp"
 #include "../archive/volume.hpp"
 #include "../recovery/recovery_record.hpp"
@@ -2341,7 +2342,7 @@ int add_to_archive(
     const compress::FilterConfig& filter_cfg = {}, int max_versions = -1,
     const std::string& default_group = "", const std::string& default_user = "",
     bool want_lock = false, int oi_mode = 0, core::uint64 oi_min_size = 65536,
-    bool cdc_enabled = false, bool want_xattr = false) {
+    bool cdc_enabled = false, bool want_xattr = false, bool disable_solid_sort = false) {
     if (files.empty()) {
         std::cerr << "No files specified for addition\n";
         return EXIT_FATAL;
@@ -2950,6 +2951,39 @@ int add_to_archive(
             queue = std::move(reordered);
         }
         cdc_flag = plan.reordered ? "reordered" : "original-order";
+    } else if (solid && !disable_solid_sort && queue.size() > 1 && method > 0 && max_versions < 0) {
+        // Heuristic content-grouped solid packing (EXP-SOLID-REORDER):
+        // Group entries into coarse semantic affinity clusters (headers, source,
+        // data, markup, binaries, media) and sort by extension then path to
+        // maximize LZ sliding window redundancy across files. References (FILECOPY
+        // and hardlinks) attach directly to their masters to maintain reference invariants.
+        std::vector<size_t> reference_of(queue.size(), SIZE_MAX);
+        {
+            std::unordered_map<std::string, size_t> index_by_name;
+            for (size_t i = 0; i < queue.size(); ++i) index_by_name.emplace(queue[i].entry_name, i);
+            for (size_t i = 0; i < queue.size(); ++i) {
+                if (queue[i].is_filecopy)
+                    reference_of[i] = index_by_name.count(queue[i].filecopy_target)
+                                          ? index_by_name[queue[i].filecopy_target]
+                                          : SIZE_MAX;
+                else if (queue[i].is_hardlink)
+                    reference_of[i] = index_by_name.count(queue[i].hardlink_target)
+                                          ? index_by_name[queue[i].hardlink_target]
+                                          : SIZE_MAX;
+            }
+        }
+        std::vector<compress::SolidOrderItem> items;
+        items.reserve(queue.size());
+        for (const auto& q : queue) {
+            items.push_back({q.entry_name, q.file_size, q.is_dir});
+        }
+        compress::SolidPlanResult plan = compress::plan_solid_order(items, reference_of);
+        if (plan.reordered) {
+            std::vector<PendingFile> reordered;
+            reordered.reserve(queue.size());
+            for (size_t idx : plan.order) reordered.push_back(std::move(queue[idx]));
+            queue = std::move(reordered);
+        }
     }
 
     g_prog.set_totals(queue.size(), total_unp);
@@ -4423,6 +4457,7 @@ static int cli_main(int argc, char* argv[]) {
     bool oi_given = false;                     // -cdc implies -oi1 only when -oi was not given
     bool cdc_enabled = false;                  // -cdc: CDC-driven solid-chain packing (v1.26 M2b)
     bool want_solid = false;                   // -s
+    bool disable_solid_sort = false;           // -ds: do not sort files in solid archive
     bool no_dir_records = false;               // -ed
     bool want_lock = false;                    // -k
     std::string comment_path;                  // -z<file>
@@ -4823,6 +4858,12 @@ static int cli_main(int argc, char* argv[]) {
             }
         } else if (sw_eq(s, "-s")) {
             want_solid = true;
+        } else if (sw_eq(s, "-s-")) {
+            want_solid = false;
+        } else if (sw_eq(s, "-ds")) {
+            disable_solid_sort = true;
+        } else if (sw_eq(s, "-ds-")) {
+            disable_solid_sort = false;
         } else if (sw_eq(s, "-ed")) {
             no_dir_records = true;
         } else if (sw_eq(s, "-k")) {
@@ -5019,7 +5060,7 @@ static int cli_main(int argc, char* argv[]) {
                 ep_mode, recurse_subdirs, want_symlinks, (cmd == "f"), want_stm, want_acl,
                 want_hardlinks, want_qo, want_ams, exclude_patterns, opt_dict_size, opt_filter_cfg,
                 max_versions, opt_group, opt_user, want_lock, oi_mode, oi_min_size, cdc_enabled,
-                want_xattr);
+                want_xattr, disable_solid_sort);
         }
         // v1.27 M5: -oi3/-oi4 exit WITHOUT creating the archive — the
         // post-add -rr handling must not then run against a file that was

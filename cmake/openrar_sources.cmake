@@ -30,6 +30,7 @@ set(OPENRAR_CORE_SOURCES
     src/compress/filters50.cpp
     src/compress/cdc_chunker.cpp
     src/compress/cdc_planner.cpp
+    src/compress/solid_order_planner.cpp
     src/compress/solid_packer.cpp
     src/compress/compressor50.cpp
     src/compress/decompressor50.cpp
