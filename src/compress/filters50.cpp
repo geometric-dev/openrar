@@ -1,11 +1,18 @@
 #include "filters50.hpp"
+#include "../core/cpu.hpp"
 #include <cstring>
 #include <vector>
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <emmintrin.h>
+#include <tmmintrin.h>
 #ifdef _MSC_VER
 #include <intrin.h>
+#endif
+#if defined(__GNUC__) || defined(__clang__)
+#define OPENRAR_TARGET_SSSE3 __attribute__((target("ssse3")))
+#else
+#define OPENRAR_TARGET_SSSE3
 #endif
 #elif defined(__aarch64__) || defined(_M_ARM64)
 #ifdef _MSC_VER
@@ -498,6 +505,160 @@ inline uint8x16_t delta_encode16(uint8x16_t cur, uint8x16_t& last) {
 }
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+// 3-channel (24-bit RGB) planar <-> interleaved shuffle masks (SSSE3)
+// Interleave (Decode: planar R, G, B -> interleaved RGB):
+// 16 bytes per vector, 16 pixels (48 bytes) total. 0x80 zeros lane in _mm_shuffle_epi8.
+alignas(16) inline constexpr uint8_t K_DEC3_R_V0[16] = {0, 0x80, 0x80, 1, 0x80, 0x80, 2, 0x80, 0x80,
+                                                        3, 0x80, 0x80, 4, 0x80, 0x80, 5};
+alignas(16) inline constexpr uint8_t K_DEC3_G_V0[16] = {0x80, 0, 0x80, 0x80, 1, 0x80, 0x80, 2, 0x80,
+                                                        0x80, 3, 0x80, 0x80, 4, 0x80, 0x80};
+alignas(16) inline constexpr uint8_t K_DEC3_B_V0[16] = {0x80, 0x80, 0, 0x80, 0x80, 1, 0x80, 0x80, 2,
+                                                        0x80, 0x80, 3, 0x80, 0x80, 4, 0x80};
+
+alignas(16) inline constexpr uint8_t K_DEC3_R_V1[16] = {
+    0x80, 0x80, 6, 0x80, 0x80, 7, 0x80, 0x80, 8, 0x80, 0x80, 9, 0x80, 0x80, 10, 0x80};
+alignas(16) inline constexpr uint8_t K_DEC3_G_V1[16] = {5, 0x80, 0x80, 6, 0x80, 0x80, 7, 0x80, 0x80,
+                                                        8, 0x80, 0x80, 9, 0x80, 0x80, 10};
+alignas(16) inline constexpr uint8_t K_DEC3_B_V1[16] = {0x80, 5, 0x80, 0x80, 6, 0x80, 0x80, 7, 0x80,
+                                                        0x80, 8, 0x80, 0x80, 9, 0x80, 0x80};
+
+alignas(16) inline constexpr uint8_t K_DEC3_R_V2[16] = {
+    0x80, 11, 0x80, 0x80, 12, 0x80, 0x80, 13, 0x80, 0x80, 14, 0x80, 0x80, 15, 0x80, 0x80};
+alignas(16) inline constexpr uint8_t K_DEC3_G_V2[16] = {
+    0x80, 0x80, 11, 0x80, 0x80, 12, 0x80, 0x80, 13, 0x80, 0x80, 14, 0x80, 0x80, 15, 0x80};
+alignas(16) inline constexpr uint8_t K_DEC3_B_V2[16] = {
+    10, 0x80, 0x80, 11, 0x80, 0x80, 12, 0x80, 0x80, 13, 0x80, 0x80, 14, 0x80, 0x80, 15};
+
+// De-interleave (Encode: interleaved RGB -> planar R, G, B):
+alignas(16) inline constexpr uint8_t K_ENC3_R_V0[16] = {
+    0, 3, 6, 9, 12, 15, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+alignas(16) inline constexpr uint8_t K_ENC3_R_V1[16] = {
+    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 2, 5, 8, 11, 14, 0x80, 0x80, 0x80, 0x80, 0x80};
+alignas(16) inline constexpr uint8_t K_ENC3_R_V2[16] = {
+    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 1, 4, 7, 10, 13};
+
+alignas(16) inline constexpr uint8_t K_ENC3_G_V0[16] = {
+    1, 4, 7, 10, 13, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+alignas(16) inline constexpr uint8_t K_ENC3_G_V1[16] = {
+    0x80, 0x80, 0x80, 0x80, 0x80, 0, 3, 6, 9, 12, 15, 0x80, 0x80, 0x80, 0x80, 0x80};
+alignas(16) inline constexpr uint8_t K_ENC3_G_V2[16] = {
+    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 2, 5, 8, 11, 14};
+
+alignas(16) inline constexpr uint8_t K_ENC3_B_V0[16] = {
+    2, 5, 8, 11, 14, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+alignas(16) inline constexpr uint8_t K_ENC3_B_V1[16] = {
+    0x80, 0x80, 0x80, 0x80, 0x80, 1, 4, 7, 10, 13, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80};
+alignas(16) inline constexpr uint8_t K_ENC3_B_V2[16] = {
+    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0, 3, 6, 9, 12, 15};
+
+OPENRAR_TARGET_SSSE3 static size_t delta_decode3_ssse3(const core::byte* src, core::byte* out,
+                                                       size_t full,
+                                                       const size_t base[32]) noexcept {
+    __m128i c0 = _mm_setzero_si128(), c1 = c0, c2 = c0;
+    const __m128i mr0 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_DEC3_R_V0));
+    const __m128i mg0 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_DEC3_G_V0));
+    const __m128i mb0 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_DEC3_B_V0));
+    const __m128i mr1 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_DEC3_R_V1));
+    const __m128i mg1 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_DEC3_G_V1));
+    const __m128i mb1 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_DEC3_B_V1));
+    const __m128i mr2 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_DEC3_R_V2));
+    const __m128i mg2 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_DEC3_G_V2));
+    const __m128i mb2 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_DEC3_B_V2));
+
+    size_t r = 0;
+    for (; r + 16 <= full; r += 16) {
+        const __m128i a = delta_decode16(
+            _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + base[0] + r)), c0);
+        const __m128i b = delta_decode16(
+            _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + base[1] + r)), c1);
+        const __m128i c = delta_decode16(
+            _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + base[2] + r)), c2);
+
+        const __m128i v0 =
+            _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(a, mr0), _mm_shuffle_epi8(b, mg0)),
+                         _mm_shuffle_epi8(c, mb0));
+        const __m128i v1 =
+            _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(a, mr1), _mm_shuffle_epi8(b, mg1)),
+                         _mm_shuffle_epi8(c, mb1));
+        const __m128i v2 =
+            _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(a, mr2), _mm_shuffle_epi8(b, mg2)),
+                         _mm_shuffle_epi8(c, mb2));
+
+        core::byte* o = out + 3 * r;
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(o), v0);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(o + 16), v1);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(o + 32), v2);
+    }
+    return r;
+}
+
+OPENRAR_TARGET_SSSE3 static size_t delta_encode3_ssse3(const core::byte* src, core::byte* out,
+                                                       size_t full,
+                                                       const size_t base[32]) noexcept {
+    __m128i l0 = _mm_setzero_si128(), l1 = l0, l2 = l0;
+    const __m128i mr0 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_ENC3_R_V0));
+    const __m128i mr1 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_ENC3_R_V1));
+    const __m128i mr2 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_ENC3_R_V2));
+    const __m128i mg0 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_ENC3_G_V0));
+    const __m128i mg1 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_ENC3_G_V1));
+    const __m128i mg2 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_ENC3_G_V2));
+    const __m128i mb0 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_ENC3_B_V0));
+    const __m128i mb1 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_ENC3_B_V1));
+    const __m128i mb2 = _mm_load_si128(reinterpret_cast<const __m128i*>(K_ENC3_B_V2));
+
+    size_t r = 0;
+    for (; r + 16 <= full; r += 16) {
+        const core::byte* s = src + 3 * r;
+        const __m128i v0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s));
+        const __m128i v1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s + 16));
+        const __m128i v2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s + 32));
+
+        const __m128i a =
+            _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(v0, mr0), _mm_shuffle_epi8(v1, mr1)),
+                         _mm_shuffle_epi8(v2, mr2));
+        const __m128i b =
+            _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(v0, mg0), _mm_shuffle_epi8(v1, mg1)),
+                         _mm_shuffle_epi8(v2, mg2));
+        const __m128i c =
+            _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(v0, mb0), _mm_shuffle_epi8(v1, mb1)),
+                         _mm_shuffle_epi8(v2, mb2));
+
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(out + base[0] + r), delta_encode16(a, l0));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(out + base[1] + r), delta_encode16(b, l1));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(out + base[2] + r), delta_encode16(c, l2));
+    }
+    return r;
+}
+#elif defined(__aarch64__) || defined(_M_ARM64)
+static size_t delta_decode3_neon(const core::byte* src, core::byte* out, size_t full,
+                                 const size_t base[32]) noexcept {
+    uint8x16_t c0 = vdupq_n_u8(0), c1 = c0, c2 = c0;
+    size_t r = 0;
+    for (; r + 16 <= full; r += 16) {
+        uint8x16x3_t v;
+        v.val[0] = delta_decode16(vld1q_u8(src + base[0] + r), c0);
+        v.val[1] = delta_decode16(vld1q_u8(src + base[1] + r), c1);
+        v.val[2] = delta_decode16(vld1q_u8(src + base[2] + r), c2);
+        vst3q_u8(out + 3 * r, v);
+    }
+    return r;
+}
+
+static size_t delta_encode3_neon(const core::byte* src, core::byte* out, size_t full,
+                                 const size_t base[32]) noexcept {
+    uint8x16_t l0 = vdupq_n_u8(0), l1 = l0, l2 = l0;
+    size_t r = 0;
+    for (; r + 16 <= full; r += 16) {
+        const uint8x16x3_t v = vld3q_u8(src + 3 * r);
+        vst1q_u8(out + base[0] + r, delta_encode16(v.val[0], l0));
+        vst1q_u8(out + base[1] + r, delta_encode16(v.val[1], l1));
+        vst1q_u8(out + base[2] + r, delta_encode16(v.val[2], l2));
+    }
+    return r;
+}
+#endif
+
 // H-09: multi-channel Delta decode (planar src -> interleaved out) in ONE
 // sequential pass over `out`. The old form made `channels` strided passes
 // over the whole region, defeating both vectorisation and the cache; this
@@ -521,6 +682,10 @@ void delta_decode_multi(const core::byte* src, core::byte* out, size_t size, siz
             core::byte* o = out + 2 * r;
             _mm_storeu_si128(reinterpret_cast<__m128i*>(o), _mm_unpacklo_epi8(a, b));
             _mm_storeu_si128(reinterpret_cast<__m128i*>(o + 16), _mm_unpackhi_epi8(a, b));
+        }
+    } else if (channels == 3) {
+        if (core::get_cpu_features().ssse3) {
+            r = delta_decode3_ssse3(src, out, full, base);
         }
     } else if (channels == 4) {
         __m128i c0 = _mm_setzero_si128(), c1 = c0, c2 = c0, c3 = c0;
@@ -551,6 +716,8 @@ void delta_decode_multi(const core::byte* src, core::byte* out, size_t size, siz
             v.val[1] = delta_decode16(vld1q_u8(src + base[1] + r), c1);
             vst2q_u8(out + 2 * r, v);
         }
+    } else if (channels == 3) {
+        r = delta_decode3_neon(src, out, full, base);
     } else if (channels == 4) {
         uint8x16_t c0 = vdupq_n_u8(0), c1 = c0, c2 = c0, c3 = c0;
         for (; r + 16 <= full; r += 16) {
@@ -600,6 +767,10 @@ void delta_encode_multi(const core::byte* src, core::byte* out, size_t size, siz
             _mm_storeu_si128(reinterpret_cast<__m128i*>(out + base[1] + r),
                              delta_encode16(odd_bytes(v0, v1), l1));
         }
+    } else if (channels == 3) {
+        if (core::get_cpu_features().ssse3) {
+            r = delta_encode3_ssse3(src, out, full, base);
+        }
     } else if (channels == 4) {
         __m128i l0 = _mm_setzero_si128(), l1 = l0, l2 = l0, l3 = l0;
         for (; r + 16 <= full; r += 16) {
@@ -629,6 +800,8 @@ void delta_encode_multi(const core::byte* src, core::byte* out, size_t size, siz
             vst1q_u8(out + base[0] + r, delta_encode16(v.val[0], l0));
             vst1q_u8(out + base[1] + r, delta_encode16(v.val[1], l1));
         }
+    } else if (channels == 3) {
+        r = delta_encode3_neon(src, out, full, base);
     } else if (channels == 4) {
         uint8x16_t l0 = vdupq_n_u8(0), l1 = l0, l2 = l0, l3 = l0;
         for (; r + 16 <= full; r += 16) {
