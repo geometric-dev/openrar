@@ -3918,6 +3918,66 @@ static void test_delta_kernels_match_reference() {
     std::cout << "[PASS] Delta kernels match the strided reference (1..32 channels)\n";
 }
 
+static void test_delta3_rgb_benchmark() {
+    constexpr size_t N = 12 * 1024 * 1024; // 12 MiB RGB buffer (4,194,304 pixels)
+    std::vector<core::byte> src(N);
+    for (size_t i = 0; i < N; ++i) {
+        src[i] = static_cast<core::byte>((i * 17 + (i >> 8)) & 0xFF);
+    }
+    std::vector<core::byte> enc(N);
+    std::vector<core::byte> dec(N);
+
+    // Warmup & correctness check
+    REQUIRE(Filters50::encode_delta(src.data(), enc.data(), N, 3));
+    REQUIRE(Filters50::apply_delta(enc.data(), dec.data(), N, 3));
+    REQUIRE(dec == src);
+
+    constexpr int ITERS = 10;
+    auto t0 = std::chrono::steady_clock::now();
+    for (int iter = 0; iter < ITERS; ++iter) {
+        Filters50::encode_delta(src.data(), enc.data(), N, 3);
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    double enc_s = std::chrono::duration<double>(t1 - t0).count();
+    double enc_mb_s = (double(N) * ITERS / (1024.0 * 1024.0)) / enc_s;
+
+    auto t2 = std::chrono::steady_clock::now();
+    for (int iter = 0; iter < ITERS; ++iter) {
+        Filters50::apply_delta(enc.data(), dec.data(), N, 3);
+    }
+    auto t3 = std::chrono::steady_clock::now();
+    double dec_s = std::chrono::duration<double>(t3 - t2).count();
+    double dec_mb_s = (double(N) * ITERS / (1024.0 * 1024.0)) / dec_s;
+
+    REQUIRE(dec == src);
+    std::cout << "[BENCH] Delta 3-channel (RGB 24-bit, 12 MiB x " << ITERS << "):\n"
+              << "        Encode: " << enc_mb_s << " MB/s (" << (enc_s / ITERS * 1000.0)
+              << " ms/call)\n"
+              << "        Decode: " << dec_mb_s << " MB/s (" << (dec_s / ITERS * 1000.0)
+              << " ms/call)\n";
+
+    // Compare with channels == 2 (SIMD)
+    auto t4 = std::chrono::steady_clock::now();
+    for (int iter = 0; iter < ITERS; ++iter) {
+        Filters50::apply_delta(enc.data(), dec.data(), N, 2);
+    }
+    auto t5 = std::chrono::steady_clock::now();
+    double dec2_s = std::chrono::duration<double>(t5 - t4).count();
+    double dec2_mb_s = (double(N) * ITERS / (1024.0 * 1024.0)) / dec2_s;
+
+    // Compare with channels == 4 (SIMD)
+    auto t6 = std::chrono::steady_clock::now();
+    for (int iter = 0; iter < ITERS; ++iter) {
+        Filters50::apply_delta(enc.data(), dec.data(), N, 4);
+    }
+    auto t7 = std::chrono::steady_clock::now();
+    double dec4_s = std::chrono::duration<double>(t7 - t6).count();
+    double dec4_mb_s = (double(N) * ITERS / (1024.0 * 1024.0)) / dec4_s;
+
+    std::cout << "        [SIMD Reference] Channels 2 Decode: " << dec2_mb_s << " MB/s\n"
+              << "        [SIMD Reference] Channels 4 Decode: " << dec4_mb_s << " MB/s\n";
+}
+
 
 // Regression (found by tests/fuzz/fuzz_target.cpp): at the 64 KiB window
 // floor the plain-byte flush cadence equalled the window, so a long match
@@ -4293,6 +4353,7 @@ static const openrar::test::Case k_cases[] = {
     {"test_decompressor_opt_d01_window_clamping", test_decompressor_opt_d01_window_clamping, false},
     {"test_cpu_features", test_cpu_features, false},
     {"test_delta_kernels_match_reference", test_delta_kernels_match_reference, false},
+    {"test_delta3_rgb_benchmark", test_delta3_rgb_benchmark, false},
     {"test_small_window_long_match_roundtrip", test_small_window_long_match_roundtrip, false},
     {"test_lazy_window_tracks_output", test_lazy_window_tracks_output, false},
     {"test_lazy_window_equivalence", test_lazy_window_equivalence, false},
