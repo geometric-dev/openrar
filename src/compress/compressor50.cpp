@@ -2003,22 +2003,9 @@ int Compressor50::process_available(bool final) {
             if (rem < cur_max_lz) cur_max_lz = rem;
         }
 
-        // FailCount heuristic: skip chain search on long incompressible runs
-        core::uint32 search_chain = max_chain_;
-        if (fail_count_ > 0x100) {
-            core::uint32 skip_mask = 3;
-            if (fail_count_ > 0x400) skip_mask = 7;
-            if (fail_count_ > 0x800) skip_mask = 15;
-            if (fail_count_ > 0x1000) skip_mask = 31;
-            if (fail_count_ > 0x2000) skip_mask = 127;
-            if (fail_count_ > 0x4000) skip_mask = 511;
-            if (fail_count_ > 0x8000) skip_mask = 2047;
-            if ((fail_count_ & skip_mask) != 0) search_chain = 0;
-        }
-        MatchInfo best = {0, -1};
-        if (search_chain > 0) best = find_match(cur_, search_chain, nice_len_);
-        if (best.length > cur_max_lz) best.length = cur_max_lz;
-
+        // EXP-M5-ADAPTIVE: Early Repeat-Distance Probe & Adaptive Search Chain.
+        // In repetitive spans, probe historical repeat offsets BEFORE walking the hash chain.
+        // Repeat matches carry zero distance coding overhead on the wire.
         size_t rep_best_len = 0;
         int rep_idx = -1;
         const core::byte* buf_cur = &buf_data_[static_cast<size_t>(cur_ - pos_base_)];
@@ -2033,6 +2020,30 @@ int Compressor50::process_available(bool final) {
                 rep_idx = static_cast<int>(i);
             }
         }
+
+        // Adaptive search depth based on repeat candidate quality
+        core::uint32 search_chain = max_chain_;
+        if (rep_best_len >= cur_nice_len) {
+            search_chain = 0; // Unbeatable repeat match; skip chain walk entirely
+        } else if (rep_best_len >= 32) {
+            search_chain = std::min(search_chain, 8U);
+        } else if (rep_best_len >= 16) {
+            search_chain = std::min(search_chain, 16U);
+        } else if (fail_count_ > 0x100) {
+            // FailCount heuristic: skip chain search on long incompressible runs
+            core::uint32 skip_mask = 3;
+            if (fail_count_ > 0x400) skip_mask = 7;
+            if (fail_count_ > 0x800) skip_mask = 15;
+            if (fail_count_ > 0x1000) skip_mask = 31;
+            if (fail_count_ > 0x2000) skip_mask = 127;
+            if (fail_count_ > 0x4000) skip_mask = 511;
+            if (fail_count_ > 0x8000) skip_mask = 2047;
+            if ((fail_count_ & skip_mask) != 0) search_chain = 0;
+        }
+
+        MatchInfo best = {0, -1};
+        if (search_chain > 0) best = find_match(cur_, search_chain, nice_len_);
+        if (best.length > cur_max_lz) best.length = cur_max_lz;
 
         // v1.43 M2+ arbiter (cost-aware concession). The rep
         // thread reuses a stored distance, so it pays no distance code — its
