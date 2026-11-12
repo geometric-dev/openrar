@@ -2213,6 +2213,120 @@ void test_filter_machine_dispatch() {
     REQUIRE(Filters50::detect_filter(le_macho_arm.data(), le_macho_arm.size(), channels) ==
             FilterType::Arm);
 
+    // 11. PE hybrids: CHPE_X86 carries x86 code -> E8; ARM64X -> None, and
+    //     neither is an "unknown machine" for the diagnostic counter.
+    Filters50::reset_unknown_pe_machine_count();
+    auto pe_chpe = make_pe(0x3A64);
+    REQUIRE(Filters50::detect_filter(pe_chpe.data(), pe_chpe.size(), channels) == FilterType::E8);
+    auto pe_arm64x = make_pe(0xA64E);
+    REQUIRE(Filters50::detect_filter(pe_arm64x.data(), pe_arm64x.size(), channels) ==
+            FilterType::None);
+    REQUIRE(Filters50::unknown_pe_machine_count() == 0);
+
+    // 12. Non-x86 ELF must not reach the x86 density scan, even when its
+    //     payload is dense in valid E8 rel32 calls.
+    auto elf_with_calls = [](core::uint16 machine) {
+        std::vector<core::byte> data(64 + 1024, 0);
+        data[0] = 0x7F;
+        data[1] = 'E';
+        data[2] = 'L';
+        data[3] = 'F';
+        data[4] = 2; // 64-bit
+        data[5] = 1; // little endian
+        core::write_le16(data.data() + 0x12, machine);
+        for (size_t i = 64; i + 4 < data.size(); i += 5) {
+            data[i] = static_cast<core::byte>(0xE8);
+            core::write_le32(data.data() + i + 1, 0); // local rel32 target
+        }
+        return data;
+    };
+    for (core::uint16 m : {core::uint16(0x14), core::uint16(0x15), core::uint16(0x16),
+                           core::uint16(0x08), core::uint16(0x2B), core::uint16(0x102)}) {
+        auto elf_other = elf_with_calls(m);
+        REQUIRE(Filters50::detect_filter(elf_other.data(), elf_other.size(), channels) ==
+                FilterType::None);
+    }
+    auto elf_x64_calls = elf_with_calls(0x3E);
+    REQUIRE(Filters50::detect_filter(elf_x64_calls.data(), elf_x64_calls.size(), channels) ==
+            FilterType::E8);
+
+    // 13. Universal binaries: all-x86 slices -> E8, any non-x86 slice -> None,
+    //     and 64-bit fat headers parse in both byte orders.
+    auto make_fat = [](bool fat64, bool big_endian, const std::vector<core::uint32>& cpus) {
+        const size_t entry = fat64 ? 32 : 20;
+        std::vector<core::byte> d(8 + entry * cpus.size() + 64, 0);
+        if (big_endian) {
+            d[0] = 0xCA;
+            d[1] = 0xFE;
+            d[2] = 0xBA;
+            d[3] = fat64 ? 0xBF : 0xBE;
+        } else {
+            d[0] = fat64 ? 0xBF : 0xBE;
+            d[1] = 0xBA;
+            d[2] = 0xFE;
+            d[3] = 0xCA;
+        }
+        auto put32 = [&](size_t off, core::uint32 v) {
+            if (big_endian) {
+                core::write_be32(d.data() + off, v);
+            } else {
+                core::write_le32(d.data() + off, v);
+            }
+        };
+        put32(4, static_cast<core::uint32>(cpus.size()));
+        for (size_t i = 0; i < cpus.size(); ++i) {
+            put32(8 + i * entry, cpus[i]);
+        }
+        return d;
+    };
+
+    auto fat_x86_slices = make_fat(false, true, {0x01000007u, 7});
+    REQUIRE(Filters50::detect_filter(fat_x86_slices.data(), fat_x86_slices.size(), channels) ==
+            FilterType::E8);
+    auto fat_arm_first = make_fat(false, true, {0x0100000Cu, 0x01000007u});
+    REQUIRE(Filters50::detect_filter(fat_arm_first.data(), fat_arm_first.size(), channels) ==
+            FilterType::None);
+    auto fat_arm_second = make_fat(false, true, {0x01000007u, 0x0100000Cu});
+    REQUIRE(Filters50::detect_filter(fat_arm_second.data(), fat_arm_second.size(), channels) ==
+            FilterType::None);
+    auto fat64_x64 = make_fat(true, true, {0x01000007u});
+    REQUIRE(Filters50::detect_filter(fat64_x64.data(), fat64_x64.size(), channels) ==
+            FilterType::E8);
+    auto fat64_arm64 = make_fat(true, true, {0x0100000Cu});
+    REQUIRE(Filters50::detect_filter(fat64_arm64.data(), fat64_arm64.size(), channels) ==
+            FilterType::None);
+    auto fat64_le_x64 = make_fat(true, false, {0x01000007u});
+    REQUIRE(Filters50::detect_filter(fat64_le_x64.data(), fat64_le_x64.size(), channels) ==
+            FilterType::E8);
+
+    // An ARM64 slice suppresses E8 even when the payload is dense in x86 calls.
+    auto fat_arm_calls = make_fat(false, true, {0x0100000Cu});
+    fat_arm_calls.resize(8 + 20 + 1024, 0);
+    for (size_t i = 8 + 20; i + 4 < fat_arm_calls.size(); i += 5) {
+        fat_arm_calls[i] = static_cast<core::byte>(0xE8);
+        core::write_le32(fat_arm_calls.data() + i + 1, 0);
+    }
+    REQUIRE(Filters50::detect_filter(fat_arm_calls.data(), fat_arm_calls.size(), channels) ==
+            FilterType::None);
+
+    // 14. Java .class shares 0xCAFEBABE; its "nfat_arch" (class major version)
+    //     is implausible, so the bytes must reach the density scan.
+    std::vector<core::byte> java_class(8 + 1024, 0);
+    java_class[0] = 0xCA;
+    java_class[1] = 0xFE;
+    java_class[2] = 0xBA;
+    java_class[3] = 0xBE;
+    java_class[4] = 0;
+    java_class[5] = 0;
+    java_class[6] = 0;
+    java_class[7] = 52; // major version 52
+    for (size_t i = 8; i + 4 < java_class.size(); i += 5) {
+        java_class[i] = static_cast<core::byte>(0xE8);
+        core::write_le32(java_class.data() + i + 1, 0);
+    }
+    REQUIRE(Filters50::detect_filter(java_class.data(), java_class.size(), channels) ==
+            FilterType::E8);
+
     std::cout << "    - Machine dispatch table & multi-ISA hygiene: OK" << std::endl;
 }
 
