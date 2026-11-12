@@ -304,6 +304,11 @@ target_link_libraries(archive_api_tests PRIVATE
     target_link_libraries(tokencensus PRIVATE openrar_core)
     target_include_directories(tokencensus PRIVATE ${OPENRAR_INCLUDES})
 
+    # Wave 1b PROBE-PREDICT (not a test): image/audio predictor & channel probe.
+    add_executable(predict_probe tools/predict_probe.cpp)
+    target_link_libraries(predict_probe PRIVATE openrar_core)
+    target_include_directories(predict_probe PRIVATE ${OPENRAR_INCLUDES})
+
     # v1.38.0 Gate 0 probe (not a test): decode-kernel variant A/B + rebuild
     # trap reproduction (docs/v1.38.0-pre-analysis.md).
     add_executable(decode_kernel_probe tools/decode_kernel_probe.cpp)

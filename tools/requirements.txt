@@ -1,0 +1,7 @@
+# Python tooling dependencies.
+#   python -m pip install -r tools/requirements.txt
+#
+# Pillow is used only by tools/generate_experiment_fixtures.py, to convert the
+# pinned Kodak PNGs into uncompressed 24-bit BMP corpus members. The version is
+# pinned because the BMP bytes (and therefore manifest.sha256) depend on it.
+Pillow==12.2.0

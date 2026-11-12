@@ -38,5 +38,17 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Kodak Lossless True Color Image Suite (test-only)
+
+`tests/fixtures/experiment/photo_kodim01.bmp` .. `photo_kodim04.bmp` are
+uncompressed 24-bit BMP conversions of `kodim01.png` .. `kodim04.png` from the
+Kodak Lossless True Color Image Suite, fetched from
+<https://r0k.us/graphics/kodak/> and pinned by SHA-256 in
+`tools/generate_experiment_fixtures.py`. The upstream page states: "It is my
+understanding they have been released by the Eastman Kodak Company for
+unrestricted usage. Many sites use them as a standard test suite for
+compression testing, etc." The images are evaluation fixtures only and are not
+linked into any shipped binary.
+
 ## Acknowledgements
 We would like to acknowledge the invaluable work of the open-source community in documenting the RAR format, which made this implementation possible. You can find out more at https://github.com/bitplane/rar-research
