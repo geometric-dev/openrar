@@ -154,6 +154,37 @@ Every filter-detection gate below therefore carries a **pack wall-clock at `-mt4
 
 **Exit.** A one-page report plus a decision: which predictor to use (almost certainly "plane delta, because it is the only legal one"), which bpp→channels mapping, whether row alignment matters at all on C3, and whether UTF-16 (channels=2) clears the bar as a bonus.
 
+#### 4.2.1 Empirical Decision Note (Wave 1b Probe Results)
+
+Evaluated across the 34-file C3/C4 experiment corpus (`tests/fixtures/experiment/`) via `tools/predict_probe.cpp` over candidate channel strides $\{1, 2, 3, 4, 12, 16, 18, 24, 32\}$ and upper-bound 2D predictors (Up-delta, Paeth).
+
+1. **Predictor Selection:** **Type 0 DELTA (1D Plane Delta)** is confirmed.
+   - Genuine 24-bit Kodak photographs (`kodim01`..`kodim04`) show an average entropy reduction of **+2.406 bits/byte** (~33% reduction from 7.27 to 4.86 bits/byte) using standard emittable DELTA-3.
+   - The theoretical 2D Paeth predictor upper bound yields only an incremental 0.1 to 0.3 bits/byte further reduction (e.g. 4.049 → 3.959 on `kodim03`), confirming that 1D DELTA-3 captures ~85–90% of available image correlation without violating RAR5 3-bit filter type constraints or requiring incompatible 2D stride parameters (`EXP-PAETH-IMAGE` remains permanently deferred / out of scope).
+
+2. **bpp → Channels Mapping:**
+   - **8 bpp:** `channels = 1` (optimal for grayscale/paletted images, e.g. `sample.pgm` entropy 7.74 → 3.57, gain +4.17 bits/byte).
+   - **16 bpp:** `channels = 2` (optimal for RGB 555/565, entropy 7.77 → 1.17, gain +6.60 bits/byte, +54.7% LZ repeat gain).
+   - **24 bpp:** `channels = 3` (optimal for RGB true-color; +4.26 bits/byte on synthetic ramps, +1.44 to +3.41 bits/byte on Kodak photographs).
+   - **32 bpp:** `channels = 4` (optimal for RGBA true-color, entropy 6.65 → 3.14, gain +3.51 bits/byte, +41.1% LZ repeat gain).
+   - **Audio Multichannel:**
+     - 5.1 @ 16-bit: `channels = 12` (+1.06 bits/byte, +44.0% LZ match gain)
+     - 5.1 @ 24-bit: `channels = 18` (+0.55 bits/byte, +36.0% LZ match gain)
+     - 5.1 @ 32-bit: `channels = 24` (+0.34 bits/byte, +30.3% LZ match gain)
+     - 7.1 @ 16-bit: `channels = 16` (+0.95 bits/byte, +52.9% LZ match gain)
+     - 7.1 @ 24-bit: `channels = 24` (+0.48 bits/byte, +38.4% LZ match gain)
+     - 7.1 @ 32-bit: `channels = 32` (+0.29 bits/byte, +29.4% LZ match gain)
+     - JUNK-prefixed WAV / RIFF: channel stride = `channels * (bps/8)` once chunk header parsed.
+
+3. **Row Alignment on C3:**
+   - On full-image transforms, odd row padding (widths 1919 vs 1920 vs 1921) degrades full-file entropy by less than 0.006 bits/byte (+4.256 vs +4.262 vs +4.261 bits/byte).
+   - However, to prevent inter-row phase drift when chunking or emitting bounded filter regions, region boundaries must align to row boundaries (`row_stride`), or full-member filtering should only be activated when `row_stride % bpp_bytes == 0`.
+
+4. **UTF-16 Channels=2 Hypothesis:** **REFUTED.**
+   - On `text_utf16_le.txt`, raw uncompressed byte entropy is 3.303 bits/byte.
+   - DELTA with `channels = 2` yields an entropy of 3.756 bits/byte (**regression of -0.453 bits/byte**).
+   - While plane 1 (all zero high bytes) compresses to 0.00 bits/byte, plane 0 (character diffs) disrupts the character frequency distribution of natural text, increasing plane 0 entropy from ~4.3 to 5.51 bits/byte. UTF-16 will not receive DELTA filtering.
+
 ### 4.3 EXP-FILTER-SAFE-MT (W2, Wave 2)
 
 **Change.** Allow the chunked pipeline when a filter is detected:
