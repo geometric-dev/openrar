@@ -1,0 +1,3 @@
+# The corpus manifest must survive checkout byte-for-byte, including on hosts
+# with core.autocrlf=true.
+manifest.sha256 -text
