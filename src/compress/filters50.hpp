@@ -38,7 +38,9 @@ public:
     static FilterType detect_filter(const core::byte* data, size_t size, core::uint8& out_channels,
                                     const FilterConfig& config = {});
 
-    // Log-only counter for unrecognised PE machine architectures
+    // Log-only counter for unrecognised PE machine architectures.
+    // Set OPENRAR_FILTER_DIAG to also print each unknown machine (and each
+    // non-x86 ELF machine) to stderr at detection time.
     static core::uint64 unknown_pe_machine_count() noexcept;
     static void reset_unknown_pe_machine_count() noexcept;
 

@@ -136,7 +136,7 @@ Every filter-detection gate below therefore carries a **pack wall-clock at `-mt4
 - ELF `EM_AARCH64` (0xB7) / `EM_RISCV` (0xF3) get *no* filter (safe by accident), but there is no explicit "recognised, unsupported" branch.
 - `PE 0x0200` (IA64), `0x5064` (RISC-V), `0xA641` (ARM64EC) are unhandled.
 
-**Change.** Machine-dispatch table, not a default. `0x014C`/`0x8664` → E8; `0x01C0`/`0x01C2`/`0x01C4` → Arm; `0xAA64`/`0x0200`/`0x5064`/`0xA641` → None; unknown → **None** (with a log-only counter so a future real machine is visible). Add fat Mach-O arch-0 parsing and both endiannesses.
+**Change.** Machine-dispatch table, not a default. PE: `0x014C`/`0x8664`/`0x3A64` (CHPE_X86) → E8; `0x01C0`/`0x01C2`/`0x01C4` → Arm; `0xAA64`/`0xA64E` (ARM64X)/`0x0200`/`0x5064`/`0xA641` → None; unknown → **None** (counter plus an `OPENRAR_FILTER_DIAG` stderr line so a future real machine is visible). ELF: only `0x03`/`0x3E` reach E8, `0x28` is Arm, every other `e_machine` is explicitly None. Mach-O: thin 32/64 in both byte orders, plus fat 32 (`0xCAFEBABE`) and fat 64 (`0xCAFEBABF`) headers in both byte orders, with every slice inspected (E8 only when all slices are x86) and Java `.class` disambiguated by nfat/header/slice-range validity.
 
 **Gate.** 0 digest change on the 30 ratchet cells (I-1). No archive growth on C2 or C5. Size must not increase on any C5 member (it may decrease on PE-ARM64). Tests added in `tests/unit/compress_tests.cpp` beside `test_forward_filters`.
 
