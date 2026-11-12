@@ -1,5 +1,6 @@
 #include "filters50.hpp"
 #include "../core/cpu.hpp"
+#include <atomic>
 #include <cstring>
 #include <vector>
 
@@ -42,6 +43,18 @@ inline unsigned first_match_byte(core::uint64 nibble_mask) {
 }
 #endif
 
+namespace {
+std::atomic<core::uint64> s_unknown_pe_machine_count{0};
+} // namespace
+
+core::uint64 Filters50::unknown_pe_machine_count() noexcept {
+    return s_unknown_pe_machine_count.load(std::memory_order_relaxed);
+}
+
+void Filters50::reset_unknown_pe_machine_count() noexcept {
+    s_unknown_pe_machine_count.store(0, std::memory_order_relaxed);
+}
+
 FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::uint8& out_channels,
                                     const FilterConfig& config) {
     out_channels = 1;
@@ -58,19 +71,31 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
     if (!data || size < 64) return FilterType::None;
 
     // 2. PE executable detection
-    if (config.e8_override >= 0) {
-        if (data[0] == 'M' && data[1] == 'Z' && size >= 128) {
-            core::uint32 pe_off = core::read_le32(data + 0x3C);
-            // 64-bit arithmetic: pe_off is untrusted and near-UINT32_MAX values
-            // would wrap below in 32-bit and pass the guard (OOB read).
-            if (static_cast<core::uint64>(pe_off) + 6 < size && data[pe_off] == 'P' &&
-                data[pe_off + 1] == 'E' && data[pe_off + 2] == 0 && data[pe_off + 3] == 0) {
-                core::uint16 machine = core::read_le16(data + pe_off + 4);
-                if (config.arm_override >= 0 &&
-                    (machine == 0x01C0 || machine == 0x01C2 || machine == 0x01C4)) {
-                    return FilterType::Arm;
-                }
-                return FilterType::E8; // Default PE to E8 (x86/x64)
+    if (data[0] == 'M' && data[1] == 'Z' && size >= 128) {
+        core::uint32 pe_off = core::read_le32(data + 0x3C);
+        // 64-bit arithmetic: pe_off is untrusted and near-UINT32_MAX values
+        // would wrap below in 32-bit and pass the guard (OOB read).
+        if (static_cast<core::uint64>(pe_off) + 6 < size && data[pe_off] == 'P' &&
+            data[pe_off + 1] == 'E' && data[pe_off + 2] == 0 && data[pe_off + 3] == 0) {
+            core::uint16 machine = core::read_le16(data + pe_off + 4);
+            switch (machine) {
+            case 0x014C: // IMAGE_FILE_MACHINE_I386
+            case 0x8664: // IMAGE_FILE_MACHINE_AMD64
+                if (config.e8_override >= 0) return FilterType::E8;
+                return FilterType::None;
+            case 0x01C0: // IMAGE_FILE_MACHINE_ARM
+            case 0x01C2: // IMAGE_FILE_MACHINE_THUMB
+            case 0x01C4: // IMAGE_FILE_MACHINE_ARMNT
+                if (config.arm_override >= 0) return FilterType::Arm;
+                return FilterType::None;
+            case 0xAA64: // IMAGE_FILE_MACHINE_ARM64
+            case 0x0200: // IMAGE_FILE_MACHINE_IA64
+            case 0x5064: // IMAGE_FILE_MACHINE_RISCV64
+            case 0xA641: // IMAGE_FILE_MACHINE_ARM64EC
+                return FilterType::None;
+            default:
+                s_unknown_pe_machine_count.fetch_add(1, std::memory_order_relaxed);
+                return FilterType::None;
             }
         }
     }
@@ -84,20 +109,46 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
         if (config.arm_override >= 0 && machine == 0x28) { // 32-bit ARM (EM_ARM)
             return FilterType::Arm;
         }
+        if (machine == 0xB7 || machine == 0xF3) { // EM_AARCH64 (0xB7) or EM_RISCV (0xF3)
+            return FilterType::None;
+        }
     }
 
     // 4. Mach-O detection
     if (size >= 8) {
         core::uint32 magic = core::read_le32(data);
-        if (magic == 0xFEEDFACEu || magic == 0xFEEDFACFu) { // Mach-O 32 / 64
-            core::uint32 cputype = core::read_le32(data + 4);
-            if (config.e8_override >= 0 &&
-                (cputype == 7 || cputype == 0x01000007u)) { // x86 / x86_64
-                return FilterType::E8;
+        bool is_macho = false;
+        core::uint32 cputype = 0;
+
+        if (magic == 0xFEEDFACEu || magic == 0xFEEDFACFu) {
+            // Thin Mach-O (host little-endian: 32 / 64)
+            is_macho = true;
+            cputype = core::read_le32(data + 4);
+        } else if (magic == 0xCEFAEDFEu || magic == 0xCFFAEDFEu) {
+            // Thin Mach-O (big-endian: 32 / 64)
+            is_macho = true;
+            cputype = core::read_be32(data + 4);
+        } else if ((magic == 0xCAFEBABEu || magic == 0xBEBAFECAu) && size >= 12) {
+            // Mach-O fat/universal (0xCAFEBABE and byte-swapped 0xBEBAFECA)
+            core::uint32 nfat_arch =
+                (magic == 0xBEBAFECAu) ? core::read_be32(data + 4) : core::read_le32(data + 4);
+            if (nfat_arch >= 1) {
+                is_macho = true;
+                cputype =
+                    (magic == 0xBEBAFECAu) ? core::read_be32(data + 8) : core::read_le32(data + 8);
             }
-            if (config.arm_override >= 0 && cputype == 12) { // 32-bit ARM (CPU_TYPE_ARM)
-                return FilterType::Arm;
+        }
+
+        if (is_macho) {
+            if (cputype == 7 || cputype == 0x01000007u) { // x86 / x86_64
+                if (config.e8_override >= 0) return FilterType::E8;
+                return FilterType::None;
             }
+            if (cputype == 12) { // 32-bit ARM (CPU_TYPE_ARM)
+                if (config.arm_override >= 0) return FilterType::Arm;
+                return FilterType::None;
+            }
+            return FilterType::None;
         }
     }
 

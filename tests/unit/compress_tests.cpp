@@ -2078,6 +2078,144 @@ void test_detect_filter_hostile_pe_offset() {
     std::cout << "    - Hostile e_lfanew rejected without OOB: OK" << std::endl;
 }
 
+void test_filter_machine_dispatch() {
+    std::cout << "[+] test_filter_machine_dispatch" << std::endl;
+    core::uint8 channels = 0;
+
+    auto make_pe = [](core::uint16 machine) {
+        std::vector<core::byte> data(256, 0);
+        data[0] = 'M';
+        data[1] = 'Z';
+        core::write_le32(data.data() + 0x3C, 64);
+        data[64] = 'P';
+        data[65] = 'E';
+        data[66] = 0;
+        data[67] = 0;
+        core::write_le16(data.data() + 68, machine);
+        return data;
+    };
+
+    auto make_elf = [](core::uint16 machine) {
+        std::vector<core::byte> data(64, 0);
+        data[0] = 0x7F;
+        data[1] = 'E';
+        data[2] = 'L';
+        data[3] = 'F';
+        data[4] = 2; // 64-bit
+        data[5] = 1; // little endian
+        core::write_le16(data.data() + 0x12, machine);
+        return data;
+    };
+
+    // 1. PE x86-64 (0x8664) -> E8
+    auto pe_x64 = make_pe(0x8664);
+    REQUIRE(Filters50::detect_filter(pe_x64.data(), pe_x64.size(), channels) == FilterType::E8);
+
+    // 2. PE ARM64 (0xAA64) -> None
+    auto pe_arm64 = make_pe(0xAA64);
+    REQUIRE(Filters50::detect_filter(pe_arm64.data(), pe_arm64.size(), channels) ==
+            FilterType::None);
+
+    // 3. PE ARM64EC (0xA641) -> None
+    auto pe_arm64ec = make_pe(0xA641);
+    REQUIRE(Filters50::detect_filter(pe_arm64ec.data(), pe_arm64ec.size(), channels) ==
+            FilterType::None);
+
+    // 4. Unknown PE machine -> None, increments counter
+    Filters50::reset_unknown_pe_machine_count();
+    auto pe_unknown = make_pe(0xBEEF);
+    REQUIRE(Filters50::detect_filter(pe_unknown.data(), pe_unknown.size(), channels) ==
+            FilterType::None);
+    REQUIRE(Filters50::unknown_pe_machine_count() == 1);
+
+    // PE IA64 (0x0200) & RISCV64 (0x5064) -> None
+    auto pe_ia64 = make_pe(0x0200);
+    REQUIRE(Filters50::detect_filter(pe_ia64.data(), pe_ia64.size(), channels) == FilterType::None);
+    auto pe_riscv64 = make_pe(0x5064);
+    REQUIRE(Filters50::detect_filter(pe_riscv64.data(), pe_riscv64.size(), channels) ==
+            FilterType::None);
+
+    // PE ARM32 (0x01C0, 0x01C2, 0x01C4) -> Arm
+    for (core::uint16 arm_m : {core::uint16(0x01C0), core::uint16(0x01C2), core::uint16(0x01C4)}) {
+        auto pe_arm = make_pe(arm_m);
+        REQUIRE(Filters50::detect_filter(pe_arm.data(), pe_arm.size(), channels) ==
+                FilterType::Arm);
+    }
+
+    // 5. Fat Mach-O with x86_64 first arch -> E8
+    std::vector<core::byte> fat_x86(64, 0);
+    fat_x86[0] = 0xCA;
+    fat_x86[1] = 0xFE;
+    fat_x86[2] = 0xBA;
+    fat_x86[3] = 0xBE;
+    core::write_be32(fat_x86.data() + 4, 1);           // nfat_arch = 1
+    core::write_be32(fat_x86.data() + 8, 0x01000007u); // cputype = CPU_TYPE_X86_64
+    REQUIRE(Filters50::detect_filter(fat_x86.data(), fat_x86.size(), channels) == FilterType::E8);
+
+    // 6. Fat Mach-O with arm64 first arch -> None
+    std::vector<core::byte> fat_arm64(64, 0);
+    fat_arm64[0] = 0xCA;
+    fat_arm64[1] = 0xFE;
+    fat_arm64[2] = 0xBA;
+    fat_arm64[3] = 0xBE;
+    core::write_be32(fat_arm64.data() + 4, 1);           // nfat_arch = 1
+    core::write_be32(fat_arm64.data() + 8, 0x0100000Cu); // cputype = CPU_TYPE_ARM64
+    REQUIRE(Filters50::detect_filter(fat_arm64.data(), fat_arm64.size(), channels) ==
+            FilterType::None);
+
+    // 7. Big-endian Mach-O x86 -> E8
+    std::vector<core::byte> be_macho_x86(64, 0);
+    be_macho_x86[0] = 0xFE;
+    be_macho_x86[1] = 0xED;
+    be_macho_x86[2] = 0xFA;
+    be_macho_x86[3] = 0xCE;
+    core::write_be32(be_macho_x86.data() + 4, 7); // cputype = CPU_TYPE_X86
+    REQUIRE(Filters50::detect_filter(be_macho_x86.data(), be_macho_x86.size(), channels) ==
+            FilterType::E8);
+
+    // Big-endian Mach-O 64 x86_64 -> E8
+    std::vector<core::byte> be_macho_x64(64, 0);
+    be_macho_x64[0] = 0xFE;
+    be_macho_x64[1] = 0xED;
+    be_macho_x64[2] = 0xFA;
+    be_macho_x64[3] = 0xCF;
+    core::write_be32(be_macho_x64.data() + 4, 0x01000007u);
+    REQUIRE(Filters50::detect_filter(be_macho_x64.data(), be_macho_x64.size(), channels) ==
+            FilterType::E8);
+
+    // 8. ELF aarch64 (EM_AARCH64 = 0xB7) -> None
+    auto elf_a64 = make_elf(0xB7);
+    REQUIRE(Filters50::detect_filter(elf_a64.data(), elf_a64.size(), channels) == FilterType::None);
+
+    // ELF riscv (EM_RISCV = 0xF3) -> None
+    auto elf_riscv = make_elf(0xF3);
+    REQUIRE(Filters50::detect_filter(elf_riscv.data(), elf_riscv.size(), channels) ==
+            FilterType::None);
+
+    // 9. ELF x86-64 (EM_X86_64 = 0x3E) -> E8
+    auto elf_x64 = make_elf(0x3E);
+    REQUIRE(Filters50::detect_filter(elf_x64.data(), elf_x64.size(), channels) == FilterType::E8);
+
+    // ELF x86 (EM_386 = 0x03) -> E8
+    auto elf_x86 = make_elf(0x03);
+    REQUIRE(Filters50::detect_filter(elf_x86.data(), elf_x86.size(), channels) == FilterType::E8);
+
+    // 10. Existing ARM32 cases unchanged:
+    // ELF ARM32 (EM_ARM = 0x28) -> Arm
+    auto elf_arm32 = make_elf(0x28);
+    REQUIRE(Filters50::detect_filter(elf_arm32.data(), elf_arm32.size(), channels) ==
+            FilterType::Arm);
+
+    // Thin Mach-O ARM32 LE -> Arm
+    std::vector<core::byte> le_macho_arm(64, 0);
+    core::write_le32(le_macho_arm.data(), 0xFEEDFACEu);
+    core::write_le32(le_macho_arm.data() + 4, 12); // CPU_TYPE_ARM
+    REQUIRE(Filters50::detect_filter(le_macho_arm.data(), le_macho_arm.size(), channels) ==
+            FilterType::Arm);
+
+    std::cout << "    - Machine dispatch table & multi-ISA hygiene: OK" << std::endl;
+}
+
 void test_stream_encoder_decoder_filter_roundtrip() {
     std::cout << "[+] test_stream_encoder_decoder_filter_roundtrip" << std::endl;
     // The v1.21.1 regression: an active E8 filter with 1 MiB regions and
@@ -4410,6 +4548,7 @@ static const openrar::test::Case k_cases[] = {
     {"test_filter_detect_delta_wav_bounds", test_filter_detect_delta_wav_bounds, false},
     {"test_filter_detect_disable_all", test_filter_detect_disable_all, false},
     {"test_detect_filter_hostile_pe_offset", test_detect_filter_hostile_pe_offset, false},
+    {"test_filter_machine_dispatch", test_filter_machine_dispatch, false},
     {"test_stream_encoder_decoder_filter_roundtrip", test_stream_encoder_decoder_filter_roundtrip,
      false},
     {"test_slot257_run_collapse", test_slot257_run_collapse, false},
