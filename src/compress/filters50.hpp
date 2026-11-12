@@ -37,6 +37,11 @@ public:
     // Heuristic filter detection
     static FilterType detect_filter(const core::byte* data, size_t size, core::uint8& out_channels,
                                     const FilterConfig& config = {});
+
+    // Log-only counter for unrecognised PE machine architectures
+    static core::uint64 unknown_pe_machine_count() noexcept;
+    static void reset_unknown_pe_machine_count() noexcept;
+
     // x86 CALL/JMP relative address translation
     static void apply_e8(core::byte* data, size_t size, core::uint64 file_offset,
                          bool include_e9 = false);
