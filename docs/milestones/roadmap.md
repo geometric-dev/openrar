@@ -129,6 +129,8 @@ Under the revised Branching & Experiment Promotion Policy ([`docs/versioning.md`
 
 Every candidate is evaluated strictly against its kill gate. Only candidates that empirically win across all target toolchains without regressing baseline metrics are squashed and promoted to release-candidate feature branches (`feat/*`). Failed experiments are permanently archived (`archive/exp-*`) or pruned, leaving zero technical debt in trunk or release branches.
 
+**Intake:** candidates are first triaged in [`docs/experimentation-roadmap.md`](../experimentation-roadmap.md), which carries the format-legality gate (the RAR5 filter `Type` field is 3 bits; only `0..3` are legal), the W2/W3/EXT classification, the pinned corpora, and the wave sequencing. A row is registered in the table below only once it has a corpus and a measurable kill gate.
+
 | Candidate ID | Target Area / Mechanism | Experiment Branch | Kill Gate Criteria | Adjudication / Status | Promotion Target |
 |:---|:---|:---|:---|:---|:---|
 | **EXP-WILDCOPY** (H-18) | Overlapping LZ wildcopy & pattern doubling SIMD | `exp/lz-wildcopy-simd` | Decompression throughput $+10\%$, 0 overrun risk, 100% thread parity | **PROMOTED (WINNER)** | Merged to `main` |
@@ -142,6 +144,8 @@ Every candidate is evaluated strictly against its kill gate. Only candidates tha
 | **EXP-SOLID-REORDER** | Heuristic extension/content-grouped solid packing | `arc/exp-solid-reorder` | Archive size reduction $\ge 2.0\%$ on multi-file source/asset trees, 0 decompression overhead, 0 format changes | **REFUTED & EXCISED (KILLED)**: Fails 2% kill gate. Global extension sort regresses by $-0.30\%$ on real codebases (breaks `.h`/`.cpp` locality). Directory-affine sort achieves only $+0.02\%..0.42\%$, because $\ge 4\text{ MiB}$ LZ windows already fit directory working sets. Excised; archived to `arc/exp-solid-reorder`. | Dropped |
 | **EXP-M5-ADAPTIVE** | Adaptive search depth & early cutoff on low-entropy repeats | `arc/exp-m5-adaptive` | `-m5` compression throughput $+15\%$ with $<0.1\%$ compression ratio loss | **REFUTED & EXCISED (KILLED)**: Fails kill gate. Early repeat probing with bounded chain depths missed $>100\text{ B}$ matches on `big24.bin` (+115 B) and `real_src.txt` (+98 B), tripping ratchet guard. Throughput showed no statistically significant gain (3.11 vs 3.46 MB/s). Excised; archived to `arc/exp-m5-adaptive`. | Dropped |
 | **EXP-FUZZ-STRESS** | Enterprise continuous fuzzing & Invariant I-15/I-16 stress | `exp/continuous-fuzz-harness` | Zero leaks, 0 crashes across 8 engines, 100% I-15/I-16 compliance | **PLANNED** | Pending evaluation |
+| **EXP-MACHINE-DISPATCH** | Wrong-filter hygiene on non-x86 containers (PE/ELF/Mach-O) | `exp/machine-dispatch` | 0 digest change on the 30 ratchet cells; no archive growth on C2/C5; size must not increase on any C5 member | **IN PROGRESS** | Pending evaluation |
+| **PROBE-PREDICT** | Image predictor & channel mapping evaluation (log-only probe) | `exp/predict-probe` | probe report + recorded predictor/channel decision; no encoder change | **IN PROGRESS** | Pre-implementation decision |
 
 ---
 
