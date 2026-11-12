@@ -89,6 +89,15 @@ bytes. It is **excluded from the gate**: the gate is about ARM64 code, and this
 file is not ARM64 code. The +6 B is recorded here as an explicit, documented
 exception rather than averaged away or dropped.
 
+**Those absolute sizes are not comparable with the earlier `551`/`557` unless the
+stored name is accounted for.** RAR5 stores the member name in UTF-16 (2 bytes
+per character), and this control's descriptive 33-character name is 18
+characters longer than the original `c5_pe_arm64.exe`. Archived under that
+original name the same bytes measure **568 / 551 / 549 B** for `main` and
+**570 / 557 / 555 B** for the branch at `-m1/-m3/-m5` — exactly the
+`551 → 557` the first analysis reported. Only the deltas are name-independent;
+`587`/`593` minus the 36-byte name cost is `551`/`557`, not a contradiction.
+
 ## Limitation (Q-7)
 
 These are **not compiler output**. The Windows reference host has no clang, so
