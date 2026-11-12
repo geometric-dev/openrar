@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PINNED_SOURCE = ROOT / "tests" / "fixtures" / "c5" / "pinned.c"
 
 # Changing pinned.c changes the corpus and voids every measurement taken on it.
-PINNED_SHA256 = "a8dae4e0c3fa896f97ed710a396be3bd9f32b7cbf2bf683df4b556b53130ff8a"
+PINNED_SHA256 = "d3bad8e15c404cf28aa259540c244c7e11d2c6911151d0ad20014586dbf38847"
 
 # name -> (clang triple, expected ELF e_machine)
 TARGETS = {
