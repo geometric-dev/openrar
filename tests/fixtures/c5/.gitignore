@@ -1,0 +1,2 @@
+# The repository ignores *.o build output; the ELF corpus members are inputs.
+!*.o
