@@ -140,6 +140,8 @@ Every filter-detection gate below therefore carries a **pack wall-clock at `-mt4
 
 **Gate.** 0 digest change on the 30 ratchet cells (I-1). No archive growth on C2 or C5. Size must not increase on any C5 member (it may decrease on PE-ARM64). Tests added in `tests/unit/compress_tests.cpp` beside `test_forward_filters`.
 
+**Landed evidence (2026-11-12).** `tools/measure_c5.py` re-runs the size gate against a `main`-built binary (0 B on four members, −6 B on PE-ARM64); `tools/prove_dispatch_parity.py` proves the two clauses the size gate does not cover: **30/30 ratchet cells byte-identical** between `main` and the branch (`-m1`..`-m5` over the guard's corpora), and **12/12 reference extractions byte-exact** under UnRAR 7.20 and WinRAR 7.20 for every archive the change alters. The original x86-payload ARM64 stub is kept as a hash-pinned **non-gating control** (+2 B at `-m1`, +6 B at `-m3`/`-m5`) so the synthetic-corpus correction is auditable.
+
 **Why first:** hours of work, zero format risk, removes a wrong transform from shipping behaviour, and C5 doubles as the corpus for the deferred A64 work.
 
 ### 4.2 PROBE-PREDICT (MEAS, Wave 1)

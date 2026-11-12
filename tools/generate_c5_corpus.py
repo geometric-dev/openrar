@@ -37,6 +37,11 @@ PE_MACHINES = {
     "aarch64": 0xAA64,
 }
 
+# Frozen evidence, not generated: the original ARM64 PE stub from the first
+# C2/C5 eval, whose payload is x86-shaped (101 0xE8 bytes). It is kept so the
+# corpus swap cannot be read as moving the goalposts; see README.md.
+FROZEN_FIXTURES = ("control_pe_aarch64_x86payload.exe",)
+
 
 def _align_up(value: int, alignment: int) -> int:
     return (value + alignment - 1) // alignment * alignment
@@ -156,15 +161,24 @@ def main() -> int:
         p.write_bytes(data)
         written.append(p)
 
+    entries = list(written)
+    for name in FROZEN_FIXTURES:
+        frozen = out / name
+        if frozen.is_file():
+            entries.append(frozen)
+        else:
+            print(f"[WARN] frozen control missing: {frozen}")
+
     lines = []
-    for p in written:
+    for p in entries:
         digest = hashlib.sha256(p.read_bytes()).hexdigest()
         lines.append(f"{digest}  {p.name}\n")
     # newline="" keeps the manifest LF-only on Windows, so sha256sum -c works
     # on the committed copy from any host.
     with (out / "manifest.sha256").open("w", encoding="utf-8", newline="") as fh:
         fh.write("".join(lines))
-    print(f"wrote {len(written)} C5 stubs + manifest to {out}")
+    print(f"wrote {len(written)} C5 stubs + {len(entries) - len(written)} frozen control(s) "
+          f"+ manifest to {out}")
     return 0
 
 
