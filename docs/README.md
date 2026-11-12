@@ -77,6 +77,7 @@ Guides for integrating OpenRAR into applications, web environments, and native p
 ## 🎯 4. Project Strategy & Governance
 
 - **[Master Roadmap (`ROADMAP.md`)](ROADMAP.md):** The authoritative project roadmap detailing the completed Classic Arc (v1.0–v1.42), the completed Modern Arc (v1.43–v1.52), and active governance scorecards.
+- **[Experimentation Roadmap](experimentation-roadmap.md):** Post-v2.3.0 filter & decode candidate intake: format-legality gate, W2/W3/EXT classification, corpora, kill gates, and wave sequencing.
 - **[OpenRAR v2.0 Architecture Charter](v2.0-charter.md):** Executive strategy and architectural roadmap for v2.0 (closing the ratio gap via cost-aware DAG parsing, AVX-512/NEON SIMD kernels, and zero-allocation streaming).
 
 ---
@@ -89,6 +90,7 @@ The `docs/` tree is partitioned into focused, logically separated domains:
 docs/
 ├── README.md                     # This document (Master Documentation Hub)
 ├── ROADMAP.md                    # Canonical Master Roadmap & Milestone Scorecard
+├── experimentation-roadmap.md    # Post-v2.3.0 candidate intake, gates & corpora
 ├── v2.0-charter.md               # OpenRAR v2.0 Architecture Strategy & Charter
 │
 ├── [Living Specifications]
