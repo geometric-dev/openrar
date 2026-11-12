@@ -3,7 +3,7 @@ name: Wave 1 — C5 real-object gate & parity
 # The committed C5 fixtures are synthetic because the Windows reference host
 # has no clang (Q-7). This job closes that gap: it cross-compiles the pinned
 # freestanding source with clang for aarch64/riscv64/x86_64 and re-runs the
-# dispatch gates on real compiler output.
+# dispatch gates on real compiler output, including PE32+ images linked with lld.
 on:
   pull_request:
     paths:
@@ -79,7 +79,7 @@ jobs:
           "$BRANCH" --version
 
       - name: Cross-compile the pinned C5 corpus
-        run: python3 tools/build_c5_real_corpus.py --out build/c5_real
+        run: python3 tools/build_c5_real_corpus.py --out build/c5_real --pe
 
       - name: C5 size gate on real objects
         run: |
@@ -87,7 +87,6 @@ jobs:
             --baseline "main=$MAIN" \
             --candidate "branch=$BRANCH" \
             --corpus build/c5_real \
-            --allow-missing \
             --json build/c5_real_gate.json
 
       - name: Ratchet parity and reference extraction
