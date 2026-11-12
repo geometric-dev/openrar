@@ -41,7 +41,15 @@ TARGETS = {
     "riscv64": ("riscv64-linux-gnu", 0xF3),
 }
 
-CFLAGS = ("-O2", "-c", "-ffreestanding", "-fno-builtin", "-fno-asynchronous-unwind-tables")
+CFLAGS = ("-O2", "-c", "-ffreestanding", "-fno-builtin", "-fno-stack-protector",
+          "-fno-asynchronous-unwind-tables")
+
+# Real PE images need a linker as well as a compiler: lld-link is not present
+# everywhere, so this is opt-in (--pe) and skipped loudly when unavailable.
+PE_TARGETS = {
+    "x86_64": ("x86_64-pc-windows-msvc", "x64", 0x8664),
+    "aarch64": ("aarch64-pc-windows-msvc", "arm64", 0xAA64),
+}
 
 
 def sha256(path: Path) -> str:
@@ -70,6 +78,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="build/c5_real")
     ap.add_argument("--clang", default=None, help="clang executable (default: PATH)")
+    ap.add_argument("--pe", action="store_true",
+                    help="also link real PE32+ images (needs lld-link)")
+    ap.add_argument("--lld-link", default=None, help="lld-link executable (default: PATH)")
     args = ap.parse_args()
 
     if not PINNED_SOURCE.is_file():
@@ -120,6 +131,55 @@ def main() -> int:
                   "size gate would not exercise the filter.", file=sys.stderr)
             return 1
         written.append(target)
+
+    if args.pe:
+        lld_link = args.lld_link or shutil.which("lld-link")
+        if not lld_link:
+            print("lld-link not found; cannot link the real PE objects. Install lld and "
+                  "re-run with --pe.", file=sys.stderr)
+            return 2
+        for name, (triple, machine_flag, expected_machine) in PE_TARGETS.items():
+            obj = out / f"pe_{name}.o"
+            image = out / f"pe_{name}.exe"
+            for stale in (obj, image):
+                if stale.exists():
+                    stale.unlink()
+            compile_cmd = [clang, f"--target={triple}", *CFLAGS, "-o", str(obj),
+                           str(PINNED_SOURCE)]
+            proc = subprocess.run(compile_cmd, capture_output=True, text=True)
+            if proc.returncode != 0 or not obj.is_file():
+                print(f"clang failed for {triple} (rc={proc.returncode}):\n"
+                      f"{proc.stdout}{proc.stderr}", file=sys.stderr)
+                return 1
+            link_cmd = [lld_link, f"/machine:{machine_flag}", "/entry:c5_entry",
+                        "/subsystem:console", "/nodefaultlib", f"/out:{image}", str(obj)]
+            proc = subprocess.run(link_cmd, capture_output=True, text=True)
+            obj.unlink(missing_ok=True)
+            if proc.returncode != 0 or not image.is_file():
+                print(f"lld-link failed for {machine_flag} (rc={proc.returncode}):\n"
+                      f"{proc.stdout}{proc.stderr}", file=sys.stderr)
+                return 1
+            data = image.read_bytes()
+            if data[:2] != b"MZ" or len(data) < 128:
+                print(f"{image.name} is not a PE image", file=sys.stderr)
+                return 1
+            pe_off = struct.unpack_from("<I", data, 0x3C)[0]
+            if pe_off + 6 > len(data) or data[pe_off:pe_off + 4] != b"PE\x00\x00":
+                print(f"{image.name} has no PE header", file=sys.stderr)
+                return 1
+            machine = struct.unpack_from("<H", data, pe_off + 4)[0]
+            if machine != expected_machine:
+                print(f"{image.name}: machine 0x{machine:04X}, expected "
+                      f"0x{expected_machine:04X}", file=sys.stderr)
+                return 1
+            calls = valid_e8_calls(data)
+            print(f"  {image.name:<16} {len(data):>7,} B  machine=0x{machine:04X}  "
+                  f"valid E8 sites={calls}")
+            if name == "x86_64" and calls < 32:
+                print("  PE x86-64 image does not reach the E8 density threshold (32).",
+                      file=sys.stderr)
+                return 1
+            written.append(image)
 
     lines = []
     for path in sorted(written):

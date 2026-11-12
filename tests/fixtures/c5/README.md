@@ -121,6 +121,12 @@ The builder verifies the source hash and each object's `e_machine`, and it
 refuses to emit an x86-64 control that does not reach the detector's 32-valid-
 `E8` threshold — otherwise the size gate would not exercise the filter at all.
 
+With `--pe` (and `lld-link` installed) it also links real PE32+ images for
+x86-64 and ARM64 from the same source; without lld it reports that and stops.
+The committed `pe_*.exe` stubs remain the PE coverage on hosts that cannot link
+PE, and the CI job does not pass `--pe` until that path has been verified on a
+host with lld.
+
 `.github/workflows/wave1-c5-parity.yml` builds `main` and the branch with
 clang, generates that corpus, and re-runs both checks on the real objects:
 `tools/measure_c5.py` (size gate, `--allow-missing` because only the three ELF
