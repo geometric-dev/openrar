@@ -36,6 +36,10 @@ FIXTURES = (
     "pe_aarch64.exe",
 )
 
+# Measured and reported, never gated: the original ARM64 PE stub whose payload
+# is x86-shaped. It records what the first eval measured; see the corpus README.
+CONTROL_FIXTURES = ("control_pe_aarch64_x86payload.exe",)
+
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -112,6 +116,7 @@ def main() -> int:
     work.mkdir(parents=True, exist_ok=True)
 
     rows = []
+    control_rows = []
     failures = []
     for fixture in FIXTURES:
         src = corpus / fixture
@@ -129,6 +134,17 @@ def main() -> int:
                     failures.append((fixture, level, name, delta))
             rows.append({"fixture": fixture, "level": level, "sizes": sizes})
 
+    for fixture in CONTROL_FIXTURES:
+        src = corpus / fixture
+        if not src.is_file():
+            continue
+        for level in levels:
+            sizes = {}
+            for name, exe in binaries:
+                archive = work / f"{fixture}.{name}.m{level}.rar"
+                sizes[name] = build_archive(exe, level, src, archive)
+            control_rows.append({"fixture": fixture, "level": level, "sizes": sizes})
+
     names = [n for n, _ in binaries]
     header = "| member | -m | " + " | ".join(names) + " | delta vs " + names[0] + " |"
     print(header)
@@ -139,8 +155,17 @@ def main() -> int:
         delta_cell = ", ".join(f"{d:+d}" for d in deltas) if deltas else "-"
         print(f"| `{row['fixture']}` | {row['level']} | {cells} | {delta_cell} |")
 
+    if control_rows:
+        print("\nNon-gating control (x86-shaped payload in an ARM64 container):")
+        for row in control_rows:
+            cells = " | ".join(str(row["sizes"][n]) for n in names)
+            deltas = [row["sizes"][n] - row["sizes"][names[0]] for n in names[1:]]
+            delta_cell = ", ".join(f"{d:+d}" for d in deltas) if deltas else "-"
+            print(f"| `{row['fixture']}` | {row['level']} | {cells} | {delta_cell} |")
+
     if args.json:
-        Path(args.json).write_text(json.dumps({"binaries": names, "rows": rows}, indent=2) + "\n",
+        Path(args.json).write_text(json.dumps({"binaries": names, "rows": rows,
+                                               "controls": control_rows}, indent=2) + "\n",
                                   encoding="utf-8")
 
     if failures:
