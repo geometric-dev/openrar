@@ -24,6 +24,7 @@ tests/fixtures/
 │       ├── mutator_delete_file=action=del.rar.sha256
 │       ├── mutator_lock=action=lock.rar
 │       └── mutator_lock=action=lock.rar.sha256
+├── c5/                            ← ISA dispatch corpus (see c5/README.md)
 └── rar5/                          ← Synthetic and golden RAR5 feature coverage archives
     ├── hello5.rar
     ├── hello5.rar.sha256

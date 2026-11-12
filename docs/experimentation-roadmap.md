@@ -260,11 +260,11 @@ No gate in §4 is evaluable without these. Each corpus gets a manifest with SHA-
 | **C2** | Negative controls | random, text, JPEG, ZIP, and a **mislabelled** file (BMP header + random payload) | False-positive detection |
 | **C3** | Image | BMP 8/16/24/32 bpp at widths **1919, 1920, 1921** (padding on/off), uncompressed TIFF strips LE+BE, TGA type 2, PPM/PGM; synthetic ramps **and** 4 public-domain photos | EXP-IMAGE-STRIDE |
 | **C4** | Audio | 5.1/7.1 WAV at 16/24/32-bit; JUNK-prefixed WAV; RF64/BW64; AIFF; CAF; seeded (sine + noise) generation | EXP-AUDIO-DETECT, EXP-DELTA-MULTI-STRIDE |
-| **C5** | ISA | aarch64 + riscv64 ELF objects cross-compiled from pinned C sources; x86-64 control; one PE-ARM64 object | EXP-MACHINE-DISPATCH, deferred EXT work |
+| **C5** | ISA | aarch64 + riscv64 ELF objects; x86-64 ELF/PE controls; one PE-ARM64 object. Committed at `tests/fixtures/c5/` as ISA-shaped synthetic stubs (seed 1337, `tools/generate_c5_corpus.py`) pending the clang cross-compile in CI | EXP-MACHINE-DISPATCH, deferred EXT work |
 | **C6** | Decode | literal-heavy (minified JS, text), match-heavy (zeros, runs), binary, ≥64 MiB members | Wave 4/5 decode gates |
 | **C7** | Filtered-MT | ≥8 MiB members that trigger E8 / DELTA | EXP-FILTER-SAFE-MT |
 
-**C5 recipe** (reproducible, licence-clean, no sysroot needed): `clang --target=aarch64-linux-gnu -O2 -c pinned.c -o pinned.a64.o`, same for `riscv64-linux-gnu`. If clang cannot target a triple on the Windows host, generate the corpus in CI (ubuntu leg) and pin the hashes — do not skip the corpus.
+**C5 recipe** (reproducible, licence-clean, no sysroot needed): `clang --target=aarch64-linux-gnu -O2 -c pinned.c -o pinned.a64.o`, same for `riscv64-linux-gnu`. If clang cannot target a triple on the Windows host, generate the corpus in CI (ubuntu leg) and pin the hashes — do not skip the corpus. The committed stub set exists because of Q-7; the size gate is `tools/measure_c5.py --baseline main=<main build> --candidate branch=<branch build>` and the current result is in `tests/fixtures/c5/README.md`.
 
 **Protocol.** `openrar_bench` (1 warm-up + 7 timed, median and spread, host disclosed) for throughput; archive byte counts from the same build for size; **every** archive whose bytes change is cross-extracted by UnRAR 7.20 and WinRAR 7.20 before a row may be promoted. Speeds are never compared across builds without a same-session baseline.
 
