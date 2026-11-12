@@ -11,7 +11,12 @@ Corpus includes:
   - BW64/RF64
   - AIFF
   - CAF
-  - 4 public-domain Kodak photographs (converted to uncompressed 24-bit BMP)
+  - 4 Kodak photographs from the Lossless True Color Image Suite, fetched by
+    pinned hash and converted to uncompressed 24-bit BMP
+
+Requires Pillow (tools/requirements.txt). Fetching the photographs needs
+network access; pass --skip-kodak to generate the 28 synthetic fixtures alone
+(the committed corpus is complete, so regeneration is only needed to extend it).
 """
 
 import hashlib
@@ -328,26 +333,70 @@ def generate_caf(filename, channels, bits_per_sample, num_samples=4000):
     data = b'data' + struct.pack('>QI', len(raw_be) + 4, 0) + raw_be
     (OUT_DIR / filename).write_bytes(hdr + desc + data)
 
+# Upstream PNGs, pinned by SHA-256. The Kodak Lossless True Color Image Suite
+# was released by Eastman Kodak for unrestricted use; see THIRD_PARTY_NOTICES.md.
+KODAK_SOURCE_SHA256 = {
+    "01": "a56e27cbf5f843c048b6af1d6e090760e9c92fadba88b7dee0205918a37523bd",
+    "02": "4f4b74a79237e311d72cad958237b5f7088d8bce1c82305ebefe1a70e3022dfd",
+    "03": "e25ca1ff2f0c0cb5fdfd5f9b0a0bb21ac4c3de3c84a67f35b09a85d3306249db",
+    "04": "e3b946107c5d3441c022f678d0c3caf1e224d81b1604ba840a4f88e562de61aa",
+}
+
+REPORT_FILES = {"predict_probe_report.csv", "predict_probe_report.md"}
+
+
 def fetch_kodak_photos():
-    """Fetch 4 public-domain Kodak photographs and convert to uncompressed 24-bit BMP."""
+    """Fetch the pinned Kodak photographs and convert to uncompressed 24-bit BMP.
+
+    A failed or mismatched download is an error: a silently short corpus is
+    worse than no corpus.
+    """
     base_url = "https://r0k.us/graphics/kodak/kodak"
-    photo_ids = ["01", "02", "03", "04"]
-    for pid in photo_ids:
+    for pid, expected in KODAK_SOURCE_SHA256.items():
         url = f"{base_url}/kodim{pid}.png"
         out_name = f"photo_kodim{pid}.bmp"
         out_path = OUT_DIR / out_name
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 png_bytes = resp.read()
-            img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-            # Save as uncompressed BMP (24 bpp)
-            img.save(out_path, format="BMP")
-            print(f"  [OK] Downloaded and converted {out_name} ({img.width}x{img.height})")
         except Exception as e:
-            print(f"  [WARN] Failed to fetch photo {url}: {e}")
+            raise RuntimeError(
+                f"cannot fetch {url}: {e}. Re-run with --skip-kodak to generate the "
+                "synthetic fixtures only, or restore the committed BMP from git."
+            ) from e
+        actual = hashlib.sha256(png_bytes).hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"{url} hash mismatch: {actual} != {expected}")
+        img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+        # Save as uncompressed BMP (24 bpp)
+        img.save(out_path, format="BMP")
+        print(f"  [OK] Downloaded and converted {out_name} ({img.width}x{img.height})")
+
+
+def write_manifest():
+    """Pin every corpus input by SHA-256; probe outputs are not corpus members."""
+    manifest_path = OUT_DIR / "manifest.sha256"
+    lines = []
+    for fname in sorted(os.listdir(OUT_DIR)):
+        if fname == "manifest.sha256" or fname in REPORT_FILES:
+            continue
+        p = OUT_DIR / fname
+        if p.is_file():
+            lines.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {fname}\n")
+    with manifest_path.open("w", encoding="utf-8", newline="") as fh:
+        fh.write("".join(lines))
+    print(f"Manifest written with {len(lines)} files to {manifest_path}")
+    return manifest_path
 
 def main():
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--skip-kodak", action="store_true",
+                    help="skip the network-fetched Kodak photographs")
+    args = ap.parse_args()
+
     print(f"Generating experiment fixtures in {OUT_DIR}...")
     
     # 1. BMP suite: widths 1919, 1920, 1921 across 8, 16, 24, 32 bpp
@@ -385,21 +434,15 @@ def main():
     sample_text = "The quick brown fox jumps over the lazy dog. OpenRAR high performance archiving.\n" * 100
     (OUT_DIR / "text_utf16_le.txt").write_bytes(sample_text.encode('utf-16le'))
 
-    # 10. Fetch 4 public-domain Kodak photographs
-    print("Fetching authentic public-domain Kodak photographs...")
-    fetch_kodak_photos()
-    
+    # 10. Fetch the pinned Kodak photographs
+    if args.skip_kodak:
+        print("[SKIP] Kodak photographs (--skip-kodak)")
+    else:
+        print("Fetching pinned Kodak photographs...")
+        fetch_kodak_photos()
+
     # 11. Write manifest
-    manifest_path = OUT_DIR / "manifest.sha256"
-    lines = []
-    for fname in sorted(os.listdir(OUT_DIR)):
-        if fname == "manifest.sha256": continue
-        p = OUT_DIR / fname
-        if p.is_file():
-            h = hashlib.sha256(p.read_bytes()).hexdigest()
-            lines.append(f"{h}  {fname}\n")
-    manifest_path.write_text("".join(lines), encoding="utf-8")
-    print(f"Manifest written with {len(lines)} files to {manifest_path}")
+    write_manifest()
 
 if __name__ == "__main__":
     main()

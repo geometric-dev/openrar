@@ -306,7 +306,9 @@ int main(int argc, char** argv) {
         for (const auto& entry : fs::directory_iterator(target_dir)) {
             if (entry.is_regular_file()) {
                 std::string name = entry.path().filename().string();
-                if (name != "manifest.sha256" &&
+                const bool is_own_output =
+                    name == "predict_probe_report.csv" || name == "predict_probe_report.md";
+                if (name != "manifest.sha256" && !is_own_output &&
                     (name.size() < 4 || name.rfind(".tmp") != name.size() - 4)) {
                     files.push_back(entry.path());
                 }
@@ -350,25 +352,35 @@ int main(int argc, char** argv) {
         base_rec.note = "raw uncompressed bytes";
         records.push_back(base_rec);
 
-        // 2. Candidate DELTA channels
+        // 2. Candidate DELTA channels. Emission starts at the pixel data
+        //    (bfOffBits) for images, so measure the same phase the encoder
+        //    would emit: a 54-byte header is not a multiple of 4, and starting
+        //    at byte 0 shifts every 32 bpp plane by two bytes.
+        size_t delta_start = geom.is_image ? geom.pixel_offset : 0;
+        if (delta_start >= raw.size()) delta_start = 0;
         std::vector<core::byte> residual(raw.size());
+        if (delta_start > 0) {
+            std::memcpy(residual.data(), raw.data(), delta_start);
+        }
         for (size_t ch : CANDIDATE_CHANNELS) {
-            if (ch > raw.size()) continue;
-            bool ok = compress::Filters50::encode_delta(raw.data(), residual.data(), raw.size(),
-                                                        static_cast<core::uint8>(ch));
+            if (ch > raw.size() - delta_start) continue;
+            bool ok = compress::Filters50::encode_delta(
+                raw.data() + delta_start, residual.data() + delta_start, raw.size() - delta_start,
+                static_cast<core::uint8>(ch));
             if (!ok) continue;
 
             double res_entropy = compute_entropy(residual.data(), residual.size());
             double res_lz = compute_lz_friendliness(residual.data(), residual.size()) * 100.0;
 
-            // Per-plane entropies
-            const size_t full = raw.size() / ch;
-            const size_t rem = raw.size() % ch;
+            // Per-plane entropies over the emitted region only
+            const size_t delta_size = raw.size() - delta_start;
+            const size_t full = delta_size / ch;
+            const size_t rem = delta_size % ch;
             std::ostringstream oss;
             oss << std::fixed << std::setprecision(2);
             for (size_t c = 0; c < ch; ++c) {
                 size_t psize = full + (c < rem ? 1 : 0);
-                size_t pstart = c * full + (c < rem ? c : rem);
+                size_t pstart = delta_start + c * full + (c < rem ? c : rem);
                 double pe = compute_entropy(residual.data() + pstart, psize);
                 if (c > 0) oss << ";";
                 oss << pe;
