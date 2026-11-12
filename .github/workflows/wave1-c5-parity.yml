@@ -1,0 +1,111 @@
+name: Wave 1 — C5 real-object gate & parity
+
+# The committed C5 fixtures are synthetic because the Windows reference host
+# has no clang (Q-7). This job closes that gap: it cross-compiles the pinned
+# freestanding source with clang for aarch64/riscv64/x86_64 and re-runs the
+# dispatch gates on real compiler output.
+on:
+  pull_request:
+    paths:
+      - 'src/compress/filters50.cpp'
+      - 'src/compress/filters50.hpp'
+      - 'tests/fixtures/c5/**'
+      - 'tools/build_c5_real_corpus.py'
+      - 'tools/measure_c5.py'
+      - 'tools/prove_dispatch_parity.py'
+      - 'tools/release_regression_guard.py'
+      - '.github/workflows/wave1-c5-parity.yml'
+  push:
+    branches:
+      - 'exp/machine-dispatch'
+      - 'integ/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-object-gate:
+    name: clang cross-compiled C5 gate & parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (full history for the v2.0.23 corpus tag)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld cmake ninja-build
+          # UnRAR is in multiverse. WinRAR has no Linux CLI, so reference
+          # extraction here is UnRAR-only; the Windows leg owns the WinRAR half.
+          sudo apt-get install -y unrar || echo "unrar unavailable; reference extraction will be skipped"
+
+      - name: Build main (baseline)
+        run: |
+          git worktree add "$RUNNER_TEMP/main" origin/main
+          cmake -S "$RUNNER_TEMP/main" -B "$RUNNER_TEMP/main-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build "$RUNNER_TEMP/main-build" --target openrar
+
+      - name: Build branch (candidate)
+        run: |
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build-ci --target openrar
+
+      - name: Locate binaries
+        run: |
+          MAIN=$(find "$RUNNER_TEMP/main-build" -type f -name openrar -perm -u+x | head -1)
+          BRANCH=$(find build-ci -type f -name openrar -perm -u+x | head -1)
+          test -n "$MAIN"
+          test -n "$BRANCH"
+          echo "MAIN=$MAIN" >> "$GITHUB_ENV"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          "$MAIN" --version
+          "$BRANCH" --version
+
+      - name: Cross-compile the pinned C5 corpus
+        run: python3 tools/build_c5_real_corpus.py --out build/c5_real
+
+      - name: C5 size gate on real objects
+        run: |
+          python3 tools/measure_c5.py \
+            --baseline "main=$MAIN" \
+            --candidate "branch=$BRANCH" \
+            --corpus build/c5_real \
+            --allow-missing \
+            --json build/c5_real_gate.json
+
+      - name: Ratchet parity and reference extraction
+        run: |
+          REF=""
+          if ! command -v unrar >/dev/null 2>&1; then REF="--skip-references"; fi
+          python3 tools/prove_dispatch_parity.py \
+            --baseline "main=$MAIN" \
+            --candidate "branch=$BRANCH" \
+            --c5-corpus build/c5_real \
+            --json build/dispatch_parity.json $REF
+
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave1-c5-measurements
+          path: |
+            build/c5_real_gate.json
+            build/dispatch_parity.json
+          if-no-files-found: warn

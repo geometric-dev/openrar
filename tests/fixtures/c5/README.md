@@ -98,10 +98,18 @@ original name the same bytes measure **568 / 551 / 549 B** for `main` and
 `551 → 557` the first analysis reported. Only the deltas are name-independent;
 `587`/`593` minus the 36-byte name cost is `551`/`557`, not a contradiction.
 
-## Limitation (Q-7)
+## Real corpus (CI)
 
-These are **not compiler output**. The Windows reference host has no clang, so
-the real cross-compiled corpus must be produced in the Ubuntu CI leg:
+These are **not compiler output**. The Windows reference host has no clang
+(Q-7), so the real objects are produced in the Ubuntu CI leg from
+[`pinned.c`](pinned.c) — freestanding, no headers, no sysroot, SHA-256
+`6305cf3e5e80b24b9d4795f1de6e7783229332dffd8fd57ed55f691006744828`:
+
+```
+python3 tools/build_c5_real_corpus.py --out build/c5_real
+```
+
+which runs, per target:
 
 ```
 clang --target=aarch64-linux-gnu -O2 -c pinned.c -o elf_aarch64.o
@@ -109,6 +117,17 @@ clang --target=riscv64-linux-gnu -O2 -c pinned.c -o elf_riscv64.o
 clang --target=x86_64-linux-gnu  -O2 -c pinned.c -o elf_x86_64.o
 ```
 
-Size deltas on these stubs are evidence about **dispatch and filter
-overhead**, not about compression ratio on real ARM64/RISC-V code. Re-run the
-size gate on the CI corpus before promoting any ratio claim.
+The builder verifies the source hash and each object's `e_machine`, and it
+refuses to emit an x86-64 control that does not reach the detector's 32-valid-
+`E8` threshold — otherwise the size gate would not exercise the filter at all.
+
+`.github/workflows/wave1-c5-parity.yml` builds `main` and the branch with
+clang, generates that corpus, and re-runs both checks on the real objects:
+`tools/measure_c5.py` (size gate, `--allow-missing` because only the three ELF
+objects exist) and `tools/prove_dispatch_parity.py` (30 ratchet cells plus
+reference extraction of changed archives). Reference extraction is UnRAR-only
+on Linux: WinRAR has no Linux CLI, so the WinRAR half stays on the Windows leg.
+
+Size deltas on the committed stubs are evidence about **dispatch and filter
+overhead**, not about compression ratio on real ARM64/RISC-V code. The CI
+numbers are the ones that speak to real compiler output.

@@ -99,6 +99,9 @@ def main() -> int:
     ap.add_argument("--candidate", action="append", type=parse_binary, default=[],
                     help="name=/path/to/openrar (repeatable)")
     ap.add_argument("--corpus", default="tests/fixtures/c5")
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="skip absent fixtures instead of failing (e.g. the real CI corpus "
+                         "has only the cross-compiled ELF objects)")
     ap.add_argument("--levels", default="0,1,3,5")
     ap.add_argument("--work", default=None, help="scratch directory (default: temp)")
     ap.add_argument("--json", default=None, help="write the measurement matrix here")
@@ -108,9 +111,15 @@ def main() -> int:
     levels = [int(x) for x in args.levels.split(",") if x.strip()]
     corpus = Path(args.corpus)
     missing = [f for f in FIXTURES if not (corpus / f).is_file()]
-    if missing:
+    if missing and not args.allow_missing:
         print(f"missing C5 fixtures in {corpus}: {', '.join(missing)}", file=sys.stderr)
         return 2
+    fixtures = [f for f in FIXTURES if f not in missing]
+    if not fixtures:
+        print(f"no C5 fixtures found in {corpus}", file=sys.stderr)
+        return 2
+    for fixture in missing:
+        print(f"note: skipping absent fixture {fixture}", file=sys.stderr)
 
     work = Path(args.work) if args.work else Path(tempfile.mkdtemp(prefix="c5_measure_"))
     work.mkdir(parents=True, exist_ok=True)
@@ -118,7 +127,7 @@ def main() -> int:
     rows = []
     control_rows = []
     failures = []
-    for fixture in FIXTURES:
+    for fixture in fixtures:
         src = corpus / fixture
         digest = sha256(src)
         for level in levels:
