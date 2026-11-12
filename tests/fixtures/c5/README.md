@@ -66,6 +66,26 @@ candidates. It is recorded here for the audit trail and is **not** a gate
 result. The committed fixtures carry ISA-shaped payloads; the old stub is not
 part of the corpus.
 
+## Real objects (CI)
+
+`tools/build_c5_real_corpus.py` cross-compiles the pinned source rather than
+generating bytes by hand. With `--pe` (and `lld-link`) it also links real
+PE32+ images. clang 18.1.3 / lld 18.1.3 produced:
+
+| Object | Bytes | Machine | Valid `E8` sites |
+|---|---:|---|---:|
+| `elf_x86_64.o` | 3,992 | `0x3E` | 55 |
+| `elf_aarch64.o` | 4,152 | `0xB7` | 6 |
+| `elf_riscv64.o` | 9,896 | `0xF3` | 3 |
+| `pe_x86_64.exe` | 2,048 | `0x8664` | 55 |
+| `pe_aarch64.exe` | 2,048 | `0xAA64` | 5 |
+
+Against a `main`-built binary (`c5ff210`) every real object is byte-identical
+except PE-ARM64, where suppressing `E8` is a **win**: −8 B at `-m1`, −10 B at
+`-m3`, −15 B at `-m5`. All 30 ratchet cells stay byte-identical, and the six
+changed archives (both producers, three levels) extract 12/12 byte-exact under
+UnRAR 7.20 and WinRAR 7.20.
+
 ## Non-gating control
 
 `control_pe_aarch64_x86payload.exe` is the **original** stub from the first
@@ -124,8 +144,8 @@ refuses to emit an x86-64 control that does not reach the detector's 32-valid-
 With `--pe` (and `lld-link` installed) it also links real PE32+ images for
 x86-64 and ARM64 from the same source; without lld it reports that and stops.
 The committed `pe_*.exe` stubs remain the PE coverage on hosts that cannot link
-PE, and the CI job does not pass `--pe` until that path has been verified on a
-host with lld.
+PE; the CI job installs lld and passes `--pe`, so real PE images are gated
+there too. That path was verified with lld 18.1.3 before being enabled.
 
 `.github/workflows/wave1-c5-parity.yml` builds `main` and the branch with
 clang, generates that corpus, and re-runs both checks on the real objects:
