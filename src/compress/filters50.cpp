@@ -1,6 +1,8 @@
 #include "filters50.hpp"
 #include "../core/cpu.hpp"
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -45,6 +47,12 @@ inline unsigned first_match_byte(core::uint64 nibble_mask) {
 
 namespace {
 std::atomic<core::uint64> s_unknown_pe_machine_count{0};
+
+// Set OPENRAR_FILTER_DIAG to surface container-dispatch decisions on stderr.
+bool filter_diag_enabled() {
+    static const bool enabled = std::getenv("OPENRAR_FILTER_DIAG") != nullptr;
+    return enabled;
+}
 } // namespace
 
 core::uint64 Filters50::unknown_pe_machine_count() noexcept {
@@ -81,6 +89,7 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
             switch (machine) {
             case 0x014C: // IMAGE_FILE_MACHINE_I386
             case 0x8664: // IMAGE_FILE_MACHINE_AMD64
+            case 0x3A64: // IMAGE_FILE_MACHINE_CHPE_X86 (x86 code in an ARM64 image)
                 if (config.e8_override >= 0) return FilterType::E8;
                 return FilterType::None;
             case 0x01C0: // IMAGE_FILE_MACHINE_ARM
@@ -89,66 +98,127 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
                 if (config.arm_override >= 0) return FilterType::Arm;
                 return FilterType::None;
             case 0xAA64: // IMAGE_FILE_MACHINE_ARM64
+            case 0xA64E: // IMAGE_FILE_MACHINE_ARM64X
             case 0x0200: // IMAGE_FILE_MACHINE_IA64
             case 0x5064: // IMAGE_FILE_MACHINE_RISCV64
             case 0xA641: // IMAGE_FILE_MACHINE_ARM64EC
                 return FilterType::None;
             default:
                 s_unknown_pe_machine_count.fetch_add(1, std::memory_order_relaxed);
+                if (filter_diag_enabled()) {
+                    std::fprintf(stderr, "[filter] unknown PE machine 0x%04X -> none\n",
+                                 static_cast<unsigned>(machine));
+                }
                 return FilterType::None;
             }
         }
     }
 
-    // 3. ELF executable detection
+    // 3. ELF executable detection: e_machine decides, and nothing below the
+    //    x86 entries is allowed to reach the E8 density scan.
     if (size >= 20 && data[0] == 0x7F && data[1] == 'E' && data[2] == 'L' && data[3] == 'F') {
         core::uint16 machine = core::read_le16(data + 0x12);
-        if (config.e8_override >= 0 && (machine == 0x03 || machine == 0x3E)) { // x86 or x86_64
-            return FilterType::E8;
+        if (machine == 0x03 || machine == 0x3E) { // EM_386 / EM_X86_64
+            return config.e8_override >= 0 ? FilterType::E8 : FilterType::None;
         }
-        if (config.arm_override >= 0 && machine == 0x28) { // 32-bit ARM (EM_ARM)
-            return FilterType::Arm;
+        if (machine == 0x28) { // 32-bit ARM (EM_ARM)
+            return config.arm_override >= 0 ? FilterType::Arm : FilterType::None;
         }
-        if (machine == 0xB7 || machine == 0xF3) { // EM_AARCH64 (0xB7) or EM_RISCV (0xF3)
-            return FilterType::None;
+        // AArch64 (0xB7), RISC-V (0xF3), PPC/PPC64, S390, MIPS, SPARC,
+        // LoongArch, EM_NONE and any future machine: explicitly None.
+        if (filter_diag_enabled()) {
+            std::fprintf(stderr, "[filter] non-x86 ELF machine 0x%04X -> none\n",
+                         static_cast<unsigned>(machine));
         }
+        return FilterType::None;
     }
 
-    // 4. Mach-O detection
+    // 4. Mach-O: thin images plus 32/64-bit universal (fat) headers in both
+    //    byte orders. A container is filtered as a whole, so E8 is only legal
+    //    when every slice of a universal binary is x86.
     if (size >= 8) {
-        core::uint32 magic = core::read_le32(data);
-        bool is_macho = false;
+        const core::uint32 magic = core::read_le32(data);
+        bool is_thin = false;
+        bool is_fat = false;
+        bool fat_be = false;
+        size_t fat_entry = 20;
         core::uint32 cputype = 0;
 
         if (magic == 0xFEEDFACEu || magic == 0xFEEDFACFu) {
-            // Thin Mach-O (host little-endian: 32 / 64)
-            is_macho = true;
+            // Thin Mach-O, little-endian fields (32 / 64 bit)
+            is_thin = true;
             cputype = core::read_le32(data + 4);
         } else if (magic == 0xCEFAEDFEu || magic == 0xCFFAEDFEu) {
-            // Thin Mach-O (big-endian: 32 / 64)
-            is_macho = true;
+            // Thin Mach-O, big-endian fields (32 / 64 bit)
+            is_thin = true;
             cputype = core::read_be32(data + 4);
-        } else if ((magic == 0xCAFEBABEu || magic == 0xBEBAFECAu) && size >= 12) {
-            // Mach-O fat/universal (0xCAFEBABE and byte-swapped 0xBEBAFECA)
-            core::uint32 nfat_arch =
-                (magic == 0xBEBAFECAu) ? core::read_be32(data + 4) : core::read_le32(data + 4);
-            if (nfat_arch >= 1) {
-                is_macho = true;
-                cputype =
-                    (magic == 0xBEBAFECAu) ? core::read_be32(data + 8) : core::read_le32(data + 8);
-            }
+        } else if (magic == 0xBEBAFECAu || magic == 0xCAFEBABEu) {
+            // FAT_MAGIC / FAT_CIGAM
+            is_fat = true;
+            fat_be = (magic == 0xBEBAFECAu);
+        } else if (magic == 0xBFBAFECAu || magic == 0xCAFEBABFu) {
+            // FAT_MAGIC_64 / FAT_CIGAM_64
+            is_fat = true;
+            fat_be = (magic == 0xBFBAFECAu);
+            fat_entry = 32;
         }
 
-        if (is_macho) {
+        if (is_thin) {
             if (cputype == 7 || cputype == 0x01000007u) { // x86 / x86_64
-                if (config.e8_override >= 0) return FilterType::E8;
-                return FilterType::None;
+                return config.e8_override >= 0 ? FilterType::E8 : FilterType::None;
             }
             if (cputype == 12) { // 32-bit ARM (CPU_TYPE_ARM)
-                if (config.arm_override >= 0) return FilterType::Arm;
-                return FilterType::None;
+                return config.arm_override >= 0 ? FilterType::Arm : FilterType::None;
             }
             return FilterType::None;
+        }
+
+        if (is_fat && size >= 12) {
+            auto rd32 = [&](size_t off) {
+                return fat_be ? core::read_be32(data + off) : core::read_le32(data + off);
+            };
+            auto rd64 = [&](size_t off) -> core::uint64 {
+                const core::uint32 first = rd32(off);
+                const core::uint32 second = rd32(off + 4);
+                return fat_be ? (static_cast<core::uint64>(first) << 32) | second
+                              : (static_cast<core::uint64>(second) << 32) | first;
+            };
+
+            const core::uint32 nfat_arch = rd32(4);
+            // Java .class files share 0xCAFEBABE, where the field at +4 is the
+            // class major version (>= 45). An implausible count, header or
+            // slice range means "not universal" and falls through to the scan.
+            bool plausible =
+                nfat_arch >= 1 && nfat_arch <= 32 &&
+                static_cast<core::uint64>(8) + static_cast<core::uint64>(fat_entry) * nfat_arch <=
+                    static_cast<core::uint64>(size);
+            bool all_x86 = true;
+            bool all_arm32 = true;
+            bool any_cputype = false;
+            for (core::uint32 i = 0; plausible && i < nfat_arch; ++i) {
+                const size_t base = 8 + static_cast<size_t>(i) * fat_entry;
+                if (base + fat_entry > size) {
+                    plausible = false;
+                    break;
+                }
+                const core::uint32 arch_cpu = rd32(base);
+                const core::uint64 arch_off = fat_entry == 32 ? rd64(base + 8) : rd32(base + 8);
+                const core::uint64 arch_len = fat_entry == 32 ? rd64(base + 16) : rd32(base + 12);
+                if (arch_cpu != 0) any_cputype = true;
+                if (arch_off > static_cast<core::uint64>(size) ||
+                    arch_len > static_cast<core::uint64>(size) - arch_off) {
+                    plausible = false;
+                    break;
+                }
+                if (arch_cpu != 7 && arch_cpu != 0x01000007u) all_x86 = false;
+                if (arch_cpu != 12) all_arm32 = false;
+            }
+            if (plausible) {
+                if (!any_cputype) return FilterType::None;
+                if (all_x86) return config.e8_override >= 0 ? FilterType::E8 : FilterType::None;
+                if (all_arm32) return config.arm_override >= 0 ? FilterType::Arm : FilterType::None;
+                return FilterType::None;
+            }
         }
     }
 
