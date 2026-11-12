@@ -66,6 +66,29 @@ candidates. It is recorded here for the audit trail and is **not** a gate
 result. The committed fixtures carry ISA-shaped payloads; the old stub is not
 part of the corpus.
 
+## Non-gating control
+
+`control_pe_aarch64_x86payload.exe` is the **original** stub from the first
+C2/C5 eval, carried over byte-for-byte (SHA-256
+`37cc3d2bb0089190878a29911d72319194c03ce9c6b26c5612c2968fb85acce8`); the
+generator does not rewrite it. It is a 70-byte PE header with machine `0xAA64`
+followed by 10,000 bytes of x86-shaped payload containing 101 `0xE8` bytes —
+x86 code in an ARM64 container.
+
+It exists so the corpus swap cannot be read as moving the goalposts. Measured
+by `tools/measure_c5.py`:
+
+| level | main | branch | Δ |
+|---|---:|---:|---:|
+| `-m1` | 604 | 606 | **+2 B** |
+| `-m3` | 587 | 593 | **+6 B** |
+| `-m5` | 585 | 591 | **+6 B** |
+
+That is the real cost of suppressing a filter that happened to fit x86-shaped
+bytes. It is **excluded from the gate**: the gate is about ARM64 code, and this
+file is not ARM64 code. The +6 B is recorded here as an explicit, documented
+exception rather than averaged away or dropped.
+
 ## Limitation (Q-7)
 
 These are **not compiler output**. The Windows reference host has no clang, so
