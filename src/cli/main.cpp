@@ -4661,7 +4661,7 @@ static int cli_main(int argc, char* argv[]) {
             if (lower_tail == "auto") {
                 opt_dict_size = openrar::compress::DICT_SIZE_AUTO;
             } else {
-                char unit = tail.empty() ? 0 : tail.back();
+                char unit = tail.empty() ? '\0' : tail.back();
                 uint64_t mult = 1;
                 bool has_unit = false;
                 if (unit == 'k' || unit == 'K') {

@@ -271,7 +271,8 @@ void add_allow_arg_nomask(std::vector<SockFilter>& f, uint32_t nr, uint32_t arg_
     // i+2: any masked bit set → i+3 deny; else → i+4 allow.
     f.push_back({BPF_JMP + BPF_JEQ + BPF_K, 0, 4, nr});
     f.push_back({BPF_LD + BPF_W + BPF_ABS, 0, 0,
-                 static_cast<uint32_t>(offsetof(struct seccomp_data, args[0]) + 8 * arg_index)});
+                 static_cast<uint32_t>(offsetof(struct seccomp_data, args[0]) +
+                                       8 * static_cast<size_t>(arg_index))});
     f.push_back({BPF_JMP + BPF_JSET + BPF_K, 0, 1, mask});
     f.push_back({BPF_RET + BPF_K, 0, 0, SECCOMP_RET_ERRNO | EPERM});
     f.push_back({BPF_RET + BPF_K, 0, 0, SECCOMP_RET_ALLOW});

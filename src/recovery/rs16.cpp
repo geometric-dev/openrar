@@ -152,7 +152,7 @@ const GfniCalib& gfni_calib() {
             for (int variant = 0; variant < 3 && c.valid; ++variant) {
                 alignas(64) core::byte blk[64] = {};
                 alignas(64) core::byte exp_ecc[64] = {};
-                for (core::uint32 w = 0; w < 32; ++w) {
+                for (size_t w = 0; w < 32; ++w) {
                     const core::uint16 word =
                         static_cast<core::uint16>((w * 251 + 7) | ((w * 31 + 3) << 8));
                     core::uint16 folded = 0;
@@ -181,7 +181,7 @@ const GfniCalib& gfni_calib() {
                                   : variant == 1 ? " (lo-only)"
                                                  : " (hi-only)")
                               << " ok=" << ok << "\n";
-                    for (int w = 0; w < 4; ++w) {
+                    for (size_t w = 0; w < 4; ++w) {
                         std::cout << "[gfni-diag]   w" << w << " exp=0x" << std::hex
                                   << static_cast<unsigned>(exp_ecc[2 * w]) << std::hex
                                   << static_cast<unsigned>(exp_ecc[2 * w + 1]) << std::dec
