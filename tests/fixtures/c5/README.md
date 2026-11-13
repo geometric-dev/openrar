@@ -26,10 +26,12 @@ python tools/generate_c5_corpus.py --out tests/fixtures/c5
 
 ## Size gate
 
-The gate is "no C5 member grows relative to a binary built from `main`". It is
-measured with `tools/measure_c5.py`, which builds one non-solid, single-member
-archive per fixture and compression level and re-extracts it to confirm the
-original bytes:
+The gate is "no C5 member grows relative to a binary built from `main`", with
+one level-aware exception for the PE-ARM64 member whose decision changes: it is
+gated at `-m3`/`-m5`, while `-m1` is measured and reported but not gated (see
+"Large real ARM64 binaries" below). `tools/measure_c5.py` builds one non-solid,
+single-member archive per fixture and compression level and re-extracts it to
+confirm the original bytes:
 
 ```
 python tools/measure_c5.py \
@@ -53,7 +55,9 @@ returns the same filter they already received (x86 controls keep `E8`;
 `elf_aarch64`/`elf_riscv64` were already `None` by accident of the density
 scan). `pe_aarch64` is the only member whose decision changes — `main` applies
 `E8` to every unrecognised PE machine, the branch returns `None` — and it is
-6 bytes smaller for it at `-m1/-m3/-m5`.
+6 bytes smaller for it at `-m1/-m3/-m5`. That is a property of this 2 KB
+image, not a general law: on multi-megabyte real ARM64 code the win does not
+scale proportionally and can reverse at `-m1`.
 
 ### Corpus revision note
 
@@ -81,10 +85,54 @@ PE32+ images. clang 18.1.3 / lld 18.1.3 produced:
 | `pe_aarch64.exe` | 2,048 | `0xAA64` | 5 |
 
 Against a `main`-built binary (`c5ff210`) every real object is byte-identical
-except PE-ARM64, where suppressing `E8` is a **win**: −8 B at `-m1`, −10 B at
-`-m3`, −15 B at `-m5`. All 30 ratchet cells stay byte-identical, and the six
+except PE-ARM64, where suppressing `E8` is a **win on this image**: −8 B at
+`-m1`, −10 B at `-m3`, −15 B at `-m5`. All 30 ratchet cells stay byte-identical, and the six
 changed archives (both producers, three levels) extract 12/12 byte-exact under
 UnRAR 7.20 and WinRAR 7.20.
+
+### Large real ARM64 binaries
+
+Two classes of much larger image were measured on 2026-11-13, because the 2 KB
+fixture cannot show whether the win scales: freestanding C compiled by
+clang/lld for `aarch64-pc-windows-msvc` (67 KB to 1.05 MB; real AArch64 output,
+the program is never run), and real third-party ARM64 binaries (7-Zip 25.01
+installer 1.59 MB, curl 8.23.0 3.73 MB, CPython 3.13.9 `python313.dll` 6.33 MB
+and `python.exe` 105 KB). Delta is branch − main, negative = dispatch wins.
+
+| Source | Size | `-m1` | `-m3` | `-m5` |
+|---|---:|---:|---:|---:|
+| generated | 67,072 | −12 (−0.057%) | −18 (−0.087%) | −19 (−0.091%) |
+| generated | 132,608 | −22 (−0.054%) | −25 (−0.062%) | −21 (−0.052%) |
+| generated | 263,680 | −22 (−0.030%) | −19 (−0.026%) | −16 (−0.022%) |
+| generated | 525,824 | −31 (−0.022%) | −14 (−0.010%) | −19 (−0.014%) |
+| generated | 1,050,624 | −58 (−0.022%) | −27 (−0.010%) | −27 (−0.010%) |
+| 7-Zip 25.01 SFX | 1,588,203 | −211 (−0.014%) | −127 (−0.008%) | −129 (−0.008%) |
+| curl 8.23.0 | 3,727,464 | **+839 (+0.047%)** | −1,443 (−0.083%) | −2,245 (−0.130%) |
+| python313.dll | 6,327,128 | −3,533 (−0.155%) | −2,965 (−0.136%) | −7,360 (−0.340%) |
+| python.exe | 104,792 | −26 (−0.048%) | −24 (−0.044%) | −31 (−0.057%) |
+
+The saving grows in absolute terms but far slower than linearly: 15 B at 2 KB
+becomes 211 B at 1.6 MB and 7.4 KB at 6.3 MB, i.e. 0.6–1.1% of a 2 KB archive
+against 0.01–0.34% of a multi-megabyte one. **It also reverses**: curl 8.23.0
+grows by **+839 B (+0.047%) at `-m1`** (reproduced twice), though the same file
+shrinks at `-m2` (−3,387 B), `-m3`, `-m4` and `-m5`. So PE-ARM64 does not always
+shrink; the correct claim is that suppressing `E8` removes a wrong transform and
+is usually — not always — a small size win.
+
+### Gate rule for the changed ARM64 decision
+
+Because of that reversal the gate is level-aware for the one member whose
+decision changes:
+
+- x86 controls (`elf_x86_64`, `pe_x86_64`): byte-identical to `main` at every
+  level.
+- `pe_aarch64.exe` (`E8` → `None`): **no growth at `-m3` and `-m5`**; `-m1` is
+  measured and reported but not gated, since a real code-heavy image can grow
+  there. Growth at `-m3`/`-m5` still fails, and any growth on the other members
+  fails at every level.
+
+`tools/measure_c5.py` implements this (`ARM64_UNGATED_LEVELS`), prints a
+"measured, not gated" note, and the CI job inherits the rule.
 
 ## Non-gating control
 

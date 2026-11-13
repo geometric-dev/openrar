@@ -3,7 +3,11 @@
 
 Builds one isolated archive per C5 member for each supplied binary and
 compression level, then verifies every archive extracts to the original bytes.
-The gate is "no C5 member may grow relative to the baseline binary".
+The gate is "no C5 member may grow relative to the baseline binary", with one
+level-aware exception: the PE-ARM64 member whose dispatch decision changes is
+gated at -m3/-m5 only. At -m1 a large real ARM64 image can grow (curl 8.23.0:
++839 B), so that level is measured and reported but not gated; see
+"Large real ARM64 binaries" in tests/fixtures/c5/README.md.
 
 The comparison is between binaries built from *this* branch and from `main`
 (c5ff210), not against the v2.0.23 release artifact.
@@ -39,6 +43,12 @@ FIXTURES = (
 # Measured and reported, never gated: the original ARM64 PE stub whose payload
 # is x86-shaped. It records what the first eval measured; see the corpus README.
 CONTROL_FIXTURES = ("control_pe_aarch64_x86payload.exe",)
+
+# The only committed member whose dispatch decision changes (main: E8,
+# branch: None). Its -m1 result is reported but not gated: a large real ARM64
+# image grows there (curl 8.23.0, +839 B) while -m3/-m5 still shrink.
+CHANGED_ARM64_FIXTURE = "pe_aarch64.exe"
+ARM64_UNGATED_LEVELS = (1,)
 
 
 def sha256(path: Path) -> str:
@@ -136,12 +146,15 @@ def main() -> int:
                 archive = work / f"{fixture}.{name}.m{level}.rar"
                 sizes[name] = build_archive(exe, level, src, archive)
                 verify_roundtrip(exe, archive, digest, work, f"{fixture}.{name}.m{level}")
+            gated = not (fixture == CHANGED_ARM64_FIXTURE
+                         and level in ARM64_UNGATED_LEVELS)
             base_name, base_exe = binaries[0]
             for name, exe in binaries[1:]:
                 delta = sizes[name] - sizes[base_name]
-                if delta > 0:
+                if delta > 0 and gated:
                     failures.append((fixture, level, name, delta))
-            rows.append({"fixture": fixture, "level": level, "sizes": sizes})
+            rows.append({"fixture": fixture, "level": level, "sizes": sizes,
+                         "gated": gated})
 
     for fixture in CONTROL_FIXTURES:
         src = corpus / fixture
@@ -163,6 +176,10 @@ def main() -> int:
         deltas = [row["sizes"][n] - row["sizes"][names[0]] for n in names[1:]]
         delta_cell = ", ".join(f"{d:+d}" for d in deltas) if deltas else "-"
         print(f"| `{row['fixture']}` | {row['level']} | {cells} | {delta_cell} |")
+
+    if any(not row["gated"] for row in rows):
+        print(f"\n{CHANGED_ARM64_FIXTURE} at -m1 is measured, not gated: a large real")
+        print("ARM64 image can grow there (curl 8.23.0: +839 B), while -m3/-m5 still shrink.")
 
     if control_rows:
         print("\nNon-gating control (x86-shaped payload in an ARM64 container):")
