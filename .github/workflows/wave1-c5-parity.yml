@@ -85,8 +85,10 @@ jobs:
 
       - name: Locate binaries
         run: |
-          MAIN=$(find "$RUNNER_TEMP/main-build" -type f -name openrar -perm -u+x | head -1)
-          BRANCH=$(find build-ci -type f -name openrar -perm -u+x | head -1)
+          # measure_c5.py runs from scratch directories, so both paths must be
+          # absolute.
+          MAIN=$(realpath "$(find "$RUNNER_TEMP/main-build" -type f -name openrar -perm -u+x | head -1)")
+          BRANCH=$(realpath "$(find build-ci -type f -name openrar -perm -u+x | head -1)")
           test -n "$MAIN"
           test -n "$BRANCH"
           echo "MAIN=$MAIN" >> "$GITHUB_ENV"
