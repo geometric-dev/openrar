@@ -100,23 +100,27 @@ and `python.exe` 105 KB). Delta is branch − main, negative = dispatch wins.
 
 | Source | Size | `-m1` | `-m3` | `-m5` |
 |---|---:|---:|---:|---:|
-| generated | 67,072 | −12 (−0.057%) | −18 (−0.087%) | −19 (−0.091%) |
-| generated | 132,608 | −22 (−0.054%) | −25 (−0.062%) | −21 (−0.052%) |
-| generated | 263,680 | −22 (−0.030%) | −19 (−0.026%) | −16 (−0.022%) |
-| generated | 525,824 | −31 (−0.022%) | −14 (−0.010%) | −19 (−0.014%) |
-| generated | 1,050,624 | −58 (−0.022%) | −27 (−0.010%) | −27 (−0.010%) |
+| generated | 67,072 | −13 (−0.062%) | −21 (−0.101%) | −19 (−0.091%) |
+| generated | 132,608 | −20 (−0.049%) | −25 (−0.062%) | −22 (−0.054%) |
+| generated | 263,680 | −20 (−0.027%) | −23 (−0.031%) | −17 (−0.023%) |
+| generated | 525,824 | −33 (−0.024%) | −12 (−0.009%) | −17 (−0.012%) |
+| generated | 1,050,624 | −54 (−0.020%) | −27 (−0.010%) | −26 (−0.010%) |
 | 7-Zip 25.01 SFX | 1,588,203 | −211 (−0.014%) | −127 (−0.008%) | −129 (−0.008%) |
 | curl 8.23.0 | 3,727,464 | **+839 (+0.047%)** | −1,443 (−0.083%) | −2,245 (−0.130%) |
-| python313.dll | 6,327,128 | −3,533 (−0.155%) | −2,965 (−0.136%) | −7,360 (−0.340%) |
-| python.exe | 104,792 | −26 (−0.048%) | −24 (−0.044%) | −31 (−0.057%) |
+| `python313.dll` | 6,327,128 | −3,533 (−0.155%) | −2,965 (−0.136%) | −7,360 (−0.340%) |
+| `python.exe` | 104,792 | −26 (−0.048%) | −24 (−0.044%) | −31 (−0.057%) |
+| `libcrypto-3-arm64.dll` | 5,932,400 | −6,307 (−0.432%) | −10,041 (−0.711%) | −3,080 (−0.221%) |
 
 The saving grows in absolute terms but far slower than linearly: 15 B at 2 KB
-becomes 211 B at 1.6 MB and 7.4 KB at 6.3 MB, i.e. 0.6–1.1% of a 2 KB archive
-against 0.01–0.34% of a multi-megabyte one. **It also reverses**: curl 8.23.0
-grows by **+839 B (+0.047%) at `-m1`** (reproduced twice), though the same file
-shrinks at `-m2` (−3,387 B), `-m3`, `-m4` and `-m5`. So PE-ARM64 does not always
-shrink; the correct claim is that suppressing `E8` removes a wrong transform and
-is usually — not always — a small size win.
+becomes 211 B at 1.6 MB, 2.2 KB at 3.7 MB and 10.0 KB at 5.9 MB, i.e. 0.6–1.1%
+of a 2 KB archive against 0.01–0.71% of a multi-megabyte one.
+`libcrypto-3-arm64.dll` is the second code-heavy sample and shrinks at every
+level (−6.3/−10.0/−3.1 KB), so curl is a single-sample outlier rather than a
+level-wide rule. Even so PE-ARM64 does not always shrink: curl 8.23.0 grows by
+**+839 B (+0.047%) at `-m1`** (reproduced twice), though the same file shrinks
+at `-m2` (−3,387 B), `-m3`, `-m4` and `-m5`. The correct claim is that
+suppressing `E8` removes a wrong transform and is usually — not always — a small
+size win.
 
 ### Gate rule
 
@@ -131,7 +135,7 @@ growth belongs to that image rather than to the corpus. They are measured with
 `--report-only`, which prints the deltas and exits 0, so the reversal stays on
 record without weakening the gate:
 
-```
+python tools/measure_c5.py --baseline main=... --candidate branch=... --corpus build/large_arm64/corpus/curl --report-only
 python tools/measure_c5.py     --baseline main=.../openrar.exe --candidate branch=.../openrar.exe     --corpus build/large_arm64/corpus/curl --report-only
 ```
 
@@ -148,9 +152,12 @@ python tools/build_large_arm64_corpus.py --out build/large_arm64
 It generates the freestanding C, compiles it for `aarch64-pc-windows-msvc` with
 clang, links with `lld-link` (`/nodefaultlib`, `/opt:noref`), then downloads the
 real binaries, verifies every archive and extracted member against the pinned
-hashes, and writes `corpus/<label>/pe_aarch64.exe`, `manifest.sha256` and
-`manifest.json` (URLs, sizes, hashes, toolchain versions). `--offline` requires
-already-downloaded, hash-matching archives instead.
+hashes, and writes `corpus/<label>/pe_aarch64.exe`, `manifest.sha256`,
+`manifest.generated.sha256` and `manifest.json` (URLs, sizes, hashes, toolchain
+versions). `manifest.sha256` lists only the pinned real samples, so
+`sha256sum -c` works on any host; generated images go in the separate
+informational manifest. `--offline` requires already-downloaded, hash-matching
+archives instead.
 
 | Sample | Pinned source | SHA-256 |
 |---|---|---|
@@ -158,18 +165,21 @@ already-downloaded, hash-matching archives instead.
 | `curl` | `https://curl.se/windows/dl-8.23.0_8/curl-8.23.0_8-win64a-mingw.zip` | `9ffddd2a85843d3b4b590d24d6becc4f25a70c77781d7d09235ba069b5c4589e` |
 | `pydll` | `https://www.python.org/ftp/python/3.13.9/python-3.13.9-embed-arm64.zip` | `cba392bd5c7aed68b26d1b523822cc3d80802c085481dfde79262ebfc7179d26` |
 | `pyexe` | same CPython archive | same archive hash |
+| `libcrypto` | same CPython archive | same archive hash |
 
 Extracted members are pinned too: `curl.exe`
 `38e26717fd1a3b04a92be13bac9442a0c8c0566b7bba1e8d413e225c6592335b`,
 `python313.dll`
 `b4a36b1486e5cb0e23c7aded651e3998aa476089699622779c328fb31350fc8c`,
 `python.exe`
-`0339dc88887f1849f8fd811d1b329ce0fa7503c77ec7a2b3b68113c99320aec6`.
-Generated images are not byte-stable (lld stamps a timestamp) and depend on the
-compiler version, so their hashes are recorded in `manifest.json` but not
-enforced; their deltas can move by a byte or two between rebuilds, while the
-pinned real samples reproduce exactly. The numbers above were produced with
-clang/lld 18.1.3.
+`0339dc88887f1849f8fd811d1b329ce0fa7503c77ec7a2b3b68113c99320aec6`,
+`libcrypto-3-arm64.dll`
+`8387f314ecffbb3db2e7c5409ad60c60f93a111f2ad3e62432d5d341d6e51140`.
+Generated images are byte-stable per toolchain: `lld-link /timestamp:0` removes
+the link-time clock, and two consecutive rebuilds produced identical hashes.
+They still depend on the compiler version, so they are recorded in
+`manifest.generated.sha256` and `manifest.json` but not enforced across hosts.
+The numbers above were produced with clang/lld 18.1.3.
 
 Each sample is stored under the gate's own member name (`pe_aarch64.exe`) so
 archive sizes stay comparable, and every archive is re-extracted and hash-checked

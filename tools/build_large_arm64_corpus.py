@@ -84,6 +84,14 @@ SOURCES = (
         "member_glob": "python.exe",
         "member_sha": "0339dc88887f1849f8fd811d1b329ce0fa7503c77ec7a2b3b68113c99320aec6",
     },
+    {
+        "label": "libcrypto",
+        "url": "https://www.python.org/ftp/python/3.13.9/python-3.13.9-embed-arm64.zip",
+        "archive_sha": "cba392bd5c7aed68b26d1b523822cc3d80802c085481dfde79262ebfc7179d26",
+        "member": "libcrypto-3-arm64.dll",
+        "member_glob": "libcrypto-3-arm64.dll",
+        "member_sha": "8387f314ecffbb3db2e7c5409ad60c60f93a111f2ad3e62432d5d341d6e51140",
+    },
 )
 
 
@@ -217,8 +225,11 @@ def build_synthetic(nfuncs: int, out: pathlib.Path, clang: str, lld: str) -> pat
     with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
         objs = list(ex.map(compile_one, files))
     image = out / f"pe_{nfuncs}.exe"
+    # /timestamp:0 removes the link-time clock from the PE header, which is the
+    # only source of byte variation between identical builds.
     run([lld, "/machine:arm64", "/entry:c5_main", "/subsystem:console",
-         "/nodefaultlib", "/opt:noref", f"/out:{image}"] + [str(o) for o in objs])
+         "/nodefaultlib", "/opt:noref", "/timestamp:0", f"/out:{image}"]
+        + [str(o) for o in objs])
     return image
 
 
@@ -313,13 +324,27 @@ def main() -> int:
                  "bytes": dest.stat().st_size, "sha256": got})
             print(f"  {source['label']:<7} {dest.stat().st_size:>9,} B  sha256 {got[:16]}…")
 
-    lines = []
-    for entry in manifest["synthetic"] + manifest["real"]:
-        lines.append(f"{entry['sha256']}  corpus/{entry['label']}/pe_aarch64.exe")
-    (out / "manifest.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    # manifest.sha256 lists only samples whose bytes are reproducible on any
+    # host (the pinned downloads). Generated images are byte-stable per
+    # toolchain (/timestamp:0) but legitimately differ across clang/lld
+    # versions, so they get a separate, informational manifest.
+    pinned = [f"{entry['sha256']}  corpus/{entry['label']}/pe_aarch64.exe"
+              for entry in manifest["real"]]
+    generated = [f"{entry['sha256']}  corpus/{entry['label']}/pe_aarch64.exe"
+                 for entry in manifest["synthetic"]]
+    # Only rewrite a manifest whose class was actually rebuilt; a
+    # --skip-real run must not truncate the pinned list.
+    if pinned or not args.skip_real:
+        (out / "manifest.sha256").write_text("\n".join(pinned) + ("\n" if pinned else ""),
+                                             encoding="utf-8", newline="\n")
+    if generated or not args.skip_synthetic:
+        (out / "manifest.generated.sha256").write_text(
+            "\n".join(generated) + ("\n" if generated else ""), encoding="utf-8", newline="\n")
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n",
                                        encoding="utf-8", newline="\n")
-    print(f"wrote {len(lines)} corpus members to {corpus}")
+    print(f"wrote {len(pinned) + len(generated)} corpus members to {corpus}")
+    print(f"pinned manifest: {len(pinned)} real samples; generated (informational): "
+          f"{len(generated)}")
     print("measure one with: python tools/measure_c5.py --baseline main=... "
           "--candidate branch=... --corpus <dir> --report-only")
     return 0
