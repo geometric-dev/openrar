@@ -26,6 +26,24 @@
 #include <pthread.h>
 #endif
 
+// Every allocation assertion in this file is measured through the global
+// operator new below, which also sees allocations the CRT makes on the
+// library's behalf. MSVC's iterator debugging (_ITERATOR_DEBUG_LEVEL >= 1 is
+// the default whenever _DEBUG is defined, i.e. the Debug configuration)
+// allocates a 16-byte _Container_proxy per container instance; two containers
+// constructed inside a measured region therefore show up as "2 allocations,
+// 32 bytes" and the zero-allocation cases fail in Debug only. Measured
+// 2026-11-13: Debug/IDL=2 fails exactly those two cases, Debug with
+// /D_ITERATOR_DEBUG_LEVEL=0 passes 7/7, Release passes 7/7. The invariant is
+// asserted wherever it is measurable - every GCC/Clang build and every MSVC
+// configuration that does not define _DEBUG - rather than letting the CRT's
+// debug layer read as a library regression.
+#if defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL > 0
+constexpr bool ALLOC_TRACKING_MEASURABLE = false;
+#else
+constexpr bool ALLOC_TRACKING_MEASURABLE = true;
+#endif
+
 // ============================================================================
 // Global replacement operator new / operator delete hooks
 // ONLY linked into this test binary to monitor allocations (Invariant I-16, §2.3)
@@ -218,6 +236,11 @@ void allocation_zero_decompressor() {
     using namespace openrar::compress;
     using namespace openrar::test;
 
+    if (!ALLOC_TRACKING_MEASURABLE) {
+        std::fprintf(stderr, "[SKIP] %s: iterator-debug container proxies are counted\n", __func__);
+        return;
+    }
+
     const std::vector<uint8_t> orig = generate_test_payload(64 * 1024, 12345);
     std::vector<core::byte> comp;
     CHECK(Compressor50::compress_buffer(orig.data(), orig.size(), comp, 3, 2 * 1024 * 1024));
@@ -310,6 +333,11 @@ void allocation_stream_steady_state() {
     using namespace openrar;
     using namespace openrar::compress;
     using namespace openrar::test;
+
+    if (!ALLOC_TRACKING_MEASURABLE) {
+        std::fprintf(stderr, "[SKIP] %s: iterator-debug container proxies are counted\n", __func__);
+        return;
+    }
 
     const std::vector<uint8_t> orig = generate_test_payload(128 * 1024, 777123);
     const size_t win = 1024 * 1024;
