@@ -646,7 +646,12 @@ jobs:
     # avoids /RTC1 and /GL (openrar_flags.cmake adds /GL only to Release;
     # sanitizers.cmake forces /GL- and /LTCG:OFF for Release anyway).
     name: MSVC ASan (Windows, primary)
-    runs-on: windows-latest
+    # windows-2022, not windows-latest: the repository pins the
+    # "Visual Studio 17 2022" generator (all three Windows legs do), and
+    # windows-latest has moved to Visual Studio 18 (2026), where that generator
+    # no longer resolves - CMake fails at project() with "could not find any
+    # instance of Visual Studio" (run 43483376613).
+    runs-on: windows-2022
     timeout-minutes: 120
     steps:
       - name: Checkout repository
