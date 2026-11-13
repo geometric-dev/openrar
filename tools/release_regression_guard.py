@@ -14,8 +14,10 @@ binary on the same census corpora and FAILS CLOSED (exit 1) when the new build i
   Ratchet  every deterministic cell must also stay at or below RATCHET_BYTES (the 2.1.1 sizes), so
            a later change cannot spend the lead over v2.0.23 without the guard noticing.
   Corpora  synthetic (word salad, tiled source, PRNG, zeros) AND real content: the v2.0.23
-           tag's src/, tests/ and docs/ trees and the baseline executable. The synthetic set
-           alone passed a build that was 2-3% larger than v2.0.23 on every real file.
+           tag's src/, tests/ and docs/ trees and the pinned baseline executable (SHA-256 per
+           platform; a baseline built from the tag's source is refused, see
+           REAL_BINARY_SHA256). The synthetic set alone passed a build that was 2-3% larger
+           than v2.0.23 on every real file.
   G2       zeros8 at -m1/-m3/-m5 must be <= 587 B.
   Integrity  every archive the new binary produces is extracted and compared by SHA-256.
   Determinism  -mt1 archives are byte-identical across runs; -mt4 extracts to the source.
@@ -147,6 +149,30 @@ REAL_TREE_CORPORA = (
     ("real_docs.md", "docs", (".md",)),
 )
 REAL_CORPORA = tuple(name for name, _, _ in REAL_TREE_CORPORA) + ("real_binary.bin",)
+# SHA-256 of the executable inside each pinned baseline asset: the bytes real_binary.bin is
+# copied from, and the bytes every allowance for it was measured against. It is pinned apart
+# from the tag-derived corpora because it is a per-platform file.
+#
+# This pin is also why the corpus is the release asset and not a v2.0.23 built from source,
+# which would let the table keep the older, tighter 0.67% ceiling: a source build's bytes
+# depend on the compiler and linker (MSVC 14.44 and 14.51 produce different executables, as
+# do gcc 13 and clang), so its ratios are not portable and cannot be pinned at all. That is
+# how the table came to hold numbers CI never reproduced - it was measured against a source
+# build on one machine while the guard fed it the asset. The ceiling only looked tighter
+# because the corpus was different; detection power is set by holding the corpus still, not
+# by the size of the number. Re-measure by changing a pin deliberately, with the table.
+REAL_BINARY_SHA256 = {
+    "win32": "5335c926b2625e26a49e58b78ae1b4887200a5852b7a847969663025ae9c652c",
+    "linux": "3842cb2621d5e2c989d5892dcbef3ebeeb5dd426552bd977893d1d6b1be3c77f",
+}
+
+
+def real_binary_pin():
+    """(platform prefix, sha256) for this host, or (None, None) where nothing is pinned."""
+    for prefix, digest in REAL_BINARY_SHA256.items():
+        if sys.platform.startswith(prefix):
+            return prefix, digest
+    return None, None
 # SHA-256 of the three tag-derived corpora. The tag is immutable, so a mismatch means the
 # recipe or the tag changed, and every figure measured against the old bytes is void.
 REAL_CORPUS_SHA256 = {
@@ -438,10 +464,15 @@ def _pinned_present(path, want_sha256):
     return path.is_file() and sha256_file(path) == want_sha256
 
 
-def build_real_corpora(base):
+def build_real_corpora(base, require_pinned=True):
     """Create the real-content corpora under CENSUS_DIR. Fails closed: if the tag is missing
     there is no fallback to the working tree, because a corpus that moves with the code under
-    test cannot detect a regression in it."""
+    test cannot detect a regression in it.
+
+    `base` must be the pinned release asset, not a build of the tag's source: the executable
+    corpus pin is what keeps the allowances meaningful. `require_pinned=False` exists only for
+    the documented roles-swapped diagnostic, which deliberately feeds the guard the wrong
+    baseline to prove it fires."""
     out = {}
     need_git = [n for n, _, _ in REAL_TREE_CORPORA
                 if not _pinned_present(CENSUS_DIR / n, REAL_CORPUS_SHA256[n])]
@@ -472,6 +503,21 @@ def build_real_corpora(base):
                                f"want {REAL_CORPUS_SHA256[name][:16]}...)")
         out[name] = path
     binary = CENSUS_DIR / "real_binary.bin"
+    platform_key, pin = real_binary_pin()
+    if pin is None:
+        print(f"WARNING: no executable-corpus pin for {sys.platform}; real_binary.bin is not "
+              f"verified against the v{BASELINE_VERSION} release asset, so its allowance "
+              f"figures are only meaningful if that file is the asset.")
+    elif require_pinned:
+        got = sha256_file(base)
+        if got != pin:
+            raise RuntimeError(
+                f"the executable corpus is not the pinned v{BASELINE_VERSION} release asset "
+                f"({platform_key}): sha256 {got[:16]}..., want {pin[:16]}... The allowances "
+                f"for real_binary.bin were measured against the asset, and a binary built from "
+                f"the tag's source is a different file with different ratios. Pass the released "
+                f"openrar as --baseline (or OPENRAR_BASELINE_BIN), or re-measure deliberately "
+                f"and update REAL_BINARY_SHA256 together with KNOWN_SIZE_ALLOWANCE_PCT.")
     if not binary.exists() or sha256_file(binary) != sha256_file(base):
         shutil.copyfile(base, binary)
     out["real_binary.bin"] = binary
@@ -669,7 +715,8 @@ def selftest(args):
         WORK_DIR.mkdir(parents=True, exist_ok=True)
         try:
             corpora = generate_corpora()
-            corpora.update(build_real_corpora(base))
+            corpora.update(build_real_corpora(
+                base, require_pinned=not args.allow_unpinned_corpus))
             check("corpora present and pinned (no git needed)", True, f"{len(corpora)} files")
         except (RuntimeError, OSError, subprocess.CalledProcessError) as e:
             check("corpora present and pinned (no git needed)", False, str(e))
@@ -721,7 +768,12 @@ def _run(args):
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     corpora = generate_corpora()
     try:
-        corpora.update(build_real_corpora(base))
+        # The pin is the default and cannot be switched off by a version string: the
+        # roles-swapped "prove it fires" diagnostic has to say so out loud.
+        if args.allow_unpinned_corpus:
+            print("WARNING: --allow-unpinned-corpus: real_binary.bin is not the pinned "
+                  "release asset. This is a diagnostic run, not a release verdict.")
+        corpora.update(build_real_corpora(base, require_pinned=not args.allow_unpinned_corpus))
     except (RuntimeError, OSError, subprocess.CalledProcessError) as e:
         fatal(str(e))
         return 1
@@ -762,6 +814,9 @@ def main():
     ap.add_argument("--baseline-version", default=BASELINE_VERSION,
                     help="version string the baseline must report (default: %(default)s); "
                          "overridden only to prove the guard fires, e.g. with the roles swapped")
+    ap.add_argument("--allow-unpinned-corpus", action="store_true",
+                    help="accept a baseline that is not the pinned release asset; only for the "
+                         "roles-swapped diagnostic that proves the guard fires")
     ap.add_argument("--report", nargs="?", const="", default=None, metavar="PATH",
                     help=f"write a JSON result file (default path: ~/{DEFAULT_REPORT_NAME})")
     ap.add_argument("--pause", action="store_true",
