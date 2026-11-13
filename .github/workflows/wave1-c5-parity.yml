@@ -11,6 +11,7 @@ on:
       - 'src/compress/filters50.hpp'
       - 'tests/fixtures/c5/**'
       - 'tools/build_c5_real_corpus.py'
+      - 'tools/build_large_arm64_corpus.py'
       - 'tools/measure_c5.py'
       - 'tools/prove_dispatch_parity.py'
       - 'tools/release_regression_guard.py'
@@ -80,6 +81,17 @@ jobs:
 
       - name: Cross-compile the pinned C5 corpus
         run: python3 tools/build_c5_real_corpus.py --out build/c5_real --pe
+
+      - name: Generated PE images are byte-stable
+        run: |
+          # /timestamp:0 must remove every varying byte: two builds by the same
+          # toolchain have to hash identically. This job never passes
+          # --report-only; the committed and cross-compiled corpora are gated
+          # strictly in the steps above and below.
+          python3 tools/build_large_arm64_corpus.py --out build/large_a --skip-real
+          python3 tools/build_large_arm64_corpus.py --out build/large_b --skip-real
+          diff -u build/large_a/manifest.generated.sha256 \
+                  build/large_b/manifest.generated.sha256
 
       - name: C5 size gate on real objects
         run: |

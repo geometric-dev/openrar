@@ -179,7 +179,10 @@ Generated images are byte-stable per toolchain: `lld-link /timestamp:0` removes
 the link-time clock, and two consecutive rebuilds produced identical hashes.
 They still depend on the compiler version, so they are recorded in
 `manifest.generated.sha256` and `manifest.json` but not enforced across hosts.
-The numbers above were produced with clang/lld 18.1.3.
+The numbers above were produced with clang/lld 18.1.3. CI re-runs the
+builder twice and diffs `manifest.generated.sha256`, so any flag that
+reintroduces a varying field fails the build; the workflow never passes
+`--report-only` — only strict gating runs there.
 
 Each sample is stored under the gate's own member name (`pe_aarch64.exe`) so
 archive sizes stay comparable, and every archive is re-extracted and hash-checked
