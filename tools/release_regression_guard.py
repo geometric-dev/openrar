@@ -104,8 +104,18 @@ SPEED_TOO_SHORT_S = 0.4
 #   * Word-salad text (synthetic_text8, and the text third of big24 / mixed16) at -m4/-m5.
 #     v2.0.23's forward-arrival parser wins on seeded random words; greedy wins by 1-2% on
 #     every real source/test/markdown file, which is the trade v2.1.1 makes.
-#   * The x86-64 executable (real_binary.bin) at every method, +0.10% to +0.66%. v2.0.23's
+#   * The x86-64 executable (real_binary.bin) at every method, +0.17% to +0.82%. v2.0.23's
 #     parser is better on filtered machine code; closing it is open work (plan section 10).
+#
+# real_binary.bin was re-measured on 2026-11-13 against the corpus this guard actually builds
+# (a copy of the baseline *release asset*, whose zip is pinned by SHA-256 in the workflow).
+# The previous numbers, 0.67/0.42/0.21/0.14/0.11, were measured against a v2.0.23 binary built
+# from the tag's source instead, which is a different executable and therefore different
+# corpus bytes: rebuilding v2.0.23 from source reproduces those five values to 0.01%
+# (+0.660/+0.414/+0.200/+0.140/+0.112%), while every tree that has held this table produces
+# the pinned-asset numbers below (v2.1.1, 74d32f5 and the v2.2 line all emit byte-identical
+# archives on this corpus). So the growth is the corpus, not the encoder - which is why this
+# is a re-measurement rather than an accepted loss.
 KNOWN_SIZE_ALLOWANCE_PCT = {
     ("big24.bin", 4): 0.01,
     ("big24.bin", 5): 0.10,
@@ -113,11 +123,11 @@ KNOWN_SIZE_ALLOWANCE_PCT = {
     ("mixed16.bin", 5): 0.18,
     ("synthetic_text8.txt", 4): 0.32,
     ("synthetic_text8.txt", 5): 1.25,
-    ("real_binary.bin", 1): 0.67,
-    ("real_binary.bin", 2): 0.42,
-    ("real_binary.bin", 3): 0.21,
-    ("real_binary.bin", 4): 0.14,
-    ("real_binary.bin", 5): 0.11,
+    ("real_binary.bin", 1): 0.82,
+    ("real_binary.bin", 2): 0.67,
+    ("real_binary.bin", 3): 0.48,
+    ("real_binary.bin", 4): 0.30,
+    ("real_binary.bin", 5): 0.18,
 }
 
 # Real-content corpora. The synthetic corpora above are word salad, tiled source and PRNG
