@@ -924,7 +924,7 @@ struct FileArchiveHandle : ArchiveHandleBase {
                     std::vector<openrar::core::byte> out_bytes;
                     openrar::compress::Decompressor50 dec(
                         e.header.win_size ? static_cast<size_t>(e.header.win_size)
-                                          : (1024u * 1024));
+                                          : (openrar::core::MIB));
                     if (!dec.decompress_to_vector(packed.data(), packed.size(), out_bytes, false,
                                                   MAX_COMMENT_PAYLOAD)) {
                         return RAR_OK; // undecodable comment reported as absent
@@ -1084,7 +1084,7 @@ int OPENRAR_DLL_CALL openrar_last_error(char* buf, int buf_len) {
 // ── Block codec ──────────────────────────────────────────────────────────────
 int OPENRAR_DLL_CALL openrar_compress(const uint8_t* src, size_t src_len, uint8_t** out_ptr,
                                       size_t* out_len, int method) {
-    return openrar_compress2(src, src_len, out_ptr, out_len, method, 2 * 1024 * 1024);
+    return openrar_compress2(src, src_len, out_ptr, out_len, method, 2 * openrar::core::MIB);
 }
 int OPENRAR_DLL_CALL openrar_compress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr,
                                        size_t* out_len, int method, size_t win_size) {
@@ -1130,7 +1130,7 @@ int OPENRAR_DLL_CALL openrar_decompress(const uint8_t* src, size_t src_len, uint
     // Must mirror openrar_compress's 2 MiB default: raw block streams carry
     // no dictionary-size header, so the decompress default has to cover the
     // compress default (a larger window is always safe).
-    return openrar_decompress2(src, src_len, out_ptr, out_len, 2 * 1024 * 1024);
+    return openrar_decompress2(src, src_len, out_ptr, out_len, 2 * openrar::core::MIB);
 }
 int OPENRAR_DLL_CALL openrar_decompress2(const uint8_t* src, size_t src_len, uint8_t** out_ptr,
                                          size_t* out_len, size_t win_size) {
@@ -1146,7 +1146,7 @@ int OPENRAR_DLL_CALL openrar_decompress2(const uint8_t* src, size_t src_len, uin
             eff_limit = g_tls_limits.max_member_output_bytes;
         }
 
-        openrar::compress::Decompressor50 dec(win_size ? win_size : 2 * 1024 * 1024);
+        openrar::compress::Decompressor50 dec(win_size ? win_size : 2 * openrar::core::MIB);
         std::vector<openrar::core::byte> out;
         size_t prior = out.size();
         bool ok = dec.decompress_to_vector(src, src_len, out, false, eff_limit);
@@ -2408,19 +2408,19 @@ uint32_t OPENRAR_DLL_CALL openrar_stream_create(int method, uint32_t window_log2
         size_t win = 0;
         switch (window_log2) {
         case 1:
-            win = 128 * 1024;
+            win = 128 * openrar::core::KIB;
             break;
         case 2:
-            win = 256 * 1024;
+            win = 256 * openrar::core::KIB;
             break;
         case 3:
-            win = 512 * 1024;
+            win = 512 * openrar::core::KIB;
             break;
         case 4:
-            win = 1024 * 1024;
+            win = openrar::core::MIB;
             break;
         case 5:
-            win = 4 * 1024 * 1024;
+            win = 4 * openrar::core::MIB;
             break;
         default:
             return 0;
@@ -2700,7 +2700,7 @@ int OPENRAR_DLL_CALL openrar_decompress_limits(const uint8_t* src, size_t src_le
             eff_limit = g_tls_limits.max_member_output_bytes;
         }
 
-        openrar::compress::Decompressor50 dec(win_size ? win_size : 2 * 1024 * 1024);
+        openrar::compress::Decompressor50 dec(win_size ? win_size : 2 * openrar::core::MIB);
         std::vector<openrar::core::byte> out;
         bool ok = dec.decompress_to_vector(src, src_len, out, false, eff_limit);
         if (!ok) {

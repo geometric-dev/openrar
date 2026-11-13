@@ -1,5 +1,7 @@
 #include "source_delete.hpp"
 
+#include "core/types.hpp"
+
 #include <chrono>
 #include <cstdio>
 #if !defined(_WIN32)
@@ -45,7 +47,7 @@ bool wipe_delete(const std::filesystem::path& path, std::error_code& ec) {
             return false;
         }
         f.seekp(0, std::ios::beg);
-        std::vector<char> zeros(64 * 1024, 0);
+        std::vector<char> zeros(64 * core::KIB, 0);
         std::streamoff done = 0;
         while (done < len) {
             const std::streamoff take = (len - done) < (std::streamoff)zeros.size()

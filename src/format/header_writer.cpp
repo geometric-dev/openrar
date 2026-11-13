@@ -367,7 +367,8 @@ std::vector<core::byte> HeaderWriter::serialize_file_block(const FileBlock& bloc
         auto push_owner_name = [&owner_content](const std::string& name) {
             size_t len = std::min<size_t>(name.size(), 255);
             core::push_vint(owner_content, len);
-            owner_content.insert(owner_content.end(), name.begin(), name.begin() + len);
+            owner_content.insert(owner_content.end(), name.begin(),
+                                 name.begin() + static_cast<std::ptrdiff_t>(len));
         };
         if (oflags & 0x0001) push_owner_name(block.owner_user);
         if (oflags & 0x0002) push_owner_name(block.owner_group);

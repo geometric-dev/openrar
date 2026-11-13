@@ -638,7 +638,7 @@ private:
             return grow(n);
         }
         bool grow(size_t n);
-        static constexpr size_t INITIAL_WINDOW = 256 * 1024;
+        static constexpr size_t INITIAL_WINDOW = 256 * core::KIB;
         // Resets the call-local flush cursor (per decompress/decompress_block
         // call, like the sequential decoder's call-local last_flushed).
         void begin_call() { last_flushed_ = 0; }
@@ -711,7 +711,7 @@ private:
     size_t declared_win_{DEFAULT_WIN_SIZE};
 };
 
-static_assert(sizeof(Decompressor50) <= 64 * 1024,
+static_assert(sizeof(Decompressor50) <= 64 * core::KIB,
               "Decompressor50 per-instance state must be bounded within 64 KiB (Invariant I-16)");
 
 } // namespace openrar::compress

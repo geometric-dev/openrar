@@ -102,7 +102,7 @@ bool ParallelBlockPipeline::compress_stream(io::FileStream& src_stream, core::ui
 
     // High-throughput chunk pipeline with bounded in-flight memory
     core::uint64 total_chunks = (file_size + chunk_size - 1) / chunk_size;
-    size_t max_in_flight = std::max<size_t>(2, eff_threads_ * 2);
+    size_t max_in_flight = std::max<size_t>(2, static_cast<size_t>(eff_threads_) * 2);
 
     struct ChunkJob {
         core::uint64 index{0};

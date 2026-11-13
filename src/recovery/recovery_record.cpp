@@ -20,7 +20,7 @@ RecoveryParams RecoveryManager::calculate_params(core::uint64 protected_size,
     // with zero sector counts (rs16.init rejects them; generate_parity
     // returns empty).
     constexpr core::uint64 MAX_TOTAL_SECTORS = 65530;
-    constexpr core::uint64 MAX_SECTOR_SIZE = 1024 * 1024;
+    constexpr core::uint64 MAX_SECTOR_SIZE = core::MIB;
 
     for (;;) {
         core::uint64 data64 = (protected_size + params.sector_size - 1) / params.sector_size;

@@ -11,7 +11,7 @@
 namespace openrar::sandbox {
 
 namespace {
-constexpr size_t READ_CHUNK = 256 * 1024; // recv staging granularity (≤ 4 MiB frames)
+constexpr size_t READ_CHUNK = 256 * core::KIB; // recv staging granularity (≤ 4 MiB frames)
 } // namespace
 
 #if defined(_WIN32)

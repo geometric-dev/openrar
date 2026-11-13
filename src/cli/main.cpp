@@ -911,7 +911,7 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
                 if (!entry.header.sub_data.empty()) {
                     cmt_text.assign(reinterpret_cast<const char*>(entry.header.sub_data.data()),
                                     entry.header.sub_data.size());
-                } else if (entry.data_size > 0 && entry.data_size <= 1024 * 1024) {
+                } else if (entry.data_size > 0 && entry.data_size <= core::MIB) {
                     std::vector<char> cbuf(static_cast<size_t>(entry.data_size));
                     auto& s = reader.stream();
                     if (s.seek(static_cast<core::int64>(entry.data_offset),
@@ -987,7 +987,7 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
                     if (!entry.header.sub_data.empty()) {
                         cmt_text.assign(reinterpret_cast<const char*>(entry.header.sub_data.data()),
                                         entry.header.sub_data.size());
-                    } else if (entry.data_size > 0 && entry.data_size <= 1024 * 1024) {
+                    } else if (entry.data_size > 0 && entry.data_size <= core::MIB) {
                         std::vector<char> cbuf(static_cast<size_t>(entry.data_size));
                         auto& s = reader.stream();
                         if (s.seek(static_cast<core::int64>(entry.data_offset),
@@ -1043,9 +1043,9 @@ int list_archive(const std::string& arc_path, bool bare, bool technical,
                           << "  CRC32:       " << std::hex << entry.header.data_crc32 << std::dec
                           << "\n";
                 if (entry.header.win_size > 0) {
-                    if (entry.header.win_size >= 1024 * 1024 &&
-                        (entry.header.win_size % (1024 * 1024) == 0)) {
-                        std::cout << "  Dictionary:  " << (entry.header.win_size / (1024 * 1024))
+                    if (entry.header.win_size >= core::MIB &&
+                        (entry.header.win_size % core::MIB == 0)) {
+                        std::cout << "  Dictionary:  " << (entry.header.win_size / core::MIB)
                                   << " MB\n";
                     } else if (entry.header.win_size >= 1024 &&
                                (entry.header.win_size % 1024 == 0)) {
@@ -1776,7 +1776,7 @@ static bool sha256_file_content(const std::filesystem::path& p, core::byte* dige
     io::FileStream f;
     if (!f.open(p, io::FileMode::ReadOnly)) return false;
     crypto::Sha256 h;
-    std::vector<core::byte> buf(1024 * 1024);
+    std::vector<core::byte> buf(core::MIB);
     for (;;) {
         const size_t got = f.read(buf.data(), buf.size());
         if (got == 0) break;
@@ -1836,8 +1836,8 @@ static CdcFingerprintResult fingerprint_file_cdc(const std::filesystem::path& p,
     chunk_count = 0;
     std::error_code ec;
     const auto sz = std::filesystem::file_size(p, ec);
-    if (!ec && sz >= 2 * compress::CdcChunker::CDC_MAX_CHUNK && threads > 1 &&
-        sz <= 256 * 1024 * 1024) {
+    if (!ec && sz >= static_cast<core::uint64>(compress::CdcChunker::CDC_MAX_CHUNK) * 2 &&
+        threads > 1 && sz <= 256 * core::MIB) {
         io::FileStream f;
         if (!f.open(p, io::FileMode::ReadOnly)) return CdcFingerprintResult::Unreadable;
         std::vector<core::byte> file_data(static_cast<size_t>(sz));
@@ -1865,7 +1865,7 @@ static CdcFingerprintResult fingerprint_file_cdc(const std::filesystem::path& p,
     io::FileStream f;
     if (!f.open(p, io::FileMode::ReadOnly)) return CdcFingerprintResult::Unreadable;
     compress::CdcStreamChunker stream(chunker);
-    std::vector<core::byte> buf(1024 * 1024);
+    std::vector<core::byte> buf(core::MIB);
     std::vector<compress::CdcChunk> chunks;
     for (;;) {
         const size_t got = f.read(buf.data(), buf.size());
@@ -2158,7 +2158,7 @@ static int run_batch_add(const std::string& arc_path, const std::vector<PendingF
     size_t large_files = 0;
     for (const auto& q : queue) {
         if (!q.is_dir && !q.is_symlink && !q.is_hardlink && !q.is_filecopy &&
-            q.file_size >= 1024 * 1024) {
+            q.file_size >= core::MIB) {
             ++large_files;
         }
     }
@@ -2435,7 +2435,8 @@ int add_to_archive(
                                     pf.is_dir_target = is_dir_target;
                                     pf.symlink_target = target_str;
                                     queue.push_back(std::move(pf));
-                                    g_prog.spin("Scanning files…", queue.size());
+                                    g_prog.spin("Scanning files…",
+                                                static_cast<core::int64>(queue.size()));
                                 }
                             }
                         }
@@ -2458,7 +2459,7 @@ int add_to_archive(
                         if (!should_include(rel, dir_entry.path())) continue;
                         queue.push_back({dir_entry.path(), rel, sz});
                         total_unp += sz;
-                        g_prog.spin("Scanning files…", queue.size());
+                        g_prog.spin("Scanning files…", static_cast<core::int64>(queue.size()));
                     }
                 }
             } else {
@@ -2491,7 +2492,8 @@ int add_to_archive(
                                     pf.is_dir_target = is_dir_target;
                                     pf.symlink_target = target_str;
                                     queue.push_back(std::move(pf));
-                                    g_prog.spin("Scanning files…", queue.size());
+                                    g_prog.spin("Scanning files…",
+                                                static_cast<core::int64>(queue.size()));
                                 }
                             }
                         }
@@ -2512,7 +2514,7 @@ int add_to_archive(
                         if (!should_include(rel, dir_entry.path())) continue;
                         queue.push_back({dir_entry.path(), rel, sz});
                         total_unp += sz;
-                        g_prog.spin("Scanning files…", queue.size());
+                        g_prog.spin("Scanning files…", static_cast<core::int64>(queue.size()));
                     }
                 }
             }
@@ -2556,7 +2558,8 @@ int add_to_archive(
                                 pf.is_dir_target = is_dir_target;
                                 pf.symlink_target = target_str;
                                 queue.push_back(std::move(pf));
-                                g_prog.spin("Scanning files…", queue.size());
+                                g_prog.spin("Scanning files…",
+                                            static_cast<core::int64>(queue.size()));
                             }
                         }
                     }
@@ -2585,7 +2588,7 @@ int add_to_archive(
                     queue.push_back({dir_entry.path(), rel, sz});
                     total_unp += sz;
                 }
-                g_prog.spin("Scanning files…", queue.size());
+                g_prog.spin("Scanning files…", static_cast<core::int64>(queue.size()));
             };
             if (recurse_subdirs) {
                 for (const auto& dir_entry :
@@ -2629,7 +2632,7 @@ int add_to_archive(
                             pf.is_dir_target = is_dir_target;
                             pf.symlink_target = target_str;
                             queue.push_back(std::move(pf));
-                            g_prog.spin("Scanning files…", queue.size());
+                            g_prog.spin("Scanning files…", static_cast<core::int64>(queue.size()));
                         }
                     }
                 }
@@ -2651,7 +2654,7 @@ int add_to_archive(
             if (should_include(entry, p)) {
                 queue.push_back({p, entry, sz});
                 total_unp += sz;
-                g_prog.spin("Scanning files…", queue.size());
+                g_prog.spin("Scanning files…", static_cast<core::int64>(queue.size()));
             }
         }
     }

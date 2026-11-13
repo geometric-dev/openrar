@@ -5,19 +5,21 @@
 #include <string>
 #include <vector>
 
+#include "core/types.hpp"
+
 namespace openrar::cli {
 
 struct BenchmarkOptions {
-    unsigned threads{0};               // 0 = auto-detect (hardware_concurrency)
-    size_t dict_size{4 * 1024 * 1024}; // default 4 MiB
-    int method{3};                     // compression method (0..5, default 3)
-    unsigned seconds{5};               // duration per timed phase (default 5s, min 1, max 60)
-    bool plain{false};                 // disable ANSI animations
-    bool json{false};                  // emit JSON output
-    bool submit{false};                // submit results to cloud leaderboard
-    bool leaderboard{false};           // view global cloud hardware leaderboard
-    std::string system_name;           // custom machine / system description
-    std::string endpoint;              // ingestion URL override
+    unsigned threads{0};             // 0 = auto-detect (hardware_concurrency)
+    size_t dict_size{4 * core::MIB}; // default 4 MiB
+    int method{3};                   // compression method (0..5, default 3)
+    unsigned seconds{5};             // duration per timed phase (default 5s, min 1, max 60)
+    bool plain{false};               // disable ANSI animations
+    bool json{false};                // emit JSON output
+    bool submit{false};              // submit results to cloud leaderboard
+    bool leaderboard{false};         // view global cloud hardware leaderboard
+    std::string system_name;         // custom machine / system description
+    std::string endpoint;            // ingestion URL override
 };
 
 struct BenchmarkResult {

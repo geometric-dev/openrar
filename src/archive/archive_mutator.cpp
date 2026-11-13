@@ -1250,7 +1250,7 @@ bool ArchiveMutator::prepare_add_file(
     fb.file_name = arc_entry_name;
     fb.attributes = 0x20;
     bool is_non_pow2 = (win_size & (win_size - 1)) != 0;
-    fb.unp_ver = (method > 0 && (win_size > (1ULL * 1024 * 1024 * 1024) || is_non_pow2)) ? 1 : 0;
+    fb.unp_ver = (method > 0 && (win_size > core::GIB || is_non_pow2)) ? 1 : 0;
     apply_file_times(fb, times, times_mask);
 
     {
@@ -1265,7 +1265,7 @@ bool ArchiveMutator::prepare_add_file(
             win_size = compress::resolve_auto_dict(static_cast<core::uint32>(method), file_sz);
             win_size = clamp_window_to_address_space(win_size);
             bool is_np2 = (win_size & (win_size - 1)) != 0;
-            fb.unp_ver = (method > 0 && (win_size > (1ULL * 1024 * 1024 * 1024) || is_np2)) ? 1 : 0;
+            fb.unp_ver = (method > 0 && (win_size > core::GIB || is_np2)) ? 1 : 0;
         } else if (dict_size == 0 && !is_solid && method > 0 && file_sz > 0) {
             core::uint64 file_pow2 = 0x20000ULL; // 128 KiB floor
             while (file_pow2 < file_sz && file_pow2 < win_size) {
@@ -1273,7 +1273,7 @@ bool ArchiveMutator::prepare_add_file(
             }
             win_size = std::min(win_size, file_pow2);
             bool is_np2 = (win_size & (win_size - 1)) != 0;
-            fb.unp_ver = (method > 0 && (win_size > (1ULL * 1024 * 1024 * 1024) || is_np2)) ? 1 : 0;
+            fb.unp_ver = (method > 0 && (win_size > core::GIB || is_np2)) ? 1 : 0;
         }
 
         if (file_sz == 0) {
@@ -1311,7 +1311,7 @@ bool ArchiveMutator::prepare_add_file(
                     if (comp_ok) {
                         comp_ok = solid_packer->pack_end(&compressed_payload);
                     }
-                } else if (eff_threads > 1 && uncompressed.size() >= 1024 * 1024) {
+                } else if (eff_threads > 1 && uncompressed.size() >= core::MIB) {
                     comp_ok = compress::Compressor50::compress_buffer_parallel(
                         uncompressed.data(), uncompressed.size(), compressed_payload, method,
                         static_cast<size_t>(win_size), filter_cfg, eff_threads);
@@ -1407,7 +1407,7 @@ bool ArchiveMutator::prepare_add_file(
                 fb.has_crc32 = true;
                 fb.method = static_cast<core::uint32>(method);
                 fb.win_size = win_size;
-                fb.unp_ver = (win_size > (1ULL * 1024 * 1024 * 1024) || is_non_pow2) ? 1 : 0;
+                fb.unp_ver = (win_size > core::GIB || is_non_pow2) ? 1 : 0;
                 out.needs_direct_stream = true;
                 out.direct_stream_threads = eff_threads;
             } else {
@@ -1444,7 +1444,8 @@ bool ArchiveMutator::prepare_add_file(
                         }
                         spooled_pack_bytes += complete_blocks;
                         enc_residual.erase(enc_residual.begin(),
-                                           enc_residual.begin() + complete_blocks);
+                                           enc_residual.begin() +
+                                               static_cast<std::ptrdiff_t>(complete_blocks));
                     }
                     return true;
                 };
@@ -2814,7 +2815,7 @@ int ArchiveMutator::write_batch_add_ex(
                     } fctx{&out, &actual_pack_size, true};
 
                     compress::StreamEncoder encoder(
-                        pf.fb.method,
+                        static_cast<int>(pf.fb.method),
                         static_cast<size_t>(
                             compress::lz_window_for_input(pf.fb.win_size, pf.fb.unp_size)),
                         filter_cfg);
@@ -3185,8 +3186,10 @@ int ArchiveMutator::write_batch_add_ex(
                 qo_payload.insert(qo_payload.end(), struct_size_vint.begin(),
                                   struct_size_vint.end());
                 qo_payload.insert(qo_payload.end(), hdr_vints.begin(), hdr_vints.end());
-                qo_payload.insert(qo_payload.end(), qo_arena.begin() + idx.arena_offset,
-                                  qo_arena.begin() + idx.arena_offset + idx.size);
+                qo_payload.insert(qo_payload.end(),
+                                  qo_arena.begin() + static_cast<std::ptrdiff_t>(idx.arena_offset),
+                                  qo_arena.begin() + static_cast<std::ptrdiff_t>(idx.arena_offset) +
+                                      static_cast<std::ptrdiff_t>(idx.size));
             }
 
 
@@ -3429,7 +3432,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
     // drop the fraction — header window < encoder window), so such members
     // declare version 1. Applied where the final method is decided below;
     // store and empty members keep 0.
-    const core::uint64 unp_ver_gib = 1ULL * 1024 * 1024 * 1024;
+    const core::uint64 unp_ver_gib = core::GIB;
     auto unp_ver_for = [&](core::uint32 final_method) -> core::uint32 {
         return (final_method > 0 && (win_size > unp_ver_gib || (win_size & (win_size - 1)) != 0))
                    ? 1u
@@ -3463,7 +3466,7 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
         io::FileStream src;
         if (!src.open(src_file, io::FileMode::ReadOnly)) return false;
         crypto::Crc32 crc_calc;
-        std::vector<core::byte> buf(1024 * 1024);
+        std::vector<core::byte> buf(core::MIB);
         core::uint64 rem = file_sz;
         while (rem > 0) {
             size_t take = static_cast<size_t>(std::min<core::uint64>(rem, buf.size()));
@@ -3572,13 +3575,15 @@ bool ArchiveMutator::add_file_to_archive_vol(const std::filesystem::path& arc_pa
                     return false;
                 }
                 spooled_pack_bytes += complete_blocks;
-                enc_residual.erase(enc_residual.begin(), enc_residual.begin() + complete_blocks);
+                enc_residual.erase(enc_residual.begin(),
+                                   enc_residual.begin() +
+                                       static_cast<std::ptrdiff_t>(complete_blocks));
             }
             return true;
         };
 
         crypto::Crc32 crc_calc;
-        std::vector<core::byte> read_buf(1024 * 1024);
+        std::vector<core::byte> read_buf(core::MIB);
         core::uint64 remaining = file_sz;
 
         io::FileStream src;
@@ -4264,7 +4269,7 @@ bool ArchiveMutator::convert_to_sfx(const std::filesystem::path& arc_path,
         return false;
     }
 
-    std::vector<core::byte> buf(64 * 1024);
+    std::vector<core::byte> buf(64 * core::KIB);
     core::uint64 rem = stub.size();
     while (rem > 0) {
         size_t take = static_cast<size_t>(std::min<core::uint64>(rem, buf.size()));

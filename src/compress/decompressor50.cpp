@@ -816,7 +816,7 @@ bool Decompressor50::ApplyEngine::flush_pending(bool flush_all, core::uint64 bas
     }
 
     // Honor RAM ceiling invariant (docs/invariants.md §2): cap retained scratch at 1 MiB.
-    constexpr size_t MAX_RETAINED_FILTER_SCRATCH = 1024 * 1024;
+    constexpr size_t MAX_RETAINED_FILTER_SCRATCH = core::MIB;
     if (filter_scratch_.capacity() > MAX_RETAINED_FILTER_SCRATCH) {
         filter_scratch_.clear();
         filter_scratch_.shrink_to_fit();
@@ -1489,7 +1489,7 @@ bool Decompressor50::decode_span(const PrescanTimeline& tl, const core::byte* sr
         size_t span_packed = 0;
         for (uint32_t bi = first_block; bi <= last_block; ++bi)
             span_packed += tl.blocks[bi].header_len + tl.blocks[bi].block_size;
-        const size_t est_pool = std::min(rec_cap, std::max<size_t>(64 * 1024, span_packed));
+        const size_t est_pool = std::min(rec_cap, std::max<size_t>(64 * core::KIB, span_packed));
         const size_t est_recs =
             std::min(rec_cap / sizeof(OpRecord), std::max<size_t>(4096, span_packed / 2));
         try {
@@ -1953,7 +1953,7 @@ bool Decompressor50::decompress_to_vector(const core::byte* src, size_t src_size
     // decompression bombs (F1). Explicit callers may bound up to MAX_STREAM_OUTPUT (64 GiB native / 2 GiB 32-bit).
     core::uint64 limit = effective_stream_limit(max_output);
 
-    size_t cap = std::max<size_t>(64 * 1024, src_size * 8);
+    size_t cap = std::max<size_t>(64 * core::KIB, static_cast<size_t>(src_size) * 8);
     if (cap > static_cast<size_t>(limit)) cap = static_cast<size_t>(limit);
     try {
         out.reserve(cap);

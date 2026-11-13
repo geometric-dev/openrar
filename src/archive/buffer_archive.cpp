@@ -102,7 +102,7 @@ size_t find_rar5_signature(const uint8_t* data, size_t size) {
             core::uint64 bsize = 0;
             size_t bsize_len = 0;
             if (!core::read_vint(data + off + 4, size - (off + 4), bsize, bsize_len) ||
-                bsize == 0 || bsize > 2 * 1024 * 1024) {
+                bsize == 0 || bsize > 2 * core::MIB) {
                 continue;
             }
             size_t type_pos = off + 4 + bsize_len;
@@ -592,7 +592,7 @@ int list_file_stream(const std::filesystem::path& arc_path,
                 core::uint64 bsize = 0;
                 size_t bsize_len = 0;
                 if (!core::read_vint(peek + 4, pgot - 4, bsize, bsize_len) || bsize == 0 ||
-                    bsize > 2 * 1024 * 1024)
+                    bsize > 2 * core::MIB)
                     continue;
                 size_t type_pos = 4 + bsize_len;
                 if (type_pos >= pgot) continue;
@@ -760,12 +760,12 @@ int BufferArchive::extract(const uint8_t* data, size_t size, size_t entry_index,
         if (e.win_size > compress::Decompressor50::ALLOC_LIMIT) {
             return RAR_ERR_LIMIT_EXCEEDED;
         }
-        size_t win = e.win_size > 0 ? static_cast<size_t>(e.win_size) : 32 * 1024 * 1024;
+        size_t win = e.win_size > 0 ? static_cast<size_t>(e.win_size) : 32 * core::MIB;
         compress::Decompressor50 unpacker(win, e.extra_dist);
 
         bool limit_exceeded = false;
         out.clear();
-        if (e.size > 0 && e.size <= 64 * 1024 * 1024) {
+        if (e.size > 0 && e.size <= 64 * core::MIB) {
             out.reserve(static_cast<size_t>(e.size));
         }
 

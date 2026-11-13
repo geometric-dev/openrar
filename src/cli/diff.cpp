@@ -115,7 +115,7 @@ int diff_archives(const DiffOptions& opt) {
             item.kind = DiffKind::Deleted;
             item.size1 = e1->header.unp_size;
             item.crc1 = e1->header.data_crc32;
-            item.method1 = e1->header.method;
+            item.method1 = static_cast<int>(e1->header.method);
             item.mtime1 = e1->header.mtime_win;
             items.push_back(item);
             count_deleted++;
@@ -127,8 +127,8 @@ int diff_archives(const DiffOptions& opt) {
             item.size2 = e2->header.unp_size;
             item.crc1 = e1->header.data_crc32;
             item.crc2 = e2->header.data_crc32;
-            item.method1 = e1->header.method;
-            item.method2 = e2->header.method;
+            item.method1 = static_cast<int>(e1->header.method);
+            item.method2 = static_cast<int>(e2->header.method);
             item.mtime1 = e1->header.mtime_win;
             item.mtime2 = e2->header.mtime_win;
 
@@ -156,7 +156,7 @@ int diff_archives(const DiffOptions& opt) {
             item.kind = DiffKind::Added;
             item.size2 = e2->header.unp_size;
             item.crc2 = e2->header.data_crc32;
-            item.method2 = e2->header.method;
+            item.method2 = static_cast<int>(e2->header.method);
             item.mtime2 = e2->header.mtime_win;
             items.push_back(item);
             count_added++;

@@ -26,7 +26,7 @@ constexpr size_t EOCD64_LOC_FIXED = 20;
 
 // Bounded EOCD backward-scan window (prepended SFX stubs tolerated; the
 // shipped MAX_SFX_SIZE bound is the precedent).
-constexpr core::uint64 EOCD_SCAN_WINDOW = 4 * 1024 * 1024;
+constexpr core::uint64 EOCD_SCAN_WINDOW = 4 * core::MIB;
 
 core::uint16 rd16(const core::byte* p) {
     return static_cast<core::uint16>(p[0] | (p[1] << 8));
@@ -58,7 +58,8 @@ int64_t dos_datetime_to_epoch(core::uint16 d, core::uint16 t) {
     const int doy = (153 * mp + 2) / 5 + day - 1;
     const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     const int64_t days = static_cast<int64_t>(era) * 146097 + doe - 719468;
-    return days * 86400 + hour * 3600 + minute * 60 + second;
+    return days * 86400 + static_cast<int64_t>(hour) * 3600 + static_cast<int64_t>(minute) * 60 +
+           static_cast<int64_t>(second);
 }
 
 // ---------------------------------------------------------------------------
@@ -96,11 +97,14 @@ ForeignStatus ZipReader::locate_eocd(const ExtractionLimits& limits, std::string
         return ForeignStatus::IoError;
     }
     // EOCD is the LAST occurrence of the signature that field-validates.
-    for (int64_t i = static_cast<int64_t>(buf.size()) - EOCD_FIXED; i >= 0; --i) {
-        if (rd32(buf.data() + i) != EOCD_SIG) continue;
-        const core::uint16 comment_len = rd16(buf.data() + i + 20);
-        if (static_cast<core::uint64>(i) + EOCD_FIXED + comment_len != buf.size()) continue;
-        const core::byte* e = buf.data() + i;
+    // buf.size() >= EOCD_FIXED because fsize was checked above and the window
+    // is min(fsize, EOCD_SCAN_WINDOW + EOCD_FIXED), so the descending index
+    // cannot underflow.
+    for (size_t pos = buf.size() - EOCD_FIXED + 1; pos-- > 0;) {
+        if (rd32(buf.data() + pos) != EOCD_SIG) continue;
+        const core::uint16 comment_len = rd16(buf.data() + pos + 20);
+        if (static_cast<core::uint64>(pos) + EOCD_FIXED + comment_len != buf.size()) continue;
+        const core::byte* e = buf.data() + pos;
         cd_offset_ = rd32(e + 16);
         cd_size_ = rd32(e + 16 - 4); // offset 12: size of CD
         total_entries_ = rd16(e + 10);
@@ -108,11 +112,11 @@ ForeignStatus ZipReader::locate_eocd(const ExtractionLimits& limits, std::string
         if (cd_offset_ == 0xFFFFFFFFu || cd_size_ == 0xFFFFFFFFu || total_entries_ == 0xFFFF ||
             rd32(e + 8) == 0xFFFFFFFFu) {
             // Locator is 20 bytes directly before the EOCD.
-            if (static_cast<core::uint64>(i) < EOCD64_LOC_FIXED) {
+            if (pos < EOCD64_LOC_FIXED) {
                 detail = "EOCD64 locator out of range";
                 return ForeignStatus::Unparseable;
             }
-            const core::byte* loc = buf.data() + i - EOCD64_LOC_FIXED;
+            const core::byte* loc = buf.data() + pos - EOCD64_LOC_FIXED;
             if (rd32(loc) != EOCD64_LOC_SIG) {
                 detail = "ZIP64 fields set but locator missing";
                 return ForeignStatus::Unparseable;

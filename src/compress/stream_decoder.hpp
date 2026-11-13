@@ -20,7 +20,7 @@ namespace openrar::compress {
 // Thread-compatible per-instance (no internal locking; one caller at a time).
 class StreamDecoder {
 public:
-    explicit StreamDecoder(size_t win_size = 4 * 1024 * 1024, int method = 3);
+    explicit StreamDecoder(size_t win_size = 4 * core::MIB, int method = 3);
     ~StreamDecoder() = default;
 
     StreamDecoder(const StreamDecoder&) = delete;
@@ -96,7 +96,7 @@ private:
     void* flush_user_{nullptr};
 };
 
-static_assert(sizeof(StreamDecoder) <= 64 * 1024,
+static_assert(sizeof(StreamDecoder) <= 64 * core::KIB,
               "StreamDecoder per-instance state must be bounded within 64 KiB (Invariant I-16)");
 
 } // namespace openrar::compress

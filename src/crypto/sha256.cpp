@@ -81,7 +81,7 @@ const core::uint32 K256[64] = {
 static void sha256_transform_scalar(core::uint32* state, const core::byte* block) {
     core::uint32 w[64];
     for (int i = 0; i < 16; ++i) {
-        w[i] = core::read_be32(block + i * 4);
+        w[i] = core::read_be32(block + static_cast<std::ptrdiff_t>(i) * 4);
     }
     for (int i = 16; i < 64; ++i) {
         w[i] = theta1(w[i - 2]) + w[i - 7] + theta0(w[i - 15]) + w[i - 16];
@@ -516,7 +516,7 @@ void Sha256::finish(void* out_digest) {
 
     auto* out = static_cast<core::byte*>(out_digest);
     for (int i = 0; i < 8; ++i) {
-        core::write_be32(out + i * 4, state_[i]);
+        core::write_be32(out + static_cast<std::ptrdiff_t>(i) * 4, state_[i]);
     }
 }
 

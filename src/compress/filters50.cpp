@@ -46,7 +46,7 @@ inline unsigned first_match_byte(core::uint64 nibble_mask) {
 #endif
 
 namespace {
-std::atomic<core::uint64> s_unknown_pe_machine_count{0};
+std::atomic<core::uint64> g_unknown_pe_machine_count{0};
 
 // Set OPENRAR_FILTER_DIAG to surface container-dispatch decisions on stderr.
 bool filter_diag_enabled() {
@@ -56,11 +56,11 @@ bool filter_diag_enabled() {
 } // namespace
 
 core::uint64 Filters50::unknown_pe_machine_count() noexcept {
-    return s_unknown_pe_machine_count.load(std::memory_order_relaxed);
+    return g_unknown_pe_machine_count.load(std::memory_order_relaxed);
 }
 
 void Filters50::reset_unknown_pe_machine_count() noexcept {
-    s_unknown_pe_machine_count.store(0, std::memory_order_relaxed);
+    g_unknown_pe_machine_count.store(0, std::memory_order_relaxed);
 }
 
 FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::uint8& out_channels,
@@ -104,7 +104,7 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
             case 0xA641: // IMAGE_FILE_MACHINE_ARM64EC
                 return FilterType::None;
             default:
-                s_unknown_pe_machine_count.fetch_add(1, std::memory_order_relaxed);
+                g_unknown_pe_machine_count.fetch_add(1, std::memory_order_relaxed);
                 if (filter_diag_enabled()) {
                     std::fprintf(stderr, "[filter] unknown PE machine 0x%04X -> none\n",
                                  static_cast<unsigned>(machine));
@@ -361,7 +361,7 @@ void Filters50::apply_e8(core::byte* data, size_t size, core::uint64 file_offset
 #if defined(_MSC_VER)
         unsigned long bsf;
         _BitScanForward(&bsf, mask);
-        tz = bsf;
+        tz = static_cast<int>(bsf);
 #else
         tz = __builtin_ctz(mask);
 #endif
@@ -487,7 +487,7 @@ void Filters50::apply_arm(core::byte* data, size_t size, core::uint64 file_offse
 #if defined(_MSC_VER)
         unsigned long bsf;
         _BitScanForward(&bsf, mask);
-        tz = bsf;
+        tz = static_cast<int>(bsf);
 #else
         tz = __builtin_ctz(mask);
 #endif
@@ -556,7 +556,7 @@ inline size_t delta_plane_base(size_t full, size_t rem, size_t c) {
 // a per-thread buffer instead of allocating and zero-filling one per call.
 core::byte* delta_scratch(size_t size) {
     thread_local std::vector<core::byte> scratch;
-    constexpr size_t MAX_CACHED_SCRATCH = 2 * 1024 * 1024;
+    constexpr size_t MAX_CACHED_SCRATCH = 2 * core::MIB;
     try {
         if (scratch.capacity() > MAX_CACHED_SCRATCH && size <= MAX_CACHED_SCRATCH) {
             scratch.resize(size);
@@ -1079,7 +1079,7 @@ void Filters50::encode_e8(core::byte* data, size_t size, core::uint64 file_offse
 #if defined(_MSC_VER)
         unsigned long bsf;
         _BitScanForward(&bsf, mask);
-        tz = bsf;
+        tz = static_cast<int>(bsf);
 #else
         tz = __builtin_ctz(mask);
 #endif
@@ -1204,7 +1204,7 @@ void Filters50::encode_arm(core::byte* data, size_t size, core::uint64 file_offs
 #if defined(_MSC_VER)
         unsigned long bsf;
         _BitScanForward(&bsf, mask);
-        tz = bsf;
+        tz = static_cast<int>(bsf);
 #else
         tz = __builtin_ctz(mask);
 #endif

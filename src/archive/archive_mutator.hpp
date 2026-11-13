@@ -121,7 +121,7 @@ public:
         std::filesystem::path path_;
     };
 
-    static constexpr size_t SPOOL_MEMORY_THRESHOLD = 16 * 1024 * 1024; // 16 MiB
+    static constexpr size_t SPOOL_MEMORY_THRESHOLD = 16 * core::MIB; // 16 MiB
 
     // Fully prepared payload for batch archive creation: everything the CLI
     // can compute without touching the archive file (read + CRC + compress +

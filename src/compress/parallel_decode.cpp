@@ -16,11 +16,10 @@
 namespace openrar::compress {
 namespace {
 
-constexpr size_t MIB = 1024 * 1024;
 // Amortization floor per span (Gate 0 G3) and the span-count topology
 // (review R3): spans = clamp(pack / 4 MiB, 2, 4 * workers); engagement
 // requires >= 3 spans so at least two symbol workers exist.
-constexpr size_t SPAN_PACKED_FLOOR = 4 * MIB;
+constexpr size_t SPAN_PACKED_FLOOR = 4 * core::MIB;
 // Span topology (review R3, amended by measurement): the pipelined applier
 // overlaps apply with decode only when spans are fine enough - at the Gate
 // 0 probe's 5-span split the applier idles through the first span decode
@@ -30,14 +29,14 @@ constexpr size_t SPAN_PACKED_FLOOR = 4 * MIB;
 // tens of microseconds against a ~17 ms span decode - the original 4 MiB
 // floor amortized per-range state the single-pass designs needed; this
 // pipeline has none.
-constexpr size_t SPAN_TARGET_BYTES = 1 * MIB;
+constexpr size_t SPAN_TARGET_BYTES = core::MIB;
 constexpr size_t SPAN_COUNT_MAX = 32;
 // Per-span record cap (G5, review R2): records + literal pool together.
 // Real corpora measure 2-3x span output in the 12-byte record encoding;
 // 16x the span's packed bytes keeps every common shape inside the bound
 // and pushes pathological streams to the sequential fallback instead of
 // unbounded memory. The derivation lives in the Gate 0 record (SS1/SS2).
-constexpr size_t RECORD_CAP_MIN = 16 * MIB;
+constexpr size_t RECORD_CAP_MIN = 16 * core::MIB;
 constexpr size_t RECORD_CAP_PACKED_MULTIPLE = 16;
 // Publish window (review R4): a worker that finishes more than this many
 // spans ahead of the applier parks before publishing. Resident record

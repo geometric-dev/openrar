@@ -26,7 +26,7 @@ namespace openrar::compress {
 // Thread-compatible per-instance (no internal locking; one caller at a time).
 class StreamEncoder {
 public:
-    StreamEncoder(int method = 3, size_t win_size = 4 * 1024 * 1024,
+    StreamEncoder(int method = 3, size_t win_size = 4 * core::MIB,
                   const FilterConfig& filter_cfg = {});
     ~StreamEncoder() = default;
 

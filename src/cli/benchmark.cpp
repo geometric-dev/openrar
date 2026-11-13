@@ -116,14 +116,14 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     res.method = opt.method;
 
     // Directives 1 & 6: Clamped single shared read-only corpus (16 MiB)
-    constexpr size_t CORPUS_SIZE = 16 * 1024 * 1024;
+    constexpr size_t CORPUS_SIZE = 16 * core::MIB;
     const std::vector<core::byte> corpus = generate_benchmark_corpus(CORPUS_SIZE);
 
     // Warm-up pass (Directive 6: 100ms un-timed to steady CPU boost clocks)
     {
         std::vector<core::byte> warm_packed;
-        compress::Compressor50::compress_buffer(corpus.data(), 512 * 1024, warm_packed, opt.method,
-                                                opt.dict_size);
+        compress::Compressor50::compress_buffer(corpus.data(), 512 * core::KIB, warm_packed,
+                                                opt.method, opt.dict_size);
     }
 
     const unsigned phase_sec = opt.seconds < 1 ? 1 : (opt.seconds > 60 ? 60 : opt.seconds);
@@ -136,8 +136,8 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     std::vector<std::thread> workers;
     workers.reserve(threads);
 
-    const size_t mem_chunk = std::min<size_t>(CORPUS_SIZE / threads, 2 * 1024 * 1024);
-    const size_t actual_mem_chunk = std::max<size_t>(mem_chunk, 64 * 1024);
+    const size_t mem_chunk = std::min<size_t>(CORPUS_SIZE / threads, 2 * core::MIB);
+    const size_t actual_mem_chunk = std::max<size_t>(mem_chunk, 64 * core::KIB);
 
     auto t_mem_start = std::chrono::steady_clock::now();
     for (unsigned i = 0; i < threads; ++i) {
@@ -169,7 +169,7 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
         std::max(mem_elapsed, 0.001);
 
     // ── Phase 1: Single-Thread Compression Benchmark ──────────────────────────
-    constexpr size_t ST_SLICE_SIZE = 4 * 1024 * 1024; // 4 MiB slice
+    constexpr size_t ST_SLICE_SIZE = 4 * core::MIB; // 4 MiB slice
     const core::byte* st_src = corpus.data();
     uint64_t st_bytes_in = 0;
     auto t_st_start = std::chrono::steady_clock::now();
@@ -193,8 +193,8 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     workers.clear();
     workers.reserve(threads);
 
-    const size_t chunk_per_thread = std::min<size_t>(CORPUS_SIZE / threads, 4 * 1024 * 1024);
-    const size_t actual_chunk = std::max<size_t>(chunk_per_thread, 256 * 1024);
+    const size_t chunk_per_thread = std::min<size_t>(CORPUS_SIZE / threads, 4 * core::MIB);
+    const size_t actual_chunk = std::max<size_t>(chunk_per_thread, 256 * core::KIB);
 
     auto t_mt_start = std::chrono::steady_clock::now();
     for (unsigned i = 0; i < threads; ++i) {
@@ -228,7 +228,7 @@ BenchmarkResult run_benchmark(const BenchmarkOptions& opt) {
     // ── Phase 3: Parallel Decompression Benchmark & CRC32 Verification ────────
     // Pre-compress reference slice
     std::vector<core::byte> ref_packed;
-    const size_t decomp_slice_size = std::min<size_t>(CORPUS_SIZE, 2 * 1024 * 1024);
+    const size_t decomp_slice_size = std::min<size_t>(CORPUS_SIZE, 2 * core::MIB);
     compress::Compressor50::compress_buffer(corpus.data(), decomp_slice_size, ref_packed,
                                             opt.method, opt.dict_size);
     const uint32_t expected_crc = compute_crc32(corpus.data(), decomp_slice_size);

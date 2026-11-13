@@ -27,8 +27,8 @@ using ParallelCancelCb = int (*)(void* user);
 struct ParallelCompressConfig {
     int method{3};
     size_t win_size{0x800000};
-    unsigned threads{0};                // 0 = auto-detect
-    size_t chunk_size{2 * 1024 * 1024}; // 2 MiB default chunk
+    unsigned threads{0};              // 0 = auto-detect
+    size_t chunk_size{2 * core::MIB}; // 2 MiB default chunk
     ParallelProgressCb progress_cb{nullptr};
     void* progress_user{nullptr};
     ParallelCancelCb cancel_cb{nullptr};

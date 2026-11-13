@@ -130,7 +130,7 @@ inline constexpr core::uint8 MHEXTRA_METADATA = static_cast<core::uint8>(ExtraTy
 inline constexpr size_t FHEXTRA_XATTR_NAME_MAX = 255;
 inline constexpr size_t FHEXTRA_XATTR_VALUE_MAX = 65536;
 inline constexpr size_t FHEXTRA_XATTR_COUNT_MAX = 4096;
-inline constexpr size_t FHEXTRA_XATTR_TOTAL_MAX = 1024 * 1024;
+inline constexpr size_t FHEXTRA_XATTR_TOTAL_MAX = core::MIB;
 
 // Main Header Model
 struct MainBlock {
