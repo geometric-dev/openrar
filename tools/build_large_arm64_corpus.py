@@ -43,6 +43,8 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -237,6 +239,27 @@ def build_synthetic(nfuncs: int, out: pathlib.Path, clang: str, lld: str) -> pat
 # --- real samples -----------------------------------------------------------
 
 
+def download(url: str, dest: pathlib.Path, attempts: int = 3) -> None:
+    """Fetch url into dest, retrying transient failures with backoff.
+
+    A partial file is removed before each retry so a truncated download can
+    never be mistaken for a cached archive by a later run.
+    """
+    last = None
+    for attempt in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=120) as resp, dest.open("wb") as f:
+                shutil.copyfileobj(resp, f)
+            return
+        except (urllib.error.URLError, OSError) as exc:
+            last = exc
+            dest.unlink(missing_ok=True)
+            if attempt + 1 < attempts:
+                time.sleep(2 ** attempt)
+    raise SystemExit(f"{url}: download failed after {attempts} attempts: {last}")
+
+
 def fetch(source: dict, downloads: pathlib.Path, offline: bool) -> pathlib.Path:
     name = source["url"].rsplit("/", 1)[-1]
     path = downloads / name
@@ -245,9 +268,7 @@ def fetch(source: dict, downloads: pathlib.Path, offline: bool) -> pathlib.Path:
     if offline:
         raise SystemExit(f"{path} is missing or has the wrong hash and --offline was given")
     path.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(source["url"], headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=120) as resp, path.open("wb") as f:
-        shutil.copyfileobj(resp, f)
+    download(source["url"], path)
     got = sha256(path)
     if got != source["archive_sha"]:
         path.unlink()
@@ -343,6 +364,20 @@ def main() -> int:
               for entry in manifest["real"]]
     generated = [f"{entry['sha256']}  corpus/{entry['label']}/pe_aarch64.exe"
                  for entry in manifest["synthetic"]]
+    # --only builds a subset: refuse to overwrite a pinned manifest that
+    # describes samples this run did not verify.
+    if args.only:
+        existing = out / "manifest.sha256"
+        if existing.is_file():
+            known = {line.split("  corpus/", 1)[1].split("/", 1)[0]
+                     for line in existing.read_text(encoding="utf-8").splitlines()
+                     if "  corpus/" in line}
+            stale = known - {entry["label"] for entry in manifest["real"]}
+            if stale:
+                raise SystemExit(
+                    f"{existing} lists {sorted(stale)}, which this --only run did not "
+                    "rebuild; use a fresh --out instead of overwriting it")
+
     # Only rewrite a manifest whose class was actually rebuilt; a
     # --skip-real run must not truncate the pinned list.
     if pinned or not args.skip_real:
