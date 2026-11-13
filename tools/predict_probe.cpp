@@ -166,10 +166,6 @@ static ImageGeometry parse_image_geometry(const std::vector<core::byte>& data) {
     if (data.size() >= 8 &&
         ((data[0] == 'I' && data[1] == 'I') || (data[0] == 'M' && data[1] == 'M'))) {
         bool is_le = (data[0] == 'I');
-        auto r16 = [&](size_t off) {
-            return is_le ? core::read_le16(data.data() + off)
-                         : core::read_be32(data.data() + off - 2) & 0xFFFF;
-        };
         auto r32 = [&](size_t off) {
             return is_le ? core::read_le32(data.data() + off) : core::read_be32(data.data() + off);
         };
