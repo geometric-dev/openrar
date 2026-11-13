@@ -139,7 +139,7 @@ record without weakening the committed gate:
 python tools/measure_c5.py --baseline main=... --candidate branch=... --corpus build/large_arm64/corpus/curl --report-only
 ```
 
-`libcrypto-3-arm64.dll` is the exception: the `libcrypto-gate` job fetches it
+`libcrypto-3-arm64.dll` is the exception: the `real-object-gate` job fetches it
 with `--only libcrypto`, re-checks the pinned hashes and gates `-m3`/`-m5`
 strictly. `-m1` stays ungated there because that level is the one that can grow
 on this image class (curl).
