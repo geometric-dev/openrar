@@ -129,8 +129,14 @@ jobs:
 
       - name: Ratchet parity and reference extraction
         run: |
+          # The tool's default --unrar points at the Windows install; on the
+          # runner UnRAR is on PATH, so pass that path explicitly.
           REF=""
-          if ! command -v unrar >/dev/null 2>&1; then REF="--skip-references"; fi
+          if command -v unrar >/dev/null 2>&1; then
+            REF="--unrar $(command -v unrar)"
+          else
+            REF="--skip-references"
+          fi
           python3 tools/prove_dispatch_parity.py \
             --baseline "main=$MAIN" \
             --candidate "branch=$BRANCH" \
