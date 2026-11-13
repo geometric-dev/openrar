@@ -124,10 +124,13 @@ size win.
 
 ### Gate rule
 
-The committed corpus is gated at **every** level: no member may grow, including
-`pe_aarch64.exe` at `-m1`. That needs no exemption because the corpus never
-grows there — the committed 10 KB stub is −6 B at `-m1` — so the gate asserts
-exactly what the corpus measures.
+The committed corpus is gated at every level the tool runs — `-m0`, `-m1`,
+`-m3`, `-m5` by default — and no member may grow, including `pe_aarch64.exe`
+at `-m1`. That needs no exemption because the corpus never grows there — the
+committed 10 KB stub is −6 B at `-m1` — so the gate asserts exactly what the
+corpus measures. A one-off `--levels 0,1,2,3,4,5` run covers the two levels the
+default skips: still no growth, `pe_aarch64` is −6 B at `-m2` and −7 B at
+`-m4`, and the other four members are 0 B at all six levels.
 
 The large real binaries above are **diagnostic, not committed gate members**: they are
 multi-megabyte third-party downloads that cannot be committed, and curl's `-m1`
