@@ -26,10 +26,9 @@ python tools/generate_c5_corpus.py --out tests/fixtures/c5
 
 ## Size gate
 
-The gate is "no C5 member grows relative to a binary built from `main`", with
-one level-aware exception for the PE-ARM64 member whose decision changes: it is
-gated at `-m3`/`-m5`, while `-m1` is measured and reported but not gated (see
-"Large real ARM64 binaries" below). `tools/measure_c5.py` builds one non-solid,
+The gate is "no C5 member grows relative to a binary built from `main`", at
+every level. Diagnostic corpora that are not gate members are measured with
+`--report-only` (see below). `tools/measure_c5.py` builds one non-solid,
 single-member archive per fixture and compression level and re-extracts it to
 confirm the original bytes:
 
@@ -119,20 +118,62 @@ shrinks at `-m2` (−3,387 B), `-m3`, `-m4` and `-m5`. So PE-ARM64 does not alwa
 shrink; the correct claim is that suppressing `E8` removes a wrong transform and
 is usually — not always — a small size win.
 
-### Gate rule for the changed ARM64 decision
+### Gate rule
 
-Because of that reversal the gate is level-aware for the one member whose
-decision changes:
+The committed corpus is gated at **every** level: no member may grow, including
+`pe_aarch64.exe` at `-m1`. That needs no exemption because the corpus never
+grows there — the 2 KB member is −8 B at `-m1` — so the gate asserts exactly
+what the corpus measures.
 
-- x86 controls (`elf_x86_64`, `pe_x86_64`): byte-identical to `main` at every
-  level.
-- `pe_aarch64.exe` (`E8` → `None`): **no growth at `-m3` and `-m5`**; `-m1` is
-  measured and reported but not gated, since a real code-heavy image can grow
-  there. Growth at `-m3`/`-m5` still fails, and any growth on the other members
-  fails at every level.
+The large real binaries above are **diagnostic, not gate members**: they are
+multi-megabyte third-party downloads that cannot be committed, and curl's `-m1`
+growth belongs to that image rather than to the corpus. They are measured with
+`--report-only`, which prints the deltas and exits 0, so the reversal stays on
+record without weakening the gate:
 
-`tools/measure_c5.py` implements this (`ARM64_UNGATED_LEVELS`), prints a
-"measured, not gated" note, and the CI job inherits the rule.
+```
+python tools/measure_c5.py     --baseline main=.../openrar.exe --candidate branch=.../openrar.exe     --corpus build/large_arm64/corpus/curl --report-only
+```
+
+Growth on any committed member, at any level, still fails.
+
+### Reproducing the large-ARM64 measurements
+
+`tools/build_large_arm64_corpus.py` rebuilds both classes of sample:
+
+```
+python tools/build_large_arm64_corpus.py --out build/large_arm64
+```
+
+It generates the freestanding C, compiles it for `aarch64-pc-windows-msvc` with
+clang, links with `lld-link` (`/nodefaultlib`, `/opt:noref`), then downloads the
+real binaries, verifies every archive and extracted member against the pinned
+hashes, and writes `corpus/<label>/pe_aarch64.exe`, `manifest.sha256` and
+`manifest.json` (URLs, sizes, hashes, toolchain versions). `--offline` requires
+already-downloaded, hash-matching archives instead.
+
+| Sample | Pinned source | SHA-256 |
+|---|---|---|
+| `7zip` | `https://www.7-zip.org/a/7z2501-arm64.exe` | `6365c7c44e217b9c1009e065daf9f9aa37454e64315b4aaa263f7f8f060755dc` |
+| `curl` | `https://curl.se/windows/dl-8.23.0_8/curl-8.23.0_8-win64a-mingw.zip` | `9ffddd2a85843d3b4b590d24d6becc4f25a70c77781d7d09235ba069b5c4589e` |
+| `pydll` | `https://www.python.org/ftp/python/3.13.9/python-3.13.9-embed-arm64.zip` | `cba392bd5c7aed68b26d1b523822cc3d80802c085481dfde79262ebfc7179d26` |
+| `pyexe` | same CPython archive | same archive hash |
+
+Extracted members are pinned too: `curl.exe`
+`38e26717fd1a3b04a92be13bac9442a0c8c0566b7bba1e8d413e225c6592335b`,
+`python313.dll`
+`b4a36b1486e5cb0e23c7aded651e3998aa476089699622779c328fb31350fc8c`,
+`python.exe`
+`0339dc88887f1849f8fd811d1b329ce0fa7503c77ec7a2b3b68113c99320aec6`.
+Generated images are not byte-stable (lld stamps a timestamp) and depend on the
+compiler version, so their hashes are recorded in `manifest.json` but not
+enforced; their deltas can move by a byte or two between rebuilds, while the
+pinned real samples reproduce exactly. The numbers above were produced with
+clang/lld 18.1.3.
+
+Each sample is stored under the gate's own member name (`pe_aarch64.exe`) so
+archive sizes stay comparable, and every archive is re-extracted and hash-checked
+by the measurement tool.
 
 ## Non-gating control
 

@@ -3,11 +3,10 @@
 
 Builds one isolated archive per C5 member for each supplied binary and
 compression level, then verifies every archive extracts to the original bytes.
-The gate is "no C5 member may grow relative to the baseline binary", with one
-level-aware exception: the PE-ARM64 member whose dispatch decision changes is
-gated at -m3/-m5 only. At -m1 a large real ARM64 image can grow (curl 8.23.0:
-+839 B), so that level is measured and reported but not gated; see
-"Large real ARM64 binaries" in tests/fixtures/c5/README.md.
+The gate is "no C5 member may grow relative to the baseline binary", at every
+level. Diagnostic corpora that are not gate members (the large real ARM64
+samples) are measured with --report-only, which reports the deltas and exits 0;
+see "Reproducing the large-ARM64 measurements" in tests/fixtures/c5/README.md.
 
 The comparison is between binaries built from *this* branch and from `main`
 (c5ff210), not against the v2.0.23 release artifact.
@@ -43,13 +42,6 @@ FIXTURES = (
 # Measured and reported, never gated: the original ARM64 PE stub whose payload
 # is x86-shaped. It records what the first eval measured; see the corpus README.
 CONTROL_FIXTURES = ("control_pe_aarch64_x86payload.exe",)
-
-# The only committed member whose dispatch decision changes (main: E8,
-# branch: None). Its -m1 result is reported but not gated: a large real ARM64
-# image grows there (curl 8.23.0, +839 B) while -m3/-m5 still shrink.
-CHANGED_ARM64_FIXTURE = "pe_aarch64.exe"
-ARM64_UNGATED_LEVELS = (1,)
-
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -115,6 +107,8 @@ def main() -> int:
     ap.add_argument("--levels", default="0,1,3,5")
     ap.add_argument("--work", default=None, help="scratch directory (default: temp)")
     ap.add_argument("--json", default=None, help="write the measurement matrix here")
+    ap.add_argument("--report-only", action="store_true",
+                    help="report deltas but exit 0 (diagnostic corpora, not gate members)")
     args = ap.parse_args()
 
     binaries = args.baseline + args.candidate
@@ -146,15 +140,12 @@ def main() -> int:
                 archive = work / f"{fixture}.{name}.m{level}.rar"
                 sizes[name] = build_archive(exe, level, src, archive)
                 verify_roundtrip(exe, archive, digest, work, f"{fixture}.{name}.m{level}")
-            gated = not (fixture == CHANGED_ARM64_FIXTURE
-                         and level in ARM64_UNGATED_LEVELS)
             base_name, base_exe = binaries[0]
             for name, exe in binaries[1:]:
                 delta = sizes[name] - sizes[base_name]
-                if delta > 0 and gated:
+                if delta > 0:
                     failures.append((fixture, level, name, delta))
-            rows.append({"fixture": fixture, "level": level, "sizes": sizes,
-                         "gated": gated})
+            rows.append({"fixture": fixture, "level": level, "sizes": sizes})
 
     for fixture in CONTROL_FIXTURES:
         src = corpus / fixture
@@ -177,10 +168,6 @@ def main() -> int:
         delta_cell = ", ".join(f"{d:+d}" for d in deltas) if deltas else "-"
         print(f"| `{row['fixture']}` | {row['level']} | {cells} | {delta_cell} |")
 
-    if any(not row["gated"] for row in rows):
-        print(f"\n{CHANGED_ARM64_FIXTURE} at -m1 is measured, not gated: a large real")
-        print("ARM64 image can grow there (curl 8.23.0: +839 B), while -m3/-m5 still shrink.")
-
     if control_rows:
         print("\nNon-gating control (x86-shaped payload in an ARM64 container):")
         for row in control_rows:
@@ -194,6 +181,11 @@ def main() -> int:
                                                "controls": control_rows}, indent=2) + "\n",
                                   encoding="utf-8")
 
+    if failures and args.report_only:
+        print("\nC5 SIZE GATE: REPORT ONLY (diagnostic corpus; growth reported, not failed)")
+        for fixture, level, name, delta in failures:
+            print(f"  {fixture} -m{level}: {name} grew by {delta} B")
+        return 0
     if failures:
         print("\nC5 SIZE GATE: FAIL")
         for fixture, level, name, delta in failures:
