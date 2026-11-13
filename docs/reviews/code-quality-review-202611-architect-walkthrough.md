@@ -5,7 +5,10 @@ MSVC ASan CI leg, whole-tree widening/narrowing sweep, re-enabled clang-tidy
 checks — plus the fresh-eyes review and libFuzzer campaign run afterwards.
 **Plan Reference:** the two user prompts; `docs/reviews/code-quality-review-202611.md`
 §9 (corrected fix outlines) and `…-architect-challenge.md` (D-1…D-8).
-**Architect Verdict:** 🟡 **CONDITIONAL APPROVAL (REMEDIATIONS REQUIRED)**
+**Architect Verdict:** 🟢 **SIGN-OFF — ALL REMEDIATIONS CLOSED (R-1, R-2)**
+**Re-verified on CI:** run 43493998279 — `ubuntu-24.04 - gcc` green end-to-end
+(gate `OK`, 58/58 tests), `MSVC ASan` green (52/52 tests). The three legs still
+red on this branch are pre-existing and tracked as R-7.
 
 ---
 
@@ -183,6 +186,11 @@ ASan runtime: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\
 Total Test time (real) = 532.40 sec
   7/52 Test  #7: allocation_tests .................   Passed    0.26 sec
 ```
+
+Re-run 43493998279 (job 132122347134) after the Linux-gate fixes: same runtime
+path, `100% tests passed, 0 tests failed out of 52`. The ubuntu gate leg in the
+same run reports `clang_tidy_check: OK (static analysis and naming clean)` and
+`100% tests passed, 0 tests failed out of 58`.
 
 0 `ERROR: AddressSanitizer` reports. `allocation_tests` passes here with its
 zero-allocation assertions **active** (RelWithDebInfo does not define `_DEBUG`,
