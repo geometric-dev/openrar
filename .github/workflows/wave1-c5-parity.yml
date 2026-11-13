@@ -53,9 +53,24 @@ jobs:
           # extraction here is UnRAR-only; the Windows leg owns the WinRAR half.
           sudo apt-get install -y unrar || echo "unrar unavailable; reference extraction will be skipped"
 
+      - name: Resolve the measurement baseline
+        run: |
+          # The gate compares against the `main` commit recorded in
+          # tools/measure_c5.py. This repository has no origin/main, so fall
+          # back to that commit, which is in the pushed branch's history.
+          git fetch --no-tags origin main || true
+          if git rev-parse --verify -q origin/main >/dev/null; then
+            echo "BASE=origin/main" >> "$GITHUB_ENV"
+          elif git rev-parse --verify -q c5ff210 >/dev/null; then
+            echo "BASE=c5ff210" >> "$GITHUB_ENV"
+          else
+            echo "::error::no baseline ref (origin/main or c5ff210) available"
+            exit 1
+          fi
+
       - name: Build main (baseline)
         run: |
-          git worktree add "$RUNNER_TEMP/main" origin/main
+          git worktree add "$RUNNER_TEMP/main" "$BASE"
           cmake -S "$RUNNER_TEMP/main" -B "$RUNNER_TEMP/main-build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
