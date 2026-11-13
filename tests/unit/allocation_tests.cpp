@@ -38,17 +38,47 @@
 // asserted wherever it is measurable - every GCC/Clang build and every MSVC
 // configuration that does not define _DEBUG - rather than letting the CRT's
 // debug layer read as a library regression.
+// ThreadSanitizer's runtime owns the global allocation functions: libclang_rt.tsan_cxx
+// defines operator new/delete (tsan_new_delete.cpp.o) so it can instrument them, and a
+// test binary that defines the same symbols is a duplicate definition at link time. With
+// no hooks installed nothing is counted, so the assertions are skipped there for the same
+// reason as the iterator-debugging case above: the measurement is absent, not the
+// behaviour.
+// Two spellings in the wild: GCC defines __SANITIZE_THREAD__, clang only answers
+// __has_feature(thread_sanitizer). Testing for the GCC macro alone silently kept the
+// hooks under clang and left the duplicate symbols exactly where they were.
+#if defined(__SANITIZE_THREAD__)
+#define OPENRAR_TSAN_BUILD 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define OPENRAR_TSAN_BUILD 1
+#endif
+#endif
+#ifndef OPENRAR_TSAN_BUILD
+#define OPENRAR_TSAN_BUILD 0
+#endif
+
+#if OPENRAR_TSAN_BUILD
+#define OPENRAR_ALLOC_TRACKING_HOOKS 0
+constexpr bool ALLOC_TRACKING_MEASURABLE = false;
+#else
+#define OPENRAR_ALLOC_TRACKING_HOOKS 1
 #if defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL > 0
 constexpr bool ALLOC_TRACKING_MEASURABLE = false;
 #else
 constexpr bool ALLOC_TRACKING_MEASURABLE = true;
 #endif
+#endif
+
+// True where this binary can install the counting hooks at all (everything except TSan).
+constexpr bool ALLOC_TRACKING_HOOKS = OPENRAR_ALLOC_TRACKING_HOOKS != 0;
 
 // ============================================================================
 // Global replacement operator new / operator delete hooks
 // ONLY linked into this test binary to monitor allocations (Invariant I-16, §2.3)
 // ============================================================================
 
+#if OPENRAR_ALLOC_TRACKING_HOOKS
 void* operator new(std::size_t n) {
     openrar::test::ScopedAllocTracker::record_alloc(n);
     if (n == 0) n = 1;
@@ -157,7 +187,8 @@ void operator delete(void* p, std::size_t, std::align_val_t al) noexcept {
 void operator delete[](void* p, std::size_t, std::align_val_t al) noexcept {
     operator delete[](p, al);
 }
-#endif
+#endif // __cpp_aligned_new
+#endif // OPENRAR_ALLOC_TRACKING_HOOKS
 
 // ============================================================================
 // Test helpers & fixtures
@@ -200,6 +231,11 @@ static std::vector<openrar::core::byte> make_x86_binary(size_t n_calls) {
 
 void allocation_tracker_nesting() {
     using namespace openrar::test;
+    if (!ALLOC_TRACKING_HOOKS) {
+        std::fprintf(stderr, "[SKIP] %s: the sanitizer runtime owns operator new/delete\n",
+                     __func__);
+        return;
+    }
     // Outside tracker, allocations do not increment any tracker
     void* p0 = ::operator new(16);
     ::operator delete(p0);
