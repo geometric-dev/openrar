@@ -54,8 +54,8 @@ returns the same filter they already received (x86 controls keep `E8`;
 `elf_aarch64`/`elf_riscv64` were already `None` by accident of the density
 scan). `pe_aarch64` is the only member whose decision changes — `main` applies
 `E8` to every unrecognised PE machine, the branch returns `None` — and it is
-6 bytes smaller for it at `-m1/-m3/-m5`. That is a property of this 2 KB
-image, not a general law: on multi-megabyte real ARM64 code the win does not
+6 bytes smaller for it at `-m1/-m3/-m5`. That is a property of this 10 KB
+stub, not a general law: on multi-megabyte real ARM64 code the win does not
 scale proportionally and can reverse at `-m1`.
 
 ### Corpus revision note
@@ -84,7 +84,7 @@ PE32+ images. clang 18.1.3 / lld 18.1.3 produced:
 | `pe_aarch64.exe` | 2,048 | `0xAA64` | 5 |
 
 Against a `main`-built binary (`c5ff210`) every real object is byte-identical
-except PE-ARM64, where suppressing `E8` is a **win on this image**: −8 B at
+except PE-ARM64, where suppressing `E8` is a **win on this image**: −9 B at
 `-m1`, −10 B at `-m3`, −15 B at `-m5`. All 30 ratchet cells stay byte-identical, and the six
 changed archives (both producers, three levels) extract 12/12 byte-exact under
 UnRAR 7.20 and WinRAR 7.20.
@@ -126,8 +126,8 @@ size win.
 
 The committed corpus is gated at **every** level: no member may grow, including
 `pe_aarch64.exe` at `-m1`. That needs no exemption because the corpus never
-grows there — the 2 KB member is −8 B at `-m1` — so the gate asserts exactly
-what the corpus measures.
+grows there — the committed 10 KB stub is −6 B at `-m1` — so the gate asserts
+exactly what the corpus measures.
 
 The large real binaries above are **diagnostic, not committed gate members**: they are
 multi-megabyte third-party downloads that cannot be committed, and curl's `-m1`
@@ -197,7 +197,7 @@ by the measurement tool.
 
 `control_pe_aarch64_x86payload.exe` is the **original** stub from the first
 C2/C5 eval, carried over byte-for-byte (SHA-256
-`d3bad8e15c404cf28aa259540c244c7e11d2c6911151d0ad20014586dbf38847`); the
+`37cc3d2bb0089190878a29911d72319194c03ce9c6b26c5612c2968fb85acce8`); the
 generator does not rewrite it. It is a 70-byte PE header with machine `0xAA64`
 followed by 10,000 bytes of x86-shaped payload containing 101 `0xE8` bytes —
 x86 code in an ARM64 container.
@@ -230,7 +230,7 @@ original name the same bytes measure **568 / 551 / 549 B** for `main` and
 These are **not compiler output**. The Windows reference host has no clang
 (Q-7), so the real objects are produced in the Ubuntu CI leg from
 [`pinned.c`](pinned.c) — freestanding, no headers, no sysroot, SHA-256
-`63529b17094b4958482aac3d9d81a3c2d90718d7fcaaf55670152d301d0e82c0`:
+`d3bad8e15c404cf28aa259540c244c7e11d2c6911151d0ad20014586dbf38847`:
 
 ```
 python3 tools/build_c5_real_corpus.py --out build/c5_real
