@@ -29,9 +29,26 @@ this walkthrough that the author's own report did **not** catch, both now fixed:
    persisted by `actions/cache`. The header corpus would have been discarded
    every night. Fixed to `seeds/ extra_seeds/`, matching every other harness.
 
+Two further defects surfaced when the branch was finally pushed and CI was
+dispatched (`CI Build & Test`, run 43484167369 and the follow-up run):
+
+3. **The new leg pointed at an image that no longer has the generator it
+   names.** `windows-latest` has moved to Visual Studio 18 (2026), so
+   `-G "Visual Studio 17 2022"` fails at `project()` with "could not find any
+   instance of Visual Studio". Fixed by pinning `windows-2022`, which is what
+   the workflow's other three Windows legs already do.
+4. **The Windows-only gate had a blind spot over Linux-only code.**
+   `tools/clang_tidy_check.sh` analyses only the TUs the current platform
+   compiles, so a local MSVC run cannot see `#if __x86_64__` kernels or POSIX
+   paths. CI's ubuntu leg found 81 further findings in code MSVC never builds:
+   the AVX-512 mask literals in `rs16_gfni.cpp` (128 int→char narrowings),
+   the GFNI self-test indexing in `rs16.cpp`, the seccomp BPF argument filter
+   in `spawn.cpp`, and one `main.cpp` conditional. All fixed; the gate is now
+   clean over the Linux compile database with clang-tidy-18, CI's version.
+
 Posture: this was an adversarial audit against the diff and real runner output,
-not against the narrative. CI was **not** executed (no Actions access); every
-statement below about a CI leg is a local reconstruction and is labelled as such.
+not against the narrative. CI was dispatched from this branch;  the receipts
+for the `windows-asan` leg and the ubuntu gate leg are quoted below.
 
 ---
 
@@ -93,6 +110,24 @@ so they are not a consequence of re-enabling anything. The macro ones are
 invisible to CI: the gate runs on ubuntu, where those `#if defined(_WIN32)`
 blocks are never preprocessed.
 
+**D-7 — Gate blindness was platform-local, not a code property (fixed).** See
+§1.4. This is the methodological finding of the round: a Windows-only run of a
+platform-filtered gate cannot certify a tree, and "0 findings" from it meant
+"0 findings in the TUs MSVC compiles". The follow-up verification is now
+clang-tidy-18 over the Linux compile database (78 TUs), the same pair CI uses.
+
+**D-8 — `windows-latest` vs the pinned generator (fixed).** See §1.3.
+
+**D-9 — `fuzz_rs16` can be driven into a 2.8 GB allocation (open,
+pre-existing, not this change).** Running the Linux ctest sweep under libFuzzer
+produced `ERROR: libFuzzer: out-of-memory (malloc(2796466176))` from a six-byte
+input, through `ReedSolomon16::derive_recovery_coefficients()`'s vector growth.
+The harness derives shard counts straight from the input without a cap; the
+library is behaving as told, the harness is not constraining it. My edits to
+`rs16.cpp` were loop-index types in a self-test block and cannot affect
+sizing. Worth a cap and a `-rss_limit_mb` note in the nightly, but it is out of
+scope for this change.
+
 **D-6 — `fuzz_header` has no standalone ctest entry (design note).** Registered
 inside the `Clang AND NOT WIN32` block only, exactly like `fuzz_target` and
 `fuzz_decompress`. Consequence: the deterministic sweep never runs in the MSVC
@@ -136,15 +171,32 @@ merge-dominated round reached `cov: 687 ft: 2277` with
 saturated at ~687 edges after ~6M executions**, which is what a well-formed
 short campaign looks like.
 
+### Verified in CI (run 43484167369, job `MSVC ASan (Windows, primary)`)
+
+The leg ran end-to-end after the image fix: `Configure` → `Build` →
+`Put the ASan runtime on PATH` → `Unit suite` → JUnit aggregate/upload, all
+`success`. Receipts from the job log:
+
+```
+ASan runtime: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\clang_rt.asan_dbg_dynamic-x86_64.dll
+100% tests passed, 0 tests failed out of 52
+Total Test time (real) = 532.40 sec
+  7/52 Test  #7: allocation_tests .................   Passed    0.26 sec
+```
+
+0 `ERROR: AddressSanitizer` reports. `allocation_tests` passes here with its
+zero-allocation assertions **active** (RelWithDebInfo does not define `_DEBUG`,
+so the new skip does not apply) — the Debug-only failure is confirmed to be
+configuration, not code.
+Note: the glob resolves the `_dbg` runtime variant first; that is harmless,
+because what is added to `PATH` is its containing directory, where every
+variant lives.
+
 ### Not verified (must not be reported as passing)
 
-- **The `windows-asan` CI job never ran.** No Actions execution was available.
-  The step most likely to need adjustment is the `vswhere` + `PATH` resolution
-  for `clang_rt.asan_dynamic-x86_64.dll`; until a run exists, the leg is
-  *declared*, not *demonstrated*.
-- **CI clang-tidy is 18, local is 22.** The 0-findings result is from newer
-  checks over the same config; 18 is a subset in practice but not guaranteed to
-  be identical.
+- **Local clang-tidy is 22 for the MSVC tree, 18 for the Linux one.** The
+  Windows 0-findings result (14 pre-existing naming/exception findings aside)
+  is from newer checks; the Linux verification is on 18, the CI version.
 - **Behavioural equivalence of the sweep is argued, not proven by differential
   testing.** Every rewrite was checked to be value-identical by inspection
   (`size_t` arithmetic of the same magnitudes; explicit casts of the same
@@ -183,11 +235,13 @@ short campaign looks like.
 
 | # | Directive | Severity | Rationale |
 |---|---|---|---|
-| R-1 | Run the `windows-asan` job on a branch and paste the receipt; adjust the `vswhere`/`PATH` step if the DLL is not found | **High** | The only claim in this body of work with no evidence behind it |
-| R-2 | Decide the `allocation_tests` contract: either the two cases assert a Release-only property (then gate them on `NDEBUG` with a comment) or they are a real regression in Debug builds (then file it) | **Medium** | Currently a permanent red leg on any local Debug run, which trains people to ignore the suite |
+| ~~R-1~~ | **Resolved.** The job runs on `windows-2022` and passes; the `vswhere`/`PATH` step found the runtime on the first attempt (no change needed). | — | Receipt in §4 |
+| ~~R-2~~ | **Resolved.** Release-only property, not a Debug regression: MSVC iterator debugging allocates a 16-byte `_Container_proxy` per container through the counted global `operator new` (2 containers → exactly "2 allocations, 32 bytes"). Evidence: Debug/IDL=2 fails those two cases only; Debug with `/D_ITERATOR_DEBUG_LEVEL=0` passes 7/7; Release passes 7/7; the new ASan leg (RelWithDebInfo) passes with assertions active. The invariant is skipped only where it is unmeasurable. | — | Fixed in `tests/unit/allocation_tests.cpp` |
 | R-3 | Add a fixed skip for `WIN32_LEAN_AND_MEAN` naming (e.g. `// NOLINT(readability-identifier-naming)` at each definition, since clang-tidy ignores `MacroDefinitionIgnoredRegexp`) if a Windows gate leg is ever added | Low | Keeps the option of running the gate on Windows open |
 | R-4 | Add a short `fuzz_header`-specific corpus seed (a real header body) to `tests/fuzz/seeds/` | Low | The harness currently starts from archives it cannot parse as a body; a genuine body would let the campaign skip the warm-up it spent ~1 min on |
 | R-5 | Consider registering `fuzz_header` in the standalone (non-clang) ctest sweep so the deterministic sweep runs on the Windows/MSVC legs too | Low | Cheap coverage of the CRC-bypass path on every platform; deliberately left out to match `fuzz_target` |
+| R-6 | Cap the shard counts `fuzz_rs16` derives from its input, and set `-rss_limit_mb` in the nightly step | **Medium** | D-9: a six-byte input reaches a 2.8 GB allocation and fails the libFuzzer sweep as "out-of-memory" |
+| R-7 | Investigate the three pre-existing red legs on this branch: TSan (`operator delete(void*, align_val_t)` multiply defined against the llvm-21 tsan runtime in `allocation_tests.cpp`), arm64 `-Werror` unused variables in `compress_tests.cpp`, and the v2.0.23 compression-ratio guard (+0.479% at `-m3`) | **Medium** | All three are independent of this change and would mask a real regression in the noise |
 
 *"In God we trust; all others must bring automated test logs and code diffs.
 A feature unevidenced is a feature unbuilt."*

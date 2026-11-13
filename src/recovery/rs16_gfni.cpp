@@ -43,39 +43,56 @@ namespace {
 // 0..7 and zeroes the rest. All four masks repeat per lane; _mm512_set_epi8
 // lists bytes from byte 63 (lane 3, position 15) down to byte 0.
 
+// _mm512_set_epi8 takes 64 char arguments, so a mask byte is written through
+// this named constant instead of an int literal: 0x80 (bit 7 set) is the
+// shuffle "produce zero" marker, and passing it as an int is an
+// implementation-defined narrowing to signed char.
+constexpr char SHUF_ZERO = static_cast<char>(0x80);
+
 // Compress the low bytes: result[k] = v[2k] for k = 0..7 (per 128-bit
 // lane), zeros in the upper half — the affine input layout.
+
 OPENRAR_GFNI_FN inline __m512i even_byte_mask() {
-    return _mm512_set_epi8(0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 14, 12, 10, 8, 6, 4, 2,
-                           0, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 14, 12, 10, 8, 6, 4,
-                           2, 0, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 14, 12, 10, 8, 6,
-                           4, 2, 0, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 14, 12, 10, 8,
-                           6, 4, 2, 0);
+    return _mm512_set_epi8(SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO,
+                           SHUF_ZERO, SHUF_ZERO, 14, 12, 10, 8, 6, 4, 2, 0, SHUF_ZERO, SHUF_ZERO,
+                           SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, 14, 12,
+                           10, 8, 6, 4, 2, 0, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO,
+                           SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, 14, 12, 10, 8, 6, 4, 2, 0, SHUF_ZERO,
+                           SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO,
+                           SHUF_ZERO, 14, 12, 10, 8, 6, 4, 2, 0);
 }
 
 // Compress the high bytes: result[k] = v[2k+1] for k = 0..7, zeros above.
 OPENRAR_GFNI_FN inline __m512i odd_byte_mask() {
-    return _mm512_set_epi8(0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 15, 13, 11, 9, 7, 5, 3,
-                           1, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 15, 13, 11, 9, 7, 5,
-                           3, 1, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 15, 13, 11, 9, 7,
-                           5, 3, 1, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 15, 13, 11, 9,
-                           7, 5, 3, 1);
+    return _mm512_set_epi8(SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO,
+                           SHUF_ZERO, SHUF_ZERO, 15, 13, 11, 9, 7, 5, 3, 1, SHUF_ZERO, SHUF_ZERO,
+                           SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, 15, 13,
+                           11, 9, 7, 5, 3, 1, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO,
+                           SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, 15, 13, 11, 9, 7, 5, 3, 1, SHUF_ZERO,
+                           SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO, SHUF_ZERO,
+                           SHUF_ZERO, 15, 13, 11, 9, 7, 5, 3, 1);
 }
 
 // Spread out_lo (lane positions 0..7) to even positions, zeroing odds.
 OPENRAR_GFNI_FN inline __m512i spread_lo_mask() {
-    return _mm512_set_epi8(0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0,
-                           0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0,
-                           0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0,
-                           0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0);
+    return _mm512_set_epi8(SHUF_ZERO, 7, SHUF_ZERO, 6, SHUF_ZERO, 5, SHUF_ZERO, 4, SHUF_ZERO, 3,
+                           SHUF_ZERO, 2, SHUF_ZERO, 1, SHUF_ZERO, 0, SHUF_ZERO, 7, SHUF_ZERO, 6,
+                           SHUF_ZERO, 5, SHUF_ZERO, 4, SHUF_ZERO, 3, SHUF_ZERO, 2, SHUF_ZERO, 1,
+                           SHUF_ZERO, 0, SHUF_ZERO, 7, SHUF_ZERO, 6, SHUF_ZERO, 5, SHUF_ZERO, 4,
+                           SHUF_ZERO, 3, SHUF_ZERO, 2, SHUF_ZERO, 1, SHUF_ZERO, 0, SHUF_ZERO, 7,
+                           SHUF_ZERO, 6, SHUF_ZERO, 5, SHUF_ZERO, 4, SHUF_ZERO, 3, SHUF_ZERO, 2,
+                           SHUF_ZERO, 1, SHUF_ZERO, 0);
 }
 
 // Spread out_hi (lane positions 0..7) to odd positions, zeroing evens.
 OPENRAR_GFNI_FN inline __m512i spread_hi_mask() {
-    return _mm512_set_epi8(7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80,
-                           7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80,
-                           7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80,
-                           7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0, 0x80);
+    return _mm512_set_epi8(7, SHUF_ZERO, 6, SHUF_ZERO, 5, SHUF_ZERO, 4, SHUF_ZERO, 3, SHUF_ZERO, 2,
+                           SHUF_ZERO, 1, SHUF_ZERO, 0, SHUF_ZERO, 7, SHUF_ZERO, 6, SHUF_ZERO, 5,
+                           SHUF_ZERO, 4, SHUF_ZERO, 3, SHUF_ZERO, 2, SHUF_ZERO, 1, SHUF_ZERO, 0,
+                           SHUF_ZERO, 7, SHUF_ZERO, 6, SHUF_ZERO, 5, SHUF_ZERO, 4, SHUF_ZERO, 3,
+                           SHUF_ZERO, 2, SHUF_ZERO, 1, SHUF_ZERO, 0, SHUF_ZERO, 7, SHUF_ZERO, 6,
+                           SHUF_ZERO, 5, SHUF_ZERO, 4, SHUF_ZERO, 3, SHUF_ZERO, 2, SHUF_ZERO, 1,
+                           SHUF_ZERO, 0, SHUF_ZERO);
 }
 
 } // namespace
