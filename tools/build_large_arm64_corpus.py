@@ -12,15 +12,16 @@ tests/fixtures/c5/README.md:
 
 Every corpus member is written as corpus/<label>/pe_aarch64.exe so archives
 made from different samples stay comparable (RAR5 stores the member name).
-Generated images depend on the compiler version, so their hashes are recorded
-in manifest.json but not enforced; the downloaded archives and their extracted
-members are pinned.
+Generated images are byte-stable per toolchain (/timestamp:0) but depend on
+the compiler version, so they go to manifest.generated.sha256 and are not
+enforced across hosts; the downloaded archives and their extracted members are
+pinned in manifest.sha256.
 
 Usage:
 
     python tools/build_large_arm64_corpus.py --out build/large_arm64
 
-Then measure a sample (diagnostic, not a gate member):
+Then measure a sample (diagnostic, or gated in CI for libcrypto):
 
     python tools/measure_c5.py \\
         --baseline main=.../openrar.exe --candidate branch=.../openrar.exe \\
@@ -276,6 +277,8 @@ def main() -> int:
                     help="comma-separated function counts")
     ap.add_argument("--skip-synthetic", action="store_true")
     ap.add_argument("--skip-real", action="store_true")
+    ap.add_argument("--only", default="",
+                    help="fetch only these real sample labels (comma-separated)")
     ap.add_argument("--offline", action="store_true", help="never download; require pinned files")
     ap.add_argument("--clang", default="clang")
     ap.add_argument("--lld-link", default="lld-link")
@@ -308,7 +311,15 @@ def main() -> int:
     if not args.skip_real:
         downloads = out / "downloads"
         downloads.mkdir(exist_ok=True)
-        for source in SOURCES:
+        sources = SOURCES
+        if args.only:
+            wanted = [s.strip() for s in args.only.split(",") if s.strip()]
+            known = {s["label"] for s in SOURCES}
+            unknown = [s for s in wanted if s not in known]
+            if unknown:
+                raise SystemExit(f"unknown --only labels: {unknown}")
+            sources = [s for s in SOURCES if s["label"] in wanted]
+        for source in sources:
             archive = fetch(source, downloads, args.offline)
             dest = corpus / source["label"] / "pe_aarch64.exe"
             dest.parent.mkdir(exist_ok=True)

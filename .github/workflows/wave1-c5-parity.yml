@@ -30,6 +30,76 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  libcrypto-gate:
+    name: real-code ARM64 gate on libcrypto (-m3/-m5)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld cmake ninja-build
+
+      - name: Build main (baseline)
+        run: |
+          git worktree add "$RUNNER_TEMP/main" origin/main
+          cmake -S "$RUNNER_TEMP/main" -B "$RUNNER_TEMP/main-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build "$RUNNER_TEMP/main-build" --target openrar
+
+      - name: Build branch (candidate)
+        run: |
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build-ci --target openrar
+
+      - name: Locate binaries
+        run: |
+          MAIN=$(find "$RUNNER_TEMP/main-build" -type f -name openrar -perm -u+x | head -1)
+          BRANCH=$(find build-ci -type f -name openrar -perm -u+x | head -1)
+          test -n "$MAIN"
+          test -n "$BRANCH"
+          "$MAIN" --version
+          "$BRANCH" --version
+          echo "MAIN=$MAIN" >> "$GITHUB_ENV"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+
+      - name: Download and verify the pinned libcrypto sample
+        run: |
+          python3 tools/build_large_arm64_corpus.py --out build/libcrypto \
+            --skip-synthetic --only libcrypto
+          (cd build/libcrypto && sha256sum -c manifest.sha256)
+
+      - name: Gate -m3/-m5 on libcrypto
+        run: |
+          python3 tools/measure_c5.py \
+            --baseline "main=$MAIN" \
+            --candidate "branch=$BRANCH" \
+            --corpus build/libcrypto/corpus/libcrypto \
+            --levels 3,5 \
+            --allow-missing \
+            --json build/libcrypto_gate.json
+
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave1-libcrypto-gate
+          path: build/libcrypto_gate.json
+          if-no-files-found: warn
+
   real-object-gate:
     name: clang cross-compiled C5 gate & parity
     runs-on: ubuntu-24.04

@@ -129,15 +129,20 @@ The committed corpus is gated at **every** level: no member may grow, including
 grows there — the 2 KB member is −8 B at `-m1` — so the gate asserts exactly
 what the corpus measures.
 
-The large real binaries above are **diagnostic, not gate members**: they are
+The large real binaries above are **diagnostic, not committed gate members**: they are
 multi-megabyte third-party downloads that cannot be committed, and curl's `-m1`
 growth belongs to that image rather than to the corpus. They are measured with
 `--report-only`, which prints the deltas and exits 0, so the reversal stays on
-record without weakening the gate:
+record without weakening the committed gate:
 
-python tools/measure_c5.py --baseline main=... --candidate branch=... --corpus build/large_arm64/corpus/curl --report-only
-python tools/measure_c5.py     --baseline main=.../openrar.exe --candidate branch=.../openrar.exe     --corpus build/large_arm64/corpus/curl --report-only
 ```
+python tools/measure_c5.py --baseline main=... --candidate branch=... --corpus build/large_arm64/corpus/curl --report-only
+```
+
+`libcrypto-3-arm64.dll` is the exception: the `libcrypto-gate` job fetches it
+with `--only libcrypto`, re-checks the pinned hashes and gates `-m3`/`-m5`
+strictly. `-m1` stays ungated there because that level is the one that can grow
+on this image class (curl).
 
 Growth on any committed member, at any level, still fails.
 
