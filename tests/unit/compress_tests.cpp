@@ -1040,13 +1040,15 @@ void test_hash_range_avx2_parity() {
         buf[i] = static_cast<core::byte>(rng() & 0xFF);
     }
 
+    // The reference lane is only needed by the AVX2 branch below; keeping it
+    // outside the #if makes it an unused variable on every non-x86 target.
+#if defined(OPENRAR_HAS_AVX2_HASH)
     auto scalar_hash = [](const core::byte* d) -> core::uint32 {
         constexpr core::uint32 HASH_BITS = 17;
         const core::uint32 val = core::load_le32(d);
         return (val * 0x9e3779b1u) >> (32 - HASH_BITS);
     };
 
-#if defined(OPENRAR_HAS_AVX2_HASH)
     if (core::get_cpu_features().avx2) {
         // Exercises the production kernel (arch::hash8_avx2), the same one
         // Compressor50::hash_range calls, at every byte offset of the buffer.
@@ -1071,7 +1073,8 @@ void test_hash_range_avx2_parity() {
 
 void test_bextr_and_branchless_huffman_parity() {
     using namespace openrar::compress::arch;
-    const auto& cpu = core::get_cpu_features();
+    // Every use of this is inside an x86-only #if, so it is unused on arm64.
+    [[maybe_unused]] const auto& cpu = core::get_cpu_features();
 
     // 1. Bitfield extraction parity (bextr_u32 vs bextr_u32_scalar)
 #if defined(OPENRAR_HAS_BMI1)
