@@ -7,7 +7,7 @@ StreamEncoder::StreamEncoder(int method, size_t win_size, const FilterConfig& fi
     : method_(method), win_size_(win_size), filter_cfg_(filter_cfg) {
     if (method_ < 0) method_ = 3;
     if (method_ > 5) method_ = 5;
-    if (win_size_ == 0) win_size_ = 4 * 1024 * 1024;
+    if (win_size_ == 0) win_size_ = 4 * core::MIB;
 }
 
 // Route completed block bytes to the sink (or accumulate). Called after every

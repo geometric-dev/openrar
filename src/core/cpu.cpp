@@ -126,10 +126,8 @@ CpuFeatures detect_cpu_features() {
         // Require AVX512F (bit 16) + AVX512BW (bit 30) + AVX512VL (bit 31) so
         // byte-mask instructions (_mm512_cmpeq_epi8_mask / _mm512_maskz_loadu_epi8)
         // never execute on AVX512F-only CPUs (e.g. Knights Landing).
-        constexpr int AVX512_REQ = (1 << 16) | (1 << 30) | (1U << 31);
-        f.avx512f =
-            os_zmm && ((static_cast<unsigned int>(ebx) & static_cast<unsigned int>(AVX512_REQ)) ==
-                       static_cast<unsigned int>(AVX512_REQ));
+        constexpr unsigned int AVX512_REQ = (1u << 16) | (1u << 30) | (1u << 31);
+        f.avx512f = os_zmm && ((static_cast<unsigned int>(ebx) & AVX512_REQ) == AVX512_REQ);
         // GFNI (leaf 7 ECX bit 8) is required in its 512-bit form for the
         // RS16 parity kernel, so it is gated on ZMM OS state like AVX-512F
         // (v1.22.0 groundwork). The 128/256-bit GFNI forms (AVX2-class /
@@ -274,7 +272,7 @@ std::string get_cpu_brand_string() {
         char brand[49] = {0};
         for (unsigned int i = 0; i < 3; ++i) {
             cpuid_call(static_cast<int>(0x80000002 + i), 0, info);
-            std::memcpy(brand + i * 16, info, 16);
+            std::memcpy(brand + static_cast<std::ptrdiff_t>(i) * 16, info, 16);
         }
         brand[48] = '\0';
         std::string s(brand);

@@ -5,15 +5,15 @@
 namespace openrar::compress {
 
 StreamDecoder::StreamDecoder(size_t win_size, int method)
-    : win_size_(win_size ? win_size : 4 * 1024 * 1024), method_(method),
-      decompressor_(win_size_ ? win_size_ : 4 * 1024 * 1024) {
+    : win_size_(win_size ? win_size : 4 * core::MIB), method_(method),
+      decompressor_(win_size_ ? win_size_ : 4 * core::MIB) {
     // Clamp before the member-init list builds the decompressor: a zero window
     // previously reached Decompressor50 with win_size_ == 0 (undefined window
     // arithmetic). Decompressor50 self-clamps too; this keeps win_size_
     // consistent with the decompressor's view.
 #if defined(__EMSCRIPTEN__)
     // Enforce 64 MiB allocation ceiling in 32-bit WASM to prevent heap exhaustion.
-    if (win_size_ > 64ULL * 1024 * 1024) {
+    if (win_size_ > 64 * core::MIB) {
         init_failed_ = true;
     }
 #endif
@@ -99,7 +99,8 @@ bool StreamDecoder::process_blocks() {
         in_queue_.clear();
         in_head_ = 0;
     } else if (in_head_ >= 0x40000) {
-        in_queue_.erase(in_queue_.begin(), in_queue_.begin() + in_head_);
+        in_queue_.erase(in_queue_.begin(),
+                        in_queue_.begin() + static_cast<std::ptrdiff_t>(in_head_));
         in_head_ = 0;
     }
     return ok;

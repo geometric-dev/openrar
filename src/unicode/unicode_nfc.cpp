@@ -22,7 +22,7 @@ TableResult lookup_pair(const core::uint32* table, int count, core::uint32 key) 
     int lo = 0, hi = count - 1;
     while (lo <= hi) {
         const int mid = lo + (hi - lo) / 2;
-        const core::uint32 k = table[mid * 2];
+        const core::uint32 k = table[static_cast<size_t>(mid) * 2];
         if (k == key) return {true, table[mid * 2 + 1]};
         if (k < key)
             lo = mid + 1;
@@ -38,7 +38,7 @@ TableResult lookup_triple_first(const core::uint32* table, int count, core::uint
     int lo = 0, hi = count - 1;
     while (lo <= hi) {
         const int mid = lo + (hi - lo) / 2;
-        const core::uint32 k = table[mid * 3];
+        const core::uint32 k = table[static_cast<size_t>(mid) * 3];
         if (k == key) return {true, static_cast<core::uint32>(mid)};
         if (k < key)
             lo = mid + 1;

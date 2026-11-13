@@ -396,7 +396,8 @@ RrLocation find_rr(io::FileStream& stream, core::uint64 sfx_offset) {
         std::vector<core::byte> buf(chunk + SHARD_MAGIC_SIZE);
         core::int64 cur_pos = static_cast<core::int64>(file_size);
         while (cur_pos > static_cast<core::int64>(start) && !info.found) {
-            size_t to_read = static_cast<size_t>(std::min<core::int64>(chunk, cur_pos - start));
+            core::int64 to_read = std::min<core::int64>(static_cast<core::int64>(chunk),
+                                                        static_cast<core::int64>(cur_pos - start));
             cur_pos -= to_read;
             stream.seek(cur_pos, io::SeekOrigin::Begin);
             size_t read_bytes = stream.read(buf.data(), to_read + SHARD_MAGIC_SIZE - 1);
@@ -831,7 +832,7 @@ bool RecoveryWriter::write_rev_volumes(const std::filesystem::path& arc_path,
 
     constexpr size_t REV_HEADER_MIN_BODY =
         11; // version + data_vols + parity_vols + shard_slot + rev_crc
-    const size_t body_size = REV_HEADER_MIN_BODY + 12u * nd;
+    const size_t body_size = REV_HEADER_MIN_BODY + 12 * static_cast<size_t>(nd);
     if (body_size > 0x100000u) return false; // HeaderSize cap per spec
 
     // Parity workspace cap: nr × 1 MiB buffers are allocated up front and
@@ -1180,7 +1181,7 @@ bool RecoveryWriter::add_recovery_record(const std::filesystem::path& arc_path,
     // for all (i, j) pairs keeps the active parity window (nr * stripe_len)
     // cache-resident, cutting parity memory traffic to ~2x the parity size.
     // Stripe length stays even so update_ecc's read_le16 blocks stay aligned.
-    constexpr size_t STRIPE = 256u * 1024u;
+    constexpr size_t STRIPE = 256 * core::KIB;
     std::vector<core::byte> scratch(STRIPE);
 
     // Per-chunk raw CRC-64 state for the shard-header entries (E1): chunk i's
@@ -1371,7 +1372,7 @@ bool RecoveryWriter::repair_rev_volumes(const std::filesystem::path& arc_path) {
             table_size.resize(nd, 0);
             table_crc.resize(nd, 0);
             size_t off = 11;
-            if (off + 12u * nd > body.size()) continue;
+            if (off + 12 * static_cast<size_t>(nd) > body.size()) continue;
             for (core::uint32 i = 0; i < nd; ++i) {
                 table_size[i] = core::read_le64(body.data() + off);
                 table_crc[i] = core::read_le32(body.data() + off + 8);
@@ -1981,7 +1982,8 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                             std::min<core::uint64>(total - unscaled_header, group0 - chunkpos));
                         slice.entries.resize(d0);
                         for (core::uint32 i = 0; i < d0; ++i) {
-                            slice.entries[i] = core::read_le64(s + SHARD_STATE_ARR + i * 8);
+                            slice.entries[i] =
+                                core::read_le64(s + SHARD_STATE_ARR + static_cast<size_t>(i) * 8);
                         }
                         t0_slices.push_back(std::move(slice));
                     }
@@ -2170,7 +2172,8 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                 rr.raw_data.data() + static_cast<size_t>(j) * static_cast<size_t>(shard_size);
             if (entries_shard == nullptr) {
                 for (core::uint32 i = 0; i < d; ++i) {
-                    whole.entries[i] = core::read_le64(s + SHARD_STATE_ARR + i * 8);
+                    whole.entries[i] =
+                        core::read_le64(s + SHARD_STATE_ARR + static_cast<size_t>(i) * 8);
                 }
                 entries_shard = s;
                 continue;
@@ -2383,8 +2386,9 @@ bool RecoveryWriter::repair(const std::filesystem::path& arc_path) {
                 data_area.insert(data_area.end(), s.begin(), s.end());
             }
 
-            std::vector<core::byte> prefix(
-                file_bytes.begin(), file_bytes.begin() + static_cast<size_t>(rr.header_offset));
+            std::vector<core::byte> prefix(file_bytes.begin(),
+                                           file_bytes.begin() +
+                                               static_cast<std::ptrdiff_t>(rr.header_offset));
             if (!splice_repair_with_rr(arc_path, prefix, data_area, g.pct)) return false;
             return headers_verify(arc_path, sfx_off);
         }

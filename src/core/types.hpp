@@ -21,6 +21,15 @@ using int64 = std::int64_t;
 
 using byte = std::uint8_t;
 
+// Binary size units, spelled as size_t so that `64 * core::KIB` performs the
+// multiplication in size_t. `64 * 1024` multiplies in int and widens
+// afterwards, which is what bugprone-implicit-widening-of-multiplication-result
+// flags (and what silently overflows once a literal gets large enough).
+// `.clang-tidy` enforces the check, so new code should use these.
+inline constexpr size_t KIB = 1024;
+inline constexpr size_t MIB = KIB * 1024;
+inline constexpr size_t GIB = MIB * 1024;
+
 // Endian conversion utilities
 inline uint16 read_le16(const void* ptr) {
     const auto* p = static_cast<const uint8*>(ptr);

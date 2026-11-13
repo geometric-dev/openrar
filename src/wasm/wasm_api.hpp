@@ -27,7 +27,7 @@ bool compress_buffer_raw(const core::byte* src, size_t src_len, std::vector<core
                          int method = 3, size_t win_size = 0x200000);
 
 bool decompress_buffer_raw(const core::byte* src, size_t src_len, std::vector<core::byte>& out,
-                           size_t win_size = 1024 * 1024);
+                           size_t win_size = openrar::core::MIB);
 
 } // namespace openrar::wasm
 

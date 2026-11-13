@@ -232,8 +232,8 @@ void HuffmanBuilder::build_lengths(const core::uint32* freq, core::uint32 size,
     };
     static thread_local std::vector<TreeNode> tree;
     tree.clear();
-    maybe_shrink(tree, size * 2);
-    tree.reserve(size * 2);
+    maybe_shrink(tree, static_cast<size_t>(size) * 2);
+    tree.reserve(static_cast<size_t>(size) * 2);
 
     static thread_local std::vector<core::uint32> q1;
     q1.clear();
@@ -483,7 +483,7 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
     // 1 + (3 << 30) + (2^30 - 1) = 4 GiB. A larger window still helps (the
     // whole history stays addressable within 4 GiB of every position), but
     // no match may reach further back.
-    max_dist_ = std::min<core::uint64>(max_dist_, 4ULL * 1024 * 1024 * 1024);
+    max_dist_ = std::min<core::uint64>(max_dist_, 4ULL * core::GIB);
 
     buf_size_ = win_size_ + 0x400000 + READ_CHUNK;
     buf_data_ = buf_.empty() ? nullptr : buf_.data();
@@ -495,7 +495,7 @@ void Compressor50::begin_archive(io::FileStream* dest, int method, size_t win_si
     // avoid a mid-block reallocation.
     if (match_tokens_.capacity() < 32768) match_tokens_.reserve(32768);
 
-    is_large_window_ = (win_size_ > 4ULL * 1024 * 1024 * 1024);
+    is_large_window_ = (win_size_ > 4ULL * core::GIB);
     if (is_large_window_) {
         head_.clear();
         prev_.clear();
@@ -1804,7 +1804,8 @@ bool Compressor50::write_block(bool last_block) {
     bool wrote_ok = true;
     if (mem_out_ != nullptr) {
         mem_out_->insert(mem_out_->end(), head, head + (2 + byte_count));
-        mem_out_->insert(mem_out_->end(), block_mem_.begin(), block_mem_.begin() + data_size);
+        mem_out_->insert(mem_out_->end(), block_mem_.begin(),
+                         block_mem_.begin() + static_cast<std::ptrdiff_t>(data_size));
     } else if (dest_file_ != nullptr) {
         wrote_ok = dest_file_->write(head, 2 + byte_count) == 2 + byte_count &&
                    dest_file_->write(block_mem_.data(), data_size) == data_size;
@@ -2360,7 +2361,7 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
     if (eff_threads > 16) eff_threads = 16; // Bound worker count to cap match-finder allocations
 
     // Files < 1 MiB or single-threaded execution bypass chunking
-    if (eff_threads <= 1 || src_size < 1024 * 1024) {
+    if (eff_threads <= 1 || src_size < core::MIB) {
         return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
     }
 

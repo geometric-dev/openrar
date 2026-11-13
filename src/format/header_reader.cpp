@@ -129,7 +129,7 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
             crypt->bad_password = true; // Unterminated or garbage VINT indicates bad password
             return HeaderResult::Error;
         }
-        if (body_size > 2 * 1024 * 1024) {
+        if (body_size > 2 * core::MIB) {
             // Deliberate UX heuristic: garbage from wrong password frequently decodes to enormous body_size
             crypt->bad_password = true;
             return HeaderResult::Error;
@@ -210,7 +210,7 @@ HeaderResult HeaderReader::read_block_raw(io::ReadSource& src, core::uint64& out
         return HeaderResult::Error;
     }
     // Spec 00-overview: Header size max 2 MiB (3-byte vint) — reject larger to avoid OOM / DoS
-    if (body_size > 2 * 1024 * 1024) {
+    if (body_size > 2 * core::MIB) {
         return HeaderResult::Error;
     }
 
@@ -249,7 +249,7 @@ HeaderResult HeaderReader::read_block_raw_mem(const core::byte* data, size_t siz
     if (!core::read_vint(data + cur_offset, size - cur_offset, body_size, read_bytes)) {
         return HeaderResult::Error;
     }
-    if (body_size > 2 * 1024 * 1024) {
+    if (body_size > 2 * core::MIB) {
         return HeaderResult::Error;
     }
     size_t size_vint_len = read_bytes;

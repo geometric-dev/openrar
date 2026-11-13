@@ -635,9 +635,12 @@ bool ReedSolomon16::invert_square(std::vector<core::uint32>& m, core::uint32 n) 
         }
         if (sel == n) return false;
         if (sel != col) {
-            std::swap_ranges(lu.begin() + static_cast<std::ptrdiff_t>(sel) * stride,
-                             lu.begin() + static_cast<std::ptrdiff_t>(sel + 1) * stride,
-                             lu.begin() + static_cast<std::ptrdiff_t>(col) * stride);
+            std::swap_ranges(lu.begin() + static_cast<std::ptrdiff_t>(sel) *
+                                              static_cast<std::ptrdiff_t>(stride),
+                             lu.begin() + static_cast<std::ptrdiff_t>(sel + 1) *
+                                              static_cast<std::ptrdiff_t>(stride),
+                             lu.begin() + static_cast<std::ptrdiff_t>(col) *
+                                              static_cast<std::ptrdiff_t>(stride));
             std::swap(original_row[sel], original_row[col]);
         }
         const core::uint32 pivot_inverse = gf_inv(lu[static_cast<size_t>(col) * stride + col]);

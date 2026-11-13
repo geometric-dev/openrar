@@ -848,12 +848,12 @@ public:
 };
 
 inline size_t parallel_chunk_size(core::uint64 total_size, unsigned eff_threads,
-                                  size_t configured_chunk = 2 * 1024 * 1024) {
-    constexpr size_t BLOCK_QUANTUM = 0x80000;     // 512 KiB
-    constexpr size_t MIN_CHUNK = 1024 * 1024;     // 1 MiB
-    constexpr size_t MAX_CHUNK = 4 * 1024 * 1024; // 4 MiB
-    if (configured_chunk != 2 * 1024 * 1024 && configured_chunk > 0) {
-        return std::clamp<size_t>(configured_chunk, BLOCK_QUANTUM, 256u * 1024u * 1024u);
+                                  size_t configured_chunk = 2 * core::MIB) {
+    constexpr size_t BLOCK_QUANTUM = 0x80000;   // 512 KiB
+    constexpr size_t MIN_CHUNK = core::MIB;     // 1 MiB
+    constexpr size_t MAX_CHUNK = 4 * core::MIB; // 4 MiB
+    if (configured_chunk != 2 * core::MIB && configured_chunk > 0) {
+        return std::clamp<size_t>(configured_chunk, BLOCK_QUANTUM, 256 * core::MIB);
     }
     if (eff_threads == 0) eff_threads = 1;
     core::uint64 per_thread = (total_size + eff_threads - 1) / eff_threads;

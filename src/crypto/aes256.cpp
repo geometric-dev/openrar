@@ -378,7 +378,7 @@ void Aes256::expand_key(const core::byte* key) {
 
     // Scalar key expansion (Nk = 8, Nr = 14)
     for (int i = 0; i < 8; ++i) {
-        enc_round_keys_[i] = core::read_be32(key + i * 4);
+        enc_round_keys_[i] = core::read_be32(key + static_cast<std::ptrdiff_t>(i) * 4);
     }
 
     for (int i = 8; i < 60; ++i) {

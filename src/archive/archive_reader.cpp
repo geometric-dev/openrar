@@ -91,7 +91,7 @@ bool parse_part_number(const std::filesystem::path& p, long& num) {
     return true;
 }
 
-constexpr size_t STREAM_CHUNK = 64 * 1024; // stored/decrypt slice (multiple of 16)
+constexpr size_t STREAM_CHUNK = 64 * core::KIB; // stored/decrypt slice (multiple of 16)
 
 // v1.26 M3 (security-arch §4.4): the entry's archived mtime as unix seconds.
 // Precedence matches the deferred dir-meta builder: FHEXTRA_HTIME first,
@@ -824,7 +824,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                         core::uint64 bsize = 0;
                         size_t bsize_len = 0;
                         if (core::read_vint(peek + 4, pgot - 4, bsize, bsize_len) && bsize > 0 &&
-                            bsize <= 2 * 1024 * 1024) {
+                            bsize <= 2 * core::MIB) {
                             size_t type_pos = 4 + bsize_len;
                             if (type_pos < pgot) {
                                 core::uint64 btype = 0;
@@ -990,7 +990,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                             if (format::HeaderReader::parse_file_header(
                                     qo_body.data(), qo_body.size(), qo_header) &&
                                 qo_header.is_service && qo_header.service_type == "QO" &&
-                                qo_data_size > 0 && qo_data_size <= 64 * 1024 * 1024 &&
+                                qo_data_size > 0 && qo_data_size <= 64 * core::MIB &&
                                 vs.tell() + qo_data_size <= vsz) {
                                 std::vector<core::byte> qo_buf(static_cast<size_t>(qo_data_size));
                                 if (vs.read(qo_buf.data(), qo_buf.size()) == qo_buf.size()) {
@@ -1033,7 +1033,7 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                         // cap stays — it bounds the CRC-verified
                                         // region independently of the buffer
                                         // size (v1.41.1).
-                                        if (struct_size > 2 * 1024 * 1024 ||
+                                        if (struct_size > 2 * core::MIB ||
                                             body_start > qo_buf.size() ||
                                             struct_size > qo_buf.size() - body_start) {
                                             qo_ok = false;
@@ -2290,7 +2290,7 @@ bool ArchiveReader::select_unpacker(const ArchiveEntry& entry, UnpackerSelection
         if (win == 0 && solid_unpacker_) {
             win = solid_unpacker_->win_size();
         } else if (win == 0) {
-            win = 32 * 1024 * 1024;
+            win = 32 * core::MIB;
         }
 
         if (entry.header.is_solid && solid_chain_ok_ && solid_unpacker_ &&
@@ -2316,7 +2316,7 @@ bool ArchiveReader::select_unpacker(const ArchiveEntry& entry, UnpackerSelection
         sel.unpacker->set_extra_dist(entry.header.extra_dist);
     } else {
         if (win == 0) {
-            win = 32 * 1024 * 1024;
+            win = 32 * core::MIB;
         }
         size_t alloc_win = win;
         if (entry.header.unp_size > 0 && win > 0) {
@@ -2355,7 +2355,7 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry, const core::byt
     // buffer would break it.
     if (!chain && !is_volume() && !entry.header.is_encrypted) {
         size_t win = entry.header.win_size;
-        if (win == 0) win = 32 * 1024 * 1024;
+        if (win == 0) win = 32 * core::MIB;
         compress::ParallelDecodeDiag diag;
         if (compress::should_use_parallel_decode(src_size, dest, win, false, decode_threads_,
                                                  nullptr)) {
@@ -2393,7 +2393,7 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry,
     const size_t dest = static_cast<size_t>(entry.header.unp_size);
     if (!chain && !is_volume() && !entry.header.is_encrypted) {
         size_t win = entry.header.win_size;
-        if (win == 0) win = 32 * 1024 * 1024;
+        if (win == 0) win = 32 * core::MIB;
         if (compress::should_use_parallel_decode(src_size, dest, win, false, decode_threads_,
                                                  nullptr)) {
             // The driver needs the packed stream in RAM (bounded by the

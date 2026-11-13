@@ -19,7 +19,7 @@ bool read_exact(io::FileStream& f, core::uint64 offset, void* dst, size_t n) {
 // Upper bound on an FNAME/FCOMMENT field. The stream is also bounded by
 // fsize, but a huge unterminated field would otherwise be copied into memory
 // in full before that bound is reached.
-constexpr size_t MAX_GZIP_HEADER_FIELD = 64 * 1024;
+constexpr size_t MAX_GZIP_HEADER_FIELD = 64 * core::KIB;
 
 // Scan forward for the terminating NUL, reading in chunks.
 //

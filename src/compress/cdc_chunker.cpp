@@ -124,7 +124,7 @@ void CdcChunker::chunk_parallel(const core::byte* data, size_t size, std::vector
     out.clear();
     if (!data || size == 0) return;
 
-    if (size < 2 * CDC_MAX_CHUNK || (threads == 1 && !pool)) {
+    if (size < static_cast<size_t>(CDC_MAX_CHUNK) * 2 || (threads == 1 && !pool)) {
         chunk(data, size, out);
         return;
     }
@@ -141,7 +141,7 @@ void CdcChunker::chunk_parallel(const core::byte* data, size_t size, std::vector
         return;
     }
 
-    size_t num_slices = std::min<size_t>(threads, size / (2 * CDC_MAX_CHUNK));
+    size_t num_slices = std::min<size_t>(threads, size / (static_cast<size_t>(CDC_MAX_CHUNK) * 2));
     if (num_slices <= 1) {
         chunk(data, size, out);
         return;
