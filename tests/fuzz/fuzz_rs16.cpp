@@ -67,6 +67,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     if (!test_decoding) {
         // Encoder mode (valid_flags == nullptr)
+        // A configuration the library accepts is sized by the library: at 65,535 shards
+        // init() allocates gigabytes, which a fuzzer reaches from a six-byte input. That
+        // is a resource-exhaustion input, not a finding, so skip it here. Configurations
+        // above GF_SIZE stay in the loop because rejection costs no allocation and is
+        // exactly what this harness is meant to check.
+        const core::uint64 encoder_shards = static_cast<core::uint64>(nd) + nr;
+        if (encoder_shards > 2048 && encoder_shards <= ReedSolomon16::GF_SIZE) return 0;
+
         if (rs.init(nd, nr, nullptr)) {
             // Verify dimension bounds
             if (rs.data_count() != nd || rs.rec_count() != nr) std::abort();
