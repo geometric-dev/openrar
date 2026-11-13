@@ -364,19 +364,16 @@ def main() -> int:
               for entry in manifest["real"]]
     generated = [f"{entry['sha256']}  corpus/{entry['label']}/pe_aarch64.exe"
                  for entry in manifest["synthetic"]]
-    # --only builds a subset: refuse to overwrite a pinned manifest that
-    # describes samples this run did not verify.
-    if args.only:
-        existing = out / "manifest.sha256"
-        if existing.is_file():
-            known = {line.split("  corpus/", 1)[1].split("/", 1)[0]
-                     for line in existing.read_text(encoding="utf-8").splitlines()
-                     if "  corpus/" in line}
-            stale = known - {entry["label"] for entry in manifest["real"]}
-            if stale:
-                raise SystemExit(
-                    f"{existing} lists {sorted(stale)}, which this --only run did not "
-                    "rebuild; use a fresh --out instead of overwriting it")
+    # A filtered run (--only, or a subset of samples) must not erase hashes
+    # it never verified: refuse to drop lines from an existing pinned manifest.
+    existing = out / "manifest.sha256"
+    if not args.skip_real and existing.is_file():
+        dropped = (set(existing.read_text(encoding="utf-8").splitlines())
+                   - set(pinned))
+        if dropped:
+            raise SystemExit(
+                f"{existing} lists {len(dropped)} sample(s) this run did not "
+                "verify; use a fresh --out instead of overwriting it")
 
     # Only rewrite a manifest whose class was actually rebuilt; a
     # --skip-real run must not truncate the pinned list.
