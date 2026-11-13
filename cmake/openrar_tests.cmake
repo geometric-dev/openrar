@@ -571,6 +571,18 @@ target_link_libraries(archive_api_tests PRIVATE
             target_link_libraries(fuzz_target PRIVATE ${OPENRAR_THREAD_LIB})
         endif()
 
+        # Header-body harness (2026-11 code-quality review, Tier-1 gap #1).
+        # Feeds bytes straight into parse_main_header / parse_file_header /
+        # parse_crypt_header / parse_end_header, so mutations are not filtered
+        # out by the block CRC32 that read_block_raw() verifies first. The
+        # extra-record parsers (OWNER/XATTR/CRYPT/HTIME/REDIR/SUBDATA and the
+        # main-header LOCATOR/METADATA records) were previously unreachable
+        # under fuzzing for exactly that reason.
+        add_executable(fuzz_header tests/fuzz/fuzz_header.cpp)
+        target_link_libraries(fuzz_header PRIVATE openrar_core)
+        target_include_directories(fuzz_header PRIVATE ${OPENRAR_INCLUDES})
+        openrar_enable_test_asserts(fuzz_header)
+
         # Inflate fuzzer (v1.29): only meaningful when the foreign-format
         # sources are built (it exercises src/compress/inflate).
         if(OPENRAR_FOREIGN_FORMATS)
@@ -636,6 +648,9 @@ target_link_libraries(archive_api_tests PRIVATE
             target_compile_definitions(fuzz_target PRIVATE OPENRAR_USE_LIBFUZZER)
             target_compile_options(fuzz_target PRIVATE -fsanitize=fuzzer-no-link)
             target_link_options(fuzz_target PRIVATE -fsanitize=fuzzer)
+            target_compile_definitions(fuzz_header PRIVATE OPENRAR_USE_LIBFUZZER)
+            target_compile_options(fuzz_header PRIVATE -fsanitize=fuzzer-no-link)
+            target_link_options(fuzz_header PRIVATE -fsanitize=fuzzer)
             target_compile_definitions(fuzz_archive PRIVATE OPENRAR_USE_LIBFUZZER)
             target_compile_options(fuzz_archive PRIVATE -fsanitize=fuzzer-no-link)
             target_link_options(fuzz_archive PRIVATE -fsanitize=fuzzer)
@@ -679,6 +694,7 @@ target_link_libraries(archive_api_tests PRIVATE
             add_test(NAME fuzz_archive COMMAND fuzz_archive -runs=2000 -max_len=1048576)
             add_test(NAME fuzz_inflate COMMAND fuzz_inflate -runs=2000 -max_len=1048576)
             add_test(NAME fuzz_target COMMAND fuzz_target -runs=2000 -max_len=262144)
+            add_test(NAME fuzz_header COMMAND fuzz_header -runs=2000 -max_len=262144)
             # libFuzzer mode runs until killed without -runs; an unbounded ctest entry hung
             # the sanitizer leg for an hour.
             add_test(NAME fuzz_file_handle COMMAND fuzz_file_handle -runs=500 -max_len=1048576)
