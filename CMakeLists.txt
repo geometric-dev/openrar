@@ -56,6 +56,20 @@ include(cmake/openrar_flags.cmake)
 
 include(cmake/sanitizers.cmake)
 
+# libFuzzer needs SanitizerCoverage in the code it is meant to explore, not
+# only in the harness translation unit. The per-target flags live with the fuzz
+# targets in openrar_tests.cmake, but a target-level compile option cannot
+# reach openrar_core (created before those targets), so campaigns were running
+# blind: the run reported ~65 counters - all of them the harness - and the
+# fuzzer could not tell which parser branch a mutation had reached. Both flags
+# are global because every executable in the tree links the instrumented
+# library and therefore has to resolve the SanitizerCoverage callbacks;
+# fuzzer-no-link provides them without a main(), so normal binaries keep theirs.
+if(OPENRAR_FUZZ AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT WIN32)
+    add_compile_options(-fsanitize=fuzzer-no-link)
+    add_link_options(-fsanitize=fuzzer-no-link)
+endif()
+
 include(cmake/openrar_natives.cmake)
 
 # ── WASM targets (kept separate; only when emcmake) ─────────────────────────
