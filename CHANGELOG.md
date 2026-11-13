@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-13
+
+First tagged release since 2.1.0. The version stamps 2.2.0 and 2.3.0 were written
+into the tree but never tagged or published, so this release **contains everything
+described in those two sections below** plus the stabilization work listed here.
+
+### Added
+
+- **Closed ISA dispatch table for PE, ELF and fat Mach-O:** every container is
+dispatched explicitly by machine type instead of falling through to the x86 E8
+density scan — general ELF machines, 64-bit fat Mach-O headers, ARM64X, CHPE_X86,
+and fat binaries whose first slice was x86. Fat headers are validated across all
+slices, and Java `.class` files sharing `0xCAFEBABE` are told apart by the arch
+count, header size and slice ranges. `OPENRAR_FILTER_DIAG=1` prints each dispatch
+decision (and every unrecognised machine) to stderr.
+- **RAR5 header-body fuzz harness:** `tests/fuzz/fuzz_header.cpp` feeds header
+bodies straight into the parsers, so mutations are not rejected by the CRC32 gate
+before reaching the code under test. Wired into the nightly workflow's build-assert
+loop and its `-runs=2000` ctest entry. The campaign's coverage counters went from
+65 to 2,807 once SanitizerCoverage was applied to the library itself.
+- **MSVC AddressSanitizer CI leg (`windows-asan`):** RelWithDebInfo build with
+`-DOPENRAR_SANITIZE=address`, the runtime DLL put on `PATH` explicitly (MSVC links
+`clang_rt.asan_dynamic-x86_64.dll` but does not copy it next to the executable),
+JUnit aggregate and artifact upload. 52/52 tests, zero ASan reports.
+- **C5 real-object gates:** reproducible generated images, a pinned libcrypto
+sample with real call sites, real PE objects linked from the pinned source, the
+large-ARM64 recipe, and level-by-level size gates for each committed member.
+- **PROBE-PREDICT diagnostic tool** (`tools/predict_probe.cpp`) with fixtures and
+a decision record, plus `tools/prove_dispatch_parity.py` for the 30-cell dispatch
+parity proof.
+- **2026-11 code-quality review and architect walkthrough** (`docs/reviews/`),
+including the sign-off with CI receipts.
+
+### Changed
+
+- **Analysis gate now covers Linux-only code.** Whole-tree widening/narrowing
+sweep (110 implicit widenings, 34 narrowings, 39 files) with `core::KIB/MIB/GIB`
+for size literals, and three checks re-enabled in `.clang-tidy`:
+`bugprone-narrowing-conversions`,
+`bugprone-implicit-widening-of-multiplication-result` and
+`clang-analyzer-core.CallAndMessage`. The Ubuntu gate leg was previously blind to
+81 findings in code MSVC never compiles (AVX-512 kernels, the GFNI self-test, the
+seccomp BPF filter); it is now green over the Linux compile database.
+- **Release guard corpora are pinned end to end.** `real_binary.bin` is pinned by
+SHA-256 per platform (`REAL_BINARY_SHA256`), the same way the tag-derived corpora
+were, and a baseline that is not the pinned release asset fails closed with the
+reason and the remedy. `--allow-unpinned-corpus` exists only for the
+roles-swapped diagnostic that proves the guard fires.
+- **Regression guard executable allowances re-measured** against the corpus the
+guard actually builds (the pinned release asset): +0.82/+0.67/+0.48/+0.30/+0.18%
+at `-m1`…`-m5`. The previous 0.67/0.42/0.21/0.14/0.11 had been measured against a
+v2.0.23 *built from source*, which is a different executable; rebuilding it
+reproduces the old numbers to 0.01%, proving no encoder regressed.
+
+### Fixed
+
+- **The TSan leg could never link:** `libclang_rt.tsan_cxx` owns the global
+`operator new`/`delete` so it can instrument them, and `allocation_tests.cpp`
+defines the same thirteen symbols. The counting hooks are now compiled out under
+TSan and the cases that assert counts skip with a message, as they already did
+under MSVC iterator debugging. Detection needs `__has_feature(thread_sanitizer)`
+as well as GCC's `__SANITIZE_THREAD__`.
+- **`linux-arm64` build failed under `-Werror`:** the AVX2 hash reference in
+`test_hash_range_avx2_parity` and the CPU feature handle are now scoped to the
+blocks that use them, so non-x86 targets build clean.
+- **`fuzz_rs16` could be driven into a 2.8 GB allocation** from a six-byte input:
+shard counts the library accepts above 2048 are skipped in the harness (matching
+the decoder path's existing cap), while configurations above `GF_SIZE` still run
+because rejection allocates nothing. The recorded out-of-memory artifact replays
+clean and the ASan ctest entry drops from 156 s to 2 s.
+- **`tools/predict_probe.cpp`:** dropped a dead TIFF helper that gcc rejects,
+which had kept the Ubuntu leg from ever reaching its build step.
+- **`windows-asan` job pointed at `windows-latest`,** which now has Visual Studio 18
+(2026) and cannot configure the `Visual Studio 17 2022` generator; pinned to
+`windows-2022` like the workflow's other Windows legs.
+- **Benchmark Pages setup** (the site is created when it does not exist) and the
+C5 parity/UnRAR wiring against absolute binaries on the runner.
+
+### Verification
+
+- `CI Build & Test` run 43511659774 on this commit: every leg green — both ASan
+legs, TSan, MSan (best effort), `linux-arm64`, macOS, both Ubuntu legs, three
+Windows legs, UnRAR 7.20 interop, both release regression guards, SIMD validation
+(native + Intel SDE AVX-512/GFNI), WASM, and the three SDK jobs.
+- `Nightly Fuzzing & Sanitizers` run 43508225281: clean, `fuzz_rs16` completing
+517,739 runs in 61 s at 369 MB peak RSS with leak detection on.
+
 ## [2.3.0] - 2026-11-08
 
 ### Added
