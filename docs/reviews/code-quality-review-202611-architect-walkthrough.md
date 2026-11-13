@@ -7,8 +7,10 @@ checks — plus the fresh-eyes review and libFuzzer campaign run afterwards.
 §9 (corrected fix outlines) and `…-architect-challenge.md` (D-1…D-8).
 **Architect Verdict:** 🟢 **SIGN-OFF — ALL REMEDIATIONS CLOSED (R-1, R-2)**
 **Re-verified on CI:** run 43493998279 — `ubuntu-24.04 - gcc` green end-to-end
-(gate `OK`, 58/58 tests), `MSVC ASan` green (52/52 tests). The three legs still
-red on this branch are pre-existing and tracked as R-7.
+(gate `OK`, 58/58 tests), `MSVC ASan` green (52/52 tests).
+**All-green run:** 43504475946 — every leg passes (`TSan`, `linux-arm64`,
+`Windows release regression guard`, both ASan legs, both guards, the SDK jobs),
+with only the four tag-only publish jobs skipped. R-1 through R-8 are closed.
 
 ---
 
@@ -248,8 +250,9 @@ variant lives.
 | R-3 | Add a fixed skip for `WIN32_LEAN_AND_MEAN` naming (e.g. `// NOLINT(readability-identifier-naming)` at each definition, since clang-tidy ignores `MacroDefinitionIgnoredRegexp`) if a Windows gate leg is ever added | Low | Keeps the option of running the gate on Windows open |
 | R-4 | Add a short `fuzz_header`-specific corpus seed (a real header body) to `tests/fuzz/seeds/` | Low | The harness currently starts from archives it cannot parse as a body; a genuine body would let the campaign skip the warm-up it spent ~1 min on |
 | R-5 | Consider registering `fuzz_header` in the standalone (non-clang) ctest sweep so the deterministic sweep runs on the Windows/MSVC legs too | Low | Cheap coverage of the CRC-bypass path on every platform; deliberately left out to match `fuzz_target` |
-| R-6 | Cap the shard counts `fuzz_rs16` derives from its input, and set `-rss_limit_mb` in the nightly step | **Medium** | D-9: a six-byte input reaches a 2.8 GB allocation and fails the libFuzzer sweep as "out-of-memory" |
-| R-7 | Investigate the three pre-existing red legs on this branch: TSan (`operator delete(void*, align_val_t)` multiply defined against the llvm-21 tsan runtime in `allocation_tests.cpp`), arm64 `-Werror` unused variables in `compress_tests.cpp`, and the v2.0.23 compression-ratio guard (+0.479% at `-m3`) | **Medium** | All three are independent of this change and would mask a real regression in the noise |
+| ~~R-6~~ | **Resolved.** The encoder path now skips the shard counts the library accepts above 2048, mirroring the decoder path's existing cap; counts above `GF_SIZE` still run because rejection allocates nothing. The recorded OOM artifact replays clean and the ASan ctest entry drops 156 s → 2 s. | — | D-9 |
+| ~~R-7~~ | **Resolved, and none of the three was a code regression.** TSan: the runtime owns global `new`/`delete`, so the hooks are compiled out and the cases that count are skipped (detection needs `__has_feature(thread_sanitizer)`, not just GCC's `__SANITIZE_THREAD__`). arm64: the AVX2 reference and CPU handle are now scoped to the blocks that use them. Ratio guard: no encoder regressed — see R-8. | — | Run 43504475946 |
+| ~~R-8~~ | **Resolved.** The `real_binary.bin` allowances had been measured against a v2.0.23 built from the tag's source, not the pinned release asset the guard actually uses as corpus. Rebuilding v2.0.23 from source reproduces the old five values to 0.01%, so the table is re-measured against the pinned corpus with the provenance recorded beside it. | — | `tools/release_regression_guard.py` |
 
 *"In God we trust; all others must bring automated test logs and code diffs.
 A feature unevidenced is a feature unbuilt."*
