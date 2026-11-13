@@ -23,7 +23,12 @@ The Phase 2 audit series evaluated the entire OpenRAR codebase across four syste
 ### 3. Architectural Decision Records (ADRs)
 - **[Architectural Question Log](question-log.md):** Systematic log of key architectural design decisions, trade-offs, and resolutions adopted throughout OpenRAR development.
 
-### 4. Technical Investigations & Post-Mortems
+### 4. Code Quality & Static Analysis
+- **[November 2026 Code Quality Review](code-quality-review-202611.md):** Whole-tree review with a fresh Clang-Tidy extended-suite run (209 diagnostics triaged, none actionable), MSVC `/analyze` C6262/arithmetic triage, and a P0–P4 prioritised remediation list with fix outlines.
+- **[Architect Challenge — Code Quality Review 2026-11](code-quality-review-202611-architect-challenge.md):** Adversarial principal-architect challenge of the remediation plan; three fix outlines revised (assert-only narrowing, line-keyed baseline, shared scratch buffer) and two missing verification gates identified.
+- **[Architect Walkthrough — Code Quality Review 2026-11](code-quality-review-202611-architect-walkthrough.md):** Post-implementation sign-off for the remediation (header-parser fuzz harness, MSVC ASan leg, 144-site widening sweep, three re-enabled checks). Verdict: 🟡 conditional — two defects found and fixed during the walkthrough (fuzz campaigns were coverage-blind at 65 counters; the new nightly step discarded its corpus), one pre-existing test failure and one unexecuted CI leg carried as remediations R-1/R-2.
+
+### 5. Technical Investigations & Post-Mortems
 - **[CLI Test Timing Flake Post-Mortem](followup-cli-tests-flake.md):** Root-cause analysis and resolution for sporadic CI test timeouts under Windows hosted runners.
 - **[Optimal Parse Descoping Analysis](optimal-parse-descoped-analysis.md):** Mathematical and empirical justification for parking the v1.32 full Dynamic Programming optimal parser (resolving Anti-Finding A-4).
 - **[Optimal Parse Descoping Plan](optimal-parse-descoped-plan.md):** Action plan for clean removal and replacement with bounded greedy match finding.
