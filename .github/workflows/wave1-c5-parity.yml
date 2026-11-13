@@ -34,6 +34,10 @@ jobs:
     name: clang cross-compiled C5 gate & parity
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      # Repositories without a main branch compare against the commit that
+      # tools/measure_c5.py records as the baseline.
+      BASELINE_FALLBACK: c5ff210
     steps:
       - name: Checkout (full history for the v2.0.23 corpus tag)
         uses: actions/checkout@v4
@@ -55,18 +59,15 @@ jobs:
 
       - name: Resolve the measurement baseline
         run: |
-          # The gate compares against the `main` commit recorded in
-          # tools/measure_c5.py. This repository has no origin/main, so fall
-          # back to that commit, which is in the pushed branch's history.
-          git fetch --no-tags origin main || true
-          if git rev-parse --verify -q origin/main >/dev/null; then
-            echo "BASE=origin/main" >> "$GITHUB_ENV"
-          elif git rev-parse --verify -q c5ff210 >/dev/null; then
-            echo "BASE=c5ff210" >> "$GITHUB_ENV"
-          else
-            echo "::error::no baseline ref (origin/main or c5ff210) available"
+          # Prefer origin/main when it exists; otherwise use the recorded
+          # baseline commit, which is in this branch's history.
+          BASE=$(git rev-parse --verify -q origin/main \
+                 || git rev-parse --verify -q "$BASELINE_FALLBACK") || {
+            echo "::error::neither origin/main nor $BASELINE_FALLBACK exists"
             exit 1
-          fi
+          }
+          echo "baseline: $BASE"
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
 
       - name: Build main (baseline)
         run: |
@@ -131,17 +132,16 @@ jobs:
         run: |
           # The tool's default --unrar points at the Windows install; on the
           # runner UnRAR is on PATH, so pass that path explicitly.
-          REF=""
           if command -v unrar >/dev/null 2>&1; then
-            REF="--unrar $(command -v unrar)"
+            UNRAR=(--unrar "$(command -v unrar)")
           else
-            REF="--skip-references"
+            UNRAR=(--skip-references)
           fi
           python3 tools/prove_dispatch_parity.py \
             --baseline "main=$MAIN" \
             --candidate "branch=$BRANCH" \
             --c5-corpus build/c5_real \
-            --json build/dispatch_parity.json $REF
+            --json build/dispatch_parity.json "${UNRAR[@]}"
 
       - name: Upload measurements
         if: always()
