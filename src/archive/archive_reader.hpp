@@ -509,6 +509,11 @@ private:
     // relative directory, and opens the writer through the verified anchor.
     bool open_contained_writer(const ArchiveEntry& entry, const std::filesystem::path& dest_path,
                                io::AtomicWriter& writer);
+    // SEC-TEMP-MODE (v2.4.1): the mode the extracted member must end with —
+    // the sanitized archived POSIX mode when the archive carries one, else
+    // io::default_extract_mode() (the pre-2.4.1 creation mode). The data temp
+    // is created 0600, so this is handed to the writer before its commit.
+    core::uint32 extract_final_mode(const ArchiveEntry& entry) const;
     // Contained directory materialization (dir records).
     bool create_contained_dir(const ArchiveEntry& entry, const std::filesystem::path& dest_path);
 };

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Extraction temporaries are private until committed (SEC-TEMP-MODE):** the
+  data temporary used for every extracted file is now created `0600` on POSIX
+  instead of `0644`. The member's final mode — the sanitized archived POSIX mode,
+  or the previous `0644`-bounded-by-umask default when the archive carries none —
+  is applied to the open temp handle immediately before the commit rename, so a
+  private member is never observable as world-readable for the duration of its
+  extraction. `--preserve-suid`, the umask contract and xattr restoration are
+  unchanged; Windows keeps its inherited DACL. Covered by
+  `extraction_atomic_tests::test_temp_mode_private_then_final`.
+
 ## [2.4.0] - 2026-11-13
 
 First tagged release since 2.1.0. The version stamps 2.2.0 and 2.3.0 were written

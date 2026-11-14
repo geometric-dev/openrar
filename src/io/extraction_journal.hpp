@@ -5,6 +5,7 @@
 #include "durability.hpp"
 #include "file_stream.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <list>
 #include <map>
@@ -186,6 +187,13 @@ private:
     void evict_lru_journal();
 };
 
+// SEC-TEMP-MODE (v2.4.1): the mode a member ends with when the archive carries
+// no usable POSIX mode — the mode the temp used to inherit from its historical
+// 0644 creation, i.e. 0644 bounded by the process umask. Callers hand this to
+// AtomicWriter::set_committed_mode so the 0600 temp does not narrow files that
+// have no archived mode to restore. Returns 0 on Windows (no POSIX mode).
+std::uint32_t default_extract_mode();
+
 // RAII temp writer: creates a crypto-random temp next to the destination,
 // journal-referenced (durable-first), and commits it with the atomic rename
 // cascade. On destruction anything not committed is deleted.
@@ -234,6 +242,18 @@ public:
     // harmless: the name no longer exists, and sweeps verify the shape.
     void abandon();
 
+    // SEC-TEMP-MODE (v2.4.1): the POSIX mode the committed leaf must end with.
+    // The data temp is created 0600, so every caller must decide the mode the
+    // member is allowed to have — archived mode when the archive carries one,
+    // default_extract_mode() otherwise. commit() applies it to the open temp
+    // handle immediately before the rename, so the destination name is never
+    // observable with a wider mode than the member declares. No-op on Windows
+    // (the DACL is inherited at creation).
+    void set_committed_mode(std::uint32_t mode) {
+        committed_mode_ = mode;
+        committed_mode_set_ = true;
+    }
+
     const std::filesystem::path& dest_path() const { return dest_path_; }
     const std::filesystem::path& temp_path() const { return temp_path_; }
 
@@ -244,6 +264,9 @@ private:
     std::filesystem::path temp_path_; // absolute
     bool journaled_ = false;
     bool finished_ = false;
+    void apply_committed_mode(); // SEC-TEMP-MODE: fchmod before the rename
+    std::uint32_t committed_mode_ = 0;
+    bool committed_mode_set_ = false;
     // Containment mode state:
     ContainmentRoot::VerifiedDir dir_;
     std::string rel_dir_;

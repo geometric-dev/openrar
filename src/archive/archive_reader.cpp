@@ -252,7 +252,11 @@ bool ArchiveReader::open_contained_writer(const ArchiveEntry& entry,
         const std::string c = io::u8_str(comp);
         if (c == "." || c == ".." || c.empty()) return false; // outside the root
     }
-    return writer.open_contained(sess, generic_rel(rel_dir_p), io::u8_str(dest_abs.filename()));
+    if (!writer.open_contained(sess, generic_rel(rel_dir_p), io::u8_str(dest_abs.filename()))) {
+        return false;
+    }
+    writer.set_committed_mode(extract_final_mode(entry));
+    return true;
 }
 
 bool ArchiveReader::create_contained_dir(const ArchiveEntry& entry,
@@ -362,6 +366,22 @@ core::uint32 ArchiveReader::sanitize_extract_mode(core::uint32 raw_mode, bool pr
     // The umask only ever clears rwx bits (umask(2) semantics); masking with
     // ~umask alone preserves the 07000 bits under --preserve-suid.
     return mode & static_cast<core::uint32>(~umask_bits);
+}
+
+core::uint32 ArchiveReader::extract_final_mode(const ArchiveEntry& entry) const {
+    // SEC-TEMP-MODE (v2.4.1): the temp is created 0600, so the final mode is
+    // decided here and applied by the writer just before the rename. The
+    // archived-mode condition matches the post-commit application below
+    // (extract_entry), which stays as the by-path retry.
+    const auto& h = entry.header;
+    if (h.host_os == 1 && h.redir_type == 0 && (h.file_flags & format::FHFL_DIRECTORY) == 0 &&
+        (h.attributes & 0170000u) != 0 && (h.attributes & 07777u) != 0) {
+        return sanitize_extract_mode(h.attributes, preserve_suid_, cached_umask());
+    }
+    // No archived POSIX mode (Windows-hosted archives, links, file copies):
+    // keep the mode the 0644 temp used to inherit, so members are unchanged
+    // by the narrower temp.
+    return io::default_extract_mode();
 }
 
 bool ArchiveReader::xattr_restorable(const std::string& name, bool security_opt_in) {
@@ -3113,6 +3133,7 @@ bool ArchiveReader::extract_entry_impl(const ArchiveEntry& entry,
                 if (!src.open(hard_src, io::FileMode::ReadOnly)) return false;
                 io::AtomicWriter writer;
                 if (!writer.open(ensure_extraction_session(), dest_path)) return false;
+                writer.set_committed_mode(extract_final_mode(entry));
                 core::byte buf[8192];
                 for (;;) {
                     const size_t got = src.read(buf, sizeof(buf));

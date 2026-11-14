@@ -356,6 +356,9 @@ int durable_write_to(const std::filesystem::path& dest,
         set_error("cannot create temporary file in destination directory");
         return RAR_ERR_IO;
     }
+    // SEC-TEMP-MODE (v2.4.1): the temp is created 0600; the DLL surface has no
+    // archived mode to restore, so commit with the historical default mode.
+    writer.set_committed_mode(openrar::io::default_extract_mode());
     int rc = body(writer.stream());
     if (rc != RAR_OK) {
         writer.abandon();

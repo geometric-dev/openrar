@@ -28,6 +28,21 @@
 
 namespace openrar::io {
 
+std::uint32_t default_extract_mode() {
+#if defined(_WIN32)
+    return 0; // DACL inherited at creation; no POSIX mode to apply
+#else
+    // Cached like ArchiveReader's umask read: the process umask is a run-level
+    // constant for extraction (same assumption the archived-mode path makes).
+    static const std::uint32_t mode = [] {
+        const mode_t prior = ::umask(0);
+        ::umask(prior);
+        return static_cast<std::uint32_t>(0644u & ~static_cast<std::uint32_t>(prior));
+    }();
+    return mode;
+#endif
+}
+
 namespace {
 
 // ── Journal format ───────────────────────────────────────────────────────────
@@ -943,6 +958,9 @@ bool AtomicWriter::commit(CommitMode mode, bool flush_first) {
             abandon();
             return false;
         }
+        // Last step before the rename: widen the 0600 temp to the mode the
+        // member is allowed to have (SEC-TEMP-MODE).
+        apply_committed_mode();
         int err = 0;
         if (!session_->containment().anchored_rename(dir_, temp_leaf_, leaf_, mode, err)) {
             abandon();
@@ -955,6 +973,7 @@ bool AtomicWriter::commit(CommitMode mode, bool flush_first) {
         return true;
 #endif
     }
+    apply_committed_mode();
     if (!stream_.commit_rename(dest_path_, mode, flush_first)) {
         // Failed commit is terminal: dispose of the temp (and the journal
         // slot) now so the caller cannot observe a half-open writer state.
@@ -966,6 +985,21 @@ bool AtomicWriter::commit(CommitMode mode, bool flush_first) {
     journaled_ = false;
     finished_ = true;
     return true;
+}
+
+void AtomicWriter::apply_committed_mode() {
+#if defined(_WIN32)
+    // The DACL is inherited at creation; there is no POSIX mode to apply.
+    return;
+#else
+    if (!committed_mode_set_ || !stream_.is_open()) return;
+    const int fd = static_cast<int>(reinterpret_cast<intptr_t>(stream_.os_handle()));
+    if (fd < 0) return;
+    // Best-effort: a failed fchmod leaves the temp at 0600, which is narrower
+    // than the intended mode — never wider. Post-commit metadata application
+    // (ArchiveReader::extract_entry) retries the same mode by path.
+    ::fchmod(fd, static_cast<mode_t>(committed_mode_));
+#endif
 }
 
 void AtomicWriter::abandon() {

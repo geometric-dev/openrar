@@ -848,6 +848,46 @@ void test_crash_hook_kills_after_nth_record() {
     rm_dir(dir);
 }
 
+#ifndef _WIN32
+void test_temp_mode_private_then_final() {
+    // SEC-TEMP-MODE (v2.4.1): the data temp is 0600 for the whole write, and
+    // the caller-selected mode is on the leaf by the time it is renamed — so
+    // a private member is never world-readable during its extraction.
+    const fs::path dir = make_test_dir("tempmode");
+    const fs::path dest = dir / "private.txt";
+
+    io::ExtractionSession session;
+    session.attach_root(dir);
+    io::AtomicWriter writer;
+    REQUIRE(writer.open_contained(session, "", "private.txt"));
+    writer.stream().write("secret", 6);
+    struct stat st {};
+    REQUIRE(::stat(writer.temp_path().c_str(), &st) == 0);
+    REQUIRE((st.st_mode & 07777) == 0600); // private while the writer is open
+    writer.set_committed_mode(0644);
+    REQUIRE(writer.commit());
+    REQUIRE(::stat(dest.c_str(), &st) == 0);
+    REQUIRE((st.st_mode & 07777) == 0644); // widened only at the rename
+
+    // With no mode selected the leaf is never widened past the 0600 temp.
+    {
+        io::AtomicWriter w;
+        REQUIRE(w.open_contained(session, "", "unset.txt"));
+        w.stream().write("x", 1);
+        REQUIRE(w.commit());
+        REQUIRE(::stat((dir / "unset.txt").c_str(), &st) == 0);
+        REQUIRE((st.st_mode & 07777) == 0600);
+    }
+
+    // The default reproduces the historical creation mode, 0644 & ~umask.
+    const mode_t prior = ::umask(0);
+    ::umask(prior);
+    REQUIRE(io::default_extract_mode() == (0644u & ~static_cast<unsigned>(prior)));
+    std::cout << "[PASS] temp mode is private during extraction\n";
+    rm_dir(dir);
+}
+#endif
+
 int main(int argc, char* argv[]) {
     g_argv0 = argc > 0 ? argv[0] : "";
     if (argc == 3 && std::string(argv[1]).rfind("--crash-hook-test=", 0) == 0) {
@@ -858,6 +898,9 @@ int main(int argc, char* argv[]) {
         {"test_atomic_commit_replaces", test_atomic_commit_replaces, false},
         {"test_commit_noclobber_preserves_dest", test_commit_noclobber_preserves_dest, false},
         {"test_temp_names_crypto_random", test_temp_names_crypto_random, false},
+#ifndef _WIN32
+        {"test_temp_mode_private_then_final", test_temp_mode_private_then_final, false},
+#endif
         {"test_abandon_and_destructor_disposition", test_abandon_and_destructor_disposition, false},
         {"test_journal_references_temp_during_flight", test_journal_references_temp_during_flight,
          false},
