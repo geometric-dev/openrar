@@ -1378,12 +1378,23 @@ jobs:
           path: wasm-pkg/
 
       - name: Publish to npmjs.org (trusted publishing)
-        # No token: the npm CLI detects the GitHub OIDC environment and trades it
-        # for a short-lived credential once npmjs.org matches this repository and
-        # workflow against the package's trusted publisher.
+        # npm trusted publishing needs a package that already exists on the
+        # registry, so the very first publish cannot use it. NPM_TOKEN is an
+        # optional bootstrap credential for exactly that case: when a trusted
+        # publisher is configured the npm CLI prefers OIDC and only falls back to
+        # the token if no publisher matches, so this can stay set until the first
+        # OIDC publish succeeds and then be deleted.
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           echo "npm $(npm --version)"
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is set: it will be used if trusted publishing is not configured yet"
+            npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
+          else
+            echo "No NPM_TOKEN: publishing with trusted publishing (OIDC) only"
+          fi
           for pkg in wasm-pkg/*.tgz; do
             # Re-running a tag (to replace assets, for example) must not fail on
             # a version that is already published: npm has no --skip-existing.
