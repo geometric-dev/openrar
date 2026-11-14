@@ -1,13 +1,13 @@
-# OpenRAR Experimentation Roadmap — Post-v2.3.0 Filter & Decode Pipeline
+# OpenRAR Experimentation Roadmap — Post-v2.4.0 Filter & Decode Pipeline
 
-**Document Status:** Decision record + candidate intake register (review-corrected)
+**Document Status:** Decision record + candidate intake register (rev 2, 2026-11-14)
 **Supersedes:** the 2026-11-12 `experimentation-brainstorm.md` (draft), after a source-level sense check
-**Trunk baseline:** `main` @ v2.3.0 walkthrough (`docs/milestones/v2.3.0-walkthrough.md`)
+**Trunk baseline:** `main` @ v2.4.0 (tag `v2.4.0`, `CHANGELOG.md` §2.4.0); rev 1 was written against v2.3.0, and its anchors are retained where the code is unchanged
 **Governance:** Rule G-1 (Single Decision Function), G-3 (Fingerprinted Measurement), G-8 (Charter Discipline); Invariants I-1, I-13, I-15, I-16 (`docs/invariants.md`); interop oracles UnRAR 7.20 + WinRAR 7.20 (`docs/milestones/roadmap.md` §8.1)
 
 **Relationship to the register of record:** this document is the *intake*. A row becomes an active candidate only when it is copied into `docs/milestones/roadmap.md` §7 with a branch name and a kill gate. Nothing here overrides that register.
 
-**Conventions:** all file paths are repo-root relative; `file:line` anchors name the code as it stood at v2.3.0.
+**Conventions:** all file paths are repo-root relative; rev-1 `file:line` anchors name the code as it stood at v2.3.0, and rev-2 anchors (§1 additions, §4.12–4.15) as it stood at v2.4.0.
 
 ---
 
@@ -23,7 +23,9 @@ The original brainstorm's *shape* was right — after v2.3.0 the remaining juice
 | Mechanism or unit errors (idea cannot work as written) | 3 |
 | Survive, but only with amended gates | 3 |
 | Parked as low-value after measurement reasoning | 1 |
-| New candidates added by this review | 6 |
+| New candidates added by the rev-1 review | 6 |
+
+**Rev 2 (2026-11-14):** measurements reordered the decode waves and exposed two defects outside the perf track. (a) Extraction is **applier-bound**, not entropy-bound, once `-mt` is unset or ≥2: on a 128 MiB `-m1` text member the serial record applier occupied 1.93 s of a 2.09 s `-mt4` pipeline wall (91–92%), while the span workers parked. (b) BLAKE2sp+read is ~5% of compressed verify time, so the hash is not a target, but the store-extraction sink is **2.5× a raw copy** in batch mode (0.574 s vs 0.21–0.23 s for 128 MiB), so it becomes a measurement probe (PROBE-STORE-SINK), not a sink rewrite. Five candidates follow: EXP-APPLIER-RECORD-FASTPATH (§4.12), EXP-NATIVE-CODEGEN (§4.13), SEC-PASSWORD-CHANNEL (§4.14), SEC-TEMP-MODE (§4.15), PROBE-STORE-SINK (§4.16). EXP-MACHINE-DISPATCH shipped in v2.4.0 and is no longer an intake row.
 
 Two hard blockers dominate everything else:
 
@@ -40,7 +42,7 @@ Checked against source, not against the previous brainstorm.
 |:---|:---|:---|
 | x86 E8/E9 scan | `filters50.cpp:228-234` | SSE2 16-byte compare + mask; transform itself scalar |
 | ARM32 `BL` (0xEB) | `filters50.cpp:355-359` | SSE2 scan; PE/ELF/Mach-O 32-bit ARM detection present |
-| ARM64 / RISC-V branch filter | `filters50.cpp:79-102` | **absent** (and PE-ARM64 falls through to E8 — see EXP-MACHINE-DISPATCH) |
+| ARM64 / RISC-V branch filter | `filters50.cpp:79-102` | **absent** — PE-ARM64 now dispatches to *no filter* after EXP-MACHINE-DISPATCH (v2.4.0), but ARM64/RISC-V still have no branch transform |
 | Delta 1–32 channels | `filters50.cpp:833-845`, `1138-1150` | SIMD for **2, 3, 4** only; all other strides scalar |
 | Delta 3 SSSE3 / NEON | `filters50.cpp:555-660` | 16 pixels/pass, 9 shuffle masks; promoted at 4,131 / 3,863 MB/s |
 | WAV detection | `filters50.cpp:143-154` | Fixed offsets `+8`/`+22`/`+34`; no RIFF chunk walk, no RF64/BW64/AIFF/CAF |
@@ -53,6 +55,11 @@ Checked against source, not against the previous brainstorm.
 | Parallel decode | `parallel_decode.cpp:19-46` | 1 MiB spans, 4 MiB packed floor, 32 spans max; filters already flow through the span applier (`decompressor50.cpp:1880-1892`) |
 | AES-256 | `crypto/aes256.cpp:239-309` | AES-NI **CBC**, 8-way pipelined decrypt (RAR5 is CBC, not CTR) |
 | WASM SIMD | `cmake/openrar_flags.cmake:18-24` | opt-in `-DOPENRAR_WASM_SIMD=ON`; match kernel ported, filters scalar |
+| Parallel decode topology | `parallel_decode.cpp:65-69`, `:97` | **2 workers by default** when `-mt` is unset; `-mt1` forces sequential; N clamps to **2..8**; 1 MiB span target, 4 MiB packed floor, 32 spans max; non-solid entries only |
+| Extraction stage split (measured 2026-11-14) | §8 Q-3 | 128 MiB `-m1` short-match text: store verify **0.115 s**, compressed verify **2.11–2.12 s**; at `-mt4` the applier is **1.93–1.97 s of 2.09–2.17 s pipeline wall (91–92%)** with workers parked; store extraction `-db` **0.574 s**, default **0.90 s**, raw copy **0.21–0.23 s** |
+| Native codegen | `cmake/openrar_flags.cmake:29-34`; `cmake/openrar_dll.cmake:37` | MSVC Release gets `/GL` + `/LTCG`; GCC/Clang Release gets `-O3` only — **no LTO and no PGO** — and the DLL target explicitly sets `INTERPROCEDURAL_OPTIMIZATION OFF` |
+| Password acquisition | `src/cli/main.cpp:4616-4626`; `docs/cli.md:88-89` | The manual documents bare `-p`/`-hp` as "(prompt)"; the parser **rejects** both, so a secret can only arrive inline in argv. The sandbox already never carries the raw password (`sandbox/ipc.hpp:42-43`) |
+| POSIX temp-file mode | `src/io/containment.cpp:614`; `src/io/extraction_journal.cpp:852`; `src/archive/archive_reader.cpp:450`, `:2862-2871` | Extraction data temporaries are created **0644**; the archived mode is applied only after the payload is written and committed |
 
 ---
 
@@ -76,6 +83,8 @@ Type : 3 bits     0=DELTA 1=E8 2=E8E9 3=ARM 4=AUDIO 5=RGB 6=ITANIUM 7=TEXT
 | Multi-stride delta kernels (channels ≤ 32) | ✅ | `EXP-DELTA-MULTI-STRIDE` |
 | MT-safe filtered packing | ✅ | `EXP-FILTER-SAFE-MT` |
 | Decode/Huffman/wildcopy kernels | ✅ | W2 rows |
+| Record-applier / build-codegen fast paths | ✅ | `EXP-APPLIER-RECORD-FASTPATH`, `EXP-NATIVE-CODEGEN` |
+| Password-input and temp-file hardening | ✅ | `SEC-PASSWORD-CHANNEL`, `SEC-TEMP-MODE` (behaviour only) |
 | AArch64 BL filter (new type) | ❌ | `EXP-A64-BRANCH` — **deferred, EXT** |
 | RISC-V JAL filter (new type) | ❌ | `EXP-RISCV-JAL` — **deferred, EXT** |
 | Paeth/row predictor (new type + stride param) | ❌ | `EXP-PAETH-IMAGE` — **deferred, EXT** |
@@ -126,9 +135,16 @@ Every filter-detection gate below therefore carries a **pack wall-clock at `-mt4
 | **EXP-A64-BRANCH** | EXT | ❌ | AArch64 BL translation | Deferred behind Gate 0 + RAR7 due diligence | — |
 | **EXP-RISCV-JAL** | EXT | ❌ | RISC-V JAL translation | Deferred; no container slot | — |
 | **EXP-PAETH-IMAGE** | EXT | ❌ | Row predictor for images | Deferred; blocked by PROBE-PREDICT result | — |
+| **EXP-APPLIER-RECORD-FASTPATH** | W2 | ✅ | Serial record applier in the two-phase decoder | ≥15% wall on `-mt4` 128 MiB C6 text (baseline 2.09 s); identical output and callback chunks; 0 change on 30 cells | 2 |
+| **EXP-NATIVE-CODEGEN** | W2 | ✅ | LTO, then PGO, for GCC/Clang release builds | Stage 1 ≥3% pack **and** extract at `-m3` on C6 ≥64 MiB; stage 2 a further ≥5%; 30 cells byte-identical | 2 (∥, build) |
+| **SEC-PASSWORD-CHANNEL** | W2 | ✅ | Implement the documented terminal prompt; keep secrets out of argv | No secret in any argv (test-enumerated); PTY echo-off; non-TTY fails closed; archive bytes identical | 1 (∥) |
+| **SEC-TEMP-MODE** | W2 | ✅ | 0600 extraction temporaries on POSIX | 0600 during write, archived mode after commit; umask contract unchanged; no archive bytes | 1 (∥) |
+| **PROBE-STORE-SINK** | MEAS | ✅ | Attribute `-m0` extraction overhead over a raw copy | Split ≥80% of the ~0.35 s; decision record; no code change | 2 (∥) |
 | **EXP-FUZZ-STRESS** | Track 4 | ✅ | Continuous fuzz + I-15/I-16 stress | Unchanged from register; interleave every 2 waves | ∥ |
 
-### 4.1 EXP-MACHINE-DISPATCH (W2, Wave 1)
+### 4.1 EXP-MACHINE-DISPATCH (W2, Wave 1) — shipped in v2.4.0
+
+**Status:** shipped in v2.4.0; the §7 register records the promotion. The design record below is retained for the next dispatch change.
 
 **Problem (live defect, not a hypothesis).** `detect_filter` defaults *any* unrecognised PE machine to `E8` (`filters50.cpp:66-74`). Windows-on-ARM64 (`0xAA64`) therefore receives the x86 CALL transform today — a wrong transform on real content. Additionally:
 
@@ -280,11 +296,53 @@ Reclassified from "experiment" to "port + build decision". `match_length_wasm` a
 
 **Gate.** ≥3× filter throughput vs scalar in V8; module size ≤ +8% with SIMD enabled; scalar build unchanged.
 
+### 4.12 EXP-APPLIER-RECORD-FASTPATH (W2, Wave 2)
+
+**Problem (measured, not hypothesised).** The two-phase decoder's span workers are already faster than its single consumer. On the 128 MiB C6 diagnostic member (`-m1`, 843 blocks, 32 spans, 1 MiB target), `OPENRAR_PD_TRACE=1` shows each worker decoding a span in 77–123 ms and then parking (`w1 span 1 parked (published=0 applier=0)`), while the applier spends **56–62 ms per span**, 1.93–1.97 s in total against a **2.09–2.17 s** wall. `-mt4` (2.22–2.29 s process wall) and the default 2 workers (2.16 s) both sit above the applier's 1.93–1.97 s floor, so the extra workers have nothing to consume; `-mt1` (sequential) is 3.78–3.90 s. At any worker count ≥2 the serial applier is therefore the critical path, and the entropy-decoder work that 4.6/4.7 target is hidden behind it.
+
+**Where the applier spends it.** 848k `OpRecord`s per 4 MiB span (~27M for the member, ≈4.7 output bytes/record) at ~71 ns/record. Literal records are already bulk-`memcpy`ed (`decompressor50.cpp:1782-1818`), so this is *not* 4.6: the remaining per-record work is tag dispatch, the distance/rep state update, a non-inlined `copy_match` for short matches (an indirect `wildcopy_fn` call even at `dist < len` of 5 bytes), the destination clamp, and a cadence check per record.
+
+**Change (profile first, then pick).** Q-8 must attribute the 1.93 s before code. Candidate sub-changes, in expected order: (a) a no-filter fast path that hoists `has_completed_filter()` and precomputes the cadence boundary; (b) an inline short-copy (`distance ≤ 8 && length ≤ 16`) ahead of `copy_match`'s generic path; (c) avoid the `std::memcpy` call for ≤8-byte literal stretches; (d) merge adjacent literal records in `decode_span` where no match intervenes; (e) software-prefetch the next record. Any change must keep `total_written` and flush positions identical — the pipeline's callback chunk boundaries are part of the contract (4.9's identity harness).
+
+**Gate.** ≥15% wall-clock on `-mt4` 128 MiB C6 text (baseline 2.09–2.17 s on the reference host), ≥8% on the ≥64 MiB C6 corpus, 0 regression at `-mt1` and on zeros/binary; output and callback chunk boundaries byte-identical to the sequential decoder; 30 ratchet cells unchanged; ASan/UBSan clean. Record the per-sub-change profile in the branch's walkthrough; do not promote on a single corpus.
+
+### 4.13 EXP-NATIVE-CODEGEN (W2, Wave 2, build track)
+
+**Problem (verified in the build files).** MSVC Release is compiled with `/GL` and linked with `/LTCG` (`cmake/openrar_flags.cmake:29-30`); the GCC/Clang Release branch adds only `-O3 -fomit-frame-pointer` (`:34`). `CMAKE_INTERPROCEDURAL_OPTIMIZATION` is set nowhere in the tree, and `cmake/openrar_dll.cmake:37` deliberately disables IPO for the shared library. There is no PGO anywhere (`/GENPROFILE`, `-fprofile-generate`/`-fprofile-use`). The same decoder is therefore LTO'd on Windows and not on Linux/macOS, and the cross-toolchain benchmark comparison is not like-for-like.
+
+**Change.** Two stages, each independently gated. **Stage 1:** LTO (thin or full, whichever the compiler supports) for `openrar_core` plus the CLI/SFX/worker on GCC/Clang, leaving the DLL target alone until an ABI/export check proves it safe. **Stage 2:** PGO trained on the release-guard corpora (the 30 cells plus C6) for the same targets; instrumented builds never ship. Keep the sanitizer overrides: `cmake/sanitizers.cmake:84-85` forces `/GL-` and `/LTCG:OFF` under ASan — the equivalents are needed for `-flto` and the profile flags.
+
+**Gate.** Stage 1: ≥3% median pack **and** ≥3% median extract at `-m3` on C6 ≥64 MiB, with no regression on any C6 class; stage 2: a further ≥5% combined. Every stage: 30 ratchet cells byte-identical, all 56 ctest suites green, `abi_layout_tests` and `abi_export_parity` unchanged, and the same-host/same-session protocol of §6. A stage that fails is archived, not carried.
+
+### 4.14 SEC-PASSWORD-CHANNEL (W2, Wave 1, security track)
+
+**Problem (live documentation/behaviour mismatch).** `docs/cli.md:88-89` documents `-p[<pwd>]` and `-hp[<pwd>]` with the bare form as "(prompt)". The parser rejects bare `-p` and `-hp` with a usage error (`src/cli/main.cpp:4616-4626`), and there is no no-echo reader outside the TUI's raw-mode helper (`src/cli/tui.hpp:648-663`). The only way to supply a secret is therefore `-p<secret>` / `-hp<secret>` in argv, which is visible to every local process (`/proc/<pid>/cmdline`), Windows process explorers, and shell history. The rest of the password path is already careful: the sandbox transfers derived key material only, never the password (`src/sandbox/ipc.hpp:42-43`, `worker_broker.hpp:20`, `worker_main.cpp:36`).
+
+**Change.** Implement the documented prompt: bare `-p`/`-hp` (and the UnRAR-compatible `-p-`) read from the controlling terminal with echo off (`termios` ECHO clear on POSIX, `SetConsoleMode` minus `ENABLE_ECHO_INPUT` on Windows), require a TTY, read at most 127 bytes (the KDF truncation point), and `secure_wipe` the buffer after key derivation. Non-TTY invocation fails closed with a message pointing at the file channel, never silently reading a pipe. Add `OPENRAR_PASSWORD_FILE` (or `--password-file`) for automation, documented as a 0600-file alternative. Keep inline `-p<pwd>` working for compatibility; do not print it in the prompt path.
+
+**Gate.** A child-process argv enumeration finds no secret in prompted mode; a PTY test proves no echo and one prompt per key derivation; non-TTY fails closed; archives produced with the same password are byte-identical to inline mode; all 56 suites; the sandbox worker still never receives the raw password.
+
+### 4.15 SEC-TEMP-MODE (W2, Wave 1, security track)
+
+**Problem (verified window).** The extraction data temporary is created by `ContainmentRoot::anchored_create` with mode **0644** (`src/io/containment.cpp:614`) on POSIX. `AtomicWriter::open_contained` uses that path for every entry (`src/io/extraction_journal.cpp:852`), and the archived mode is applied only after the payload has been written and committed (`src/archive/archive_reader.cpp:450`, `:2862-2871`). A 0600 member is therefore world-readable — in a 0755 destination directory — for the whole duration of its extraction, which can be seconds for a large member. The journal itself is already 0600 (`containment.cpp:625`); only the data temp is widened.
+
+**Change.** Create the data temp 0600 and apply the sanitized archived mode (umask-bounded, SUID/SGID masked unless `--preserve-suid`) at or before commit, so the final name is never briefly 0644 either. Windows is unchanged (the DACL is inherited at creation). Keep `anchored_create`'s O_EXCL semantics and the no-follow commit path.
+
+**Gate.** A POSIX unit test stats the temp while the writer is open and asserts 0600, then asserts the archived mode after commit; a 0750/umask matrix; `--preserve-suid` and xattr behaviour unchanged; no archive bytes change; all 56 suites.
+
+### 4.16 PROBE-STORE-SINK (MEAS, Wave 2, ∥)
+
+**Why (measured, and the rev-1 assumption was wrong).** Rev 1 called the extraction sink "at the filesystem baseline"; the numbers do not support that. Same 128 MiB file, same host: a raw 1 MiB-chunk read+write is **0.21–0.23 s**; OpenRAR `x -m0 --in-proc -db` is **0.574 s**; default (entry durability) is **0.90 s**. The 0.33 s gap between the last two is the mandated per-entry flush. The remaining **~0.35 s (2.5× raw)** is unattributed: the journal record plus 128-bit temp-name RNG, the anchored temp create, rename, chmod and MOTW, the 64 KiB write cadence, per-chunk progress/cancel callbacks, and host AV scanning of the random `.tmp` leaf are all candidates.
+
+**What.** A log-only probe around one stored member (pattern: `tools/durability_probe.cpp`) that timestamps each of those stages, for `-db` and default, on NTFS and ext4. No production code change.
+
+**Exit.** A one-page split and a decision: either a concrete sink change with a gate, or a recorded "fsync/AV-bound, no code headroom". This measurement is not a licence to weaken durability.
+
 ---
 
 ## 5. Closed, parked, and reclassified
 
-| From the brainstorm | Disposition | Reason |
+| Claim / candidate | Disposition | Reason |
 |:---|:---|:---|
 | EXP-VECTORIZED-MEMCMP | **Closed — shipped** | `arch/match_simd.hpp` + `match_avx512.cpp`: SSE2/AVX2/AVX-512/NEON/WASM match kernels with runtime dispatch. |
 | EXP-AES-NI-CTR | **Closed — shipped and wrong mode** | RAR5 uses AES-256-**CBC**; `aes256.cpp:239-309` already has AES-NI CBC with 8-way pipelined decrypt. CTR would be a format change. |
@@ -296,6 +354,10 @@ Reclassified from "experiment" to "port + build decision". `match_length_wasm` a
 | EXP-AVX2-E8-SCAN | **Parked** | The scan is <0.2% of pack wall-clock (10 MiB scan at GB/s vs pack at 15 MB/s). A +30% kernel gate is easy and meaningless; an end-to-end gate would be noise. Reopen only if a profile says otherwise. |
 | EXP-A64-BRANCH | **Deferred (EXT)** | Needs a new filter type; also PE-ARM64 is currently mis-filtered as E8, which must be fixed first. |
 | EXP-RISCV-JAL | **Deferred (EXT)** | Same; plus no real corpus in typical archive workloads yet. |
+| "BLAKE2sp is a meaningful extraction cost" | **Refuted — measured** | 128 MiB store verify 0.115 s vs 2.12 s compressed verify: read+BLAKE2sp is ≈5% of the compressed path. Do not optimise the hash for speed. |
+| "The extraction sink is at the filesystem baseline" | **Open — not attributed** | `-m0` extraction is 0.574 s (`-db`) vs 0.21–0.23 s for a raw copy and 0.90 s default (the difference is the per-entry fsync). ~0.35 s remains unexplained; PROBE-STORE-SINK measures it before any change. |
+| "Huffman 2-symbol speeds up default extraction" | **Re-scoped** | With `-mt` unset (2 workers) the workers park behind the applier (91–92% of wall); gate 4.7 at `-mt1`, where the token loop is the critical path. |
+| "More parallel-decode workers help" | **Refuted on the reference host** | 2 workers take 2.16 s and 4 take 2.22–2.29 s; the applier is the single serial consumer. Reopen only with an applier that keeps up. |
 | "Pipeline filters into the span pipeline" | **Already satisfied** | Filter ops are records applied by the span applier (`decompressor50.cpp:1880-1892`). |
 | "JPEG-in-TIFF benefits from delta" | **Withdrawn** | Already entropy-coded; delta mildly hurts. |
 
@@ -317,6 +379,8 @@ No gate in §4 is evaluable without these. Each corpus gets a manifest with SHA-
 
 **C5 recipe** (reproducible, licence-clean, no sysroot needed): `clang --target=aarch64-linux-gnu -O2 -c pinned.c -o pinned.a64.o`, same for `riscv64-linux-gnu`. If clang cannot target a triple on the Windows host, generate the corpus in CI (ubuntu leg) and pin the hashes — do not skip the corpus. The committed stub set exists because of Q-7; the size gate is `tools/measure_c5.py --baseline main=<main build> --candidate branch=<branch build>` and the current result is in `tests/fixtures/c5/README.md`.
 
+**C6 Rev-2 diagnostic recipe (not yet a pinned gate corpus).** 128 MiB of seeded text — seed 1234, 400 synthetic `wN` tokens plus 8 common English words, 12 tokens per line, truncated to exactly 134,217,728 bytes. It is short-match-heavy (≈848k records per 4 MiB span), so report it as its own class next to literal-heavy text, zeros and binary. The numbers in §1 and §4.12 were taken on the i7-7500U reference host with the v2.3.0 release binary (`build/openrar64/Release/openrar.exe`, built 2026-11-13); the v2.4.0 changelog records no decoder/applier change, but a gate run must use a same-session trunk build.
+
 **Protocol.** `openrar_bench` (1 warm-up + 7 timed, median and spread, host disclosed) for throughput; archive byte counts from the same build for size; **every** archive whose bytes change is cross-extracted by UnRAR 7.20 and WinRAR 7.20 before a row may be promoted. Speeds are never compared across builds without a same-session baseline.
 
 **Stop rule.** A failed gate archives the branch to `arc/exp-*`, records the measurement in `docs/milestones/roadmap.md` §7, and closes the row. No partial promotion, no "mostly passing".
@@ -328,21 +392,26 @@ No gate in §4 is evaluable without these. Each corpus gets a manifest with SHA-
 ```mermaid
 graph TD
     W0["Wave 0 — Gate 0 decision + register rows"] --> W1
-    W1["Wave 1 — EXP-MACHINE-DISPATCH · PROBE-PREDICT"] --> W2
-    W2["Wave 2 — EXP-FILTER-SAFE-MT"] --> W3
+    W1["Wave 1 — EXP-MACHINE-DISPATCH ✅ v2.4.0 · PROBE-PREDICT ✅"] --> W2
+    SEC["Security track — SEC-PASSWORD-CHANNEL · SEC-TEMP-MODE (any wave)"] -.-> W2
+    BUILD["Build track — EXP-NATIVE-CODEGEN (∥ Wave 2)"] -.-> W2
+    SPROBE["PROBE-STORE-SINK (∥ Wave 2)"] -.-> W2
+    W2["Wave 2 — EXP-FILTER-SAFE-MT ∥ EXP-APPLIER-RECORD-FASTPATH · EXP-LITERAL-RUN-BULK"] --> W3
     W3["Wave 3 — EXP-IMAGE-STRIDE · EXP-AUDIO-DETECT"] --> W4
-    W4["Wave 4 — EXP-LITERAL-RUN-BULK · EXP-HUFF-2SYM · EXP-DELTA-MULTI-STRIDE"] --> W5
+    W4["Wave 4 — EXP-HUFF-2SYM (gated at -mt1) · EXP-DELTA-MULTI-STRIDE"] --> W5
     W5["Wave 5 — PARALLEL-DECODE-TUNE · WILDCOPY-AVX512 (gated)"] --> W6
     W6["Track 4 — EXP-FUZZ-STRESS (interleave every 2 waves)"]
     PROBE["PROBE-PREDICT result"] -.->|gates| W3
-    W4 -.->|applier overhead removed| W5
+    W2 -.->|applier overhead removed| W5
 ```
 
 Rationale for the order:
 
-- **Wave 1 first** because both items are cheap, legal, and reduce uncertainty: dispatch hygiene removes a wrong transform, and the probe prevents building an image filter that cannot win.
-- **Wave 2 before Wave 3** because image/audio detection costs MT throughput without it.
-- **Wave 4 before Wave 5** because the applier's per-literal overhead must go before span topology or AVX-512 copies can show up in the measurement.
+- **Wave 1 is done.** Dispatch hygiene removed a wrong transform (v2.4.0) and the probe prevented building an image filter that cannot win.
+- **Wave 2 now carries both tracks.** FILTER-SAFE-MT is still the prerequisite for image/audio detection; EXP-APPLIER-RECORD-FASTPATH is the measured decode bottleneck (91–92% of `-mt4` wall) with no format risk, and EXP-LITERAL-RUN-BULK removes the same per-token cadence in the sequential loop.
+- **Wave 3 before Wave 4** because image/audio detection still costs MT throughput without Wave 2's filter fix.
+- **Wave 4's Huffman work is gated at `-mt1`.** At the default worker count the symbol decode is hidden behind the applier, so a 2-symbol table cannot show its gain end-to-end until the applier catches up.
+- **Wave 5 remains the topology/wildcopy tail.** Both only become visible once the applier stops starving the workers.
 - **Wave 0 is not optional**: a candidate without a register row and a corpus is an opinion.
 
 > [!IMPORTANT]
@@ -356,14 +425,19 @@ Rationale for the order:
 |:---:|:---|:---|
 | Q-1 | Does RAR 7.x define an ARM64 or image filter inside the 3-bit type space? | All EXT work |
 | Q-2 | What fraction of pack wall-clock is the E8 scan end-to-end? | EXP-AVX2-E8-SCAN (currently parked) |
-| Q-3 | What fraction of extract wall-clock is Huffman decode vs copy vs filter vs BLAKE2sp vs fsync? | EXP-HUFF-2SYM, EXP-WILDCOPY-AVX512, EXP-PARALLEL-DECODE-TUNE |
+| Q-3 | What fraction of extract wall-clock is Huffman decode vs copy vs filter vs BLAKE2sp vs fsync? | **ANSWERED for the reference shape (2026-11-14).** 128 MiB `-m1` short-match text, i7-7500U, v2.3.0 release: `t -mt4` pipeline wall 2.09–2.17 s, of which the serial record applier is 1.93–1.97 s (**91–92%**); span workers decode 1 MiB spans in 77–123 ms and park. `t -mt1` is 3.78–3.90 s, so parallel decode buys 1.75× but is applier-ceilinged. Store verify (read+BLAKE2sp) is 0.115 s (**≈5%** of compressed verify). Extraction adds 0.58 s of sink+durability (the default-vs-`-db` store gap, 0.90 s vs 0.574 s, prices the per-entry fsync at ≈0.33 s); the remaining ≈0.35 s of store extraction over a raw copy is unattributed (Q-10). **Remaining unknown:** the split inside the 1.93 s applier (Q-8). |
 | Q-4 | Measured gain of plane-delta on real photographs (not ramps) at 24/32 bpp? | EXP-IMAGE-STRIDE go/no-go |
 | Q-5 | Actual cost of the `-mt` → `-mt1` fallback on a 100 MB filtered member? | EXP-FILTER-SAFE-MT priority |
 | Q-6 | Is delta3 memory-bandwidth-bound at 4,131 MB/s on the reference host? | Any further delta ISA work |
 | Q-7 | Can clang on the Windows reference host target `aarch64`/`riscv64` with `-c`? | C5 corpus sourcing |
+| Q-8 | Inside the 1.93 s record applier, what is the share of `copy_match`, literal memcpy, cadence/branch dispatch, and window growth? | EXP-APPLIER-RECORD-FASTPATH (profile before coding) |
+| Q-9 | Does GCC/Clang LTO change any archive byte or DLL export? | EXP-NATIVE-CODEGEN (this is the gate, not an assumption) |
+| Q-10 | Where does the ~0.35 s of `-m0` extraction overhead over a raw copy (0.574 s vs 0.21–0.23 s for 128 MiB) go? | PROBE-STORE-SINK |
 
 ---
 
 ## 9. Provenance
 
 Derived from the 2026-11-12 brainstorm, corrected against source on 2026-11-12. Corrections applied: filter-type legality (§2), MT fallback interaction (§3), already-shipped candidates (§5), delta channel units (§4.8), Huffman mechanism (§4.7), VBMI claim and bandwidth ceiling (§5), JPEG-in-TIFF claim (§5), span-pipeline status (§4.9), I-15 margin wording (§4.10), plus corpora, class labels and measurable gates. New candidates added: EXP-FILTER-SAFE-MT, EXP-LITERAL-RUN-BULK, EXP-HUFF-2SYM, EXP-MACHINE-DISPATCH, EXP-AUDIO-DETECT, PROBE-PREDICT.
+
+**Rev 2 (2026-11-14).** Re-baselined to v2.4.0; recorded the measured extraction-stage split (Q-3), refuted BLAKE2sp as a target and opened the store sink as PROBE-STORE-SINK, reordered the decode waves around the applier, and added EXP-APPLIER-RECORD-FASTPATH, EXP-NATIVE-CODEGEN, SEC-PASSWORD-CHANNEL, SEC-TEMP-MODE and PROBE-STORE-SINK. Every new row's premise was checked against source or measured; the diagnostic numbers and their caveats are in §1, §4.12 and §4.16.
