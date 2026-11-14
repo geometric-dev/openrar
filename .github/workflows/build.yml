@@ -1368,8 +1368,11 @@ jobs:
         uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
         with:
           # Trusted publishing needs Node >= 22.14.0 and npm CLI >= 11.5.1.
+          # No registry-url on purpose: it writes a `//registry.npmjs.org/:
+          # _authToken=${NODE_AUTH_TOKEN}` line into .npmrc, and npm treats any
+          # _authToken — even one that expands to the empty string — as "auth is
+          # configured" and skips the OIDC exchange entirely.
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Download WASM package
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -1377,24 +1380,38 @@ jobs:
           name: openrar-wasm
           path: wasm-pkg/
 
-      - name: Publish to npmjs.org (trusted publishing)
-        # npm trusted publishing needs a package that already exists on the
-        # registry, so the very first publish cannot use it. NPM_TOKEN is an
-        # optional bootstrap credential for exactly that case: when a trusted
-        # publisher is configured the npm CLI prefers OIDC and only falls back to
-        # the token if no publisher matches, so this can stay set until the first
-        # OIDC publish succeeds and then be deleted.
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Verify the npm trusted publisher (OIDC exchange)
+        # Proves this repository+workflow is accepted for the package before
+        # anything is published. The exchange endpoint only issues a short-lived
+        # publish token when a trusted publisher matches, so this is the same
+        # check a publish performs — and it still runs when the version is
+        # already on the registry and the publish below is skipped.
         run: |
           set -euo pipefail
-          echo "npm $(npm --version)"
-          if [ -n "${NPM_TOKEN:-}" ]; then
-            echo "NPM_TOKEN is set: it will be used if trusted publishing is not configured yet"
-            npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
-          else
-            echo "No NPM_TOKEN: publishing with trusted publishing (OIDC) only"
+          pkg=$(ls wasm-pkg/*.tgz | head -1)
+          name=$(tar -xzOf "${pkg}" package/package.json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).name")
+          id_token=$(curl -sS -f -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" \
+            | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).value")
+          code=$(curl -sS -o /tmp/oidc-exchange.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${id_token}" \
+            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${name}")
+          if [ "${code}" != "200" ]; then
+            echo "::error::The npm trusted publisher rejected the OIDC exchange for ${name} (HTTP ${code}). Check that the publisher names repository ${GITHUB_REPOSITORY}, workflow build.yml, an empty environment, and allows npm publish (a new publisher is stage-only by default)."
+            cat /tmp/oidc-exchange.json || true
+            exit 1
           fi
+          echo "Trusted publisher accepted the OIDC exchange for ${name}"
+
+      - name: Publish to npmjs.org (trusted publishing)
+        # OIDC is the only credential this job may use. A token would take
+        # precedence and silently disable trusted publishing, so the publish
+        # path actively drops any token the runner has.
+        run: |
+          set -euo pipefail
+          unset NODE_AUTH_TOKEN || true
+          npm config delete //registry.npmjs.org/:_authToken 2>/dev/null || true
+          echo "npm $(npm --version)"
           for pkg in wasm-pkg/*.tgz; do
             # Re-running a tag (to replace assets, for example) must not fail on
             # a version that is already published: npm has no --skip-existing.
