@@ -1338,5 +1338,13 @@ jobs:
           echo "Publishing package to NPM..."
           npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
           for pkg in wasm-pkg/*.tgz; do
+            # Re-running a tag (to replace assets, for example) must not fail on
+            # a version that is already published: npm has no --skip-existing.
+            name=$(tar -xzOf "${pkg}" package/package.json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).name")
+            ver=$(tar -xzOf "${pkg}" package/package.json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).version")
+            if npm view "${name}@${ver}" version >/dev/null 2>&1; then
+              echo "::notice::${name}@${ver} is already on npmjs.org; skipping"
+              continue
+            fi
             npm publish "${pkg}" --provenance --access public
           done
