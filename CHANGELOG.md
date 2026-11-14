@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-11-14
+
+### Performance
+
+- **Short-match decode is up to 19% faster:** the two-phase applier now
+  copies 8 bytes for matches up to 8 bytes and 16 bytes for 9–16-byte
+  matches when the wider store cannot overlap the source, with the byte
+  copy kept for overlap, ring wrap, zero-fill and the full-ring alias.
+  On a quiet 128 MiB text corpus at `-mt4`, applier work fell 19.4% and
+  test wall time 17.7% (median of five pairs; range 14.5–21.9%).
+- **Unfiltered spans skip the filter-queue cadence test:** a no-filter
+  flush threshold cuts a further 2.4% of applier time (1.7% wall, median
+  of five quiet pairs). The release guard, `-mt1` parity, zeros/binary,
+  release tests and ASan are green.
+
 ## [2.4.1] - 2026-11-14
 
 ### Security
