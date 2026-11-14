@@ -14,10 +14,6 @@ on:
         description: 'Only run the npm trusted-publisher OIDC exchange (every build job is skipped)'
         type: boolean
         default: false
-      npm_oidc_check_package:
-        description: 'npm package name to exchange for'
-        type: string
-        default: 'openrar-wasm'
 
 # Cancel superseded runs on the same branch/PR: a second push within the
 # ~9-minute matrix window replaces the first, halving feedback latency and
@@ -1384,8 +1380,9 @@ jobs:
   # repository, without cutting or re-pointing a release tag:
   #   gh workflow run build.yml --ref <branch> -f npm_oidc_check=true
   # It must live in this file: the publisher is bound to the workflow filename
-  # `build.yml`, so an OIDC token minted by any other workflow is rejected. The
-  # build jobs carry the inverse condition, so that dispatch runs only this job.
+  # `build.yml`, so a token from any other workflow is rejected. Build jobs carry
+  # the inverse condition and the publish/verify jobs stay tag-gated, so this is
+  # the only job a dispatch can run.
   npm-oidc-check:
     name: npm trusted publisher (OIDC exchange)
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check }}
@@ -1395,30 +1392,22 @@ jobs:
       id-token: write # mints the OIDC token the registry exchanges
     steps:
       - name: Exchange the OIDC token for a package-scoped publish token
-        env:
-          PACKAGE: ${{ inputs.npm_oidc_check_package }}
         run: |
           set -euo pipefail
-          pkg="${PACKAGE:-openrar-wasm}"
-          # The registry issues a token only when a trusted publisher matches
-          # this repository, the workflow file build.yml and an empty
-          # environment. It answers 201 Created with token_type "oidc".
+          pkg=openrar-wasm
           id_token=$(curl -sS -f -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
-          code=$(curl -sS -o /tmp/oidc-exchange.json -w '%{http_code}' -X POST \
-            -H "Authorization: Bearer ${id_token}" \
-            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${pkg}")
-          case "${code}" in
-            2*)
-              python3 -c 'import json; d=json.load(open("/tmp/oidc-exchange.json")); print("publisher accepted: token_type=%s lifetime=%ss" % (d.get("token_type"), int(d.get("expires", 0)) - int(d.get("created", 0))))'
-              ;;
-            *)
-              echo "::error::The npm trusted publisher rejected the OIDC exchange for ${pkg} (HTTP ${code}). Check that the publisher names repository ${GITHUB_REPOSITORY}, workflow build.yml, an empty environment, and allows npm publish (a new publisher is stage-only by default)."
-              cat /tmp/oidc-exchange.json || true
-              exit 1
-              ;;
-          esac
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" | jq -r .value)
+          # A matching publisher answers 201 Created with token_type "oidc";
+          # a mismatch is 4xx. The token itself is never printed.
+          if ! code=$(curl -sS -o /tmp/exchange.json -w '%{http_code}' -X POST \
+                 -H "Authorization: Bearer ${id_token}" \
+                 "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${pkg}") \
+             || [ "${code:0:1}" != 2 ]; then
+            echo "::error::The npm trusted publisher rejected the OIDC exchange for ${pkg} (HTTP ${code:-no response}). Check that the publisher names repository ${GITHUB_REPOSITORY}, workflow build.yml, an empty environment, and allows npm publish (a new publisher is stage-only by default)."
+            cat /tmp/exchange.json 2>/dev/null || true
+            exit 1
+          fi
+          jq -r '"publisher accepted: token_type=\(.token_type) lifetime=\(.expires - .created)s"' /tmp/exchange.json
 
   publish-npm:
     name: Publish WASM SDK to NPM
@@ -1444,35 +1433,6 @@ jobs:
         with:
           name: openrar-wasm
           path: wasm-pkg/
-
-      - name: Verify the npm trusted publisher (OIDC exchange)
-        # Proves this repository+workflow is accepted for the package before
-        # anything is published. The exchange endpoint only issues a short-lived
-        # publish token when a trusted publisher matches, so this is the same
-        # check a publish performs — and it still runs when the version is
-        # already on the registry and the publish below is skipped.
-        run: |
-          set -euo pipefail
-          pkg=$(ls wasm-pkg/*.tgz | head -1)
-          name=$(tar -xzOf "${pkg}" package/package.json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).name")
-          id_token=$(curl -sS -f -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" \
-            | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).value")
-          code=$(curl -sS -o /tmp/oidc-exchange.json -w '%{http_code}' -X POST \
-            -H "Authorization: Bearer ${id_token}" \
-            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${name}")
-          # The registry answers 201 Created with token_type "oidc" for a
-          # matching trusted publisher; any 2xx is acceptance.
-          case "${code}" in
-            2*)
-              echo "Trusted publisher accepted the OIDC exchange for ${name}"
-              ;;
-            *)
-              echo "::error::The npm trusted publisher rejected the OIDC exchange for ${name} (HTTP ${code}). Check that the publisher names repository ${GITHUB_REPOSITORY}, workflow build.yml, an empty environment, and allows npm publish (a new publisher is stage-only by default)."
-              cat /tmp/oidc-exchange.json || true
-              exit 1
-              ;;
-          esac
 
       - name: Publish to npmjs.org (trusted publishing)
         # OIDC is the only credential this job may use. A token would take
