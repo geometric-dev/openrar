@@ -72,18 +72,17 @@ jobs:
             arch_suffix: ""
             cmake_arch: ""
             dll_suffix: ""
-          # macos-latest is an Apple-silicon runner and this leg passes no
-          # -DCMAKE_OSX_ARCHITECTURES, so the binaries are arm64-only. The
-          # matrix label used to say "universal", which the published
-          # openrar-<ver>-macos-*-universal.zip did not honour (Intel Macs
-          # cannot run it). Named for the truth; a real universal2 build would
-          # need CMAKE_OSX_ARCHITECTURES="arm64;x86_64" on this leg.
+          # The first universal attempt never passed an arch list, so on an
+          # arm64 runner the "universal" artifact was arm64-only and Intel Macs
+          # could not run it. The leg now builds with
+          # CMAKE_OSX_ARCHITECTURES="arm64;x86_64" and asserts both slices with
+          # lipo before anything is published.
           - os: macos-latest
             compiler: clang
             cxx: clang++
             build_type: Release
-            arch: arm64
-            arch_suffix: " (arm64)"
+            arch: universal
+            arch_suffix: ""
             cmake_arch: ""
             dll_suffix: ""
           - os: windows-2022
@@ -131,12 +130,21 @@ jobs:
         run: |
           WARN_FLAG=""
           if [ "${{ matrix.warnings_as_errors }}" = "true" ]; then WARN_FLAG="-DOPENRAR_WARNINGS_AS_ERRORS=ON"; fi
+          # One fat build for both Mac architectures: Intel Macs have no
+          # other way to run the release artifact. An array, not a string, so
+          # the quote survives the semicolon (CMake reads it as its arch list)
+          # and the other legs pass no argument at all.
+          ARCH_ARGS=()
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            ARCH_ARGS+=("-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64")
+          fi
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
             -DOPENRAR_DLL_SUFFIX=${{ matrix.dll_suffix }} \
             -DOPENRAR_INMEM_ARCHIVE=ON \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            "${ARCH_ARGS[@]}" \
             $WARN_FLAG
 
       - name: Formatting check (clang-format, gate leg only)
@@ -184,6 +192,32 @@ jobs:
       - name: Build All Targets
         run: |
           cmake --build build --config ${{ matrix.build_type }} --parallel
+
+      - name: Verify universal2 binaries (macOS)
+        # The 2.4.0 artifact was published as "universal" while being arm64
+        # only. Asserting both slices here makes that class of silent drift a
+        # red build instead of a support claim nobody checks.
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          for bin in ./build/openrar ./build/libopenrar.dylib; do
+            if [ ! -e "$bin" ]; then
+              echo "::error::$bin not found"
+              status=1
+              continue
+            fi
+            info="$(lipo -info "$bin")"
+            echo "$info"
+            for want in arm64 x86_64; do
+              if ! grep -q "$want" <<<"$info"; then
+                echo "::error::$bin is missing the $want slice (not universal2)"
+                status=1
+              fi
+            done
+          done
+          exit $status
 
       - name: Verify DLL artifact exists
         shell: bash

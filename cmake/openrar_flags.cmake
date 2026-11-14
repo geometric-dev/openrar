@@ -103,7 +103,24 @@ if(NOT EMSCRIPTEN)
             PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
     elseif((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)")
-        set(OPENRAR_AVX512_KERNEL ON)
+        # A universal2 macOS build compiles every TU for both slices from one
+        # definition set. The kernel bodies are gated on the capability define
+        # alone (not on __x86_64__), so enabling it here would push x86
+        # intrinsics into the arm64 slice and break the build. Multi-arch
+        # builds stay on the AVX2 dispatch path; a single-arch x86_64 build
+        # (including the x86_64-only macOS leg, if one is ever added) keeps
+        # the AVX-512/GFNI kernels.
+        set(_openrar_multiarch FALSE)
+        if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+            list(LENGTH CMAKE_OSX_ARCHITECTURES _openrar_arch_count)
+            if(_openrar_arch_count GREATER 1)
+                set(_openrar_multiarch TRUE)
+                message(STATUS "openrar: multiple Apple architectures - AVX-512/GFNI kernels disabled")
+            endif()
+        endif()
+        if(NOT _openrar_multiarch)
+            set(OPENRAR_AVX512_KERNEL ON)
+        endif()
     endif()
 endif()
 if(OPENRAR_AVX512_KERNEL)
