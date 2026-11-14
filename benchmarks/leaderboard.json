@@ -1,7 +1,7 @@
 {
   "benchmark": "openrar_rarmark_v2",
   "leaderboard_url": "https://geometric-dev.github.io/openrar/",
-  "updated_at": "2026-11-14 08:27:28 UTC",
+  "updated_at": "2026-11-14 08:37:33 UTC",
   "total": 8,
   "entries": [
     {
@@ -76,20 +76,6 @@
     },
     {
       "rank": 6,
-      "cpu_brand": "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",
-      "system": "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",
-      "arch": "x86_64",
-      "threads": 4,
-      "simd": "AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC",
-      "mem_bw_gbps": 5.83,
-      "st_compress_kbps": 9932.8,
-      "mt_compress_kbps": 21161.5,
-      "mt_decompress_kbps": 462420.7,
-      "speedup_ratio": 2.13,
-      "rarmark_score": 19766
-    },
-    {
-      "rank": 7,
       "cpu_brand": "Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz",
       "system": "Intel(R) Core(TM) i5-6440HQ CPU @ 2.60GHz",
       "arch": "x86_64",
@@ -101,6 +87,20 @@
       "mt_decompress_kbps": 443890.7,
       "speedup_ratio": 3.37,
       "rarmark_score": 19453
+    },
+    {
+      "rank": 7,
+      "cpu_brand": "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",
+      "system": "Intel(R) Core(TM) i7-7500U CPU @ 2.70GHz",
+      "arch": "x86_64",
+      "threads": 4,
+      "simd": "AVX2 LZ, AVX2 BLAKE2sp, AES-NI, PCLMUL CRC",
+      "mem_bw_gbps": 7.43,
+      "st_compress_kbps": 16700.1,
+      "mt_compress_kbps": 34661.4,
+      "mt_decompress_kbps": 411312.5,
+      "speedup_ratio": 2.08,
+      "rarmark_score": 18532
     },
     {
       "rank": 8,
