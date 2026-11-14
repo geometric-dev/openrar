@@ -59,7 +59,7 @@ Checked against source, not against the previous brainstorm.
 | Extraction stage split (measured 2026-11-14) | §8 Q-3 | 128 MiB `-m1` short-match text, v2.4.0: store verify **0.115 s**, compressed verify **1.18–1.27 s quiet / 1.6–2.1 s sustained** (process); at `-mt4` applier spans total **1.03 s quiet / 1.5–2.0 s sustained** (91% of the corresponding pipeline wall), workers parked; store extraction `-db` **0.574 s**, default **0.90 s**, raw copy **0.21–0.23 s** |
 | Native codegen | `cmake/openrar_flags.cmake:29-34`; `cmake/openrar_dll.cmake:37` | MSVC Release gets `/GL` + `/LTCG`; GCC/Clang Release gets `-O3` only — **no LTO and no PGO** — and the DLL target explicitly sets `INTERPROCEDURAL_OPTIMIZATION OFF` |
 | Password acquisition | `src/cli/main.cpp:4616-4626`; `docs/cli.md:88-89` | The manual documents bare `-p`/`-hp` as "(prompt)"; the parser **rejects** both, so a secret can only arrive inline in argv. The sandbox already never carries the raw password (`sandbox/ipc.hpp:42-43`) |
-| POSIX temp-file mode | `src/io/containment.cpp:614`; `src/io/extraction_journal.cpp:852`; `src/archive/archive_reader.cpp:450`, `:2862-2871` | Extraction data temporaries are created **0644**; the archived mode is applied only after the payload is written and committed |
+| POSIX temp-file mode | `src/io/containment.cpp:610`; `src/io/extraction_journal.cpp:867`; `src/archive/archive_reader.cpp:371`, `:2886-2894` | **Fixed in v2.4.1 (SEC-TEMP-MODE):** extraction data temporaries are created **0600** and the member's final mode is applied to the open handle immediately before the commit rename, so the archived mode is in place at the rename rather than after it |
 
 ---
 
@@ -328,7 +328,9 @@ Reclassified from "experiment" to "port + build decision". `match_length_wasm` a
 
 **Gate.** A child-process argv enumeration finds no secret in prompted mode; a PTY test proves no echo and one prompt per key derivation; non-TTY fails closed; archives produced with the same password are byte-identical to inline mode; all 56 suites; the sandbox worker still never receives the raw password.
 
-### 4.15 SEC-TEMP-MODE (W2, Wave 1, security track)
+### 4.15 SEC-TEMP-MODE (W2, Wave 1, security track) — shipped in v2.4.1
+
+**Status:** shipped in v2.4.1 (`6658b3d`); `CHANGELOG.md` §2.4.1 and the §1 inventory row record it.
 
 **Problem (verified window).** The extraction data temporary is created by `ContainmentRoot::anchored_create` with mode **0644** (`src/io/containment.cpp:614`) on POSIX. `AtomicWriter::open_contained` uses that path for every entry (`src/io/extraction_journal.cpp:852`), and the archived mode is applied only after the payload has been written and committed (`src/archive/archive_reader.cpp:450`, `:2862-2871`). A 0600 member is therefore world-readable — in a 0755 destination directory — for the whole duration of its extraction, which can be seconds for a large member. The journal itself is already 0600 (`containment.cpp:625`); only the data temp is widened.
 
