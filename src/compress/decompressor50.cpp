@@ -1822,7 +1822,18 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
     // (inside engine_.flush_pending). Filter records skip the cadence check
     // exactly like the sequential filter-token branch.
     const size_t flush_cadence = engine_.flush_cadence();
+    // Most streams schedule no filters. In that case the flush test is just a
+    // threshold: hoist the queue dereference and subtraction out of the
+    // per-record path. A Filter record invalidates the flag below.
+    bool no_filters = !engine_.filters_ || engine_.filters_->empty();
+    size_t next_flush = engine_.last_flushed_ + flush_cadence;
     auto cadence = [&]() -> bool {
+        if (no_filters) {
+            if (total_written < next_flush) return true;
+            if (!engine_.flush_pending(false, 0, total_written, dest_size, flush_cb)) return false;
+            next_flush = engine_.last_flushed_ + flush_cadence;
+            return true;
+        }
         if (total_written - engine_.last_flushed_ < flush_cadence &&
             !engine_.has_completed_filter(0, total_written))
             return true;
@@ -1991,6 +2002,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
         }
         if (!engine_.ensure_filters()) return false;
         if (!engine_.filters_->push(fe)) return false;
+        no_filters = false;
 #ifdef OPENRAR_CROSS_VALIDATE
         if (engine_.val_src_ != nullptr) {
             engine_.val_regions_.emplace_back(static_cast<size_t>(fe.block_start), fe.block_length);
