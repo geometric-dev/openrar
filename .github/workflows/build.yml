@@ -106,16 +106,6 @@ jobs:
             # rather than the arch name so the arm64-native macOS leg still runs
             # its tests (it used to be gated on arch == 'arm64').
             cross_compiled: true
-            # x64 host cross-compiling for ARM64: these artifacts cannot run
-            # here, so the test/benchmark steps are skipped. Keyed off this flag
-            # rather than the arch name so the arm64-native macOS leg still runs
-            # its tests (it used to be gated on arch == 'arm64').
-            cross_compiled: true
-            # x64 host cross-compiling for ARM64: these artifacts cannot run
-            # here, so the test/benchmark steps are skipped. Keyed off this flag
-            # rather than the arch name so the arm64-native macOS leg still runs
-            # its tests (it used to be gated on arch == 'arm64').
-            cross_compiled: true
 
     steps:
       - name: Checkout repository
