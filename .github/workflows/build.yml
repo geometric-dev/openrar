@@ -19,7 +19,9 @@ on:
 # ~9-minute matrix window replaces the first, halving feedback latency and
 # removing queue noise (commit-and-pray mitigation, v1.22.0).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # The OIDC check gets its own group: it is a one-minute dispatch that must not
+  # cancel an in-flight push run (and vice versa).
+  group: ${{ github.workflow }}-${{ github.ref }}${{ (github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) && '-oidc-check' || '' }}
   cancel-in-progress: true
 
 # Default-deny. Only release-assets widens this (it needs contents/id-token/
