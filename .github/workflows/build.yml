@@ -365,10 +365,15 @@ jobs:
         run: |
           set -euo pipefail
           SUFFIX="${{ matrix.dll_suffix }}"
-          SRC="build/openrar64/${{ matrix.build_type }}/openrar${SUFFIX}.dll"
-          [ -f "$SRC" ] || SRC="build/${{ matrix.build_type }}/openrar${SUFFIX}.dll"
-          if [ ! -f "$SRC" ]; then
+          # The Visual Studio generator writes the DLL beside the build root;
+          # Ninja-style layouts use a per-config directory. Search instead of
+          # hard-coding a path, so a layout change cannot silently break
+          # staging (this step failed on both Windows legs looking only in
+          # build/Release and build/openrar64/Release).
+          SRC=$(find build -name "openrar${SUFFIX}.dll" -type f 2>/dev/null | head -n 1)
+          if [ -z "$SRC" ]; then
             echo "::error::openrar${SUFFIX}.dll not found; cannot stage the canonical openrar.dll"
+            find build -maxdepth 2 -name 'openrar*.dll' -type f 2>/dev/null || true
             exit 1
           fi
           cp "$SRC" "$(dirname "$SRC")/openrar.dll"
