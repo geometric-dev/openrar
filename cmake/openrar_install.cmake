@@ -15,6 +15,14 @@ if(NOT EMSCRIPTEN)
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
             LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
             ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    # The sandboxed worker ships beside the CLI: worker_exe_path() resolves it
+    # as a sibling of the openrar binary, and without it the CLI falls back to
+    # in-process parsing with a warning on stderr. The target exists only when
+    # the test targets are configured, hence the guard.
+    if(TARGET openrar_worker)
+        install(TARGETS openrar_worker RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+
     install(FILES
                 include/openrar/openrar_dll.h
                 include/openrar/openrar.hpp
