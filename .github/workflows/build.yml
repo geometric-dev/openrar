@@ -1441,7 +1441,9 @@ jobs:
           PKG=openrar-wasm
           REGISTRY=https://registry.npmjs.org
           found=0
-          for _ in $(seq 1 30); do
+          # 2.4.0 took 3.5 minutes between "publish" and its tarball being
+          # served, so allow 10 minutes like the nuget check.
+          for _ in $(seq 1 60); do
             if npm view "${PKG}@${VERSION}" version --registry "$REGISTRY" >/dev/null 2>&1; then
               found=1
               break
@@ -1449,7 +1451,7 @@ jobs:
             sleep 10
           done
           if [ "$found" -ne 1 ]; then
-            echo "::error::${PKG}@${VERSION} is not resolvable from npmjs.org after 5 minutes"
+            echo "::error::${PKG}@${VERSION} is not resolvable from npmjs.org after 10 minutes"
             exit 1
           fi
           work="$(mktemp -d)"
