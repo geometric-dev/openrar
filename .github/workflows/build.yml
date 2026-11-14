@@ -1404,7 +1404,9 @@ jobs:
               echo "::notice::${name}@${ver} is already on npmjs.org; skipping"
               continue
             fi
-            if ! npm publish "${pkg}" --provenance --access public; then
+            # "./" matters: a bare "dir/file.tgz" is parsed by npm as a
+            # GitHub shorthand (owner/repo) and it tries to clone it.
+            if ! npm publish "./${pkg}" --provenance --access public; then
               echo "::error::npm publish ${name}@${ver} failed. On ENEEDAUTH, check that ${name}'s trusted publisher names repository ${GITHUB_REPOSITORY}, workflow build.yml, and allows npm publish (a new publisher is stage-only by default)."
               exit 1
             fi
