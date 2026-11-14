@@ -102,34 +102,25 @@ if(NOT EMSCRIPTEN)
         set_source_files_properties(src/compress/arch/match_avx512.cpp src/recovery/rs16_gfni.cpp src/crypto/arch/blake2sp_avx512.cpp
             PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        # Enable when the build has an x86-64 slice. Checking only the host
-        # processor was wrong for universal2: that build is configured on an
-        # Apple Silicon runner, so CMAKE_SYSTEM_PROCESSOR says arm64 while one
-        # slice is Intel, and the Intel half silently shipped without the
-        # kernels. cmake/isa_kernel_gate.hpp (force-included below) drops the
-        # capability defines for whichever slices are not x86.
-        set(_openrar_x86_slice FALSE)
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)")
-            set(_openrar_x86_slice TRUE)
-        endif()
-        if(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
-            set(_openrar_x86_slice TRUE)
-        endif()
-        if(_openrar_x86_slice)
+        # Enable when the build has an x86-64 slice: either the host processor
+        # (native builds) or the Apple architecture list, because a universal2
+        # build runs on an Apple Silicon host whose processor is arm64 while one
+        # of its slices is Intel.
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)" OR
+           CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
             set(OPENRAR_AVX512_KERNEL ON)
         endif()
     endif()
 endif()
 if(OPENRAR_AVX512_KERNEL)
     add_compile_definitions(OPENRAR_HAS_AVX512_KERNEL=1 OPENRAR_HAS_GFNI_KERNEL=1)
-    # The capability defines are target-wide, so a universal build would hand
-    # them to the arm64 slice as well. Force-include the gate: it #undefs them
-    # when the compiler is targeting a non-x86 architecture, and is a no-op on
-    # every x86-64 build (including the Intel slice of a fat binary).
-    if(MSVC)
-        add_compile_options("/FI${CMAKE_SOURCE_DIR}/cmake/isa_kernel_gate.hpp")
-    else()
-        add_compile_options(-include ${CMAKE_SOURCE_DIR}/cmake/isa_kernel_gate.hpp)
+    # A universal2 build hands these target-wide definitions to the arm64 slice
+    # as well, while the kernel bodies are gated on the definition alone.
+    # Force-include the gate for Apple builds so a non-x86 slice drops them; it
+    # is a no-op on the x86-64 slice, and no other platform builds one target for
+    # two architectures.
+    if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+        add_compile_options(-include "${CMAKE_CURRENT_SOURCE_DIR}/cmake/isa_kernel_gate.hpp")
     endif()
 endif()
 

@@ -209,6 +209,43 @@ jobs:
           done
           exit $status
 
+      - name: Verify the Intel slice carries the AVX-512 and GFNI kernels
+        # Being fat is not enough: 2.4.0 shipped a universal zip whose x86_64
+        # slice silently lacked these kernels - first because multi-arch builds
+        # switched them off, then because enablement keyed off the runner's host
+        # CPU. Thin the slice and assert the kernel symbols are actually in it.
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          symbols=(match_length_avx512_kernel blake2sp_update_bulk_avx512 rs16_fold_gfni)
+          status=0
+          for bin in ./build/openrar ./build/libopenrar.dylib; do
+            if [ ! -e "$bin" ]; then
+              echo "::error::$bin not found"
+              status=1
+              continue
+            fi
+            # mktemp -d is portable (BSD's -t template rules differ from GNU's)
+            thin="$(mktemp -d)/$(basename "$bin").x86_64" || exit 1
+            if ! lipo -thin x86_64 -output "$thin" "$bin"; then
+              echo "::error::$bin has no x86_64 slice to inspect"
+              rm -f "$thin"
+              status=1
+              continue
+            fi
+            for sym in "${symbols[@]}"; do
+              if grep -aq "$sym" "$thin"; then
+                echo "$bin [x86_64]: $sym present"
+              else
+                echo "::error::$bin x86_64 slice is missing $sym (kernel not compiled in)"
+                status=1
+              fi
+            done
+            rm -rf "$(dirname "$thin")"
+          done
+          exit $status
+
       - name: Verify DLL artifact exists
         shell: bash
         run: |
