@@ -703,6 +703,45 @@ bool Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
     return true;
 }
 
+bool Decompressor50::ApplyEngine::copy_match_short(size_t distance, size_t length,
+                                                   size_t total_written) {
+#ifdef OPENRAR_CROSS_VALIDATE
+    return copy_match(distance, length, total_written);
+#else
+    (void)total_written;
+    // The applier's dominant record is a 5-byte match. For <=16 bytes the
+    // generic path pays an indirect wildcopy call plus its setup; a forward
+    // byte copy is correct for overlap and needs no dispatch. Everything the
+    // fast path cannot express (zero-fill on the first pass, ring wrap,
+    // source-ahead overlap, full-ring alias) falls back to copy_match.
+    if (length == 0 || length > 16) return copy_match(distance, length, total_written);
+    if (distance == 0 || distance > win_size_) return true; // callers validate first
+    if (!reserve(length)) return false;
+    if (distance > win_pos_ && !first_win_done_) {
+        return copy_match(distance, length, total_written);
+    }
+    size_t src = wrap_up(win_pos_ + win_size_ - distance);
+    if (src == win_pos_) {
+        win_pos_ = wrap_up(win_pos_ + length);
+        if (win_pos_ == 0) first_win_done_ = true;
+        return true;
+    }
+    if (src + length > win_size_ || win_pos_ + length > win_size_) {
+        return copy_match(distance, length, total_written);
+    }
+    const size_t gap = (src < win_pos_) ? (win_pos_ - src) : (src - win_pos_);
+    if (src > win_pos_ && gap < length) {
+        return copy_match(distance, length, total_written);
+    }
+    core::byte* dst = &window_[win_pos_];
+    const core::byte* sp = &window_[src];
+    for (size_t i = 0; i < length; ++i) dst[i] = sp[i];
+    win_pos_ = wrap_up(win_pos_ + length);
+    if (win_pos_ == 0) first_win_done_ = true;
+    return true;
+#endif
+}
+
 bool Decompressor50::ApplyEngine::flush_plain_up_to(size_t target, size_t total_written,
                                                     size_t dest_size, OutputCallback cb) {
     if (last_flushed_ > total_written) return false;
@@ -1763,6 +1802,10 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
             return true;
         return engine_.flush_pending(false, 0, total_written, dest_size, flush_cb);
     };
+    auto copy = [&](size_t distance, size_t len) -> bool {
+        return len <= 16 ? engine_.copy_match_short(distance, len, total_written)
+                         : engine_.copy_match(distance, len, total_written);
+    };
 
     for (const auto& r : sr.recs) {
         if (total_written >= dest_size) break; // applier clamp point [R8]
@@ -1834,7 +1877,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
             old_dist_[0] = distance;
             last_length_ = len;
             if (len > dest_size - total_written) len = dest_size - total_written;
-            if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
+            if (!copy(distance, len)) return window_alloc_failed();
             total_written += len;
             if (!cadence()) return false;
             continue;
@@ -1855,7 +1898,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
             last_length_ = r.a;
             size_t len = r.a;
             if (len > dest_size - total_written) len = dest_size - total_written;
-            if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
+            if (!copy(distance, len)) return window_alloc_failed();
             total_written += len;
             if (!cadence()) return false;
             continue;
@@ -1871,7 +1914,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
                 }
                 size_t len = last_length_;
                 if (len > dest_size - total_written) len = dest_size - total_written;
-                if (!engine_.copy_match(distance, len, total_written)) return window_alloc_failed();
+                if (!copy(distance, len)) return window_alloc_failed();
                 total_written += len;
                 if (!cadence()) return false;
             }

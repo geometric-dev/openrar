@@ -651,6 +651,9 @@ private:
         }
         // False only when the window could not grow (allocation failure).
         bool copy_match(size_t distance, size_t length, size_t total_written);
+        // Short-match fast path: contiguous copies up to 16 bytes without the
+        // generic wildcopy dispatch. Falls back to copy_match for wrap/zero edges.
+        bool copy_match_short(size_t distance, size_t length, size_t total_written);
         bool flush_plain_up_to(size_t target, size_t total_written, size_t dest_size,
                                OutputCallback cb);
         bool flush_pending(bool flush_all, core::uint64 base_at_entry, size_t total_written,
