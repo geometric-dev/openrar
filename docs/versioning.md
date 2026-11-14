@@ -209,6 +209,84 @@ Every release candidate must pass all four qualification legs:
    required matrix legs (`msan` is deliberately outside its `needs`), so a
    red job it depends on means no artifacts were published.
 
+## Registry publishing credentials
+
+Registry publishing runs only from a `v*` tag (`publish-pypi`, `publish-nuget`,
+`publish-npm`, then `verify-published`). No long-lived registry secret is stored
+for either .NET or JavaScript: both exchange a GitHub Actions OIDC token for a
+short-lived credential scoped to one package. The two secrets that remain are
+`NUGET_USER` (the nuget.org **profile name**, not the account email) and
+`LAUNCHPAD_GPG_KEY`.
+
+### npm — `openrar-wasm` trusted publishing
+
+Package settings → Trusted publishing must match this table exactly. npm compares
+the token's workflow identity against it, so a near miss is a hard rejection:
+
+| Field | Value |
+|:---|:---|
+| Provider | GitHub Actions |
+| Organization or user | `geometric-dev` |
+| Repository | `openrar` |
+| Workflow filename | `build.yml` — the file name only, not `.github/workflows/build.yml` |
+| Environment | *blank* — the publish job uses no GitHub environment |
+| Allowed actions | **npm publish** ticked; a newly created publisher allows *stage publish* only until this is ticked |
+
+Prerequisites on the job: `permissions: id-token: write`, a GitHub-hosted runner
+(self-hosted is unsupported), and npm CLI ≥ 11.5.1 (Node 24 via `setup-node`).
+`wasm/js/package.json` must keep a `repository.url` that matches the GitHub
+repository; residency mismatches fail provenance validation with a 422.
+
+**The pitfall: any configured token silently disables trusted publishing.** The
+npm CLI performs the OIDC exchange only when no `_authToken` resolves for the
+registry. Two things create one, and either is enough to lose OIDC:
+
+- a `NPM_TOKEN` / `NODE_AUTH_TOKEN` environment variable, or `npm config set
+  //registry.npmjs.org/:_authToken …`;
+- `actions/setup-node` with `registry-url:`, which writes
+  `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` into `.npmrc`. The line
+exists even when the secret does not, and an expansion to the empty string still
+counts as "auth is configured" — npm then skips the exchange and fails with
+`ENEEDAUTH`, or quietly publishes with the token when one is present.
+
+The publish job therefore passes no `registry-url`, injects no token, and clears
+an ambient `_authToken` before publishing. Do not re-add `NPM_TOKEN` as a
+convenience: the token wins, the publisher goes unexercised, and an unvalidated
+publisher **expires two days after creation**. If that happens, delete the
+configuration and create it again.
+
+### Validating the npm publisher without a release
+
+The publisher names `build.yml`, so an OIDC token minted by any other workflow
+file is rejected — the check has to live in `build.yml`, which is why it is a
+dispatch input rather than a standalone workflow:
+
+```bash
+gh workflow run build.yml --ref master -f npm_oidc_check=true
+```
+
+That dispatch runs only `npm trusted publisher (OIDC exchange)`; every build job
+carries the inverse `if` (`!(github.event_name == 'workflow_dispatch' &&
+inputs.npm_oidc_check)`) and is skipped, so it finishes in under a minute without
+touching a tag or a registry. The job posts the Actions OIDC token to
+`POST https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/<name>`;
+the registry answers **201 Created** with `token_type: "oidc"` when a trusted
+publisher matches, and the job prints only the token type and lifetime, never
+the token itself. A non-2xx fails the job with the publisher fields to check. The
+`publish-npm` job runs the same exchange before publishing, so a green release
+run also proves it.
+
+### nuget.org — `OpenRAR.NET` trusted publishing
+
+Policy fields on nuget.org (account → Trusted Publishing): repository owner
+`geometric-dev`, repository `openrar`, workflow file `build.yml`, environment
+blank, and a package pattern covering the id (`OpenRAR.NET` or `OpenRAR.*`) with
+both scopes enabled — *new packages* and *new versions*. `publish-nuget` uses
+`NuGet/login@v1` to exchange the OIDC token and pushes with `--skip-duplicate`,
+so re-running a tag is safe. The policy becomes permanently active after its
+first successful publish; policy fields and `NUGET_USER` are the two things to
+check on an authentication failure.
+
 ## Tag retention & package ecosystem policy
 
 OpenRAR coordinates git tags with external package registries (Debian APT, NuGet, PyPI, NPM):
