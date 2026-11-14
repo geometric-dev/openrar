@@ -103,28 +103,25 @@ if(NOT EMSCRIPTEN)
             PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
     elseif((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)")
-        # A universal2 macOS build compiles every TU for both slices from one
-        # definition set. The kernel bodies are gated on the capability define
-        # alone (not on __x86_64__), so enabling it here would push x86
-        # intrinsics into the arm64 slice and break the build. Multi-arch
-        # builds stay on the AVX2 dispatch path; a single-arch x86_64 build
-        # (including the x86_64-only macOS leg, if one is ever added) keeps
-        # the AVX-512/GFNI kernels.
-        set(_openrar_multiarch FALSE)
-        if(APPLE AND CMAKE_OSX_ARCHITECTURES)
-            list(LENGTH CMAKE_OSX_ARCHITECTURES _openrar_arch_count)
-            if(_openrar_arch_count GREATER 1)
-                set(_openrar_multiarch TRUE)
-                message(STATUS "openrar: multiple Apple architectures - AVX-512/GFNI kernels disabled")
-            endif()
-        endif()
-        if(NOT _openrar_multiarch)
-            set(OPENRAR_AVX512_KERNEL ON)
-        endif()
+        # Also covers a universal2 macOS build hosted on Apple Silicon: the
+        # kernels are enabled here, and cmake/isa_kernel_gate.hpp (force-
+        # included below) drops the capability defines for the arm64 slice so
+        # only the x86_64 slice compiles the intrinsics. Without that gate the
+        # arm64 half of a fat binary would not compile at all.
+        set(OPENRAR_AVX512_KERNEL ON)
     endif()
 endif()
 if(OPENRAR_AVX512_KERNEL)
     add_compile_definitions(OPENRAR_HAS_AVX512_KERNEL=1 OPENRAR_HAS_GFNI_KERNEL=1)
+    # The capability defines are target-wide, so a universal build would hand
+    # them to the arm64 slice as well. Force-include the gate: it #undefs them
+    # when the compiler is targeting a non-x86 architecture, and is a no-op on
+    # every x86-64 build (including the Intel slice of a fat binary).
+    if(MSVC)
+        add_compile_options("/FI${CMAKE_SOURCE_DIR}/cmake/isa_kernel_gate.hpp")
+    else()
+        add_compile_options(-include ${CMAKE_SOURCE_DIR}/cmake/isa_kernel_gate.hpp)
+    endif()
 endif()
 
 
