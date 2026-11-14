@@ -9,6 +9,15 @@ on:
   pull_request:
     branches: [ master, v2 ]
   workflow_dispatch:
+    inputs:
+      npm_oidc_check:
+        description: 'Only run the npm trusted-publisher OIDC exchange (every build job is skipped)'
+        type: boolean
+        default: false
+      npm_oidc_check_package:
+        description: 'npm package name to exchange for'
+        type: string
+        default: 'openrar-wasm'
 
 # Cancel superseded runs on the same branch/PR: a second push within the
 # ~9-minute matrix window replaces the first, halving feedback latency and
@@ -24,8 +33,11 @@ concurrency:
 permissions:
   contents: read
 
+# Dispatch gate: `-f npm_oidc_check=true` runs only npm-oidc-check.
+# Every build job below carries the inverse condition.
 jobs:
   roadmap-lint:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     # v1.44 M3: anchor lint as a pre-tag gate (CI wiring additive per plan §5).
     # Fails the build if roadmap file:line anchors no longer resolve, the
     # v1.44 verification ledger drifts from recomputation, or docs/FMM.md
@@ -46,6 +58,7 @@ jobs:
           python3 tools/test_assertion_lint.py
 
   build-and-test:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     name: ${{ matrix.os }} - ${{ matrix.compiler }} (${{ matrix.build_type }})${{ matrix.arch_suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -449,6 +462,7 @@ jobs:
           retention-days: 7
 
   linux-arm64-qemu:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     name: linux-arm64 (gcc cross, QEMU run)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -582,6 +596,7 @@ jobs:
 
 
   simd-validation:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     name: "SIMD kernels (native + Intel SDE: AVX-512, GFNI)"
     # The AVX-512 match kernel and GFNI RS16 fold kernel dispatch only where
     # the CPU reports the feature. GitHub runners cannot be assumed to have
@@ -675,6 +690,7 @@ jobs:
           echo "End-to-end .rev generate/destroy/repair under SDE PASSED"
 
   wasm:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     name: WASM (Emscripten) — block codec + archive API
     runs-on: ubuntu-latest
     steps:
@@ -749,6 +765,7 @@ jobs:
           fi
 
   windows-asan:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     # 2026-11 code-quality review, Tier-1 gap #2. Every sanitizer leg ran on
     # ubuntu-latest, so the Windows-only code paths — the NT anchored
     # containment opens (io/containment.cpp), win32_meta, sandbox spawn,
@@ -823,6 +840,7 @@ jobs:
           retention-days: 3
 
   sanitizers:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     # v1.30 M5 (SECURITY_ARCHITECTURE §7.2): ASan + UBSan are PRIMARY legs —
     # the full unit suite under both sanitizers on one Linux leg.
     name: ASan + UBSan (primary)
@@ -865,6 +883,7 @@ jobs:
           retention-days: 3
 
   tsan:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     # v1.30 M5: ThreadSanitizer on the threaded suites (parallel pipeline,
     # slot readers, TUI single-writer).
     name: TSan (primary)
@@ -907,6 +926,7 @@ jobs:
           retention-days: 3
 
   msan:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     # v1.30 M5: MSan is BEST-EFFORT on the Linux/clang leg (§7.2 revised):
     # it requires an instrumented libc++, cannot gate the MSVC matrix, and
     # is reported but never blocks the release.
@@ -961,6 +981,7 @@ jobs:
   # C# / .NET SDK binding: builds native library, verifies against xUnit
   # conformance suite, and packs NuGet package.
   csharp:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     name: C# binding (build, test & pack)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -992,6 +1013,7 @@ jobs:
 
   # Python SDK binding: builds pure Python wheel and source distribution (sdist).
   python-sdk:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     name: Python SDK (build & package)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1017,6 +1039,7 @@ jobs:
           retention-days: 7
 
   oracle-interop:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     # Gate G1: every archive the encoder can emit (both parsers, every method) must decode
     # byte-identically under the pinned UnRAR 7.20. Fail-closed: a missing oracle, a wrong
     # banner or a hash mismatch exits non-zero.
@@ -1048,6 +1071,7 @@ jobs:
         run: python3 tools/interop_reference.py
 
   release-regression-guard:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     # Directive 14: a release must not be larger, slower or less correct than the previous
     # one. Runs tools/release_regression_guard.py against the pinned v2.0.23 release binary.
     # The guard is fail-closed: a missing or mis-versioned baseline is an error, not a skip.
@@ -1092,6 +1116,7 @@ jobs:
         run: python3 tools/release_regression_guard.py --binary build/openrar
 
   windows-regression-guard:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
     # W3: Windows release regression guard (Directive 14 & Roadmap v2.2)
     # Runs tools/release_regression_guard.py on windows-2022 against the pinned v2.0.23 release binary.
     name: Windows release regression guard (vs v2.0.23)
@@ -1354,6 +1379,46 @@ jobs:
             --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
+
+  # Branch-dispatchable proof that the npm trusted publisher accepts this
+  # repository, without cutting or re-pointing a release tag:
+  #   gh workflow run build.yml --ref <branch> -f npm_oidc_check=true
+  # It must live in this file: the publisher is bound to the workflow filename
+  # `build.yml`, so an OIDC token minted by any other workflow is rejected. The
+  # build jobs carry the inverse condition, so that dispatch runs only this job.
+  npm-oidc-check:
+    name: npm trusted publisher (OIDC exchange)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # mints the OIDC token the registry exchanges
+    steps:
+      - name: Exchange the OIDC token for a package-scoped publish token
+        env:
+          PACKAGE: ${{ inputs.npm_oidc_check_package }}
+        run: |
+          set -euo pipefail
+          pkg="${PACKAGE:-openrar-wasm}"
+          # The registry issues a token only when a trusted publisher matches
+          # this repository, the workflow file build.yml and an empty
+          # environment. It answers 201 Created with token_type "oidc".
+          id_token=$(curl -sS -f -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          code=$(curl -sS -o /tmp/oidc-exchange.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${id_token}" \
+            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${pkg}")
+          case "${code}" in
+            2*)
+              python3 -c 'import json; d=json.load(open("/tmp/oidc-exchange.json")); print("publisher accepted: token_type=%s lifetime=%ss" % (d.get("token_type"), int(d.get("expires", 0)) - int(d.get("created", 0))))'
+              ;;
+            *)
+              echo "::error::The npm trusted publisher rejected the OIDC exchange for ${pkg} (HTTP ${code}). Check that the publisher names repository ${GITHUB_REPOSITORY}, workflow build.yml, an empty environment, and allows npm publish (a new publisher is stage-only by default)."
+              cat /tmp/oidc-exchange.json || true
+              exit 1
+              ;;
+          esac
 
   publish-npm:
     name: Publish WASM SDK to NPM
