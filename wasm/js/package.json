@@ -1,7 +1,12 @@
 {
   "name": "openrar-wasm",
   "version": "2.4.0",
-  "description": "OpenRAR RAR5 block codec + in-memory archive API — WASM build (Emscripten MODULARIZE)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/geometric-dev/openrar.git",
+    "directory": "wasm/js"
+  },
+  "description": "OpenRAR RAR5 block codec + in-memory archive API \u2014 WASM build (Emscripten MODULARIZE)",
   "type": "module",
   "main": "./openrar.js",
   "types": "./openrar.d.ts",
@@ -46,7 +51,16 @@
     "test": "node --test test.mjs helpers.test.mjs archive.test.mjs worker.test.mjs",
     "check-exports": "node check-exports.mjs"
   },
-  "keywords": ["rar", "rar5", "wasm", "emscripten", "compression", "archive"],
+  "keywords": [
+    "rar",
+    "rar5",
+    "wasm",
+    "emscripten",
+    "compression",
+    "archive"
+  ],
   "license": "MIT",
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  }
 }
