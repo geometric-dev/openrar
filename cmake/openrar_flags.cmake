@@ -101,14 +101,23 @@ if(NOT EMSCRIPTEN)
         set(OPENRAR_AVX512_KERNEL ON)
         set_source_files_properties(src/compress/arch/match_avx512.cpp src/recovery/rs16_gfni.cpp src/crypto/arch/blake2sp_avx512.cpp
             PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
-    elseif((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)")
-        # Also covers a universal2 macOS build hosted on Apple Silicon: the
-        # kernels are enabled here, and cmake/isa_kernel_gate.hpp (force-
-        # included below) drops the capability defines for the arm64 slice so
-        # only the x86_64 slice compiles the intrinsics. Without that gate the
-        # arm64 half of a fat binary would not compile at all.
-        set(OPENRAR_AVX512_KERNEL ON)
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Enable when the build has an x86-64 slice. Checking only the host
+        # processor was wrong for universal2: that build is configured on an
+        # Apple Silicon runner, so CMAKE_SYSTEM_PROCESSOR says arm64 while one
+        # slice is Intel, and the Intel half silently shipped without the
+        # kernels. cmake/isa_kernel_gate.hpp (force-included below) drops the
+        # capability defines for whichever slices are not x86.
+        set(_openrar_x86_slice FALSE)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(AMD64)")
+            set(_openrar_x86_slice TRUE)
+        endif()
+        if(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+            set(_openrar_x86_slice TRUE)
+        endif()
+        if(_openrar_x86_slice)
+            set(OPENRAR_AVX512_KERNEL ON)
+        endif()
     endif()
 endif()
 if(OPENRAR_AVX512_KERNEL)
