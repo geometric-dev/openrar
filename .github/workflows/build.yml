@@ -1396,12 +1396,18 @@ jobs:
           code=$(curl -sS -o /tmp/oidc-exchange.json -w '%{http_code}' -X POST \
             -H "Authorization: Bearer ${id_token}" \
             "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${name}")
-          if [ "${code}" != "200" ]; then
-            echo "::error::The npm trusted publisher rejected the OIDC exchange for ${name} (HTTP ${code}). Check that the publisher names repository ${GITHUB_REPOSITORY}, workflow build.yml, an empty environment, and allows npm publish (a new publisher is stage-only by default)."
-            cat /tmp/oidc-exchange.json || true
-            exit 1
-          fi
-          echo "Trusted publisher accepted the OIDC exchange for ${name}"
+          # The registry answers 201 Created with token_type "oidc" for a
+          # matching trusted publisher; any 2xx is acceptance.
+          case "${code}" in
+            2*)
+              echo "Trusted publisher accepted the OIDC exchange for ${name}"
+              ;;
+            *)
+              echo "::error::The npm trusted publisher rejected the OIDC exchange for ${name} (HTTP ${code}). Check that the publisher names repository ${GITHUB_REPOSITORY}, workflow build.yml, an empty environment, and allows npm publish (a new publisher is stage-only by default)."
+              cat /tmp/oidc-exchange.json || true
+              exit 1
+              ;;
+          esac
 
       - name: Publish to npmjs.org (trusted publishing)
         # OIDC is the only credential this job may use. A token would take
