@@ -601,8 +601,13 @@ bool ContainmentRoot::anchored_create(const VerifiedDir& dir, const std::string&
     out_handle = h;
     return true;
 #else
+    // SEC-TEMP-MODE (v2.4.1): extraction data temporaries are created 0600.
+    // The writer applies the member's final mode to this handle immediately
+    // before the commit rename, so a private member is never world-readable
+    // for the duration of its extraction. The journal temp below has always
+    // been 0600 for the same reason.
     const int fd = ::openat(static_cast<int>(reinterpret_cast<intptr_t>(dir.raw())), leaf.c_str(),
-                            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+                            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     if (fd < 0) return false;
     out_handle = reinterpret_cast<void*>(static_cast<intptr_t>(fd));
     return true;
