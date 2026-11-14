@@ -733,6 +733,32 @@ bool Decompressor50::ApplyEngine::copy_match_short(size_t distance, size_t lengt
     if (src > win_pos_ && gap < length) {
         return copy_match(distance, length, total_written);
     }
+    // Wide copy where the wider load/store cannot overlap the source range.
+    // The bytes written past `length` are ahead of win_pos_ (never a future
+    // source) and are overwritten by the next record; flush stops at
+    // total_written, so they never reach the output.
+    const size_t width = (length <= 8) ? 8 : 16;
+    const bool wide_safe = (src < win_pos_) ? (distance >= width) : (gap >= width);
+    if (wide_safe && src + width <= win_size_ && win_pos_ + width <= win_size_) {
+        if (!reserve(width)) return false;
+        // reserve() may grow the window; recompute the pointers after it.
+        src = wrap_up(win_pos_ + win_size_ - distance);
+        core::byte* wdst = &window_[win_pos_];
+        const core::byte* wsrc = &window_[src];
+        if (width == 8) {
+            std::uint64_t v;
+            std::memcpy(&v, wsrc, 8);
+            std::memcpy(wdst, &v, 8);
+        } else {
+            core::byte tmp[16];
+            std::memcpy(tmp, wsrc, 16);
+            std::memcpy(wdst, tmp, 16);
+        }
+        win_pos_ = wrap_up(win_pos_ + length);
+        if (win_pos_ == 0) first_win_done_ = true;
+        return true;
+    }
+
     core::byte* dst = &window_[win_pos_];
     const core::byte* sp = &window_[src];
     for (size_t i = 0; i < length; ++i) dst[i] = sp[i];
