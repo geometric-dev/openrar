@@ -72,12 +72,18 @@ jobs:
             arch_suffix: ""
             cmake_arch: ""
             dll_suffix: ""
+          # macos-latest is an Apple-silicon runner and this leg passes no
+          # -DCMAKE_OSX_ARCHITECTURES, so the binaries are arm64-only. The
+          # matrix label used to say "universal", which the published
+          # openrar-<ver>-macos-*-universal.zip did not honour (Intel Macs
+          # cannot run it). Named for the truth; a real universal2 build would
+          # need CMAKE_OSX_ARCHITECTURES="arm64;x86_64" on this leg.
           - os: macos-latest
             compiler: clang
             cxx: clang++
             build_type: Release
-            arch: universal
-            arch_suffix: ""
+            arch: arm64
+            arch_suffix: " (arm64)"
             cmake_arch: ""
             dll_suffix: ""
           - os: windows-2022
@@ -96,6 +102,21 @@ jobs:
             arch_suffix: " (arm64)"
             cmake_arch: "ARM64"
             dll_suffix: "_arm64"
+            # x64 host cross-compiling for ARM64: these artifacts cannot run
+            # here, so the test/benchmark steps are skipped. Keyed off this flag
+            # rather than the arch name so the arm64-native macOS leg still runs
+            # its tests (it used to be gated on arch == 'arm64').
+            cross_compiled: true
+            # x64 host cross-compiling for ARM64: these artifacts cannot run
+            # here, so the test/benchmark steps are skipped. Keyed off this flag
+            # rather than the arch name so the arm64-native macOS leg still runs
+            # its tests (it used to be gated on arch == 'arm64').
+            cross_compiled: true
+            # x64 host cross-compiling for ARM64: these artifacts cannot run
+            # here, so the test/benchmark steps are skipped. Keyed off this flag
+            # rather than the arch name so the arm64-native macOS leg still runs
+            # its tests (it used to be gated on arch == 'arm64').
+            cross_compiled: true
 
     steps:
       - name: Checkout repository
@@ -185,7 +206,7 @@ jobs:
         # Windows ARM64 is a cross-compile leg (x64 host): ARM64 exes cannot
         # execute there, so test execution is limited to other legs. aarch64
         # Linux coverage runs under QEMU in the dedicated job below.
-        if: matrix.arch != 'arm64'
+        if: matrix.cross_compiled != true
         run: |
           ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
 
@@ -196,11 +217,11 @@ jobs:
         # rather than emit a shallow-green report. The artifact upload below
         # mirrors the lane name so run-over-run regressions are diffable per
         # matrix entry.
-        if: matrix.arch != 'arm64' && always()
+        if: matrix.cross_compiled != true && always()
         run: python tools/ctest_to_junit.py --log build/Testing/Temporary/LastTest.log --out build/junit-report.xml --min-tests 20
 
       - name: Upload JUnit report
-        if: matrix.arch != 'arm64' && always()
+        if: matrix.cross_compiled != true && always()
         uses: actions/upload-artifact@v4
         with:
           name: junit-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.arch }}-${{ matrix.build_type }}
@@ -212,7 +233,7 @@ jobs:
         # Real AVX2/SSE2/NEON hardware numbers across all native platforms.
         # Informational throughput report with median-of-passes protocol;
         # --quick bounds execution time to ~10-15s per runner.
-        if: matrix.arch != 'arm64'
+        if: matrix.cross_compiled != true
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -225,7 +246,7 @@ jobs:
           $BENCH_EXE --quick
 
       - name: Interop Gate (local spec, no rar.exe in CI)
-        if: matrix.arch != 'arm64'
+        if: matrix.cross_compiled != true
         shell: bash
         run: |
           # No rar.exe in CI; the gate degrades to self-roundtrip + two-block probe
@@ -234,7 +255,7 @@ jobs:
           python tools/interop_gate.py --quick
 
       - name: CLI Smoke Test (Archive Creation & Extraction)
-        if: matrix.arch != 'arm64'
+        if: matrix.cross_compiled != true
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -271,7 +292,7 @@ jobs:
         # AVX2, SSE2, Apple Silicon NEON, GFNI), benchmarks in-memory RAR5 compression
         # & multi-threaded decompression, calculates thread scaling, and gates on
         # bit-exact CRC32 verification (decompression_verified: true).
-        if: matrix.arch != 'arm64'
+        if: matrix.cross_compiled != true
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -309,6 +330,26 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu') && matrix.compiler == 'gcc'
         run: node tools/run-tests.cjs
 
+      - name: Stage canonical shared-library name
+        # SDK consumers load the library as `openrar` (openrar.dll /
+        # libopenrar.so / libopenrar.dylib). CI builds the arch-suffixed DLL for
+        # side-by-side installs, so publish the canonical name beside it: each
+        # release zip holds one architecture, so the copy cannot collide, and
+        # nobody has to rename a file to use the SDKs.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUFFIX="${{ matrix.dll_suffix }}"
+          SRC="build/openrar64/${{ matrix.build_type }}/openrar${SUFFIX}.dll"
+          [ -f "$SRC" ] || SRC="build/${{ matrix.build_type }}/openrar${SUFFIX}.dll"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::openrar${SUFFIX}.dll not found; cannot stage the canonical openrar.dll"
+            exit 1
+          fi
+          cp "$SRC" "$(dirname "$SRC")/openrar.dll"
+          ls -l "$(dirname "$SRC")"/openrar*.dll
+
       - name: Upload native shared-library artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -326,6 +367,14 @@ jobs:
             build/openrar64/Release/openrar.exe
             build/openrar64/openrar.exe
             build/openrar
+            # The sandboxed worker ships beside the CLI (worker_exe_path()
+            # resolves a sibling of the openrar binary); without it the CLI
+            # degrades to in-process parsing and warns on stderr.
+            build/openrar64/Release/openrar_worker.exe
+            build/openrar64/${{ matrix.build_type }}/openrar_worker.exe
+            build/${{ matrix.build_type }}/openrar_worker.exe
+            build/openrar_worker.exe
+            build/openrar_worker
             build/*.deb
           # error, not warn: the release-assets job zips whatever lands in the
           # artifact, so a silently-empty artifact would publish an empty
@@ -1178,10 +1227,13 @@ jobs:
           skip-existing: true
 
   publish-nuget:
-    name: Publish .NET SDK to NuGet.org
+    name: Publish .NET SDK (GitHub Packages + NuGet.org)
     needs: [release-assets]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # nuget.pkg.github.com, authenticated by GITHUB_TOKEN
     steps:
       - name: Download NuGet packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -1189,19 +1241,39 @@ jobs:
           name: openrar-nuget
           path: pkg/
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Push to GitHub Packages
+        # No repository secret required: GITHUB_TOKEN with packages:write is
+        # enough, so a tagged release always lands somewhere installable.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          dotnet nuget push "pkg/*.nupkg" \
+            --api-key "${GITHUB_TOKEN}" \
+            --source "https://nuget.pkg.github.com/${OWNER}/index.json" \
+            --skip-duplicate
+
       - name: Push to NuGet.org
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
-          if [ -z "${NUGET_API_KEY}" ]; then
-            echo "::warning::NUGET_API_KEY secret not found. Skipping NuGet.org publish."
-          else
-            echo "Pushing packages to NuGet.org..."
-            dotnet nuget push "pkg/*.nupkg" \
-              --api-key "${NUGET_API_KEY}" \
-              --source https://api.nuget.org/v3/index.json \
-              --skip-duplicate
+          set -euo pipefail
+          if [ -z "${NUGET_API_KEY:-}" ]; then
+            echo "::error::NUGET_API_KEY is not set, so this tagged release cannot publish to NuGet.org."
+            echo "Add the repository secret NUGET_API_KEY (nuget.org push key), or drop this job if nuget.org is not a target. The package IS available on GitHub Packages."
+            exit 1
           fi
+          echo "Pushing packages to NuGet.org..."
+          dotnet nuget push "pkg/*.nupkg" \
+            --api-key "${NUGET_API_KEY}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
 
   publish-npm:
     name: Publish WASM SDK to NPM
@@ -1209,6 +1281,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       id-token: write # Generates public Sigstore provenance attestation on NPM
     steps:
       - name: Set up Node.js
@@ -1227,12 +1300,14 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "${NPM_TOKEN}" ]; then
-            echo "::warning::NPM_TOKEN secret not found. Skipping NPM publish."
-          else
-            echo "Publishing package to NPM..."
-            npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
-            for pkg in wasm-pkg/*.tgz; do
-              npm publish "${pkg}" --provenance --access public
-            done
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN is not set, so this tagged release cannot publish to npmjs.org."
+            echo "Add the repository secret NPM_TOKEN (npm automation token with publish rights), or drop this job if npmjs is not a target."
+            exit 1
           fi
+          echo "Publishing package to NPM..."
+          npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
+          for pkg in wasm-pkg/*.tgz; do
+            npm publish "${pkg}" --provenance --access public
+          done
