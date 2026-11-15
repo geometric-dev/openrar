@@ -2,12 +2,13 @@ name: CI Build & Test
 
 on:
   push:
-    # 'v2.*' covers long-lived release branches (v2.1, v2.2, ...). A push to v2.1 used to run
-    # nothing, so a release branch could be tagged without a single CI leg having seen it.
-    branches: [ master, v2, 'v2.*' ]
+    # master is the only active branch line: v2 and v2.1 were retired and deleted
+    # (docs/versioning.md § Branch retirement). Tags still gate releases. If a
+    # maintenance line is ever cut again, add its branch here deliberately.
+    branches: [ master ]
     tags: [ 'v*' ]
   pull_request:
-    branches: [ master, v2 ]
+    branches: [ master ]
   workflow_dispatch:
     inputs:
       npm_oidc_check:

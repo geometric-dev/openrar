@@ -284,6 +284,42 @@ OpenRAR coordinates git tags with external package registries (Debian APT, NuGet
 3. **Intermediate Patch Tag Pruning:** To maintain a clean, navigable tag namespace without cluttering git tooling, intermediate pre-release or superseded development patch tags within a minor line (`vX.Y.1` through `vX.Y.(Z-1)`) may be retired once the succeeding patch has completed its release and verification workflow.
 4. **Registry Provenance:** Release assets published to permanent external package registries (NuGet, PyPI, NPM, Debian Launchpad) maintain corresponding reachable VCS revisions.
 
+## Branch retirement
+
+As of 2026-11-14 **`master` is the only active branch line**. The `v2` and `v2.1`
+maintenance branches were retired and deleted from GitHub and from local clones;
+`v2.1.0` remains the released tag for that line, and `2.4.x` carries everything
+that shipped after it.
+
+- **`v2`** held nothing unique: every commit outside `master` had a
+  patch-equivalent on `master` (`git cherry master v2` reported none), and its
+  tip was already an ancestor of the released `v2.1.0` tag. It was deleted
+  without an archive tag.
+- **`v2.1`** stood 8 commits past `v2.1.0`, with no `2.1.1` ever tagged or
+  published. Four of those commits had no patch equivalent on `master` — the
+  forward-arrival DAG experiment (M0 census, sub-length relaxation, M2
+  ablation, Track E parser). `master` carries that engine reworked rather than
+  dropped (`compressor50.cpp` is much smaller and `OPENRAR_ENABLE_FORWARD_ARRIVAL`
+  still exists), so the branch was a superseded shape, not missing
+  functionality.
+
+The branch is preserved as the annotated tag **`archive/v2.1`** (`dffd78d`).
+That tag is the only place some of the work exists: `docs/milestones/v2.1.0-m0-census-report.json`
+and `tools/bench_m2_ablation.py` are not on `master`, and the experiment's parser
+shape lives only there. Restore it with:
+
+```bash
+git checkout -b v2.1 archive/v2.1
+```
+
+Retired experiment and arc branches follow the same rule: archive the tip as an
+`archive/*` tag before deleting the branch, and record what makes it unique in
+the tag message (`archive/design-a-stash`, `archive/exp-*`, `archive/arc-*`).
+CI triggers reflect the single active line — `build.yml` runs on `master` pushes
+and pull requests plus `v*` tags, and `benchmarks.yml` only commits, builds Pages
+artifacts and deploys from `master`. Re-adding a maintenance branch to either
+trigger is a deliberate decision, not a side effect of creating it.
+
 ## Embedding the version
 
 Implemented:
