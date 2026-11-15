@@ -714,6 +714,28 @@ bool Decompressor50::ApplyEngine::copy_match_short(size_t distance, size_t lengt
     // byte copy is correct for overlap and needs no dispatch. Everything the
     // fast path cannot express (zero-fill on the first pass, ring wrap,
     // source-ahead overlap, full-ring alias) falls back to copy_match.
+    // Early hot path: source already written in this window, no wrap, and
+    // the window has room, so skip the generic reservation and edge checks.
+    const size_t ew = (length <= 8) ? 8 : 16;
+    if (length > 0 && length <= 16 && distance <= win_pos_ && distance >= ew &&
+        win_pos_ + ew <= win_size_ && cap_ - win_pos_ >= ew) {
+        const core::byte* esp = &window_[win_pos_ - distance];
+        core::byte* edp = &window_[win_pos_];
+        if (ew == 8) {
+            std::uint64_t v;
+            std::memcpy(&v, esp, 8);
+            std::memcpy(edp, &v, 8);
+        } else {
+            std::uint64_t a, b;
+            std::memcpy(&a, esp, 8);
+            std::memcpy(&b, esp + 8, 8);
+            std::memcpy(edp, &a, 8);
+            std::memcpy(edp + 8, &b, 8);
+        }
+        win_pos_ = wrap_up(win_pos_ + length);
+        if (win_pos_ == 0) first_win_done_ = true;
+        return true;
+    }
     if (length == 0 || length > 16) return copy_match(distance, length, total_written);
     if (distance == 0 || distance > win_size_) return true; // callers validate first
     if (!reserve(length)) return false;
