@@ -92,6 +92,59 @@ with openrar.Archive("backup.rar") as arc:
         arc.extract_to_path(0, "./extracted")
 ```
 
+#### .NET SDK (NuGet)
+
+The official .NET binding ([`OpenRAR.NET` on NuGet](https://www.nuget.org/packages/OpenRAR.NET/)) is a P/Invoke layer over the frozen C ABI, targeting `netstandard2.0` — .NET Framework 4.6.1+, .NET Core 2.0+ and .NET 5+:
+
+```bash
+# Install the OpenRAR .NET SDK
+dotnet add package OpenRAR.NET
+```
+
+The package is managed code only: the native `openrar.dll` / `libopenrar.so` / `libopenrar.dylib` from the release zips must sit beside the application or on the loader path.
+
+Quick C# usage:
+```csharp
+using System.IO;
+using OpenRAR;
+
+Native.Probe();                            // throws on a C ABI mismatch
+Console.WriteLine(Native.PackageVersion);  // e.g. "2.4.2"
+
+using var archive = new Archive("backup.rar");
+var entries = archive.List();
+for (uint i = 0; i < entries.Length; i++)
+{
+    if (!archive.Test(i))                  // CRC32 / BLAKE2sp verification
+        throw new InvalidOperationException($"entry {i} failed verification");
+    archive.ExtractToPath(i, Path.Combine("out", $"{i:D4}.bin"));
+}
+```
+
+#### JavaScript & WebAssembly (npm)
+
+The WASM build ([`openrar-wasm` on npm](https://www.npmjs.com/package/openrar-wasm)) exposes the RAR5 block codec and an in-memory archive API for Node.js 18+ and browsers (ESM):
+
+```bash
+# Install the OpenRAR WASM package
+npm install openrar-wasm
+```
+
+Quick JavaScript usage:
+```js
+import { createArchive, listArchive, extractFile } from 'openrar-wasm/archive';
+
+// Build an archive in memory, then read it back
+const rar = await createArchive([
+  { path: 'hello.txt', data: new TextEncoder().encode('Hello') },
+], { method: 3 });
+
+for (const entry of await listArchive(rar)) console.log(entry.path);
+const bytes = await extractFile(rar, 'hello.txt');
+```
+
+The raw block codec is available too: `import { compress, decompress, CompressionMethod } from 'openrar-wasm/index'`.
+
 #### Building from Source
 
 ##### Standard CMake (Windows, Linux, macOS with GCC, Clang, or MSVC)
