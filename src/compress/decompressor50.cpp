@@ -703,6 +703,27 @@ bool Decompressor50::ApplyEngine::copy_match(size_t distance, size_t length,
     return true;
 }
 
+#ifndef OPENRAR_CROSS_VALIDATE
+namespace {
+// Copies 8 or 16 bytes whose source range cannot overlap the destination.
+// Both 8-byte words are loaded before either store, so the width-16 adjacent
+// case (distance/gap == 16) is also safe.
+inline void copy_match_wide(core::byte* dst, const core::byte* src, size_t width) {
+    assert(width == 8 || width == 16);
+    std::uint64_t lo;
+    std::memcpy(&lo, src, 8);
+    if (width == 16) {
+        std::uint64_t hi;
+        std::memcpy(&hi, src + 8, 8);
+        std::memcpy(dst, &lo, 8);
+        std::memcpy(dst + 8, &hi, 8);
+    } else {
+        std::memcpy(dst, &lo, 8);
+    }
+}
+} // namespace
+#endif
+
 bool Decompressor50::ApplyEngine::copy_match_short(size_t distance, size_t length,
                                                    size_t total_written) {
 #ifdef OPENRAR_CROSS_VALIDATE
@@ -719,19 +740,7 @@ bool Decompressor50::ApplyEngine::copy_match_short(size_t distance, size_t lengt
     const size_t ew = (length <= 8) ? 8 : 16;
     if (length > 0 && length <= 16 && distance <= win_pos_ && distance >= ew &&
         win_pos_ + ew <= win_size_ && cap_ - win_pos_ >= ew) {
-        const core::byte* esp = &window_[win_pos_ - distance];
-        core::byte* edp = &window_[win_pos_];
-        if (ew == 8) {
-            std::uint64_t v;
-            std::memcpy(&v, esp, 8);
-            std::memcpy(edp, &v, 8);
-        } else {
-            std::uint64_t a, b;
-            std::memcpy(&a, esp, 8);
-            std::memcpy(&b, esp + 8, 8);
-            std::memcpy(edp, &a, 8);
-            std::memcpy(edp + 8, &b, 8);
-        }
+        copy_match_wide(&window_[win_pos_], &window_[win_pos_ - distance], ew);
         win_pos_ = wrap_up(win_pos_ + length);
         if (win_pos_ == 0) first_win_done_ = true;
         return true;
@@ -765,17 +774,7 @@ bool Decompressor50::ApplyEngine::copy_match_short(size_t distance, size_t lengt
         if (!reserve(width)) return false;
         // reserve() may grow the window; recompute the pointers after it.
         src = wrap_up(win_pos_ + win_size_ - distance);
-        core::byte* wdst = &window_[win_pos_];
-        const core::byte* wsrc = &window_[src];
-        if (width == 8) {
-            std::uint64_t v;
-            std::memcpy(&v, wsrc, 8);
-            std::memcpy(wdst, &v, 8);
-        } else {
-            core::byte tmp[16];
-            std::memcpy(tmp, wsrc, 16);
-            std::memcpy(wdst, tmp, 16);
-        }
+        copy_match_wide(&window_[win_pos_], &window_[src], width);
         win_pos_ = wrap_up(win_pos_ + length);
         if (win_pos_ == 0) first_win_done_ = true;
         return true;

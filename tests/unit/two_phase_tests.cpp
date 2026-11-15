@@ -785,6 +785,72 @@ static void run_suite_body() {
         }
     }
 
+    // ── Short-match copy boundaries: distances 7/8/15/16/17, lengths 8/9/16/17 ─
+    // The early resident fast path copies 8 bytes for length <=8 and 16 bytes
+    // for length 9..16, but only when the wider store cannot overlap the
+    // source. Exercise each side of both width boundaries, including the
+    // adjacent distance==width cases and the overlapping fallbacks.
+    {
+        Decompressor50::SpanRecords sr;
+        std::vector<core::byte> expected;
+        auto add_lit = [&](size_t n) {
+            Decompressor50::OpRecord r;
+            r.tag = static_cast<core::uint8>(Decompressor50::OpRecord::Tag::Lit);
+            r.aux = static_cast<core::uint8>(n);
+            r.a = 0;
+            r.b = static_cast<core::uint32>(sr.lit_pool.size());
+            for (size_t i = 0; i < n; ++i) {
+                core::byte v = static_cast<core::byte>((i * 37 + 11) & 0xFF);
+                sr.lit_pool.push_back(v);
+                expected.push_back(v);
+            }
+            sr.recs.push_back(r);
+        };
+        auto add_match = [&](size_t dist, size_t len) {
+            Decompressor50::OpRecord r;
+            r.tag = static_cast<core::uint8>(Decompressor50::OpRecord::Tag::Match);
+            r.aux = 0;
+            r.a = static_cast<core::uint32>(dist - 1);
+            r.b = static_cast<core::uint32>(len);
+            sr.recs.push_back(r);
+            for (size_t i = 0; i < len; ++i) {
+                core::byte v = expected[expected.size() - dist];
+                expected.push_back(v);
+            }
+        };
+        add_lit(64);
+        add_match(8, 8);   // width 8, distance == width
+        add_match(16, 8);  // width 8, distance > width
+        add_match(16, 16); // width 16, distance == width
+        add_match(7, 8);   // overlap: below width 8, byte fallback
+        add_match(8, 9);   // length 9 needs width 16, distance 8 -> fallback
+        add_match(16, 9);  // length 9, distance == width 16
+        add_match(15, 16); // length 16, distance below width 16 -> fallback
+        add_match(8, 16);  // length 16, overlapping distance 8 -> fallback
+        add_match(16, 16); // width 16 after a fallback
+        add_match(17, 17); // length 17: generic copy_match
+        add_match(16, 17); // length 17 with overlap: generic copy_match
+        add_lit(5);        // overwrite the bytes written past the last length
+        add_match(16, 8);  // width 8 again after a literal record
+        sr.ok = true;
+        sr.saw_last_block = true;
+        Decompressor50 applier(0x200000);
+        REQUIRE(applier.apply_begin());
+        size_t total = 0;
+        std::vector<core::byte> out;
+        REQUIRE(applier.apply_span_records(
+            sr, expected.size(), true,
+            [&](const core::byte* p, size_t n) -> bool {
+                out.insert(out.end(), p, p + n);
+                return true;
+            },
+            &total));
+        REQUIRE(total == expected.size());
+        REQUIRE(out == expected);
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] short-match copy boundaries (dist 7/8/15/16/17, len 8/9/16/17)\n";
+    }
+
     if (!openrar::test::last_run_was_filtered()) std::cout << "All two_phase_tests passed.\n";
     return;
 }
