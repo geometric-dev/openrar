@@ -1,0 +1,98 @@
+{
+ "corpus": "C9",
+ "gates": {
+  "audio_6ch_8m.wav": {},
+  "binary_8m.bin": {
+   "min_distinct_bytes": 250,
+   "min_zlib_ratio": 0.98
+  },
+  "chunk_12m.bin": {
+   "min_compress_ratio": 2.0
+  },
+  "e8_8m.bin": {
+   "min_e8_density": 0.08
+  },
+  "minified_1m.js": {
+   "min_compress_ratio": 1.5
+  },
+  "span_cross_24m.bin": {
+   "min_zlib_ratio": 0.98
+  },
+  "text_64m.bin": {
+   "min_compress_ratio": 2.0
+  },
+  "wrap_128m.bin": {},
+  "zeros_64m.bin": {
+   "max_distinct_bytes": 1
+  }
+ },
+ "generator_sha256": "1bf5496385e973d02c1f9102712834aed0d32b206afd02c587d2f1cf52b3c249",
+ "manifest_version": 2,
+ "members": [
+  {
+   "compress_ratio": 3.41,
+   "name": "text_64m.bin",
+   "role": "C6/C9 text",
+   "sha256": "f9ab5243b591c81be0a8e8edb9e96d7dc00e27b83d22005093ee06de13166dc4",
+   "size": 67108864
+  },
+  {
+   "distinct_bytes": 1,
+   "name": "zeros_64m.bin",
+   "role": "C6/C9 match-heavy",
+   "sha256": "3b6a07d0d404fab4e23b6d34bc6696a6a312dd92821332385e5af7c01c421351",
+   "size": 67108864
+  },
+  {
+   "compress_ratio": 1.57,
+   "name": "minified_1m.js",
+   "role": "C6/C9 literal-heavy",
+   "sha256": "d5b59593939d6fbc0e46e0b148c1171c96d1eeed431354d6dd311179cf56fd53",
+   "size": 1048576
+  },
+  {
+   "distinct_bytes": 256,
+   "name": "binary_8m.bin",
+   "role": "C9 incompressible",
+   "sha256": "0f8b6acad4ca995bebdadcbf93c9a5810a5f5190e6aff1bcf870d3e2b009777b",
+   "size": 8388608,
+   "zlib_ratio": 1.0003
+  },
+  {
+   "name": "span_cross_24m.bin",
+   "role": "C9 span-crossing",
+   "sha256": "d47c14e1f0f01c0d3270b539e9fb0d9d12f057401e125c4c3d48aac331481c07",
+   "size": 25165824,
+   "zlib_ratio": 1.0003
+  },
+  {
+   "e8_density": 0.1024,
+   "name": "e8_8m.bin",
+   "role": "C7/E8 detector (probe-asserted)",
+   "sha256": "35ae8b7c53534bb7a13fca035ac116c04b98949fbacd0dec5e2b0f07d3b4a9dc",
+   "size": 8388608
+  },
+  {
+   "name": "audio_6ch_8m.wav",
+   "role": "C7/DELTA detector (probe-asserted)",
+   "sha256": "9d846110ca27d99861efab94211b29672271eab3b6eb6636625061b273b4a60d",
+   "size": 8388608
+  },
+  {
+   "forced_match": "32 MiB at offset 96 MiB",
+   "name": "wrap_128m.bin",
+   "role": "guard: 64 MiB window wraps",
+   "sha256": "363bb70dd30946a20876fb8e8e1c645f4bd00b367ff6584d425c82b35ac9bd7e",
+   "size": 134217728
+  },
+  {
+   "compress_ratio": 3.41,
+   "name": "chunk_12m.bin",
+   "role": "guard: 3 MiB chunks at -mt4",
+   "sha256": "b11180aa880372245a7d43f26dc9e0325ae6099a44ab5e5921d476ff99ab6e89",
+   "size": 12582912
+  }
+ ],
+ "prf": "shake_256",
+ "python": "3.14.3"
+}

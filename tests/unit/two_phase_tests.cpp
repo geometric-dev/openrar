@@ -494,6 +494,13 @@ static void run_suite_body() {
         // G2 flavor: v1 (446-table, > 4 GiB window) stays sequential.
         REQUIRE(!should_use_parallel_decode(32 * MB, 64 * MB, 5ULL * 1024 * 1024 * 1024, false, 0,
                                             nullptr));
+        // G2 boundary pin: 4 GiB is admitted (the record's distance is
+        // 0-based, so 2^32 fits a u32), one byte more is not. Without the
+        // pair, "win > 4 GiB" reads as an off-by-one and invites a wrong fix.
+        const core::uint64 win_4g = 4ULL << 30;
+        REQUIRE(should_use_parallel_decode(32 * MB, 64 * MB, win_4g, false, 0, &w));
+        REQUIRE(w == 2);
+        REQUIRE(!should_use_parallel_decode(32 * MB, 64 * MB, win_4g + 1, false, 0, nullptr));
         // G3: packed amortization floor.
         REQUIRE(!should_use_parallel_decode(2 * MB, 64 * MB, 0x200000, false, 0, nullptr));
         // Degenerate sizes.
@@ -849,6 +856,43 @@ static void run_suite_body() {
         REQUIRE(out == expected);
         if (!openrar::test::last_run_was_filtered())
             std::cout << "[PASS] short-match copy boundaries (dist 7/8/15/16/17, len 8/9/16/17)\n";
+    }
+
+    // C9 span-crossing member: 24 MiB of incompressible data packs to ~24 MiB,
+    // which clears the driver's packed floor (4 x SPAN_PACKED_FLOOR = 4 x 4 MiB
+    // = 16 MiB) and splits into >1 span. A text member cannot do this: at ~11x
+    // it would need ~175 MiB of source to clear the same floor.
+    {
+        constexpr size_t SPAN_MIB = 1024 * 1024;
+        const size_t N = 24 * SPAN_MIB;
+        std::vector<core::byte> data(N);
+        core::uint32 s = 12345u;
+        for (size_t i = 0; i < N; ++i) {
+            s = s * 1664525u + 1013904223u;
+            data[i] = static_cast<core::byte>(s >> 24);
+        }
+        std::vector<core::byte> packed;
+        REQUIRE(Compressor50::compress_buffer(data.data(), N, packed, 3, 64 * SPAN_MIB, {}));
+        const size_t floor_bytes = 4 * 4 * SPAN_MIB; // 4 x SPAN_PACKED_FLOOR
+        REQUIRE((packed.size() >= floor_bytes &&
+                 "span-crossing member did not clear the packed floor"));
+        ParallelDecodeDiag diag;
+        std::vector<core::byte> back;
+        const bool ok = decode_entry(
+            packed.data(), packed.size(), N, 64 * SPAN_MIB,
+            [&](const core::byte* p, size_t n) -> bool {
+                back.insert(back.end(), p, p + n);
+                return true;
+            },
+            &diag, 4, false);
+        REQUIRE(ok);
+        REQUIRE((diag.engaged && "span-crossing member did not engage the pipeline"));
+        REQUIRE((diag.spans >= 3 && "span-crossing member did not split into >=3 spans"));
+        REQUIRE(back == data);
+        if (!openrar::test::last_run_was_filtered())
+            std::cout << "[PASS] span-crossing engagement (packed " << (packed.size() >> 20)
+                      << " MiB >= " << (floor_bytes >> 20) << " MiB floor, spans " << diag.spans
+                      << ")\n";
     }
 
     if (!openrar::test::last_run_was_filtered()) std::cout << "All two_phase_tests passed.\n";

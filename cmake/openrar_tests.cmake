@@ -304,6 +304,28 @@ target_link_libraries(archive_api_tests PRIVATE
     target_link_libraries(tokencensus PRIVATE openrar_core)
     target_include_directories(tokencensus PRIVATE ${OPENRAR_INCLUDES})
 
+    # C7 corpus gate (not a test): asserts a member actually trips the E8 or
+    # DELTA detector, so a non-triggering member cannot pass as C7 coverage.
+    add_executable(filter_probe tools/filter_probe.cpp)
+    target_link_libraries(filter_probe PRIVATE openrar_core)
+    target_include_directories(filter_probe PRIVATE ${OPENRAR_INCLUDES})
+
+    # ── C9 decode-identity corpus (fail-closed) ─────────────────────────────
+    # The members are generated at test time, so there is no blob to be
+    # missing. What must never happen is an absent script, an absent committed
+    # manifest or an unbuilt probe turning C9 into an unregistered silence:
+    # c9_build is registered unconditionally below (and the QEMU lane, which
+    # cannot run heavy corpora, excludes it explicitly rather than by
+    # accident). These checks run at configure time.
+    set(OPENRAR_C9_DIR "${PROJECT_SOURCE_DIR}/tests/fixtures/c9")
+    foreach(_c9_required generate_c9.py build_c9_archives.py manifest.json)
+        if(NOT EXISTS "${OPENRAR_C9_DIR}/${_c9_required}")
+            message(FATAL_ERROR
+                "C9 corpus artefact missing: ${OPENRAR_C9_DIR}/${_c9_required}. "
+                "C9 is not optional: restore it. A corpus that is not built is not a pass.")
+        endif()
+    endforeach()
+
     # Wave 1b PROBE-PREDICT (not a test): image/audio predictor & channel probe.
     add_executable(predict_probe tools/predict_probe.cpp)
     target_link_libraries(predict_probe PRIVATE openrar_core)
@@ -497,6 +519,39 @@ target_link_libraries(archive_api_tests PRIVATE
         add_test(NAME aggregator_selftest
             COMMAND ${Python3_EXECUTABLE}
                     ${PROJECT_SOURCE_DIR}/tools/ctest_to_junit_selftest.py)
+
+        # C9 decode-identity corpus, end to end: generate the members, check
+        # them against the committed manifest, require the E8/DELTA detectors
+        # to fire via filter_probe, then build and round-trip the solid,
+        # encrypted and multi-volume archive forms. Deliberately a normal
+        # test: a missing corpus or an unbuildable probe is a FAILURE, never
+        # a skip (the scripts exit non-zero on both).
+        # CTest does not build anything, so "the probe was not built" would
+        # otherwise reach the script as a missing file. The fixture builds the
+        # two binaries c9_build needs first; if that build fails, CTest marks
+        # c9_build as not run (a failure), and the script's own probe check is
+        # the second line of defence.
+        add_test(NAME c9_tools_build
+            COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+                    --config $<CONFIG> --target openrar filter_probe)
+        set_tests_properties(c9_tools_build PROPERTIES
+            FIXTURES_SETUP c9_tools LABELS "c9;slow" TIMEOUT 1800)
+
+        add_test(NAME c9_build
+            COMMAND ${Python3_EXECUTABLE}
+                    ${OPENRAR_C9_DIR}/build_c9_archives.py
+                    --generate
+                    --src ${CMAKE_BINARY_DIR}/c9-corpus
+                    --exe $<TARGET_FILE:openrar>
+                    --filter-probe $<TARGET_FILE:filter_probe>
+                    --out ${CMAKE_BINARY_DIR}/c9-archives)
+        set_tests_properties(c9_build PROPERTIES
+            TIMEOUT 1800 LABELS "c9;slow" FIXTURES_REQUIRED c9_tools)
+    else()
+        message(FATAL_ERROR
+            "C9 corpus build requires a Python 3 interpreter, and find_package(Python3) "
+            "failed. Install Python 3 (or point -DPython3_EXECUTABLE at one): C9 must "
+            "not be skipped silently.")
     endif()
 
     # ── Kernel throughput benchmark (informational, never a gate) ───────────

@@ -2380,7 +2380,7 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry, const core::byt
         if (compress::should_use_parallel_decode(src_size, dest, win, false, decode_threads_,
                                                  nullptr)) {
             if (compress::decode_entry(src, src_size, dest, win, flush_cb, &diag, decode_threads_,
-                                       entry.header.extra_dist))
+                                       entry.header.extra_dist, filter_census_))
                 return true;
             // Fail-safe-identical (plan R5/F1-F3): a parallel-stage failure
             // before any emission already retried the sequential path
@@ -2393,6 +2393,7 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry, const core::byt
     }
     UnpackerSelection sel;
     if (!select_unpacker(entry, sel)) return false;
+    if (filter_census_ != nullptr && sel.local) sel.local->set_filter_census(filter_census_);
     bool ok = sel.unpacker->decompress(src, src_size, dest, sel.solid, flush_cb);
     if (!ok) {
         last_decompress_error_ = sel.unpacker->last_error();
@@ -2439,7 +2440,8 @@ bool ArchiveReader::decode_compressed(const ArchiveEntry& entry,
             if (pulled) {
                 compress::ParallelDecodeDiag diag;
                 if (compress::decode_entry(packed.data(), packed.size(), dest, win, flush_cb, &diag,
-                                           decode_threads_, entry.header.extra_dist)) {
+                                           decode_threads_, entry.header.extra_dist,
+                                           filter_census_)) {
                     return true;
                 }
                 return false;

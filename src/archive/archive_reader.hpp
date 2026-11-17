@@ -16,6 +16,7 @@
 
 namespace openrar::compress {
 class Decompressor50;
+struct FilterCensus;
 enum class DecompressErrorCode;
 } // namespace openrar::compress
 
@@ -118,6 +119,10 @@ public:
     // D9 default (2), 1 = sequential only, N = N (clamped to the driver's
     // ceiling). The CLI's -mt lands here on x/t.
     void set_decode_threads(unsigned t) { decode_threads_ = t; }
+    // C7 evidence sink: when set, the next decode of this reader fills it with
+    // the filter regions the decoder parsed (type, channels, offsets). The
+    // caller owns the census and clears it before each entry.
+    void set_filter_census(compress::FilterCensus* census) { filter_census_ = census; }
     bool keep_broken() const { return keep_broken_; }
     void set_extract_symlinks(bool es) { extract_symlinks_ = es; }
     bool extract_symlinks() const { return extract_symlinks_; }
@@ -392,6 +397,7 @@ private:
     bool truncated_data_{false}; // M-12
     core::uint64 sfx_offset_{0};
     unsigned decode_threads_{0}; // 0 = D9 default (2); 1 = sequential
+    compress::FilterCensus* filter_census_{nullptr};
     format::MainBlock main_block_;
     std::vector<ArchiveEntry> entries_;
     bool header_encrypted_{false};

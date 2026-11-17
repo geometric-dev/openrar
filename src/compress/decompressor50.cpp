@@ -1327,6 +1327,7 @@ bool Decompressor50::decompress_internal(BitReader& reader, size_t dest_size, bo
                 last_error_str_ = "Filter table capacity exceeded";
                 return false;
             }
+            if (filter_census_ != nullptr) filter_census_->add(fe);
 #ifdef OPENRAR_CROSS_VALIDATE
             if (engine_.val_src_ != nullptr) {
                 engine_.val_regions_.emplace_back(static_cast<size_t>(fe.block_start),
@@ -2023,6 +2024,7 @@ bool Decompressor50::apply_span_records(const SpanRecords& sr, size_t dest_size,
         }
         if (!engine_.ensure_filters()) return false;
         if (!engine_.filters_->push(fe)) return false;
+        if (filter_census_ != nullptr) filter_census_->add(fe);
         no_filters = false;
 #ifdef OPENRAR_CROSS_VALIDATE
         if (engine_.val_src_ != nullptr) {

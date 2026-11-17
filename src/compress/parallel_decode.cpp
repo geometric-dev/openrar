@@ -90,8 +90,10 @@ bool should_use_parallel_decode(size_t pack_size, size_t dest_size, size_t win_s
     if (solid_entry) return false;                               // G1 (scope: non-solid)
     if (std::getenv("OPENRAR_NO_PARALLEL_DECODE")) return false; // D9 kill switch
     if (dest_size == 0 || pack_size == 0) return false;
-    // G2 (flavor): the operation records carry u32 distances — the v0
-    // table flavor (win <= 4 GiB). v1-flavor members (446 tables) stay
+    // G2 (flavor): operation records carry u32 distances — the v0 table
+    // flavor. `>` is deliberate, not `>=`: OpRecord stores the distance
+    // 0-based, so a 4 GiB window's 2^32 still fits. Pinned by
+    // two_phase_tests ("G2 boundary pin"); v1-flavor members stay
     // sequential this arc.
     if (win_size > (4ULL * 1024 * 1024 * 1024)) return false;
     const unsigned workers = resolve_workers(requested_threads);
@@ -107,12 +109,13 @@ bool should_use_parallel_decode(size_t pack_size, size_t dest_size, size_t win_s
 
 bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size_t win_size,
                   Decompressor50::OutputCallback flush_cb, ParallelDecodeDiag* diag,
-                  unsigned requested_threads, bool extra_dist) {
+                  unsigned requested_threads, bool extra_dist, FilterCensus* filter_census) {
     if (diag) *diag = ParallelDecodeDiag{};
     if (flush_cb == nullptr || src == nullptr || src_size == 0 || dest_size == 0) return false;
 
     auto run_sequential = [&]() {
         Decompressor50 seq(win_size, extra_dist);
+        seq.set_filter_census(filter_census);
         return seq.decompress(src, src_size, dest_size, /*solid=*/false, flush_cb);
     };
 
@@ -325,6 +328,7 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
     const auto t_start = std::chrono::steady_clock::now();
     if (trace) std::fprintf(stderr, "[pd] applier starting\n");
     Decompressor50 applier(win_size, extra_dist);
+    applier.set_filter_census(filter_census);
     bool applied_ok = applier.apply_begin();
     if (trace) std::fprintf(stderr, "[pd] applier begin ok=%d\n", (int)applied_ok);
     size_t total = 0;

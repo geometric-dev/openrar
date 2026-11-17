@@ -9,6 +9,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -156,6 +157,23 @@ struct FilterEntry {
 };
 static_assert(sizeof(FilterEntry) == 24, "filter ring envelope assumes 24-byte entries (I-16)");
 
+// C7 evidence sink: every filter region the decoder actually parses out of a
+// member's token stream. Detection firing in `Filters50::detect_filter` only
+// says the input looks filterable; this says the encoder emitted a region and
+// the decoder accepted it. Offsets are absolute output positions, so a
+// consumer can assert type, channel count, coverage and ordering from the
+// archive alone. MT workers apply records on the applier thread; the mutex
+// keeps the sink safe if that ever changes.
+struct FilterCensus {
+    std::mutex mutex;
+    std::vector<FilterEntry> entries;
+
+    void add(const FilterEntry& fe) {
+        std::lock_guard<std::mutex> lock(mutex);
+        entries.push_back(fe);
+    }
+};
+
 // Fixed-capacity circular queue for pending filters (Invariant I-16).
 // Power-of-two capacity ensures lock-free / branchless modulo indexing.
 template <size_t Capacity = 65536> class FixedFilterQueue {
@@ -212,6 +230,8 @@ enum class DecompressErrorCode {
 
 class Decompressor50 {
 public:
+    // Optional C7 evidence sink; see FilterCensus. Null by default.
+    void set_filter_census(FilterCensus* census) noexcept { filter_census_ = census; }
 #if defined(__EMSCRIPTEN__) || defined(__wasm__) || defined(_M_IX86) || defined(__i386__) ||       \
     defined(__arm__) || defined(_M_ARM)
     // Implementation alloc limit 1 GiB on 32-bit/WASM; larger dictionaries fail instead of truncating.
@@ -492,6 +512,7 @@ public:
     // Aggregate filter budget across the member's spans (the sequential
     // decoder's filters_total_len, report M7); reset by apply_begin.
     size_t filters_total_len_{0};
+    FilterCensus* filter_census_{nullptr};
 
 #ifdef OPENRAR_CROSS_VALIDATE
     // Seed the decompressor with the expected original source bytes.

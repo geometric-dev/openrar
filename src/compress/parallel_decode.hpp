@@ -63,7 +63,8 @@ bool should_use_parallel_decode(size_t pack_size, size_t dest_size, size_t win_s
 // carry u32 distances, which cannot hold ExtraDist's > 4 GiB distances.
 bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size_t win_size,
                   Decompressor50::OutputCallback flush_cb, ParallelDecodeDiag* diag = nullptr,
-                  unsigned requested_threads = 0, bool extra_dist = false);
+                  unsigned requested_threads = 0, bool extra_dist = false,
+                  FilterCensus* filter_census = nullptr);
 
 } // namespace openrar::compress
 

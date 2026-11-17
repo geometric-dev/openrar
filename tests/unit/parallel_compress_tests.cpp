@@ -459,6 +459,27 @@ static void test_parallel_mt_dictionary_is_member_scoped() {
               << mt.size() << ")" << std::endl;
 }
 
+// §4.20 guard cells: pin the decomposition each new cell must produce, so a
+// future change to parallel_chunk_size cannot silently make a cell vacuous.
+// Members come from tests/fixtures/c9/generate_c9.py (manifest.sha256 pins
+// them; the 128 MiB member is generated, not committed).
+void test_guard_cell_decomposition() {
+    constexpr size_t MIB = 1024 * 1024;
+    // The chunk geometry of the two guard members the register actually runs.
+    // These call the shipped function, so changing parallel_chunk_size fails
+    // here instead of silently making a guard cell exercise a different shape
+    // than its row claims. The chunk COUNT is not asserted: it is arithmetic on
+    // the same two constants and cannot fail unless this function already did.
+    // wrap_128m.bin at -mt8: ceil(128/8) = 16 MiB per thread, clamped to MAX_CHUNK.
+    REQUIRE(parallel_chunk_size(128 * MIB, 8) == 4 * MIB);
+    // chunk_12m.bin at -mt4: 3 MiB per thread, the only sub-4 MiB geometry any
+    // guard cell samples (every other cell pins 4 MiB).
+    REQUIRE(parallel_chunk_size(12 * MIB, 4) == 3 * MIB);
+    if (!openrar::test::last_run_was_filtered())
+        std::cout << "[PASS] guard-cell decomposition (128 MiB/-mt8 -> 4 MiB chunks, "
+                     "12 MiB/-mt4 -> 3 MiB chunks)\n";
+}
+
 static const openrar::test::Case k_cases[] = {
     {"test_framing_spike", test_framing_spike, false},
     {"test_parallel_roundtrip_methods", test_parallel_roundtrip_methods, false},
@@ -470,7 +491,8 @@ static const openrar::test::Case k_cases[] = {
     {"test_parallel_filter_parity", test_parallel_filter_parity, false},
     {"test_parallel_path_selection", test_parallel_path_selection, false},
     {"test_parallel_mt_dictionary_is_member_scoped", test_parallel_mt_dictionary_is_member_scoped,
-     false}};
+     false},
+    {"test_guard_cell_decomposition", test_guard_cell_decomposition, false}};
 
 int main(int argc, char* argv[]) {
     openrar::test::route_crt_asserts_to_stderr();
