@@ -62,6 +62,7 @@ they unblock something else.
 | EXP-MT-SEED-AMORTIZE | **closed, refuted** | seed path off the critical path |
 | EXP-A64-BRANCH / EXP-RISCV-JAL / EXP-PAETH-IMAGE | **closed** | no type slot in RAR 7.23 (Q-1) |
 | EXP-PACK-BLOCK-PROFILE | **row BLOCKED** | 45% unattributed residual; code is useful but the numbers cannot rank a 2% bucket |
+| PROBE-QO-COVERAGE | **measured, on `integration`** | QO costs ~21% archive size for ~2.8% listing speed; see `docs/experiments/exp-probe-qo-coverage.md` |
 
 ## 5. Release gate (unchanged from `docs/milestones/roadmap.md` §8)
 
@@ -82,13 +83,29 @@ Plus the version bump: `tools/bump_version.py 2.5.0` across all 8 manifests,
 
 This branch has enough when **all** of these hold, not merely some:
 
+- [x] `EXP-MT-DECISION-CONSOLIDATE` landed (`2106487`) — byte-identical at `-mt1`,
+      fixes a silent `-mc` loss on containers with headers past 64 KiB
+- [x] `PROBE-QO-COVERAGE` measured (`f8bae82`) — QO costs 21% size for 2.8% speed
+- [x] 58 ctest suites green on the integration branch (57 + `mt_decision_tests`)
+- [x] release guard `[SUCCESS]` on the integration build
 - [ ] `SEC-PASSWORD-CHANNEL` landed, or explicitly deferred with a recorded
       reason (if deferred, 2.5.0 cannot claim a new CLI switch and the MINOR
       justification needs revisiting)
-- [ ] `EXP-MT-DECISION-CONSOLIDATE` landed
-- [ ] 57+ ctest suites green on the integration branch
-- [ ] release guard `[SUCCESS]` on the integration build
-- [ ] Every promoted row has its outcome written into
-      `docs/milestones/roadmap.md` §7 and `CHANGELOG.md`
+- [ ] Every promoted row's outcome written into `docs/milestones/roadmap.md` §7
+      and `CHANGELOG.md`
 - [ ] No uncommitted work on the branch
 - [ ] Manual approval before any push (per the standing instruction)
+
+### 6.1 Current state
+
+`integration` @ `f8bae82`, 3 commits past `master`:
+
+| Commit | Content |
+|:---|:---|
+| `51fcbf1` | C9 corpus + filter probe (rev 6, from master) |
+| `2abf2d4` | this plan |
+| `2106487` | EXP-MT-DECISION-CONSOLIDATE |
+| `f8bae82` | PROBE-QO-COVERAGE measurement |
+
+Verified on this branch: 58/58 ctest, guard `[SUCCESS]`, archives byte-identical
+to `master` at `-mt1`.
