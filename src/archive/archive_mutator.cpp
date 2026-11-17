@@ -1467,23 +1467,56 @@ bool ArchiveMutator::prepare_add_file(
                     // regions must not cross chunk boundaries. Run the same
                     // leading-sample detection the sequential encoder performs;
                     // if a filter would trigger, take the sequential path so
-                    // -mc is honored and -mt1/-mt>1 make the same decision for
-                    // the same data.
-                    bool use_parallel = eff_threads > 1 && !solid_packer;
-                    if (use_parallel && filter_cfg.mode != compress::FilterMode::DisableAll) {
-                        // The parallel path chunks input and forces filters
-                        // OFF, so MT is only safe when no filter would fire.
-                        // See compress::mt_should_use_parallel for why this is
-                        // a named function (it was previously an inverted
-                        // inline condition that silently disabled MT for all
-                        // filter-free input).
-                        std::vector<core::byte> sample(
-                            static_cast<size_t>(std::min<core::uint64>(file_sz, 65536)));
-                        if (!sample.empty() &&
-                            src.read(sample.data(), sample.size()) == sample.size()) {
-                            use_parallel = compress::mt_should_use_parallel(
-                                filter_cfg, sample.data(), sample.size());
-                        }
+                    // the request is honored.
+                    //
+                    // Decision consolidation (v2.4.x §4.25): one decision
+                    // function, shared with the spool and in-memory paths.
+                    // This site previously hand-rolled `eff_threads > 1 &&
+                    // !solid_packer` plus its own 64 KiB sample, while the
+                    // other two sites used different rules. That is the exact
+                    // shape of the v1.21.1 `-mc`-under-`mt` divergence, and
+                    // detect_filter is position-sensitive enough to make it
+                    // observable (see tools/mt_decision_probe.cpp). The
+                    // predicate now lives in ONE function with a truth table
+                    // pinned by test_parallel_path_selection.
+                    //
+                    // `solid_packer` is an additional local veto (a solid
+                    // session's packer is not thread-safe), not part of the
+                    // shared predicate - so it is applied first.
+                    bool use_parallel = !solid_packer;
+                    if (use_parallel) {
+                        // The WHOLE member goes to the one decision function.
+                        //
+                        // This site is the streaming path, so the bytes are not
+                        // in memory yet. It reads a bounded prefix, but the
+                        // bound is NOT 64 KiB: detect_filter is
+                        // position-sensitive (it follows e_lfanew at +0x3C and
+                        // validates Mach-O fat slice ranges against the buffer
+                        // size), so a short prefix reads as None where the full
+                        // member reads as E8, and the chunked path would then
+                        // force filters off and silently lose -mc. Measured on
+                        // a 4 MiB PE with e_lfanew at 0x20000: 4189225 B under
+                        // a 64 KiB prefix vs 4189319 B with the full member.
+                        //
+                        // kMtDetectPrefix is the documented compromise: large
+                        // enough to cover every header a real linker emits
+                        // (PE e_lfanew is in the first 1 KiB; the largest
+                        // genuine Mach-O fat slice table is a few KiB), small
+                        // enough to buffer per member. A member whose filter
+                        // header sits beyond it falls through to the E8
+                        // density scan, which is what the sequential path
+                        // would do with a short read too.
+                        std::vector<core::byte> sample(static_cast<size_t>(
+                            std::min<core::uint64>(file_sz, compress::kMtDetectPrefix)));
+                        const bool have_sample =
+                            !sample.empty() &&
+                            src.read(sample.data(), sample.size()) == sample.size();
+                        use_parallel = compress::decide_chunked_pack(
+                                           filter_cfg, sample.data(),
+                                           have_sample ? sample.size() : 0, eff_threads,
+                                           static_cast<size_t>(std::min<core::uint64>(
+                                               file_sz, std::numeric_limits<size_t>::max())))
+                                           .decision == compress::MtDecision::Chunked;
                         src.seek(0, io::SeekOrigin::Begin);
                     }
                     if (solid_packer) {
@@ -2772,17 +2805,25 @@ int ArchiveMutator::write_batch_add_ex(
                 core::uint32 final_crc = 0;
                 bool stream_ok = true;
 
+                // Decision consolidation (v2.4.x §4.25): same shared predicate
+                // as the other two sites. `direct_stream_threads > 1` is the
+                // thread-count input; the prefix policy is kMtDetectPrefix.
                 bool use_parallel = pf.direct_stream_threads > 1;
-                if (use_parallel && filter_cfg.mode != compress::FilterMode::DisableAll) {
-                    std::vector<core::byte> sample(
-                        static_cast<size_t>(std::min<core::uint64>(pf.fb.unp_size, 65536)));
-                    if (!sample.empty() &&
-                        src_in.read(sample.data(), sample.size()) == sample.size()) {
-                        use_parallel = compress::mt_should_use_parallel(filter_cfg, sample.data(),
-                                                                        sample.size());
-                    }
+                if (use_parallel) {
+                    std::vector<core::byte> sample(static_cast<size_t>(
+                        std::min<core::uint64>(pf.fb.unp_size, compress::kMtDetectPrefix)));
+                    const bool have_sample =
+                        !sample.empty() &&
+                        src_in.read(sample.data(), sample.size()) == sample.size();
                     if (!src_in.seek(0, io::SeekOrigin::Begin)) {
                         stream_ok = false;
+                    }
+                    if (stream_ok) {
+                        use_parallel =
+                            compress::decide_chunked_pack(
+                                filter_cfg, sample.data(), have_sample ? sample.size() : 0,
+                                pf.direct_stream_threads, static_cast<size_t>(pf.fb.unp_size))
+                                .decision == compress::MtDecision::Chunked;
                     }
                 }
 

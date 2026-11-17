@@ -2341,6 +2341,39 @@ bool Compressor50::compress_buffer(const core::byte* src, size_t src_size,
     return !dest.empty();
 }
 
+// EXP-MT-DECISION-CONSOLIDATE (§4.25). The one place that decides whether a
+// member takes the chunked encoder. Declared in compressor50.hpp; see the
+// comment there for the divergence this replaced.
+MtDecisionResult decide_chunked_pack(const FilterConfig& filter_cfg, const core::byte* data,
+                                     size_t data_len, unsigned eff_threads, size_t member_size) {
+    MtDecisionResult r;
+    r.decision = MtDecision::Chunked;
+
+    if (eff_threads < 2) {
+        r.decision = MtDecision::SingleThread;
+        return r;
+    }
+    // The chunking floor. Below this the chunked path adds overhead without
+    // parallelism; compress_buffer_parallel applies the same floor.
+    if (member_size < core::MIB) {
+        r.decision = MtDecision::TooSmall;
+        return r;
+    }
+    // Filters explicitly disabled: nothing would be lost by chunking.
+    if (filter_cfg.mode == FilterMode::DisableAll) return r;
+    // No bytes to judge with: take MT, matching mt_should_use_parallel's
+    // "read failed" contract. This is a caller state, not a bypass.
+    if (data == nullptr || data_len == 0) return r;
+
+    // detect_filter is bounds-safe: it guards pe_off + 6 < size and falls
+    // through to the E8 density scan when a header points past the buffer, so a
+    // prefix shorter than the member is safe - just less able to see a late
+    // header. kMtDetectPrefix is sized so real linkers never land past it.
+    r.detected = Filters50::detect_filter(data, data_len, r.channels, filter_cfg);
+    r.decision = (r.detected == FilterType::None) ? MtDecision::Chunked : MtDecision::Sequential;
+    return r;
+}
+
 bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_size,
                                             std::vector<core::byte>& dest, int method,
                                             size_t win_size, const FilterConfig& filter_cfg,
@@ -2365,20 +2398,24 @@ bool Compressor50::compress_buffer_parallel(const core::byte* src, size_t src_si
         return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
     }
 
-    // Filter parity (v1.21.1): the chunked pipeline cannot honor pre-processing
-    // transforms — chunk-relative offsets would corrupt the position-dependent
-    // E8/E8E9/ARM transforms, and regions must never cross chunk boundaries.
-    // Decide exactly the way the sequential path decides (same detect_filter
-    // call over the same data): if that decision selects a filter, take the
-    // sequential path so the request is honored; otherwise the chunks run
-    // filter-free, which is what the sequential path would produce anyway.
-    // The decision is content-based only, so -mt1 and -mt>1 always take the
-    // same path for the same input.
-    if (filter_cfg.mode != FilterMode::DisableAll) {
-        core::uint8 det_channels = 1;
-        if (Filters50::detect_filter(src, src_size, det_channels, filter_cfg) != FilterType::None) {
-            return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
-        }
+    // Filter parity (v1.21.1) + decision consolidation (v2.4.x §4.25).
+    //
+    // The chunked pipeline cannot honour pre-processing transforms: chunk-
+    // relative offsets would corrupt the position-dependent E8/E8E9/ARM
+    // transforms, and regions must never cross chunk boundaries.
+    //
+    // The decision lives in ONE function, decide_chunked_pack(), which every MT
+    // call site consumes. This site previously made its own inline decision with
+    // a WHOLE-MEMBER detect_filter call, while the two archive sites sampled
+    // 64 KiB. That disagreement is the bug: detect_filter is position-sensitive
+    // (it follows e_lfanew at +0x3C and validates Mach-O fat slice ranges
+    // against the buffer size), so the whole-member call sees E8 where a 64 KiB
+    // prefix sees None. Sampling at ANY site drops the filter. So the whole
+    // member is the policy, here and at both archive sites.
+    // tests/unit/mt_decision_tests.cpp pins the two constructs that diverge.
+    if (decide_chunked_pack(filter_cfg, src, src_size, eff_threads, src_size).decision !=
+        MtDecision::Chunked) {
+        return compress_buffer(src, src_size, dest, method, win_size, filter_cfg);
     }
 
     size_t chunk_size = parallel_chunk_size(src_size, eff_threads);

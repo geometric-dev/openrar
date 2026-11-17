@@ -48,6 +48,11 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(two_phase_tests tests/unit/two_phase_tests.cpp)
     add_openrar_test(bitreader_stream_tests tests/unit/bitreader_stream_tests.cpp)
     add_openrar_test(parallel_compress_tests tests/unit/parallel_compress_tests.cpp)
+    # EXP-MT-DECISION-CONSOLIDATE (§4.25): the MT decision predicate's truth
+    # table, and the single-decision property that replaced three divergent
+    # call sites. A member whose PE/Mach-O header sits past the 64 KiB sample
+    # used to be chunked by one site and not by another.
+    add_openrar_test(mt_decision_tests tests/unit/mt_decision_tests.cpp)
 
     # Streaming encoder & decoder gates: byte-identical vs one-shot, the historical
     # iteration-3 crash regression, cancel/progress, flush sink.

@@ -862,6 +862,62 @@ inline size_t parallel_chunk_size(core::uint64 total_size, unsigned eff_threads,
     return ((clamped + BLOCK_QUANTUM - 1) / BLOCK_QUANTUM) * BLOCK_QUANTUM;
 }
 
-} // namespace openrar::compress
 
+// ── EXP-MT-DECISION-CONSOLIDATE (§4.25) ────────────────────────────────────
+// The ONE decision function for "does this member take the chunked encoder".
+// Defined in compressor50.hpp (not parallel_compressor.hpp, which includes
+// this header) so compressor50.cpp can consume it without a circular include.
+//
+// Three call sites used to answer this independently:
+//   A. archive_mutator.cpp  - eff_threads > 1 && !solid_packer + 64 KiB sample
+//   B. archive_mutator.cpp  - direct_stream_threads > 1      + 64 KiB sample
+//   C. compressor50.cpp     - eff_threads > 1 && size >= 1 MiB + WHOLE member
+//
+// They agreed by construction, which is how the v1.21.1 `-mc`-under-`mt`
+// divergence survived. detect_filter() is position-sensitive (it follows
+// e_lfanew at +0x3C and validates Mach-O fat slice ranges against the BUFFER
+// SIZE), so a 64 KiB sample can reach a different verdict than the whole
+// member: tools/mt_decision_tests.cpp shows a fat Mach-O with a slice at
+// 0x20000, and a PE with e_lfanew at 0x20000, both returning E8 on the full
+// member and None on a 64 KiB prefix. Site C would chunk such a member (forcing
+// filters off, silently losing -mc) while A and B would not.
+//
+// CONTRACT: callers pass the bytes they hold and how many are valid. The
+// canonical amount is kMtDetectPrefix, NOT 64 KiB.
+//
+// A 64 KiB policy was tried and is wrong. detect_filter is position-sensitive:
+// it follows e_lfanew at +0x3C and validates Mach-O fat slice ranges against the
+// BUFFER SIZE, so a PE with e_lfanew at 0x20000 or a fat Mach-O with a late
+// slice reads as E8 on the full member and None on a 64 KiB prefix. Sampling
+// that short therefore DROPS the filter on the chunked path - the exact
+// `-mc`-under-`mt` divergence this row exists to remove. Measured on a 4 MiB PE
+// with e_lfanew at 0x20000: 4189225 B under a 64 KiB prefix vs 4189319 B with
+// the full member, i.e. the short-prefix build was silently running -mc-.
+//
+// kMtDetectPrefix is 1 MiB: it covers every container header a real linker
+// emits (PE e_lfanew lands in the first 1 KiB; Mach-O fat slice tables are a
+// few KiB), and it is the same order as the chunk floor, so buffering it per
+// member is not a memory regression. A header beyond it falls through to the E8
+// density scan, which is exactly what the sequential path does with a short
+// read - so both engines agree.
+enum class MtDecision : core::uint8 {
+    Chunked = 0,      // no filter would fire - chunking is safe
+    Sequential = 1,   // a filter would fire - must not chunk
+    TooSmall = 2,     // below the chunking floor
+    SingleThread = 3, // fewer than 2 effective threads
+};
+
+struct MtDecisionResult {
+    MtDecision decision{MtDecision::Sequential};
+    FilterType detected{FilterType::None};
+    core::uint8 channels{1};
+};
+
+// How many leading bytes a streaming caller must be able to supply. The
+// in-memory caller passes its whole buffer and is not bound by this.
+constexpr size_t kMtDetectPrefix = 1024 * 1024;
+
+MtDecisionResult decide_chunked_pack(const FilterConfig& filter_cfg, const core::byte* data,
+                                     size_t data_len, unsigned eff_threads, size_t member_size);
+} // namespace openrar::compress
 #endif // OPENRAR_COMPRESS_COMPRESSOR50_HPP
