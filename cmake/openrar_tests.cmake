@@ -53,6 +53,12 @@ if(NOT EMSCRIPTEN)
     # call sites. A member whose PE/Mach-O header sits past the 64 KiB sample
     # used to be chunked by one site and not by another.
     add_openrar_test(mt_decision_tests tests/unit/mt_decision_tests.cpp)
+    # SEC-INTEROP-UNDEF-FILTER (§4.21): the RAR5 filter Type field is 3 bits and
+    # only 0..3 are legal. Pins that the encoder cannot emit a reserved type,
+    # that every legal filter round-trips, and that the decoder passes an
+    # unknown type through raw where UnRAR would drop the region.
+    add_openrar_test(sec_interop_undef_filter_tests
+                     tests/unit/sec_interop_undef_filter_tests.cpp)
 
     # Streaming encoder & decoder gates: byte-identical vs one-shot, the historical
     # iteration-3 crash regression, cancel/progress, flush sink.
