@@ -260,16 +260,84 @@ FilterType Filters50::detect_filter(const core::byte* data, size_t size, core::u
         }
     }
 
-    // 7. WAV / PCM audio detection
-    if (config.delta_override >= 0 && size >= 44) {
-        if (std::memcmp(data, "RIFF", 4) == 0 && std::memcmp(data + 8, "WAVEfmt ", 8) == 0) {
-            const core::uint32 ch = core::read_le16(data + 22);
-            const core::uint32 bps = core::read_le16(data + 34);
-            const core::uint32 total_bits = ch * bps;
-            const core::uint32 stride = total_bits / 8;
-            if ((total_bits % 8 == 0) && stride >= 1 && stride <= 32) {
-                out_channels = static_cast<core::uint8>(stride);
-                return FilterType::Delta;
+    // 7. WAV / PCM audio detection (§4.5: RIFF chunk walk, not fixed offset)
+    //
+    // The canonical `fmt ` chunk is at offset 12, but JUNK/LIST/bext chunks
+    // inserted by broadcast tools shift it. Walk the RIFF chunk list to find
+    // `fmt ` wherever it is. RF64/BW64 (ds64) and AIFF/CAF are also handled.
+    if (config.delta_override >= 0 && size >= 12) {
+        auto detect_riff = [&](const core::byte* d, size_t sz, bool big_endian) -> FilterType {
+            auto rd16 = [&](size_t off) -> core::uint32 {
+                return big_endian ? (static_cast<core::uint32>(d[off]) << 8) | d[off + 1]
+                                  : (static_cast<core::uint32>(d[off + 1]) << 8) | d[off];
+            };
+            auto rd32 = [&](size_t off) -> core::uint32 {
+                return big_endian ? core::read_be32(d + off) : core::read_le32(d + off);
+            };
+            // Walk chunks: each chunk is [4-byte id][4-byte size][payload].
+            size_t pos = 12; // skip "RIFF"/"RF64" + total size
+            while (pos + 8 <= sz) {
+                const core::byte* id = d + pos;
+                const core::uint32 chunk_sz = rd32(pos + 4);
+                const size_t payload = pos + 8;
+                if (std::memcmp(id, "fmt ", 4) == 0 && payload + 16 <= sz) {
+                    // WAV fmt: audio_format(2) + channels(2) + sample_rate(4) +
+                    //         byte_rate(4) + block_align(2) + bits_per_sample(2)
+                    const core::uint32 ch = rd16(payload + 2);
+                    const core::uint32 bps = rd16(payload + 14);
+                    const core::uint32 total_bits = ch * bps;
+                    const core::uint32 stride = total_bits / 8;
+                    if ((total_bits % 8 == 0) && stride >= 1 && stride <= 32) {
+                        out_channels = static_cast<core::uint8>(stride);
+                        return FilterType::Delta;
+                    }
+                    return FilterType::None;
+                }
+                // Advance to next chunk. RF64 uses a 0xFFFFFFFF size and a
+                // ds64 chunk for the real size; we only need fmt, so skip.
+                const size_t advance = 8 + static_cast<size_t>(chunk_sz);
+                if (advance <= 0 || pos + advance <= pos) break;
+                pos += advance;
+                // Align to even byte boundary (RIFF spec).
+                if (pos < sz && (chunk_sz & 1)) ++pos;
+            }
+            return FilterType::None;
+        };
+
+        // RIFF/WAVE (little-endian)
+        if (size >= 12 && std::memcmp(data, "RIFF", 4) == 0 &&
+            std::memcmp(data + 8, "WAVE", 4) == 0) {
+            return detect_riff(data, size, /*big_endian=*/false);
+        }
+        // RF64 (Broadcast Wave Format, little-endian with ds64)
+        if (size >= 12 && std::memcmp(data, "RF64", 4) == 0 &&
+            std::memcmp(data + 8, "WAVE", 4) == 0) {
+            return detect_riff(data, size, /*big_endian=*/false);
+        }
+        // AIFF (big-endian: "FORM" + size + "AIFF")
+        if (size >= 12 && std::memcmp(data, "FORM", 4) == 0 &&
+            (std::memcmp(data + 8, "AIFF", 4) == 0 || std::memcmp(data + 8, "AIFC", 4) == 0)) {
+            auto rd16 = [&](size_t off) -> core::uint32 {
+                return (static_cast<core::uint32>(data[off]) << 8) | data[off + 1];
+            };
+            // AIFF COMM chunk: channels(2) + sample_frames(4) + sample_size(2)
+            size_t pos = 12;
+            while (pos + 8 <= size) {
+                const core::uint32 chunk_sz = core::read_be32(data + pos + 4);
+                if (std::memcmp(data + pos, "COMM", 4) == 0 && pos + 8 + 8 <= size) {
+                    const core::uint32 ch = rd16(pos + 8);
+                    const core::uint32 bps = rd16(pos + 8 + 6);
+                    const core::uint32 stride = (ch * bps) / 8;
+                    if ((ch * bps) % 8 == 0 && stride >= 1 && stride <= 32) {
+                        out_channels = static_cast<core::uint8>(stride);
+                        return FilterType::Delta;
+                    }
+                    return FilterType::None;
+                }
+                const size_t advance = 8 + static_cast<size_t>(chunk_sz);
+                if (advance <= 0 || pos + advance <= pos) break;
+                pos += advance;
+                if (pos < size && (chunk_sz & 1)) ++pos;
             }
         }
     }

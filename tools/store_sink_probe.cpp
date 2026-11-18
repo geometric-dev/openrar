@@ -48,8 +48,8 @@ int run_cmd(const std::string& cmdline) {
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    if (!::CreateProcessW(nullptr, cmdbuf.data(), nullptr, nullptr, FALSE, 0, nullptr,
-                          nullptr, &si, &pi)) {
+    if (!::CreateProcessW(nullptr, cmdbuf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si,
+                          &pi)) {
         return -1;
     }
     ::WaitForSingleObject(pi.hProcess, INFINITE);
@@ -101,8 +101,8 @@ void print_timing(const char* label, const Timing& t) {
         std::printf("  %-40s  (no samples)\n", label);
         return;
     }
-    std::printf("  %-40s  min=%.3f  mean=%.3f  max=%.3f  n=%d\n", label, t.min_s,
-                t.sum_s / t.n, t.max_s, t.n);
+    std::printf("  %-40s  min=%.3f  mean=%.3f  max=%.3f  n=%d\n", label, t.min_s, t.sum_s / t.n,
+                t.max_s, t.n);
 }
 
 // Measure a raw read+write of the same size (no journal, no temp, no rename).
@@ -111,7 +111,10 @@ double measure_raw_copy(const fs::path& src, const fs::path& dst) {
     std::FILE* in = std::fopen(src.string().c_str(), "rb");
     if (!in) return -1;
     std::FILE* out = std::fopen(dst.string().c_str(), "wb");
-    if (!out) { std::fclose(in); return -1; }
+    if (!out) {
+        std::fclose(in);
+        return -1;
+    }
     std::vector<core::byte> buf(1 << 20); // 1 MiB
     size_t n;
     while ((n = std::fread(buf.data(), 1, buf.size(), in)) > 0) {
@@ -126,10 +129,9 @@ double measure_raw_copy(const fs::path& src, const fs::path& dst) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr,
-                     "usage: store_sink_probe <openrar_exe> <corpus_file> [--reps N]\n"
-                     "  Measures the store-extraction sink stages for one member.\n"
-                     "  The member must be stored (-m0) for this to be meaningful.\n");
+        std::fprintf(stderr, "usage: store_sink_probe <openrar_exe> <corpus_file> [--reps N]\n"
+                             "  Measures the store-extraction sink stages for one member.\n"
+                             "  The member must be stored (-m0) for this to be meaningful.\n");
         return 2;
     }
 
@@ -165,8 +167,8 @@ int main(int argc, char** argv) {
     {
         const auto t0 = now_s();
         // Build a command string with proper quoting for CreateProcessW.
-        std::string cmd = "\"" + exe + "\" a -y -ep -m0 -mt1 -idq \"" + arc.string() +
-                          "\" \"" + corpus.string() + "\"";
+        std::string cmd = "\"" + exe + "\" a -y -ep -m0 -mt1 -idq \"" + arc.string() + "\" \"" +
+                          corpus.string() + "\"";
         int rc = run_cmd(cmd);
         if (rc != 0) {
             cmd = "\"" + exe + "\" a -y -m0 -mt1 -idq \"" + arc.string() + "\" \"" +
@@ -196,8 +198,8 @@ int main(int argc, char** argv) {
         fs::remove_all(dest);
         fs::create_directories(dest);
         const auto t0 = now_s();
-        std::string cmd = "\"" + exe + "\" x -y -db \"" + arc.string() + "\" \"" +
-                          dest.string() + "\"";
+        std::string cmd =
+            "\"" + exe + "\" x -y -db \"" + arc.string() + "\" \"" + dest.string() + "\"";
         const int rc = run_cmd(cmd);
         const double s = now_s() - t0;
         if (rc == 0) batch_t.add(s);
@@ -211,8 +213,7 @@ int main(int argc, char** argv) {
         fs::remove_all(dest);
         fs::create_directories(dest);
         const auto t0 = now_s();
-        std::string cmd = "\"" + exe + "\" x -y \"" + arc.string() + "\" \"" +
-                          dest.string() + "\"";
+        std::string cmd = "\"" + exe + "\" x -y \"" + arc.string() + "\" \"" + dest.string() + "\"";
         const int rc = run_cmd(cmd);
         const double s = now_s() - t0;
         if (rc == 0) default_t.add(s);
@@ -231,12 +232,12 @@ int main(int argc, char** argv) {
 
         std::printf("\n--- Attribution ---\n");
         std::printf("  raw read+write:          %.3f s\n", raw_mean);
-        std::printf("  x -db (batch):           %.3f s  (+%.3f s, %.2fx raw)\n",
-                    batch_mean, batch_overhead, batch_mean / raw_mean);
-        std::printf("  x (per-entry flush):     %.3f s  (+%.3f s, %.2fx raw)\n",
-                    default_mean, flush_cost, default_mean / raw_mean);
-        std::printf("  total overhead:          %.3f s (%.2fx raw)\n",
-                    total_overhead, default_mean / raw_mean);
+        std::printf("  x -db (batch):           %.3f s  (+%.3f s, %.2fx raw)\n", batch_mean,
+                    batch_overhead, batch_mean / raw_mean);
+        std::printf("  x (per-entry flush):     %.3f s  (+%.3f s, %.2fx raw)\n", default_mean,
+                    flush_cost, default_mean / raw_mean);
+        std::printf("  total overhead:          %.3f s (%.2fx raw)\n", total_overhead,
+                    default_mean / raw_mean);
         std::printf("  batch overhead (journal+temp+rename+MOTW+cadence+callbacks): %.3f s\n",
                     batch_overhead);
         std::printf("  per-entry flush cost:    %.3f s\n", flush_cost);
