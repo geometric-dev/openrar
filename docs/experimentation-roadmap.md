@@ -516,6 +516,15 @@ Cases 1 and 2 exist because `qo_indices` is populated **inside the rewrite path*
 
 ### 4.31 EXP-SOLID-DECODE-ENTRY (W2-D, Wave 3, gated)
 
+**Status:** Stage 0+1 complete (2026-11-18). The `solid8_c9.rar` fixture
+(8 members, 64 MiB, `-mt4`, hash-pinned in `build_c9_archives.py`) is built
+and verified. Stage 1 measured `-mt1` vs `-mt4` decode: **1.0× ratio** (min
+1.066 s vs 1.070 s, 3 reps each). The parallel path is never engaged for solid
+entries (`parallel_decode.cpp:90`, G1 clause), confirming the forgone win is
+zero on this corpus. **Stage 2 is not justified** — the gap is < 1.5×, so the
+solid scope limit stays and is recorded as deliberate. The fixture is retained
+for future re-evaluation if the non-solid parallel path improves materially.
+
 **Why (verified, and it is a capability gap rather than a tuning knob).** `should_use_parallel_decode` returns false for **any** solid entry (`parallel_decode.cpp:90`, the `G1` clause), so a solid archive decodes entirely single-threaded no matter what `-mt` says. That is a deliberate scope limit — the span applier's rep/window state is per-member, and a solid member's dictionary carries the previous member's tail — but it means the *most common* shape of large real-world archive (a solid RAR of a source tree) gets none of the ~1.9× the pipeline buys elsewhere. The roadmap has never costed this.
 
 **Change (staged, and the first stage is the whole point).** **Stage 0 (fixture — blocking, R1).** Today's `solid_c9.rar` **cannot support this row**: `build_c9_archives.py:145` builds it as `a -ep -s -m3 -mt1` over **two** members (`text_64m.bin` + `minified_1m.js`), so it pins a *sequential* solid pack and has no `-mt4` counterpart at all. A two-member solid archive has one real solid member; `-mt4` on it measures thread startup, not a decoder ceiling — a vacuous pass under G-9. Stage 0 therefore requires a **new fixture**, hash-pinned under `tests/fixtures/c9/` with a generation recipe: **≥64 MiB, ≥8 members, packed `-mt4`**, with every member's source SHA-256 recorded. Stage 1 must report the fixture's **member count and pack flags** alongside the ratio, so a future reader can see the measurement was not vacuous.
