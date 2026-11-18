@@ -373,6 +373,14 @@ target_link_libraries(archive_api_tests PRIVATE
     target_link_libraries(durability_probe PRIVATE openrar_core)
     target_include_directories(durability_probe PRIVATE ${OPENRAR_INCLUDES})
 
+    # PROBE-STORE-SINK (§4.16): log-only probe for the store-extraction sink.
+    # Not a test — timestamps each stage of the store path (journal, temp,
+    # rename, MOTW, write cadence, per-entry flush) so the 2.5x residual is
+    # attributed before any change is attempted.
+    add_executable(store_sink_probe tools/store_sink_probe.cpp)
+    target_link_libraries(store_sink_probe PRIVATE openrar_core)
+    target_include_directories(store_sink_probe PRIVATE ${OPENRAR_INCLUDES})
+
     # v1.40 quick-win microprobe (not a test): per-entry extraction
     # operation costs for the quick-win scorecard.
     add_executable(perf_microprobe tools/perf_microprobe.cpp)

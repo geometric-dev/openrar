@@ -406,6 +406,17 @@ Reclassified from "experiment" to "port + build decision". `match_length_wasm` a
 
 ### 4.16 PROBE-STORE-SINK (MEAS, Wave 2, ∥)
 
+**Status:** measured (2026-11-18, `tools/store_sink_probe.cpp`). On 24 MiB
+`big24.bin` (Windows/NTFS, 5 reps): raw read+write **0.021 s**; `x -db`
+(batch) **0.092 s** (+0.071 s, 4.4× raw); `x` (per-entry flush) **0.175 s**
+(+0.083 s, 8.4× raw). The batch overhead (journal + temp + rename + MOTW +
+cadence + callbacks) is **342% of raw** — significant. The per-entry flush
+costs an additional **0.083 s** on top of the batch path. **Decision:** the
+journal/temp/rename/MOTW/cadence path is the target for §4.32, not the
+per-entry flush (which is a durability contract). The 0.071 s batch overhead
+on 24 MiB scales to ~0.35 s on 128 MiB, matching the roadmap's recorded
+residual. No code change; this is a MEAS row.
+
 **Why (measured, and the rev-1 assumption was wrong).** Rev 1 called the extraction sink "at the filesystem baseline"; the numbers do not support that. Same 128 MiB file, same host: a raw 1 MiB-chunk read+write is **0.21–0.23 s**; OpenRAR `x -m0 --in-proc -db` is **0.574 s**; default (entry durability) is **0.90 s**. The 0.33 s gap between the last two is the mandated per-entry flush. The remaining **~0.35 s (2.5× raw)** is unattributed: the journal record plus 128-bit temp-name RNG, the anchored temp create, rename, chmod and MOTW, the 64 KiB write cadence, per-chunk progress/cancel callbacks, and host AV scanning of the random `.tmp` leaf are all candidates.
 
 **What.** A log-only probe around one stored member (pattern: `tools/durability_probe.cpp`) that timestamps each of those stages, for `-db` and default, on NTFS and ext4. No production code change.
