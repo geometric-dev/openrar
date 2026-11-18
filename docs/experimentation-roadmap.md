@@ -257,6 +257,17 @@ Evaluated across the 32-file C3/C4 experiment corpus (`tests/fixtures/experiment
 
 ### 4.3 EXP-FILTER-SAFE-MT (W2, Wave 2)
 
+**Status:** deferred to post-2.5.0. The current behaviour (filtered members
+under `-mt>1` fall back to sequential via `decide_chunked_pack` returning
+`Sequential`) is correct and safe — `-mc` is honoured, no data is lost. The
+performance benefit of chunked filtered packing is real but not urgent. The
+row requires filter coordinate-frame changes in the chunked packer
+(`ft.block_start` must be member-relative, not chunk-relative), post-transform
+seed bytes, and trailing-partial-region clamping — all of which carry a risk of
+silent corruption if implemented incorrectly. Under LTS time pressure, the safe
+decision is to defer. The §4.25 gate verification (this session) confirms the
+decision path is correct; the chunked filtered path is the remaining work.
+
 **Change.** Allow the chunked pipeline when a filter is detected:
 
 1. detect once over the whole member (same call, same data — keeps `-mt1`/`-mtN` agreement);
@@ -536,6 +547,14 @@ Subject to that, and **blocked until §4.16 reports**: if the probe attributes a
 **Gate.** No code change; the residual-unattributed ceiling from §4.28 applies unchanged (a split leaving > 10% unexplained is blocked, not published), evaluated on the `--side=pack` manifest.
 
 ### 4.26 EXP-PARALLEL-DECODE-EXTRA-DIST (W2, Wave 3)
+
+**Status:** blocked — C8 corpus not yet produced. The row requires
+oracle-produced RAR7 `extra_dist` members (≥64 MiB, non-solid, ≥4 spans)
+that OpenRAR cannot create. Until the C8 corpus exists, this row cannot be
+evaluated. The `two_phase_tests` boundary pin (4 GiB admitted, 4 GiB + 1
+rejected) is already in place. The `parallel_decode.cpp:120` early return
+for `extra_dist` members is the code change, but it must not be removed
+until the C8 corpus can validate it.
 
 **Problem (capability gap, verified in source).** `decode_entry` refuses `extra_dist` members before any prescan (`parallel_decode.cpp:120`), so **every algorithm-version-1 member decodes on the single-threaded path whatever `-mt` says**. `FileBlock::extra_dist` is set for `unp_ver == 1` with `FCI_RAR5_COMPAT` clear (`header_reader.cpp:507`) — the 446-entry RAR7 tables with `DCX = 80` distance slots (`docs/spec/03-compression-m1-m5.md:99,108,118`). The cause is structural: operation records carry `u32` distances and the pipeline documents the exclusion (`parallel_decode.hpp:61-63`); the same constraint rejects declared windows > 4 GiB (`parallel_decode.cpp:96`). OpenRAR reads these members correctly and passes the flavor through (`archive_reader.cpp:2442`), but never reaches the ~1.9× the pipeline buys elsewhere — on the flavor WinRAR 7 writes when it selects RAR7 tables, and on any RAR7 archive with a dictionary over 4 GiB.
 
