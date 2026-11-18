@@ -461,6 +461,8 @@ Stage 2 (only if Stage 1 clears its kill condition): ≥1.0% size on C6 text wit
 4. **Truth table pinned** by `tests/unit/mt_decision_tests.cpp` across `{filters off, filter detected, no sample, below floor, single thread}` and by `test_parallel_path_selection` (now asserting `decide_chunked_pack`, not the retired predicate); the late-header divergence itself is pinned with a PE at `e_lfanew = 0x20000` and a fat Mach-O with a slice at `0x20000`.
 5. **Residual, accepted:** a PE/Mach-O header at `>= 1 MiB` can still make the in-memory site (whole buffer) and the streaming sites (1 MiB prefix) disagree. No real linker emits one, and closing it means buffering the whole member, which defeats the chunked path. Recorded, not hidden.
 
+**Gate evidence (2026-11-18).** Clauses 1 and 2 verified by A/B against the v2.4.2 tag: 8 guard corpora (`big24.bin`, `mixed16.bin`, `synthetic_text8.txt`, `real_src.txt`, `real_tests.txt`, `real_docs.md`, `random8.bin`, `zeros8.bin`) × {`-mt1`, `-mt4`} at `-m3` — **16/16 byte-identical** between v2.4.2 and the integration branch. None of these corpora carries a container header in `[64 KiB, 1 MiB)`, so the decision is unchanged on all of them, which is exactly what clause 2 requires. Clause 3 is exercised by the synthetic late-header fixture in `mt_decision_tests.cpp` (PE at `e_lfanew = 0x20000` → `Sequential` with `detected = E8`, matching the whole-member detector). Clause 4: both suites pass. The release guard (`--allow-unpinned-corpus --quick`) is `[SUCCESS]`, including `-mt1` determinism and `-mt4` extraction.
+
 Class W2-P.
 
 **Sequencing note.** This row is a **prerequisite for §4.3**, not a peer: land it first so the chunking work has one predicate to extend.

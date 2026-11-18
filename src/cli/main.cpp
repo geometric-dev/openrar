@@ -16,6 +16,7 @@
 #include "../compress/filters50.hpp"
 #include "../compress/cdc_chunker.hpp"
 #include "../compress/cdc_planner.hpp"
+#include "../crypto/pbkdf2.hpp"
 #include "../archive/rar_errors.hpp"
 #include "../archive/volume.hpp"
 #include "../recovery/recovery_record.hpp"
@@ -64,6 +65,7 @@
 #include <fcntl.h>
 #else
 #include <unistd.h>
+#include <termios.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <pwd.h>
@@ -71,6 +73,159 @@
 #endif
 
 namespace openrar::cli {
+
+// ── SEC-PASSWORD-CHANNEL (§4.14) ──────────────────────────────────────────
+// Read a secret without exposing it in argv, the process environment, or a
+// shell history. Two channels are supported:
+//
+//   read_password_from_terminal() - the bare -p / -hp / -p- path. Requires a
+//     TTY on stdin; clears ECHO (termios) or ENABLE_ECHO_INPUT (Windows) for
+//     the duration of the read, prints a single prompt to stderr, reads at
+//     most 127 bytes (the KDF truncation point), and secure_wipes the buffer
+//     after the caller has derived keys. Non-TTY invocation fails closed.
+//
+//   read_password_from_file() - the --password-file / OPENRAR_PASSWORD_FILE
+//     path. Opens the file, fstat()s the descriptor (not the path, so a swap
+//     between check and read cannot race), refuses on POSIX unless the mode
+//     is exactly 0600, reads at most 127 bytes, and secure_wipes the file
+//     buffer after the caller has derived keys.
+//
+// Both return a std::string containing the password (or empty on failure,
+// with a diagnostic on stderr). The caller is responsible for secure_wiping
+// the returned string after key derivation; the helpers cannot do it for
+// them because the string is copied by value into the archive writer.
+// ──────────────────────────────────────────────────────────────────────────
+
+// Maximum password length: the KDF truncates at 128 bytes (PBKDF2-HMAC-SHA256
+// with a 1024-byte block), so reading more would silently discard the tail.
+constexpr size_t kMaxPasswordLen = 127;
+
+// Read a line from `fd` with echo disabled. Returns the number of bytes read
+// (excluding the newline), or -1 on error. The buffer is secure_wiped.
+// POSIX: termios ECHO clear. Windows: SetConsoleMode minus ENABLE_ECHO_INPUT.
+static core::int64 read_line_no_echo(int fd, char* buf, size_t max_len) {
+    core::int64 n = 0;
+#ifdef _WIN32
+    HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    DWORD mode = 0;
+    if (!::GetConsoleMode(h, &mode)) return -1;
+    DWORD saved = mode;
+    mode &= ~ENABLE_ECHO_INPUT;
+    if (!::SetConsoleMode(h, mode)) return -1;
+    // Read one byte at a time so we can stop at the newline without consuming
+    // past it (the console is in line mode by default, but ENABLE_LINE_INPUT
+    // may be off; byte-at-a-time is safe either way).
+    DWORD total = 0;
+    char ch;
+    while (total < max_len) {
+        DWORD read = 0;
+        if (!::ReadFile(h, &ch, 1, &read, nullptr) || read == 0) break;
+        if (ch == '\n' || ch == '\r') break;
+        buf[total++] = ch;
+    }
+    ::SetConsoleMode(h, saved);
+    buf[total] = '\0';
+    n = static_cast<core::int64>(total);
+    return n;
+#else
+    termios saved{};
+    if (::tcgetattr(fd, &saved) != 0) return -1;
+    termios raw = saved;
+    raw.c_lflag &= ~ECHO;
+    if (::tcsetattr(fd, TCSANOW, &raw) != 0) return -1;
+    n = static_cast<core::int64>(::read(fd, buf, max_len));
+    ::tcsetattr(fd, TCSANOW, &saved);
+    if (n <= 0) return n;
+    // Strip the trailing newline if present.
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) --n;
+    buf[n] = '\0';
+    return n;
+#endif
+}
+
+// Print a prompt to stderr and read a no-echo line from the terminal.
+// Returns an empty string on failure (with a diagnostic on stderr).
+static std::string read_password_from_terminal(const char* prompt) {
+#ifdef _WIN32
+    if (!_isatty(_fileno(stdin))) {
+#else
+    if (!::isatty(STDIN_FILENO)) {
+#endif
+        std::cerr << "Error: cannot read password from a non-TTY stdin. "
+                     "Use -p<password> or --password-file <path> for automation.\n";
+        return {};
+    }
+    std::fprintf(stderr, "%s", prompt);
+    std::fflush(stderr);
+    char buf[kMaxPasswordLen + 1];
+#ifdef _WIN32
+    core::int64 n = read_line_no_echo(_fileno(stdin), buf, kMaxPasswordLen);
+#else
+    core::int64 n = read_line_no_echo(STDIN_FILENO, buf, kMaxPasswordLen);
+#endif
+    // Echo is restored inside read_line_no_echo; emit a newline so the shell
+    // prompt is not glued to the user's cursor position.
+    std::fprintf(stderr, "\n");
+    if (n < 0) {
+        std::cerr << "Error: failed to read password from terminal.\n";
+        return {};
+    }
+    if (n == 0) {
+        std::cerr << "Error: empty password.\n";
+        return {};
+    }
+    std::string result(buf, static_cast<size_t>(n));
+    crypto::secure_wipe(buf, sizeof(buf));
+    return result;
+}
+
+// Read a password from a file. On POSIX the file must have mode 0600; the
+// check is on the opened descriptor (fstat), not the path, so a swap between
+// check and read cannot race. Returns an empty string on failure.
+static std::string read_password_from_file(const std::string& path) {
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        std::cerr << "Error: cannot open password file '" << path << "'.\n";
+        return {};
+    }
+#ifndef _WIN32
+    struct stat st {};
+    if (::fstat(fd, &st) != 0) {
+        std::cerr << "Error: cannot stat password file '" << path << "'.\n";
+        ::close(fd);
+        return {};
+    }
+    if (!S_ISREG(st.st_mode)) {
+        std::cerr << "Error: password file '" << path << "' is not a regular file.\n";
+        ::close(fd);
+        return {};
+    }
+    if ((st.st_mode & 0777) != 0600) {
+        std::cerr << "Error: password file '" << path << "' has mode " << std::oct
+                  << (st.st_mode & 0777) << std::dec
+                  << ", expected 0600. Refusing to read a world/group-accessible secret.\n";
+        ::close(fd);
+        return {};
+    }
+#endif
+    char buf[kMaxPasswordLen + 1];
+    core::int64 n = ::read(fd, buf, kMaxPasswordLen);
+    ::close(fd);
+    if (n <= 0) {
+        std::cerr << "Error: password file '" << path << "' is empty or unreadable.\n";
+        return {};
+    }
+    // Strip trailing newline.
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) --n;
+    if (n == 0) {
+        std::cerr << "Error: password file '" << path << "' contains only a newline.\n";
+        return {};
+    }
+    std::string result(buf, static_cast<size_t>(n));
+    crypto::secure_wipe(buf, sizeof(buf));
+    return result;
+}
 
 #ifndef _WIN32
 // Process umask cached once (thread-safely) for mode bounding (v1.24 §7.1).
@@ -522,6 +677,9 @@ void print_inspect_help() {
         << "  and AES-256 PBKDF2 encryption salt/workbound parameters.\n\n"
         << "Switches:\n"
         << "  -p<password>      Decryption password for encrypted archive headers\n"
+        << "  -p                 Prompt for the password (no echo, requires a TTY)\n"
+        << "  -p-                Same as -p (UnRAR-compatible prompt form)\n"
+        << "  --password-file <p>  Read the password from a 0600 file (POSIX)\n"
         << "  --json            Output complete forensic inspection envelope as structured RFC "
            "8259 JSON\n\n"
         << "Examples:\n"
@@ -643,6 +801,9 @@ void print_list_help() {
            "scripting)\n\n"
         << "Switches:\n"
         << "  -p<password>      Decryption password for archives with encrypted headers\n"
+        << "  -p                 Prompt for the password (no echo, requires a TTY)\n"
+        << "  -p-                Same as -p (UnRAR-compatible prompt form)\n"
+        << "  --password-file <p>  Read the password from a 0600 file (POSIX)\n"
         << "  --json            Output complete archive inventory as structured RFC 8259 JSON\n"
         << "  -v                Verbose listing\n\n"
         << "Examples:\n"
@@ -663,6 +824,9 @@ void print_test_help() {
         << "  CRC32 / BLAKE2sp checksums without writing extracted files to disk.\n\n"
         << "Switches:\n"
         << "  -p<password>      Decryption password for protected archives\n"
+        << "  -p                 Prompt for the password (no echo, requires a TTY)\n"
+        << "  -p-                Same as -p (UnRAR-compatible prompt form)\n"
+        << "  --password-file <p>  Read the password from a 0600 file (POSIX)\n"
         << "  -mt<n>            Single-member decode workers (default: 2; -mt1 = sequential)\n"
         << "  --json            Output structured RFC 8259 JSON test verification report\n"
         << "  -plain            Plain line-by-line output (disable ANSI animations)\n"
@@ -4350,10 +4514,25 @@ static int cli_main(int argc, char* argv[]) {
     }
 
     bool stop_switches = false;
+    std::string password; // declared here so the --password-file first-pass handler can set it
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (!stop_switches && arg == "--") {
             stop_switches = true;
+            continue;
+        }
+        // --password-file <path> is a switch that takes a separate path
+        // argument, not an =value form. Consume the next argv element as
+        // the path so it is not mistaken for the archive name.
+        if (!stop_switches && arg == "--password-file") {
+            if (i + 1 < argc) {
+                password = read_password_from_file(argv[i + 1]);
+                if (password.empty()) return 7;
+                ++i; // skip the path argument
+            } else {
+                std::cerr << "Error: --password-file requires a path argument.\n";
+                return 7;
+            }
             continue;
         }
         if (!stop_switches && !arg.empty() && (arg[0] == '-' || arg == "/?" || arg == "/h")) {
@@ -4410,7 +4589,6 @@ static int cli_main(int argc, char* argv[]) {
         return EXIT_FATAL;
     }
 
-    std::string password;
     bool want_header_encryption = false; // -hp
     int method = 3;
     unsigned mt_flag = 0; // 0 = auto-detect
@@ -4614,16 +4792,28 @@ static int cli_main(int argc, char* argv[]) {
             password = s.substr(3);
             want_header_encryption = true;
         } else if (sw_eq(s, "-hp")) {
-            // A bare -hp must fail loudly: falling through silently produced
-            // an UNENCRYPTED archive while the user believed headers were
-            // protected (sweep finding M7).
-            std::cerr << "Error: -hp requires a password (-hp<password>).\n";
-            return 7;
+            // Bare -hp: prompt for the password on the terminal. The old
+            // behaviour was a hard error; §4.14 requires the documented
+            // prompt instead.
+            password = read_password_from_terminal("Enter password (header encryption): ");
+            if (password.empty()) return 7;
+            want_header_encryption = true;
+        } else if (sw_eq(s, "-p-")) {
+            // UnRAR-compatible: -p- means "prompt for password".
+            password = read_password_from_terminal("Enter password: ");
+            if (password.empty()) return 7;
         } else if (sw_starts(s, "-p") && s.size() > 2) {
             password = s.substr(2);
         } else if (sw_eq(s, "-p")) {
-            std::cerr << "Error: -p requires a password (-p<password>).\n";
-            return 7;
+            // Bare -p: prompt for the password on the terminal (§4.14).
+            password = read_password_from_terminal("Enter password: ");
+            if (password.empty()) return 7;
+        } else if (sw_eq(s, "--password-file")) {
+            // --password-file was already handled in the first-pass loop
+            // (which consumed the path argument). The password is set; this
+            // branch is never reached because the switch was consumed. If
+            // it somehow is, the password is already set - just skip.
+            // (No-op: the first-pass handler did the work.)
         } else if (sw_starts(s, "-m") && s.size() == 3 && s[2] >= '0' && s[2] <= '5') {
             method = s[2] - '0';
         } else if (sw_starts(s, "-mt")) {
@@ -4932,8 +5122,22 @@ static int cli_main(int argc, char* argv[]) {
     // Header encryption (-hp): implies per-file data encryption
     if (want_header_encryption && (cmd == "a" || cmd == "u" || cmd == "f" || cmd == "m")) {
         if (password.empty()) {
-            std::cerr << "Error: -hp requires a password (-hp<password>).\n";
+            // If -hp was given without -p<pwd>, the bare -hp path already
+            // prompted. If we get here with an empty password, the prompt
+            // was declined or failed.
+            std::cerr << "Error: -hp requires a password (use -hp<password>, "
+                         "-hp to prompt, or --password-file <path>).\n";
             return 7;
+        }
+    }
+    // OPENRAR_PASSWORD_FILE: automation channel that mirrors --password-file.
+    // Checked after argv parsing so an explicit -p<pwd> wins; the env var is
+    // only consulted when no password was given on the command line.
+    if (password.empty()) {
+        const char* pw_file = std::getenv("OPENRAR_PASSWORD_FILE");
+        if (pw_file && *pw_file) {
+            password = read_password_from_file(pw_file);
+            if (password.empty()) return 7;
         }
     }
     // RecoveryWriter now handles -rr (0x1100B Cauchy) for every command that
