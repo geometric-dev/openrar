@@ -5,6 +5,13 @@
 
 enable_testing()
 
+# The C9 corpus gate needs Python 3 (find_package(Python3), below). It is a
+# fixtures-backed ctest entry, not a build prerequisite, so a host without
+# Python 3 only loses that entry - configure warns instead of failing. CI and
+# release gates set this ON so the entry cannot disappear silently.
+option(OPENRAR_REQUIRE_C9
+       "Fail configure when the Python-3-backed C9 corpus gate cannot be registered" OFF)
+
 # ── Unit tests (native only — Emscripten has its own node-based harness) ────
 if(NOT EMSCRIPTEN)
     # The whole unit-test suite expresses its expectations with assert().
@@ -559,10 +566,22 @@ target_link_libraries(archive_api_tests PRIVATE
         set_tests_properties(c9_build PROPERTIES
             TIMEOUT 1800 LABELS "c9;slow" FIXTURES_REQUIRED c9_tools)
     else()
-        message(FATAL_ERROR
-            "C9 corpus build requires a Python 3 interpreter, and find_package(Python3) "
-            "failed. Install Python 3 (or point -DPython3_EXECUTABLE at one): C9 must "
-            "not be skipped silently.")
+        # Python 3 is optional so a plain `cmake -B build` works on a host that
+        # has no interpreter; without it the c9_build entry simply is not
+        # registered. That is a visible loss of gate coverage, so say it loudly,
+        # and let release/CI configurations make it fatal instead.
+        if(OPENRAR_REQUIRE_C9)
+            message(FATAL_ERROR
+                "OPENRAR_REQUIRE_C9=ON but no Python 3 interpreter was found "
+                "(find_package(Python3) failed). Install Python 3 or point "
+                "-DPython3_EXECUTABLE at one: C9 must not be skipped silently "
+                "on a gate build.")
+        else()
+            message(WARNING
+                "C9 corpus gate skipped: no Python 3 interpreter found. Install "
+                "Python 3 and re-configure, or pass -DOPENRAR_REQUIRE_C9=ON to "
+                "make this a configure error.")
+        endif()
     endif()
 
     # ── Kernel throughput benchmark (informational, never a gate) ───────────

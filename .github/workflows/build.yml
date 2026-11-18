@@ -145,6 +145,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
             -DOPENRAR_DLL_SUFFIX=${{ matrix.dll_suffix }} \
             -DOPENRAR_INMEM_ARCHIVE=ON \
+            -DOPENRAR_REQUIRE_C9=ON \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             "${ARCH_ARGS[@]}" \
             $WARN_FLAG
@@ -189,7 +190,7 @@ jobs:
       - name: Configure CMake (Windows MSVC)
         if: runner.os == 'Windows'
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} -DOPENRAR_DLL_SUFFIX=${{ matrix.dll_suffix }} -DOPENRAR_INMEM_ARCHIVE=ON
+          cmake -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} -DOPENRAR_DLL_SUFFIX=${{ matrix.dll_suffix }} -DOPENRAR_INMEM_ARCHIVE=ON -DOPENRAR_REQUIRE_C9=ON
 
       - name: Build All Targets
         run: |
@@ -517,10 +518,13 @@ jobs:
         # heavy multi-megabyte compression corpora (compress_tests, stream_encoder_tests, volume_tests)
         # stall software emulation, and child-process spawning (sfx_*, cli_tests) creates excessive emulation overhead.
         # Native multi-threading, large-scale compression, and process isolation on ARM64 are verified natively on Apple Silicon & Windows ARM64 runners.
+        # C9 is excluded as a prefix (`c9_.*`, not just `c9_build`) so its
+        # fixture `c9_tools_build` does not build openrar + filter_probe under
+        # emulation for a consumer that is itself excluded.
         # Here we run the single-threaded in-process suites (crypto, recovery, format, bitreader, dll, etc.) with a 60s per-test timeout.
         run: |
           ctest --test-dir build -C Release --output-on-failure --timeout 60 \
-            -E 'compress_tests|stream_encoder_tests|solid_packer_tests|volume_tests|benchmark_tests|file_handle_tests|mutation_tests|parallel_compress_tests|two_phase_tests|sfx_.*|cli_tests|collision_matrix_tests|extraction_report_tests|transcode_tests|foreign_format_tests|sandbox_.*|python_conformance|fuzz_.*|c9_build'
+            -E 'compress_tests|stream_encoder_tests|solid_packer_tests|volume_tests|benchmark_tests|file_handle_tests|mutation_tests|parallel_compress_tests|two_phase_tests|sfx_.*|cli_tests|collision_matrix_tests|extraction_report_tests|transcode_tests|foreign_format_tests|sandbox_.*|python_conformance|fuzz_.*|c9_.*'
 
       - name: Aggregate JUnit report (v1.45 M0 gate)
         if: always()
@@ -862,11 +866,15 @@ jobs:
       #   python_conformance - loads the DLL from non-instrumented python.
       #   transcode_tests - excluded on wall-clock budget.
       #   (archive_tests re-admitted: decoupled 16.7M PBKDF2 cycle allows <1s execution).
+      #   c9_tools_build / c9_build - the fixture rebuilds openrar + filter_probe
+      #     in a sub-build, which doubles sanitizer build time on top of the
+      #     excluded suites' budget. C9 coverage is unchanged: c9_build is a
+      #     correctness fixture, not a sanitizer-specific target.
       - name: Unit suite under sanitizers
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|sfx_tests|sfx_pipeline_tests|sfx_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance'
+        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|sfx_tests|sfx_pipeline_tests|sfx_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance|c9_.*'
 
       - name: Aggregate JUnit report (v1.45 M0 gate)
         if: always()

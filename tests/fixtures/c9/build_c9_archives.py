@@ -117,7 +117,7 @@ def main():
     # fails, and stale volume parts would satisfy the >1-part check without
     # this run producing any. Both are this script's own outputs.
     for stale in os.listdir(args.out):
-        if stale.startswith(("solid_c9", "enc_c9", "vol_c9", "filter_c9")):
+        if stale.startswith(("solid_c", "enc_c", "vol_c", "filter_c")):
             os.remove(os.path.join(args.out, stale))
     text = os.path.join(args.src, "text_64m.bin")
     mini = os.path.join(args.src, "minified_1m.js")
@@ -162,7 +162,7 @@ def main():
         ex_bad = os.path.join(tmp, "enc_bad")
         p_bad = extract(exe, enc, ex_bad, "wrong-password")
         leaked = os.path.exists(os.path.join(ex_bad, "minified_1m.js"))
-        check(p_bad.returncode != 0 or not leaked,
+        check(p_bad.returncode != 0 and not leaked,
               "encrypted: wrong password fails closed (rc=%d, leaked=%s)"
               % (p_bad.returncode, leaked))
 
@@ -233,6 +233,16 @@ def main():
         check(q.returncode != 0,
               "filter_c9: the emission gate is not vacuous (no-filter entry "
               "fails an E8/DELTA expectation)")
+
+        # SEC-INTEROP-UNDEF-FILTER (§4.21): no member may carry a reserved filter
+        # type (4..7). OpenRAR emits such a region raw, but every reference
+        # decoder drops it, so an archive that contains one is not interoperable.
+        # Scan the whole archive, not just the three members asserted above.
+        q = run(probe, ["--scan-types=" + filt], expect_ok=False)
+        for line in (q.stdout or "").strip().splitlines():
+            print("  ..  " + line)
+        check(q.returncode == 0,
+              "filter_c9: no member emits a reserved filter type (type > 3)")
 
     print("C9 archive forms verified.")
     return 0

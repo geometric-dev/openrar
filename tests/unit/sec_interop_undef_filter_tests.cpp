@@ -22,8 +22,10 @@
 //      future 8+ value, so the enum and the write width are pinned together.
 //   2. Every legal filter round-trips at m1/m3/m5. A type written with the
 //      wrong width decodes as something else and fails the CRC.
-//   3. The decoder's dispatch treats 4..7 as raw. That is the source-level
-//      property the archive-level behaviour depends on.
+//   3. Legal filters are APPLIED, not passed through raw. The reserved-type
+//      raw-emission branch is source-level documented but not reachable from a
+//      unit test without a bitstream writer; see the note at
+//      test_legal_filters_are_applied_not_raw.
 
 #include "../src/compress/compressor50.hpp"
 #include "../src/compress/decompressor50.hpp"
@@ -197,9 +199,13 @@ void test_legal_filters_round_trip() {
         FilterConfig cfg;
         const FilterType got = Filters50::detect_filter(c.data.data(), c.data.size(), ch, cfg);
         if (got != c.expect) {
-            std::printf("  [SKIP] %s fixture gave %d, expected %d\n", c.name, static_cast<int>(got),
-                        static_cast<int>(c.expect));
-            continue;
+            // Fail closed: a fixture that stops tripping its detector is no
+            // longer evidence that legal filters round-trip, so skipping it
+            // would turn a broken fixture into a green run.
+            std::printf("  [FAIL] %s fixture gave %d, expected %d - fixture no longer "
+                        "exercises a legal filter\n",
+                        c.name, static_cast<int>(got), static_cast<int>(c.expect));
+            std::exit(1);
         }
         for (int method : {1, 3, 5}) {
             const std::vector<core::byte> packed = pack(c.data, method);
@@ -216,21 +222,16 @@ void test_legal_filters_round_trip() {
     }
 }
 
-// ── Property 3: reserved types pass through raw on decode ──────────────────
+// ── Property 3: legal filters are applied, never passed through raw ────────
 //
 // decompressor50.cpp:853-882 dispatches on f.type and, for anything that is not
-// 0/1/2/3, emits filter_scratch_ unchanged. That is the behaviour this project
-// relies on for forward compatibility and it is the opposite of the reference
-// engine, which returns NULL and drops the region (unpack50.cpp:505-506).
-//
-// ── Property 3: the decoder never takes the raw branch on legal content ────
-//
-// The reserved-type behaviour (decompressor50.cpp:880-881, "emit the raw
-// region") is a *source-level* property: the dispatch is inside the
-// decompression loop and the 3-bit type is Huffman-coded, so reaching it from a
-// unit test would need a bitstream writer. It is pinned by a comment at the
-// dispatch site, not by this test - and claiming otherwise would be a green
-// check on something never exercised.
+// 0/1/2/3, emits filter_scratch_ unchanged. That reserved-type branch is a
+// *source-level* property: the dispatch is inside the decompression loop and
+// the 3-bit type is Huffman-coded, so reaching it from a unit test would need a
+// bitstream writer. It is document-pinned at the dispatch site, not exercised
+// here - and claiming otherwise would be a green check on something never run.
+// (The reference engine returns NULL there and drops the region,
+// unpack50.cpp:505-506; docs/spec/04-filters.md records the divergence.)
 //
 // What IS testable, and what actually matters for interop: on content that
 // legitimately triggers a filter, the decoder must APPLY it (not fall through
@@ -253,9 +254,12 @@ void test_legal_filters_are_applied_not_raw() {
         FilterConfig cfg;
         const FilterType got = Filters50::detect_filter(c.data.data(), c.data.size(), ch, cfg);
         if (got != c.expect) {
-            std::printf("  [SKIP] %s fixture gave %d, expected %d\n", c.name, static_cast<int>(got),
-                        static_cast<int>(c.expect));
-            continue;
+            // Fail closed - see test_legal_filters_round_trip. A skipped case
+            // here would let the whole "applied, not raw" property evaporate.
+            std::printf("  [FAIL] %s fixture gave %d, expected %d - fixture no longer "
+                        "triggers the filter this property asserts\n",
+                        c.name, static_cast<int>(got), static_cast<int>(c.expect));
+            std::exit(1);
         }
 
         const std::vector<core::byte> packed = pack(c.data, 3);

@@ -6,8 +6,8 @@
 // slice ranges against the BUFFER SIZE - so a 64 KiB sample could yield a
 // different verdict than the whole member. A PE with e_lfanew at 0x20000, or a
 // fat Mach-O with a slice at 0x20000, returns E8 on the full member and None on
-// a 64 KiB prefix. One site read the whole member and would chunk it (forcing
-// filters off, silently losing -mc); the other two sampled and would not.
+// a 64 KiB prefix. The two sampling sites would chunk it (forcing filters off,
+// silently losing -mc); the one site that read the whole member would not.
 //
 // This test asserts the property that actually matters: every caller of the one
 // decision function gets the same answer for the same input. It does NOT assert
@@ -26,6 +26,12 @@
 
 using namespace openrar;
 using namespace openrar::compress;
+
+// Compile-time pin of the shared prefix. This is also what puts the suite in
+// the v1.44 ledger's measured table: it uses a local check() counter rather
+// than the doctest macros, so a file with zero counted assertions is omitted
+// from that table entirely.
+static_assert(kMtDetectPrefix == 1024 * 1024, "kMtDetectPrefix must stay 1 MiB");
 
 namespace {
 
@@ -157,11 +163,12 @@ int main() {
     std::printf("\nsingle-decision property (late container headers):\n");
     {
         // e_lfanew at 0x20000 (128 KiB): past a naive 64 KiB sample, well
-        // inside kMtDetectPrefix.
+        // inside kMtDetectPrefix. The constant check is not decorative: if a
+        // future edit shrinks the prefix this fixture silently stops proving
+        // the divergence, so fail here instead.
         std::vector<core::byte> pe = make_pe(0x20000);
         pe.resize(4 * 1024 * 1024, 0); // clear the chunking floor
-        check(pe.size() > kMtDetectPrefix || kMtDetectPrefix >= 0x20000,
-              "PE header at 0x20000 is inside kMtDetectPrefix");
+        check(kMtDetectPrefix > 0x20000 + 0x400, "the late PE header fits inside kMtDetectPrefix");
 
         const auto d = decide_chunked_pack(
             auto_cfg, pe.data(), std::min<size_t>(pe.size(), kMtDetectPrefix), 4, pe.size());
@@ -170,16 +177,18 @@ int main() {
                     static_cast<int>(d.detected));
 
         // The invariant: a member that WOULD be filtered must never be chunked,
-        // because the chunked path forces filters off.
+        // because the chunked path forces filters off. The fixture is only
+        // evidence if the whole-member detector actually fires, so that is a
+        // hard precondition - not a branch that silently passes when it does
+        // not.
         core::uint8 ch = 1;
         const FilterType whole = Filters50::detect_filter(pe.data(), pe.size(), ch, auto_cfg);
-        if (whole != FilterType::None) {
-            check(d.detected == whole,
-                  "late PE header -> predicate sees the same filter as the whole member");
-            check(d.decision != MtDecision::Chunked, "late PE header -> decision is not Chunked");
-        } else {
-            check(true, "whole-member filter NOT detected -> no constraint");
-        }
+        check(whole != FilterType::None, "whole-member PE detects a filter (fixture precondition)");
+        check(d.detected == whole,
+              "late PE header -> predicate sees the same filter as the whole member");
+        check(d.detected != FilterType::None,
+              "late PE header -> predicate does not lose the detected filter");
+        check(d.decision != MtDecision::Chunked, "late PE header -> decision is not Chunked");
 
         // The same shape for a fat Mach-O with a late slice.
         std::vector<core::byte> mo = make_fat_macho(0x20000);
@@ -191,19 +200,19 @@ int main() {
         std::printf("    fat macho@0x20000 -> %s (detected=%d)\n",
                     dm.decision == MtDecision::Chunked ? "Chunked" : "Sequential",
                     static_cast<int>(dm.detected));
-        if (whole_m != FilterType::None) {
-            check(dm.detected == whole_m,
-                  "late fat slice -> predicate sees the same filter as the whole member");
-            check(dm.decision != MtDecision::Chunked, "late fat slice -> decision is not Chunked");
-        } else {
-            check(true, "whole-member fat filter NOT detected -> no constraint");
-        }
+        check(whole_m != FilterType::None,
+              "whole-member fat Mach-O detects a filter (fixture precondition)");
+        check(dm.detected == whole_m,
+              "late fat slice -> predicate sees the same filter as the whole member");
+        check(dm.detected != FilterType::None,
+              "late fat slice -> predicate does not lose the detected filter");
+        check(dm.decision != MtDecision::Chunked, "late fat slice -> decision is not Chunked");
     }
 
     // ── 3. Prefix policy is shared, not per-site ───────────────────────────
     std::printf("\nshared prefix policy:\n");
-    check(kMtDetectPrefix == 1024 * 1024,
-          "kMtDetectPrefix is 1 MiB (covers real container headers)");
+    std::printf("  [PASS] kMtDetectPrefix is %zu bytes (pinned at compile time)\n",
+                kMtDetectPrefix);
     {
         // The documented contract: every site passes the same prefix length.
         const size_t n = std::min<size_t>(text.size(), kMtDetectPrefix);

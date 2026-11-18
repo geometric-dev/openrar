@@ -20,7 +20,9 @@ additive fixed cost that dilutes the scan; the minimum suppresses scheduler
 noise, the same reason `openrar_bench` uses a median of many).
 
 `tools/qo_probe.py`, corpus generated deterministically, `-m0 -mt1` so the
-packed payload is identical and only the QO cache differs.
+packed payload is identical and only the QO cache differs. Every listing run
+also carries the reader's `qo-taken` bit (see §3), so "the fast path fired" is
+an observation, not an assumption.
 
 ## 2. Result
 
@@ -39,9 +41,20 @@ entries) and buys ~2.8% listing time. At 1,000 entries it is *slower* than not
 having it.
 
 The win is **flat**, not growing: +1.5% → −2.6% → −2.8%. The last step is
-noise-sized. A cache that scales with entry count would show a widening gap; this
-does not, which says the scan is not header-parse-bound in the way QO assumes —
-it is dominated by per-file work that QO does not remove.
+noise-sized (−0.2 pts); the one-time 1k→3k transition is the whole of the
+change. The probe classifies growth from the **last step**, not first-vs-last,
+for exactly this reason: a single transition into "faster" and a gap that keeps
+widening produce the same first-to-last range, but only the latter means the
+header scan is what dominates. A cache that scales with entry count would still
+be widening at the top of the sweep; this is not, which says the scan is not
+header-parse-bound in the way QO assumes — it is dominated by per-file work that
+QO does not remove.
+
+The probe's `qo-taken` column is the reader's own taken/not-taken bit
+(`OPENRAR_DEBUG_QO=1`), required for every run and asserted to be `no` on the
+`-qo-` archive. The earlier version inferred engagement from timing alone, which
+cannot distinguish "the fast path did not fire" from "it fired and did not
+help".
 
 ## 4. Why the row's framing was wrong
 
@@ -68,4 +81,8 @@ python tools/qo_probe.py --openrar build/openrar64/Release/openrar.exe --reps 9
 python tools/qo_probe.py --openrar <exe> --reps 15 --sizes 1000,10000,100000
 ```
 
-No production code change. The probe writes only to a temp dir and deletes it.
+The probe sets `OPENRAR_DEBUG_QO=1` for the listing runs; the reader then emits
+one `[qo] taken=0|1` line on stderr (log-only, no behaviour change). A build
+without that hook makes the probe exit 2 rather than report an unlabelled
+timing. No production code change beyond the diagnostic; the probe writes only
+to a temp dir and deletes it.

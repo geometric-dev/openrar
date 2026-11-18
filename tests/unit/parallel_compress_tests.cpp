@@ -373,7 +373,7 @@ static void test_parallel_filter_parity() {
     std::cout << "    - Filter parity across -mt2/-mt4/-mt8: OK" << std::endl;
 }
 
-// T-M2: pin the MT path-selection decision for BOTH branches.
+// T-M2: pin the MT path-selection decision for every branch.
 //
 // This test exists because the decision used to be an inverted inline
 // condition inside ArchiveMutator::prepare_add_file. With the default
@@ -383,6 +383,10 @@ static void test_parallel_filter_parity() {
 // filters off - while all filter-free input (text, code, most data) silently
 // fell back to the sequential path and got no MT at all. Every other test in
 // this file exercises the pipeline directly, so none of them could see it.
+//
+// The decision now lives in one function, compress::decide_chunked_pack(). The
+// retired mt_should_use_parallel() predicate is not tested because it no longer
+// exists; these assertions hold the same truth table against the survivor.
 static void test_parallel_path_selection() {
     std::cout << "[+] test_parallel_path_selection: MT engages only when no filter would fire"
               << std::endl;
@@ -394,31 +398,39 @@ static void test_parallel_path_selection() {
     FilterConfig off_cfg;
     off_cfg.mode = FilterMode::DisableAll;
 
+    // The decision function refuses to chunk anything below its 1 MiB floor,
+    // so these fixtures must clear it or every branch would be TooSmall.
+    constexpr size_t kMember = 2 * core::MIB;
+
     // Filter-free content: MT must be allowed.
     {
-        auto data = generate_text_like(256 * 1024);
-        REQUIRE((mt_should_use_parallel(auto_cfg, data.data(), data.size()) &&
+        auto data = generate_text_like(kMember);
+        REQUIRE((decide_chunked_pack(auto_cfg, data.data(), data.size(), 4, data.size()).decision ==
+                     MtDecision::Chunked &&
                  "filter-free input must take the MT path (it used to fall back to sequential)"));
     }
     // E8-dense content: a filter WOULD fire, so MT must be declined so the
     // sequential path honors -mc.
     {
-        auto data = generate_e8_dense(256 * 1024);
-        REQUIRE((!mt_should_use_parallel(auto_cfg, data.data(), data.size()) &&
+        auto data = generate_e8_dense(kMember);
+        REQUIRE((decide_chunked_pack(auto_cfg, data.data(), data.size(), 4, data.size()).decision ==
+                     MtDecision::Sequential &&
                  "filter-triggering input must take the sequential path to preserve -mc parity"));
     }
     // Filters explicitly off: chunking loses nothing, so MT is allowed even
     // for content a filter would otherwise have caught.
     {
-        auto data = generate_e8_dense(256 * 1024);
-        REQUIRE((mt_should_use_parallel(off_cfg, data.data(), data.size()) &&
+        auto data = generate_e8_dense(kMember);
+        REQUIRE((decide_chunked_pack(off_cfg, data.data(), data.size(), 4, data.size()).decision ==
+                     MtDecision::Chunked &&
                  "with filters disabled, MT must be allowed unconditionally"));
     }
     // No sample available (read failed / empty): take MT, do not silently
     // fall back to sequential.
     REQUIRE(
-        (mt_should_use_parallel(auto_cfg, nullptr, 0) && "no sample must not silently disable MT"));
-    std::cout << "    - Both selection branches + no-sample fallback: OK" << std::endl;
+        (decide_chunked_pack(auto_cfg, nullptr, 0, 4, kMember).decision == MtDecision::Chunked &&
+         "no sample must not silently disable MT"));
+    std::cout << "    - Every selection branch + no-sample fallback: OK" << std::endl;
 }
 
 // T-M3: MT must not COST ratio when redundancy spans chunk boundaries.

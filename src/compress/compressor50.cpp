@@ -2361,8 +2361,8 @@ MtDecisionResult decide_chunked_pack(const FilterConfig& filter_cfg, const core:
     }
     // Filters explicitly disabled: nothing would be lost by chunking.
     if (filter_cfg.mode == FilterMode::DisableAll) return r;
-    // No bytes to judge with: take MT, matching mt_should_use_parallel's
-    // "read failed" contract. This is a caller state, not a bypass.
+    // No bytes to judge with: take MT. A failed or empty read must not silently
+    // disable the chunked encoder; it is a caller state, not a bypass.
     if (data == nullptr || data_len == 0) return r;
 
     // detect_filter is bounds-safe: it guards pe_off + 6 < size and falls

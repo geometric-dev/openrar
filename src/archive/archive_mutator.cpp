@@ -1476,48 +1476,62 @@ bool ArchiveMutator::prepare_add_file(
                     // other two sites used different rules. That is the exact
                     // shape of the v1.21.1 `-mc`-under-`mt` divergence, and
                     // detect_filter is position-sensitive enough to make it
-                    // observable (see tools/mt_decision_probe.cpp). The
-                    // predicate now lives in ONE function with a truth table
-                    // pinned by test_parallel_path_selection.
+                    // observable (tests/unit/mt_decision_tests.cpp builds the
+                    // late-header fixtures). The predicate now lives in ONE
+                    // function with a truth table pinned by
+                    // test_parallel_path_selection and mt_decision_tests.
                     //
                     // `solid_packer` is an additional local veto (a solid
                     // session's packer is not thread-safe), not part of the
                     // shared predicate - so it is applied first.
                     bool use_parallel = !solid_packer;
                     if (use_parallel) {
-                        // The WHOLE member goes to the one decision function.
-                        //
-                        // This site is the streaming path, so the bytes are not
-                        // in memory yet. It reads a bounded prefix, but the
-                        // bound is NOT 64 KiB: detect_filter is
-                        // position-sensitive (it follows e_lfanew at +0x3C and
-                        // validates Mach-O fat slice ranges against the buffer
-                        // size), so a short prefix reads as None where the full
-                        // member reads as E8, and the chunked path would then
-                        // force filters off and silently lose -mc. Measured on
-                        // a 4 MiB PE with e_lfanew at 0x20000: 4189225 B under
-                        // a 64 KiB prefix vs 4189319 B with the full member.
-                        //
-                        // kMtDetectPrefix is the documented compromise: large
-                        // enough to cover every header a real linker emits
-                        // (PE e_lfanew is in the first 1 KiB; the largest
-                        // genuine Mach-O fat slice table is a few KiB), small
-                        // enough to buffer per member. A member whose filter
-                        // header sits beyond it falls through to the E8
-                        // density scan, which is what the sequential path
-                        // would do with a short read too.
-                        std::vector<core::byte> sample(static_cast<size_t>(
-                            std::min<core::uint64>(file_sz, compress::kMtDetectPrefix)));
-                        const bool have_sample =
-                            !sample.empty() &&
-                            src.read(sample.data(), sample.size()) == sample.size();
-                        use_parallel = compress::decide_chunked_pack(
-                                           filter_cfg, sample.data(),
-                                           have_sample ? sample.size() : 0, eff_threads,
-                                           static_cast<size_t>(std::min<core::uint64>(
-                                               file_sz, std::numeric_limits<size_t>::max())))
-                                           .decision == compress::MtDecision::Chunked;
-                        src.seek(0, io::SeekOrigin::Begin);
+                        const size_t member_sz = static_cast<size_t>(
+                            std::min<core::uint64>(file_sz, std::numeric_limits<size_t>::max()));
+                        if (filter_cfg.mode == compress::FilterMode::DisableAll) {
+                            // No filter can fire, so the decision is a pure
+                            // function of thread count and member size. Ask the
+                            // shared predicate without paying a 1 MiB read.
+                            use_parallel = compress::decide_chunked_pack(filter_cfg, nullptr, 0,
+                                                                         eff_threads, member_sz)
+                                               .decision == compress::MtDecision::Chunked;
+                        } else {
+                            // The streaming path does not hold the member, so it
+                            // reads a bounded prefix for the one decision
+                            // function. The bound is NOT 64 KiB: detect_filter is
+                            // position-sensitive (it follows e_lfanew at +0x3C and
+                            // validates Mach-O fat slice ranges against the buffer
+                            // size), so a short prefix reads as None where the full
+                            // member reads as E8, and the chunked path would then
+                            // force filters off and silently lose -mc. Reproduced
+                            // on a 4 MiB PE with e_lfanew at 0x20000: -mc- -mt4
+                            // 421 B vs -mc- -mt1 409 B (MT ran with filters
+                            // off); default -mt4 == default -mt1 at 441 B once
+                            // the shared predicate sees the header.
+                            //
+                            // kMtDetectPrefix is the documented compromise: large
+                            // enough to cover every header a real linker emits
+                            // (PE e_lfanew is in the first 1 KiB; the largest
+                            // genuine Mach-O fat slice table is a few KiB), small
+                            // enough to buffer per member. A member whose filter
+                            // header sits beyond it falls through to the same
+                            // 64 KiB-bounded density scan the sequential path runs.
+                            std::vector<core::byte> sample(static_cast<size_t>(
+                                std::min<core::uint64>(file_sz, compress::kMtDetectPrefix)));
+                            const bool have_sample =
+                                !sample.empty() &&
+                                src.read(sample.data(), sample.size()) == sample.size();
+                            use_parallel =
+                                compress::decide_chunked_pack(filter_cfg, sample.data(),
+                                                              have_sample ? sample.size() : 0,
+                                                              eff_threads, member_sz)
+                                    .decision == compress::MtDecision::Chunked;
+                            // The sample read advanced the stream; every branch
+                            // below compresses from offset 0, so a failed rewind
+                            // must abort rather than silently compress a member
+                            // that starts `sample.size()` bytes in.
+                            if (!src.seek(0, io::SeekOrigin::Begin)) return false;
+                        }
                     }
                     if (solid_packer) {
                         // Solid session streaming path: the packed stream goes
@@ -2810,20 +2824,29 @@ int ArchiveMutator::write_batch_add_ex(
                 // thread-count input; the prefix policy is kMtDetectPrefix.
                 bool use_parallel = pf.direct_stream_threads > 1;
                 if (use_parallel) {
-                    std::vector<core::byte> sample(static_cast<size_t>(
-                        std::min<core::uint64>(pf.fb.unp_size, compress::kMtDetectPrefix)));
-                    const bool have_sample =
-                        !sample.empty() &&
-                        src_in.read(sample.data(), sample.size()) == sample.size();
-                    if (!src_in.seek(0, io::SeekOrigin::Begin)) {
-                        stream_ok = false;
-                    }
-                    if (stream_ok) {
-                        use_parallel =
-                            compress::decide_chunked_pack(
-                                filter_cfg, sample.data(), have_sample ? sample.size() : 0,
-                                pf.direct_stream_threads, static_cast<size_t>(pf.fb.unp_size))
-                                .decision == compress::MtDecision::Chunked;
+                    if (filter_cfg.mode == compress::FilterMode::DisableAll) {
+                        // No filter can fire; skip the 1 MiB sample read. The
+                        // shared predicate still owns the thread/size floors.
+                        use_parallel = compress::decide_chunked_pack(
+                                           filter_cfg, nullptr, 0, pf.direct_stream_threads,
+                                           static_cast<size_t>(pf.fb.unp_size))
+                                           .decision == compress::MtDecision::Chunked;
+                    } else {
+                        std::vector<core::byte> sample(static_cast<size_t>(
+                            std::min<core::uint64>(pf.fb.unp_size, compress::kMtDetectPrefix)));
+                        const bool have_sample =
+                            !sample.empty() &&
+                            src_in.read(sample.data(), sample.size()) == sample.size();
+                        if (!src_in.seek(0, io::SeekOrigin::Begin)) {
+                            stream_ok = false;
+                        }
+                        if (stream_ok) {
+                            use_parallel =
+                                compress::decide_chunked_pack(
+                                    filter_cfg, sample.data(), have_sample ? sample.size() : 0,
+                                    pf.direct_stream_threads, static_cast<size_t>(pf.fb.unp_size))
+                                    .decision == compress::MtDecision::Chunked;
+                        }
                     }
                 }
 

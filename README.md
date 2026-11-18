@@ -147,6 +147,14 @@ The raw block codec is available too: `import { compress, decompress, Compressio
 
 #### Building from Source
 
+##### Prerequisites
+
+- **CMake 3.16+** and a **C++17** compiler (GCC, Clang, or MSVC 2019+).
+- **Python 3** *(optional)* — registers the Python-backed ctest gates, including
+  the C9 corpus build (`c9_build`). Without it those entries are skipped with a
+  configure warning; pass `-DOPENRAR_REQUIRE_C9=ON` to make a missing
+  interpreter a configure error instead (release/CI gate builds do this).
+
 ##### Standard CMake (Windows, Linux, macOS with GCC, Clang, or MSVC)
 
 ```bash
