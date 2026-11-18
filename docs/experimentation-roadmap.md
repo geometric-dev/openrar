@@ -306,6 +306,16 @@ The invariant that actually holds, and that the code must document and assert, i
 
 ### 4.5 EXP-AUDIO-DETECT (W3, Wave 3)
 
+**Status:** safe first landing shipped (2026-11-18). The fixed-offset WAV
+test (`filters50.cpp:264-275`) was replaced with a RIFF chunk walk that finds
+`fmt ` wherever it is (JUNK/LIST/bext chunks no longer hide it). RF64
+(Broadcast Wave Format) and AIFF/AIFC (big-endian FORM+COMM) detection added.
+Verified: canonical WAV, JUNK-prefixed WAV (fmt at offset 84), and AIFF all
+detect DELTA with correct channel count. The remaining scope (CAF, headerless
+`.pcm/.raw` via extension hint + entropy sanity check) is deferred — the §4.2
+probe confirmed the audio strides already earn their keep on WAV/AIFF, and the
+CAF/headerless cases are lower frequency.
+
 **Change.** Replace the fixed-offset WAV test (`filters50.cpp:143-154`) with a RIFF chunk walk (skip `JUNK`/`LIST`/`bext`), then handle RF64/BW64 (`ds64`), AIFF/CAF (big-endian sample data — **note**: the DELTA transform is byte-oriented, so endianness only affects the plane split, not correctness), and headerless `.pcm/.raw` via extension hint + entropy sanity check.
 
 **Gate.** ≥2.0% on C4 (report WAV-canonical vs JUNK-prefixed vs RF64 vs AIFF separately). 0 growth on C1/C2. `-mt4` ≤ +2%. Correct `channels` (bytes/frame) for every fixture, asserted in tests.
