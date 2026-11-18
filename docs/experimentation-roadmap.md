@@ -649,6 +649,15 @@ Report per-bucket shares for filter apply, file decrypt, header decrypt, CRC32, 
 
 ### 4.29 EXP-GUARD-DEFAULT-WINDOW (W2, Wave 2 — prerequisite for §4.26)
 
+**Status:** landed on `integration` (2026-11-18). Three new guard cells at the
+default 64 MiB window and the MT path; `RATCHET_BYTES` extended from 30 to 33
+entries; `test_guard_cell_decomposition` pins the chunk geometry. The guard
+passes 33/33. The `wrap_128m.bin` cells are extract-size-at-128-MiB witnesses
+(the 96 MiB match is beyond even a 64 MiB window, so both `-md64m` and `-md4m`
+store it as literals — recorded in the guard, not silently skipped). The
+dictionary-applied proof comes from `big24.bin` at `-md64m` vs `-md4m` (80 B
+delta), covered by the existing size cells.
+
 **Why (verified in the guard, 2026-11-15).** `tools/release_regression_guard.py:435` packs every one of its 30 cells `-mt1 -md4m`. The default `-m3` dictionary is **64 MiB** (`compress_plan.hpp:62-68`), so the configuration users actually get has **no size cell**, and the MT pack path has none either because `-mt4` is never exercised. Both facts were found while scoping a candidate that is now closed (§4.27) and survive it: any future pack-side change at the default window or on the MT path is currently invisible to I-1/I-13.
 
 **Change — three cells, 30 → 33, replacing rather than growing (revised 2026-11-15).** The first draft was unsound on both axes. A **64 MiB** member at `-md64m` never slides its window at all (`seed = min(win, offset) − 1` with `offset < win` throughout), and `-mt4`/`-mt8` on 64 MiB both decompose to the *same* 16 × 4 MiB chunking (`ceil(64/4) = 16` and `ceil(64/8) = 8`, both clamped up to `MAX_CHUNK` 4 MiB), so two of the three cells were byte-identical work. The set is therefore:

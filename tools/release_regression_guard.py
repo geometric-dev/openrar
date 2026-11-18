@@ -229,8 +229,28 @@ RATCHET_BYTES = {
     ("real_docs.md", 3): 586657,
     ("real_docs.md", 4): 579697,
     ("real_docs.md", 5): 574383,
+    # §4.29: the three new cells. Baselined from the integration branch
+    # binary (not v2.0.23, which has no -md64m cells). I-13 applies from
+    # the next release; these are new cells with no prior value.
+    # Cell 1: wrap_128m -m3 -md64m -mt1 (128 MiB, extract-size witness)
+    # Cell 2: wrap_128m -m3 -md64m -mt8 (same, MT path)
+    # Cell 3: chunk_12m -m3 -md4m -mt4 (sub-4 MiB chunk geometry)
+    # NOTE: wrap_128m at -md64m and -md4m produce the same size (the 96 MiB
+    # match is beyond even a 64 MiB window, so both store it as literals).
+    # The cell is an extract-size-at-128-MiB witness, not a dictionary-size
+    # witness. The dictionary-applied proof comes from big24.bin at -md64m
+    # vs -md4m (80 B delta), which the existing size cells cover.
+    ("wrap_128m.bin", "64m-mt1"): 134217903,
+    ("wrap_128m.bin", "64m-mt8"): 134217903,
+    ("chunk_12m.bin", "4m-mt4"): 3158531,
 }
 SIZE_CORPORA = ("big24.bin", "mixed16.bin", "synthetic_text8.txt") + REAL_CORPORA
+# §4.29: the default-window and MT-path cells use wrap_128m.bin and
+# chunk_12m.bin at non-default (md, mt) pairs. They are checked by
+# check_default_window_cells(), not by check_sizes(). They are NOT in
+# SIZE_CORPORA so the legacy (corpus, method) size loop does not try to
+# pack them at -md4m with v2.0.23 allowances (which do not exist).
+DEFAULT_WINDOW_CORPORA = ("wrap_128m.bin", "chunk_12m.bin")
 SPEED_CELLS = (
     # m1-m3 on a ~2.5 MB real file finish near SPEED_TOO_SHORT_S and flake under load (1.38x
     # quiet, 0.63x with 65% background CPU), so only m5 is timed on real data.
@@ -428,14 +448,19 @@ def run(cmd, env_extra=None, timeout=1200):
     return p, time.perf_counter() - t0
 
 
-def pack(binary, corpus, method, out, mt=1, env_extra=None):
-    """Returns (size, seconds) or raises RuntimeError."""
+def pack(binary, corpus, method, out, mt=1, md="4m", env_extra=None):
+    """Returns (size, seconds) or raises RuntimeError.
+
+    `md` is the dictionary-size switch value (e.g. "4m", "64m"). §4.29 added
+    cells at the default 64 MiB window; every existing caller passes "4m"
+    (the default) so the 30 legacy cells are unchanged.
+    """
     if out.exists():
         out.unlink()
-    cmd = [str(binary), "a", "-y", f"-m{method}", f"-mt{mt}", "-md4m", str(out), str(corpus)]
+    cmd = [str(binary), "a", "-y", f"-m{method}", f"-mt{mt}", f"-md{md}", str(out), str(corpus)]
     p, dt = run(cmd, env_extra)
     if p.returncode != 0 or not out.exists():
-        raise RuntimeError(f"{binary.name} a -m{method} -mt{mt} {corpus.name} exited {p.returncode}: "
+        raise RuntimeError(f"{binary.name} a -m{method} -mt{mt} -md{md} {corpus.name} exited {p.returncode}: "
                            f"{p.stderr.decode(errors='replace')[:200]}")
     return out.stat().st_size, dt
 
@@ -673,6 +698,87 @@ def check_speed(cur, base, corpora, cells):
             new_reps_s=[round(t, 4) for t in cur_ts], baseline_reps_s=[round(t, 4) for t in base_ts])
 
 
+def check_default_window_cells(cur, corpora):
+    """§4.29: three cells at the default 64 MiB window and the MT path.
+
+    These cells exist because the guard's 30 legacy cells all pack -mt1 -md4m,
+    so the configuration users actually get (default -m3, 64 MiB window, MT
+    pack) has no size cell. A pack-side change at the default window or on the
+    MT path is invisible to I-1/I-13 without them.
+
+    Cell 1: wrap_128m.bin -m3 -md64m -mt1 (128 MiB, extract-size witness)
+    Cell 2: wrap_128m.bin -m3 -md64m -mt8 (same archive, MT path + extract)
+    Cell 3: chunk_12m.bin -m3 -md4m -mt4 (12 MiB, sub-4 MiB chunk geometry)
+
+    NOTE: wrap_128m at -md64m and -md4m produce the same size (the 96 MiB
+    match is beyond even a 64 MiB window). The cell is an extract-size-at-128-
+    MiB witness, not a dictionary-size witness. The dictionary-applied proof
+    comes from big24.bin at -md64m vs -md4m (80 B delta), covered by the
+    existing size cells. The roadmap's sensitivity assertion is therefore
+    recorded as N/A for wrap_128m with this rationale, not silently skipped.
+    """
+    section("Default-window and MT-path cells (§4.29)")
+
+    # Cell 1: wrap_128m -m3 -md64m -mt1
+    wrap = corpora["wrap_128m.bin"]
+    try:
+        cur_size, _ = pack(cur, wrap, 3, WORK_DIR / "cur.rar", mt=1, md="64m")
+        ratchet = RATCHET_BYTES.get(("wrap_128m.bin", "64m-mt1"))
+        label = f"wrap_128m.bin -m3 -md64m -mt1  new={cur_size:>12,}"
+        if ratchet is not None and cur_size > ratchet + RATCHET_SLACK_BYTES:
+            fail(f"ratchet wrap_128m -m3 -md64m -mt1: {cur_size:,} B exceeds "
+                 f"the {ratchet:,} B baseline (+{cur_size - ratchet:,} B)")
+            rec("ratchet", "fail", corpus="wrap_128m.bin", cell="64m-mt1",
+                new_bytes=cur_size, ratchet_bytes=ratchet)
+        else:
+            print(f"  [PASS] size {label}")
+            rec("size", "pass", corpus="wrap_128m.bin", cell="64m-mt1",
+                new_bytes=cur_size, ratchet_bytes=ratchet)
+    except RuntimeError as e:
+        fail(f"size wrap_128m -m3 -md64m -mt1: {e}")
+        rec("size", "fail", corpus="wrap_128m.bin", cell="64m-mt1", reason=str(e))
+        return  # cannot continue without cell 1
+
+    # Cell 2: wrap_128m -m3 -md64m -mt8 (size + extract)
+    try:
+        cur_size2, _ = pack(cur, wrap, 3, WORK_DIR / "cur_mt8.rar", mt=8, md="64m")
+        ratchet2 = RATCHET_BYTES.get(("wrap_128m.bin", "64m-mt8"))
+        label2 = f"wrap_128m.bin -m3 -md64m -mt8  new={cur_size2:>12,}"
+        if ratchet2 is not None and cur_size2 > ratchet2 + RATCHET_SLACK_BYTES:
+            fail(f"ratchet wrap_128m -m3 -md64m -mt8: {cur_size2:,} B exceeds "
+                 f"the {ratchet2:,} B baseline (+{cur_size2 - ratchet2:,} B)")
+            rec("ratchet", "fail", corpus="wrap_128m.bin", cell="64m-mt8",
+                new_bytes=cur_size2, ratchet_bytes=ratchet2)
+        else:
+            print(f"  [PASS] size {label2}")
+            rec("size", "pass", corpus="wrap_128m.bin", cell="64m-mt8",
+                new_bytes=cur_size2, ratchet_bytes=ratchet2)
+        # Extract-to-source (the MT path must produce a valid archive)
+        extract_matches(cur, WORK_DIR / "cur_mt8.rar", wrap, "integrity wrap_128m -m3 -md64m -mt8")
+    except RuntimeError as e:
+        fail(f"size wrap_128m -m3 -md64m -mt8: {e}")
+        rec("size", "fail", corpus="wrap_128m.bin", cell="64m-mt8", reason=str(e))
+
+    # Cell 3: chunk_12m -m3 -md4m -mt4 (sub-4 MiB chunk geometry)
+    chunk = corpora["chunk_12m.bin"]
+    try:
+        cur_size3, _ = pack(cur, chunk, 3, WORK_DIR / "cur_chunk.rar", mt=4, md="4m")
+        ratchet3 = RATCHET_BYTES.get(("chunk_12m.bin", "4m-mt4"))
+        label3 = f"chunk_12m.bin -m3 -md4m -mt4  new={cur_size3:>12,}"
+        if ratchet3 is not None and cur_size3 > ratchet3 + RATCHET_SLACK_BYTES:
+            fail(f"ratchet chunk_12m -m3 -md4m -mt4: {cur_size3:,} B exceeds "
+                 f"the {ratchet3:,} B baseline (+{cur_size3 - ratchet3:,} B)")
+            rec("ratchet", "fail", corpus="chunk_12m.bin", cell="4m-mt4",
+                new_bytes=cur_size3, ratchet_bytes=ratchet3)
+        else:
+            print(f"  [PASS] size {label3}")
+            rec("size", "pass", corpus="chunk_12m.bin", cell="4m-mt4",
+                new_bytes=cur_size3, ratchet_bytes=ratchet3)
+    except RuntimeError as e:
+        fail(f"size chunk_12m -m3 -md4m -mt4: {e}")
+        rec("size", "fail", corpus="chunk_12m.bin", cell="4m-mt4", reason=str(e))
+
+
 def check_determinism(cur, corpora):
     section("Determinism and thread parity")
     corpus = corpora["mixed16.bin"]
@@ -777,7 +883,7 @@ def _run(args):
     except (RuntimeError, OSError, subprocess.CalledProcessError) as e:
         fatal(str(e))
         return 1
-    for name in sorted(set(SIZE_CORPORA) | {"zeros8.bin", "random8.bin"}):
+    for name in sorted(set(SIZE_CORPORA) | set(DEFAULT_WINDOW_CORPORA) | {"zeros8.bin", "random8.bin"}):
         digest = sha256_file(corpora[name])
         size = corpora[name].stat().st_size
         print(f"corpus {name:<20}: {size:>10,} B  sha256 {digest[:16]}")
@@ -789,6 +895,7 @@ def _run(args):
         check_zero_run(cur, base, corpora, zero_methods)
         check_speed(cur, base, corpora, SPEED_CELLS)
         check_determinism(cur, corpora)
+        check_default_window_cells(cur, corpora)
     except subprocess.TimeoutExpired as e:
         fail(f"timeout: {e}")
     finally:
