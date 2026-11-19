@@ -381,6 +381,14 @@ target_link_libraries(archive_api_tests PRIVATE
     target_link_libraries(store_sink_probe PRIVATE openrar_core)
     target_include_directories(store_sink_probe PRIVATE ${OPENRAR_INCLUDES})
 
+    # RAR7 flavor probe (§4.26 C8 gate): re-parses an archive and reports
+    # whether any member carries unp_ver=1 with FCI_RAR5_COMPAT clear (the
+    # extra_dist flavor). The roadmap refuses to assume -ma7 produces it, so
+    # this is the verification step, not a switch-trust.
+    add_executable(rar7_flavor_probe tools/rar7_flavor_probe.cpp)
+    target_link_libraries(rar7_flavor_probe PRIVATE openrar_core)
+    target_include_directories(rar7_flavor_probe PRIVATE ${OPENRAR_INCLUDES})
+
     # v1.40 quick-win microprobe (not a test): per-entry extraction
     # operation costs for the quick-win scorecard.
     add_executable(perf_microprobe tools/perf_microprobe.cpp)
