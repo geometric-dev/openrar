@@ -90,7 +90,7 @@ Two further reference limits are now verified rather than assumed. `MAX_FILTER_B
 
 | Candidate | Legal? | Disposition |
 |:---|:---:|:---|
-| Image detection → existing DELTA (type 0) | ✅ | `EXP-IMAGE-STRIDE` |
+| Image detection → existing DELTA (type 0) | ❌ | `EXP-IMAGE-STRIDE` — **closed, refuted** by its own LZ-retention gate (§4.4) |
 | Audio detection → existing DELTA (type 0) | ✅ | `EXP-AUDIO-DETECT` |
 | Multi-stride delta kernels (channels ≤ 32) | ✅ | `EXP-DELTA-MULTI-STRIDE` |
 | MT-safe filtered packing | ✅ | `EXP-FILTER-SAFE-MT` |
@@ -146,7 +146,7 @@ A MEAS row is exempt from both *because it ships no code*; the moment a MEAS row
 | **SEC-INTEROP-UNDEF-FILTER** | W2-D + MEAS | ✅ | Pin the types-4..7 divergence between our decoder and UnRAR | 0 emitted bytes with type > 3; 1 negative interop test; UnRAR drops the region, we emit raw — both documented; extracted bytes identical on **C9** | 1 |
 | **PROBE-STORE-SINK** | MEAS | ✅ | Attribute `-m0` extraction overhead over a raw copy | Split ≥80% of the ~0.35 s; decision record; no code change | **1 (blocking dep for W4/W5)** |
 | **EXP-FILTER-SAFE-MT** | W2-P | ✅ | Keep MT for filtered members | Filtered member `-mt4` ≤ 0.7× `-mt1`; decode-correct on C7; size ≤ seq + 0.5% | 2 |
-| **EXP-IMAGE-STRIDE** | W3 | ✅ | BMP/TIFF/TGA/PPM/DDS → DELTA with correct bpp/channels and row-aligned regions | **Extract == source SHA-256, every C3 member, 100% (gate first)**; then ≥5.0% size on C3; no member grows > +1%; 0 growth on C1/C2; `-mt4` ≤ +10%; decode ≤ −5% | 3 |
+| **EXP-IMAGE-STRIDE** | W3 | ❌ | BMP/TIFF/TGA/PPM/DDS → DELTA with correct bpp/channels and row-aligned regions | **CLOSED, refuted 2026-11-19** — prize is real (−41.9%..−99.1% on structured content, interop-verified) but photographic content regresses (+3.6%..+11.1%) and no cheap statistic separates them (§4.4) | 3 |
 | **EXP-AUDIO-DETECT** | W3 | ✅ | RIFF chunk walk, RF64/BW64, AIFF/CAF, headerless PCM | **Extract == source SHA-256, every C4 member, 100% (gate first)**; detector false positives ≤ 0.1% of non-audio members and every selected member round-trips; then ≥2.0% size on C4; no member grows > +1%; 0 growth on C1/C2; `-mt4` ≤ +2% | 3 |
 | **EXP-LITERAL-RUN-BULK** | W2-D | ✅ | Batch literal decode, hoist per-literal cadence | +5% decode on C6 literal-heavy; 0 regression on C6 match-heavy; extracted bytes identical on **C9** (C6/C7/solid/encrypted/multi-volume/span-crossing) | 4 |
 | **EXP-HUFF-2SYM** | W2-D | ✅ | 2-symbol quick table (replaces the AVX2-gather idea) | +6% decode on C6 text/code after baseline profile; 0 regression; extracted bytes identical on **C9** | 4 |
@@ -224,7 +224,7 @@ Evaluated across the 32-file C3/C4 experiment corpus (`tests/fixtures/experiment
    - The same ordering holds at the other levels: `-m1` gives −6.08% on `kodim04` and +0.96/+5.50/+7.45% on 01–03; `-m5` gives −4.61% and +3.56/+11.34/+6.67%.
    - **The §4.4 ≥5% archive-size gate is not met on photographic content** (1 of 4 photos at `-m1`; 0 of 4 at `-m3`/`-m5`). Synthetic and paletted members pass easily at `-m3`: 24 bpp 133,181 → 51,089 B (−61.6%), 16 bpp 58,659 → 500 B, 32 bpp 121,461 → 47,809 B (−60.6%), 8 bpp 59,874 → 30,589 B (−48.9%). This is a content-selectivity failure, not a transform failure.
    - The theoretical 2D Paeth upper bound yields only an incremental 0.1 to 0.3 bits/byte further reduction (e.g. 4.049 → 3.959 on `kodim03`), so 2D prediction does not rescue the result; `EXP-PAETH-IMAGE` remains permanently deferred / out of scope.
-   - **Consequence:** automatic DELTA emission for 24 bpp photographic BMP is **refuted as a size win**. `EXP-IMAGE-STRIDE` may proceed only if emission is gated on a cheap LZ-retention check (the probe's repeat-rate delta, which flags all four photos), and the ≥5% gate must be re-run with that gate in place.
+   - **Consequence:** automatic DELTA emission for 24 bpp photographic BMP is **refuted as a size win**. `EXP-IMAGE-STRIDE` was gated on a cheap LZ-retention check; that gate was built and run on 2026-11-19 and **closed the row as refuted** (§4.4) — no tested statistic separates photographic losers from structured-content winners.
 
 2. **bpp → Channels Mapping:**
    - **8 bpp:** `channels = 1` (grayscale/paletted). After the probe was aligned to `bfOffBits`, `bmp_w1920_8bpp` prefers ch=1 at +4.09 bits/byte over ch=4 at +4.05, and `sample.pgm` gains +4.17. The archive disagrees slightly on the synthetic ramp (ch=4 is 2% smaller, 30,589 vs 31,275 B), but ch=4 over a paletted byte stream is not a meaningful bpp→channels rule.
@@ -756,7 +756,7 @@ Why this is three and not four: the merged extract assertion costs nothing (it r
 | EXP-VECTORIZED-MEMCMP | **Closed — shipped** | `arch/match_simd.hpp` + `match_avx512.cpp`: SSE2/AVX2/AVX-512/NEON/WASM match kernels with runtime dispatch. |
 | EXP-AES-NI-CTR | **Closed — shipped and wrong mode** | RAR5 uses AES-256-**CBC**; `aes256.cpp:239-309` already has AES-NI CBC with 8-way pipelined decrypt. CTR would be a format change. |
 | EXP-HUFFMAN-AVX2 | **Closed — mechanism invalid** | Circular dependence; gather slower than scalar. Replaced by EXP-HUFF-2SYM. |
-| EXP-BMP-DETECT | **Merged** into EXP-IMAGE-STRIDE | Detection alone is not enough: needs bpp mapping, row alignment, and the MT fix. |
+| EXP-BMP-DETECT | **Closed — parent row refuted** | Merged into EXP-IMAGE-STRIDE, which closed as refuted 2026-11-19: detection was never the blocker, selective emission was (§4.4). |
 | EXP-DELTA-6CH-8CH | **Re-scoped** to EXP-DELTA-MULTI-STRIDE | Wrong stride set (see 4.8). |
 | EXP-DELTA-PREDICTION (Paeth) | **Closed** as EXP-PAETH-IMAGE (EXT) | No container slot for a stride parameter (Q-1), and the 2D predictor's own upper bound was marginal (§4.2.1). |
 | EXP-AVX512-VBMI-DELTA3 | **Closed** | `vpermb` permutes within one 64-byte register; three source planes need `vpermt2b` + merges, not one instruction. Delta3 already runs at 4,131 MB/s (near streaming bandwidth), so a 2× gate is not credible. Reopen only with a bandwidth measurement. |
@@ -819,7 +819,7 @@ graph TD
     CONSOL["EXP-MT-DECISION-CONSOLIDATE (prereq for 4.3)"] -.-> W2
     BLOCK["STARTING BLOCK — 4.33 pack profile → 4.30 QO → 4.25 decision fn → 4.23 block flush"] -.-> W2
     W2["Wave 2 — EXP-MT-DECISION-CONSOLIDATE → EXP-FILTER-SAFE-MT ∥ EXP-LITERAL-RUN-BULK"] --> W3
-    W3["Wave 3 — EXP-AUDIO-DETECT · EXP-HUFF-TABLE-REUSE (gated) · EXP-BLOCK-FLUSH-TUNE · EXP-SOLID-DECODE-ENTRY (gated) · EXP-IMAGE-STRIDE (gated) · EXP-PARALLEL-DECODE-EXTRA-DIST (gated)"] --> W4
+    W3["Wave 3 — EXP-AUDIO-DETECT · EXP-HUFF-TABLE-REUSE (gated) · EXP-BLOCK-FLUSH-TUNE · EXP-SOLID-DECODE-ENTRY (gated) · EXP-PARALLEL-DECODE-EXTRA-DIST (gated) · EXP-IMAGE-STRIDE (CLOSED, refuted)"] --> W4
     W4["Wave 4 — EXP-HUFF-2SYM (gated at -mt1) · EXP-DELTA-MULTI-STRIDE · EXP-HASH-INSERT-WIDE (gated)"] --> W5
     W5["Wave 5 — PARALLEL-DECODE-TUNE · WILDCOPY-AVX512 (gated)"] --> W6
     W6["Track 4 — EXP-FUZZ-STRESS (interleave every 2 waves)"]
@@ -866,7 +866,7 @@ Rationale for the order:
 1. **EXP-AUDIO-DETECT (§4.5)** — the only measured win in the wave: DELTA shrinks 18.8–48.8% at `-m3` on 5.1/7.1 at 16/24/32-bit and 46.6% on the JUNK-prefixed file (§4.2.1).
 2. **EXP-HUFF-TABLE-REUSE (§4.22)** — MEAS-first, so a negative Stage-1 distribution report closes it for the price of a report; but it owes clause (a) (the decoder fix + 33-cell re-baseline) before clause (b) can be measured.
 3. **EXP-BLOCK-FLUSH-TUNE (§4.23)** — same MEAS-first shape and the same cheap closure (Stage 1's ≥0.5% kill condition); no decoder dependency, so it can run in parallel with (2).
-4. **EXP-IMAGE-STRIDE (§4.4)** — **blocked on the LZ-retention gate** PROBE-PREDICT's decision record requires; the entropy win does not survive an archive-size measurement on 3 of 4 Kodak photographs.
+4. **EXP-IMAGE-STRIDE (§4.4)** — **CLOSED, refuted 2026-11-19.** The LZ-retention gate was built and run (`tools/lz_retention_probe.py`): the prize is real (−41.9%..−99.1% on structured content) but photographic content regresses (+3.6%..+11.1%) and no cheap statistic separates winners from losers. Do not re-propose on entropy arguments alone.
 5. **EXP-PARALLEL-DECODE-EXTRA-DIST (§4.26)** — **blocked on the C8 corpus**, which OpenRAR cannot produce itself; a row with no corpus reports *blocked*, never pass (G-9).
 
 The order is a dependency order, not a preference: (1) is unblocked and measured, (2) and (3) are cheaply falsifiable, (4) and (5) are blocked on artefacts this wave cannot manufacture. A blocked row does not consume a slot — it stays PLANNED and the next row moves up.
@@ -883,7 +883,7 @@ The order is a dependency order, not a preference: (1) is unblocked and measured
 | Q-1 | Does RAR 7.x define an ARM64 or image filter inside the 3-bit type space? | **ANSWERED (2026-11-15, UnRAR 7.23 source).** **No.** `dev/unrar/compress.hpp:54-58` declares exactly `DELTA, E8, E8E9, ARM, AUDIO, RGB, ITANIUM, TEXT` (`0..7`) plus the non-wire `LONGRANGE`/`EXHAUSTIVE`; `unpack50.cpp:422-501` implements only 0–3 and returns `NULL` otherwise, so types 4–7 are reserved **and dropped**. There is no ARM64, RISC-V, image or row-predictor filter, and therefore no bit-exact definition an extension could match. All EXT rows are closed (§2, §5). |
 | Q-2 | What fraction of pack wall-clock is the E8 scan end-to-end? | EXP-AVX2-E8-SCAN (currently parked) |
 | Q-3 | What fraction of extract wall-clock is Huffman decode vs copy vs filter vs BLAKE2sp vs fsync? | **ANSWERED for the reference shape (2026-11-14; re-baselined on v2.4.0).** 128 MiB `-m1` short-match text, i7-7500U: `t -mt4` pipeline wall **1.14 s quiet / 1.6–2.1 s sustained** (quiet process 1.18–1.27 s), of which the serial record applier spans total **1.03 s quiet / 1.5–2.0 s sustained (91%)**; span workers decode 1 MiB spans in 75–123 ms and park. `t -mt1` is 2.45–3.24 s, so parallel decode buys ~2× but is applier-ceilinged. Store verify (read+BLAKE2sp) is 0.115 s (**≈9%** of the 1.27 s compressed verify; hash path unchanged). Extraction adds 0.58 s of sink+durability (the default-vs-`-db` store gap, 0.90 s vs 0.574 s, prices the per-entry fsync at ≈0.33 s); the remaining ≈0.35 s of store extraction over a raw copy is unattributed (Q-10). **Remaining unknown:** none at the bucket level — see Q-8. |
-| Q-4 | Measured gain of plane-delta on real photographs (not ramps) at 24/32 bpp? | EXP-IMAGE-STRIDE go/no-go |
+| Q-4 | Measured gain of plane-delta on real photographs (not ramps) at 24/32 bpp? | **ANSWERED 2026-11-19 — refutes EXP-IMAGE-STRIDE.** −41.9%..−99.1% on structured BMP/TIFF/PPM, but Kodim 01/02/03 **regress +3.6%/+8.0%/+11.1%** while Kodim 04 improves −4.6%. Four candidate separability statistics all fail (§4.4). |
 | Q-5 | Actual cost of the `-mt` → `-mt1` fallback on a 100 MB filtered member? | EXP-FILTER-SAFE-MT priority |
 | Q-6 | Is delta3 memory-bandwidth-bound at 4,131 MB/s on the reference host? | Any further delta ISA work |
 | Q-7 | Can clang on the Windows reference host target `aarch64`/`riscv64` with `-c`? | C5 corpus sourcing |
