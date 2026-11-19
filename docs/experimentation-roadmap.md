@@ -169,7 +169,7 @@ A MEAS row is exempt from both *because it ships no code*; the moment a MEAS row
 | **PROBE-EXTRACT-REMAINDER** | MEAS | ✅ | Filter-apply / AES-CBC / CRC32 / header-parse shares of extraction | Content-identical pairs normalised per MiB with a null-pair noise floor; residual ≤ 10% or blocked; decision record; no code change | 2 (∥) |
 | **EXP-MT-SEED-AMORTIZE** | W2-P | ✅ | — | **Closed 2026-11-15**: Step 1 measured the seed path — pivot ceiling ≈1%, geometry arm −5% (§4.27) | — |
 | **EXP-GUARD-DEFAULT-WINDOW** | W2-P | ✅ | Three guard cells for the default 64 MiB window and the MT pack path | 30 → 33 cells: `-md64m` on a **128 MiB wrapping** member (size + extract merged), plus one 12 MiB sub-4 MiB-chunk cell; the 30 `-md4m` cells byte-identical; sensitivity assertion vs `-md4m`; I-13 from the next release; `RATCHET_BYTES` re-baselined from `main` | 2 (prereq) |
-| **EXP-PARALLEL-DECODE-EXTRA-DIST** | W2-D | ❌ | Engage the two-phase decoder for RAR7 (`extra_dist`) members, `win ≤ 4 GiB` (audited 0-based distance) | **CLOSED, unavailable 2026-11-19** — RAR 7.20 emits `unp_ver=0` for every switch and dictionary size tested; no C8 corpus can be produced (§4.26) | 3 |
+| **EXP-PARALLEL-DECODE-EXTRA-DIST** | W2-D | ❌ | Engage the two-phase decoder for RAR7 (`extra_dist`) members, `win ≤ 4 GiB` (audited 0-based distance) | **CLOSED, unavailable 2026-11-19** — the RAR encoder welds the version bit and `FCI_RAR5_COMPAT` together, so the 446-table flavor only exists at ≥ 8 GiB dictionaries; unreachable at the ≤ 4 GiB record ceiling (§4.26) | 3 |
 | **EXP-FUZZ-STRESS** | Track 4 | ✅ | Continuous fuzz + I-15/I-16 stress | Unchanged from register; interleave every 2 waves | ∥ |
 | **EXP-PACK-BLOCK-PROFILE** | MEAS | ✅ | First pack-side wall attribution (mirror of §4.28) | Shared `--side=pack` harness; `max(5, 3 × arms)` null pairs, spread reported; residual ≤ 10% or blocked; decision record; no code change | 2 (∥, **first**) |
 | **PROBE-QO-COVERAGE** | MEAS | ✅ | Does the QuickOpen fast path engage, and what does it save? | 1k/10k/50k entry sweep; taken/not-taken bit per case **in machine-readable output**; create-vs-append split; decision record; no code change | 2 (∥) |
@@ -604,35 +604,52 @@ Subject to that, and **blocked until §4.16 reports**: if the probe attributes a
 
 ### 4.26 EXP-PARALLEL-DECODE-EXTRA-DIST (W2, Wave 3)
 
-**Status:** **CLOSED, unavailable — no corpus can be produced (2026-11-19).**
-RAR 7.20 (the only accessible reference oracle) cannot emit the flavor. Every
-combination tested — `-ma`, `-ma5`, `-ma1`..`-ma5`, `-md4m`..`-md1g`, `-md3g`,
-`-md4g`, at `-m1` and `-m3`, on both compressible and incompressible 64 MiB
-members — produces `unp_ver=0` (plain RAR5). There is no `-ma7` switch (rc=7,
-unknown option). Verified by re-parsing each archive through
-`header_reader.cpp`, not by trusting the switch (`tools/rar7_flavor_probe.cpp`).
+**Status:** **CLOSED, unavailable — confirmed structural, not incidental (2026-11-19).**
+Two independent lines of evidence agree:
 
-The header layout shows why this is a trap rather than a missing flag:
-`unp_ver = comp_info & 0x3F` and `extra_dist = unp_ver == 1 && !(comp_info &
-0x100000)`. So `unp_ver=1` **with bit 20 set** is RAR7 *dictionary sizing* over
-the RAR5 algorithm (430 tables) — not the 446-table DCX=80 flavor C8 needs. A
-naive "unp_ver == 1" check would pass the wrong flavor.
+1. **Direct probing.** RAR 7.20's CLI emits `unp_ver=0` for every switch and
+   dictionary size tested (`-ma`, `-ma5`, `-ma1`..`-ma5`, `-md4m`..`-md1g`,
+   `-md3g`, `-md4g`, at `-m1`/`-m3`, on compressible and incompressible 64 MiB
+   members), verified by re-parsing each archive through `header_reader.cpp`
+   rather than trusting the switch (`tools/rar7_flavor_probe.cpp`).
+2. **Encoder structure.** In the RAR 7.23 encoder the two bits are welded
+   together in a single conditional: when the dictionary-size code selects the
+   version-70 (446-table, DC=80) flavor, the writer sets the version bit **and**
+   bit 20 (`FCI_RAR5_COMPAT`) in the same branch. There is no path that sets one
+   without the other, and `method << 7` cannot reach either bit. So
+   `unp_ver == 1 ⟺ bit 20 set` in the encoder, rigidly. The 446-table flavor
+   is selected purely by dictionary size, and the version-70 code first becomes
+   reachable at ≥ 8 GiB — which the ≤ 4 GiB record ceiling cannot represent.
 
-Per this row's own rule — *"blocked is time-boxed to two waves and then closes as
-unavailable"* — the row closes. It is not a defect, not a risk, and not
-outstanding work: it is a capability the reference encoder does not expose.
+**The ≤ 4 GiB constraint and the target flavor are mutually exclusive in this
+encoder.** That is the decisive point: even ignoring the bit coupling, no
+dictionary the decoder can represent produces the flavor. There is no CLI
+switch (`-ma7` does not exist), no GUI setting, and no hidden encoder option.
 
-**Window ceiling for any future revival: ≤ 4 GiB.** `OpRecord` stores distances
-0-based, so `[1, 2³²]` maps onto `[0, 0xFFFFFFFF]` and the applier widens to
-`u64` before the `+1`. `parallel_decode.cpp:96`'s `>` is deliberate and
-`two_phase_tests` pins "4 GiB admitted, 4 GiB + 1 rejected". A larger dictionary
-would additionally force long-range search on and fall outside the admissible
-predicate, so it would be doubly useless.
+**Disposition:** decode-only compatibility surface. Close the row. If a
+physical corpus is ever required it would have to be hand-crafted headers or a
+third-party encoder, not RAR/WinRAR output.
 
-**What a revival needs:** an oracle-produced archive whose members re-parse as
-`extra_dist=true`, hash-pinned under `tests/fixtures/rar7/` with a C5-style
-licensing statement, plus a `header_reader.cpp:507` re-parse as the gate. Until
-such a fixture exists the row stays closed.
+**Unverified, recorded deliberately.** OpenRAR's sequential decode of a genuine
+`extra_dist` member has **never been exercised against a real archive** — no
+such archive is producible, and none exists in-tree. `parallel_decode.cpp:123`
+routes the flavor to `run_sequential()`, and `Decompressor50` takes `extra_dist`
+as a constructor parameter with the 446-table DCX=80 layout internal, so the
+source-level reading is that it works. That is **inference, not measurement**.
+Risk is low — the path is already what shipping OpenRAR does with these members,
+nothing in the 2.5.0 work touches the decoder, and a silent defect would likely
+have surfaced in the field — but a reader should know the suite does not cover
+it. Closing this would require §4.26's Step 0 (extract every C8 member to source
+SHA-256), which is now unreachable.
+
+**Scope note:** the above describes the RAR-family encoder (`Compressor`). The
+separate RAR4/v29 `CompressionData` codec (NC=299/DC=60) is unrelated to the
+446/430 split and is not covered.
+
+**Window ceiling for any hypothetical revival: ≤ 4 GiB.** `OpRecord` stores
+distances 0-based, so `[1, 2³²]` maps onto `[0, 0xFFFFFFFF]` and the applier
+widens to `u64` before the `+1`. `parallel_decode.cpp:96`'s `>` is deliberate
+and `two_phase_tests` pins "4 GiB admitted, 4 GiB + 1 rejected".
 
 **Problem (capability gap, verified in source).** `decode_entry` refuses `extra_dist` members before any prescan (`parallel_decode.cpp:120`), so **every algorithm-version-1 member decodes on the single-threaded path whatever `-mt` says**. `FileBlock::extra_dist` is set for `unp_ver == 1` with `FCI_RAR5_COMPAT` clear (`header_reader.cpp:507`) — the 446-entry RAR7 tables with `DCX = 80` distance slots (`docs/spec/03-compression-m1-m5.md:99,108,118`). The cause is structural: operation records carry `u32` distances and the pipeline documents the exclusion (`parallel_decode.hpp:61-63`); the same constraint rejects declared windows > 4 GiB (`parallel_decode.cpp:96`). OpenRAR reads these members correctly and passes the flavor through (`archive_reader.cpp:2442`), but never reaches the ~1.9× the pipeline buys elsewhere — on the flavor WinRAR 7 writes when it selects RAR7 tables, and on any RAR7 archive with a dictionary over 4 GiB.
 
@@ -814,7 +831,7 @@ No gate in §4 is evaluable without these. Each corpus gets a manifest with SHA-
 | **C5** | ISA | aarch64 + riscv64 ELF objects; x86-64 ELF/PE controls; one PE-ARM64 object. Committed at `tests/fixtures/c5/` as ISA-shaped synthetic stubs (seed 1337, `tools/generate_c5_corpus.py`) built by the clang/lld CI job (`--pe`) with the stubs kept as the no-toolchain fallback | EXP-MACHINE-DISPATCH, deferred EXT work |
 | **C6** | Decode | literal-heavy (minified JS, text), match-heavy (zeros, runs), binary, ≥64 MiB members. Was a **recipe only** until 2026-11-15; now materialised and pinned by the C9 generator (`text_64m.bin`, `zeros_64m.bin`, `minified_1m.js`, `binary_8m.bin`) | Wave 4/5 decode gates |
 | **C7** | Filtered-MT | **Detector- and emission-asserted.** `tools/filter_probe.cpp` has two modes. *Detection*: calls `Filters50::detect_filter` and exits 1 unless the type fires (observed `E8`, channels 1; `DELTA`, channels 12) — this closed the "shaped but inert" hole, where a raw stride-3 member never triggered DELTA because the detector requires a RIFF/WAVE header. *Emission*: opens the packed archive, decodes the member through `ArchiveReader`, and reads the filter records the decoder actually parsed via `FilterCensus` — asserting type, channel count, and that regions are ordered, non-overlapping, in-bounds and cover the member exactly. `build_c9_archives.py` builds `filter_c9.rar` (e8 + wav + text) and requires `E8`/ch 1, `DELTA`/ch 12 and `NONE` on the text control, plus a negative run that must fail. Measured: 8 × 1 MiB regions at offsets 0..7 MiB, coverage 8388608/8388608 for both filtered members; 0 regions on text. **Caveat on the MT claim:** `decide_chunked_pack` returns `Sequential` whenever a filter is detected (or a filter header sits in its 64 KiB–1 MiB detection window), so a `-mt4` pack of these members takes the sequential path — the records prove the archive/decoder filter contract, not chunked-MT emission, which is the work EXP-FILTER-SAFE-MT still has to do. The emission check is that experiment's regression gate: when chunked filtered MT lands, its regions must still cover the member exactly | EXP-FILTER-SAFE-MT |
-| **C8** | RAR7 algorithm | ≥64 MiB members with `unp_ver=1` and `FCI_RAR5_COMPAT` clear (446 tables, `DCX=80`). **CANNOT BE PRODUCED 2026-11-19:** RAR 7.20's CLI emits `unp_ver=0` for every switch/dictionary combination tested (`-ma`, `-ma5`, `-md4m`..`-md4g`, m1/m3), verified by re-parsing with `tools/rar7_flavor_probe.cpp` — the roadmap's original `-ma7` switch does not exist. Note `unp_ver=1` **with bit 20 set** is RAR7 *dictionary sizing* (430 tables), a different flavor. C8 is closed as unavailable | EXP-PARALLEL-DECODE-EXTRA-DIST (closed) |
+| **C8** | RAR7 algorithm | ≥64 MiB members with `unp_ver=1` and `FCI_RAR5_COMPAT` clear (446 tables, `DCX=80`). **UNREACHABLE 2026-11-19:** the RAR encoder sets the version bit and bit 20 in the same conditional, and the version-70 code only appears at ≥ 8 GiB dictionaries — past the ≤ 4 GiB record ceiling. No CLI switch (`-ma7` does not exist), no GUI setting, no hidden option. Verified by direct probing (`tools/rar7_flavor_probe.cpp`) and by encoder structure. Decode-only compatibility surface | EXP-PARALLEL-DECODE-EXTRA-DIST (closed) |
 | **C9** | Decode identity | **Materialises on demand; the manifest is committed.** `tests/fixtures/c9/generate_c9.py` (PRF **local ChaCha20, RFC 8439 §2.3** — no `random`, and no `hashlib` PRF: CPython does not guarantee `randrange` across versions, and `hashlib.shake_256` is a C extension whose internal choices are a property of the **build** rather than the language. The keystream comes from a checked-in block function, self-tested against the RFC 8439 §2.3.2 vector at import and **failing closed** on mismatch) emits nine members and writes `manifest.json` v2 recording generator sha256, PRF, Python version, and **measured properties**: `text_64m.bin`, `zeros_64m.bin`, `minified_1m.js`, `binary_8m.bin` (≥250 distinct bytes/MiB, zlib ratio ≥0.98), `span_cross_24m.bin` (incompressible: packs to ~24 MiB, so it clears the driver's packed floor of 4 × `SPAN_PACKED_FLOOR` = 4 × 4 MiB = **16 MiB**; `two_phase_tests` pins engagement at *packed 24 MiB ≥ 16 MiB floor, spans 24*, and `build_c9_archives.py` packs the member with the shipped binary and requires packed ≥ 16 MiB — the earlier 6 MiB text member packed to ~2 MiB and never engaged the pipeline at all), `e8_8m.bin` (x86-shaped, E8 density gate), `audio_6ch_8m.wav` (RIFF/WAVE 6ch/16-bit, stride 12), `wrap_128m.bin` (forced 32 MiB duplicate 96 MiB back, asserted), `chunk_12m.bin`. The two filter members are gated by `tools/filter_probe.cpp`, which calls `Filters50::detect_filter` and **fails** when the expected type is not returned. Generation **fails** if a member misses its property — the first version pinned 8 MiB of a single repeated byte, which is exactly the failure mode a digest cannot catch. Pinned **hashes prove stability only — the gates carry the meaning**: `manifest.json.gates` holds just the numeric thresholds `--verify` can re-evaluate from the manifest's own numbers, while structural assertions (RIFF header and frame alignment, the forced 96 MiB duplicate) run in the generator and again under `--check`, which regenerates. `--verify` checks members against the manifest; `--check` regenerates into a temp dir and diffs, so a generator change cannot silently rewrite its own pin. Archive forms: `build_c9_archives.py` builds `solid_c9.rar`, `enc_c9.rar` (wrong password must fail closed), a `vol_c9` set whose part count is **derived from packed size**, and `filter_c9.rar` (E8 + DELTA + a no-filter control, asserted at record level — see C7), all verified by round-trip. **C9 is a registered CTest (`c9_build`, labels `c9;slow`, ~42 s)** rather than a manual step: it generates the members, checks them against the committed manifest, requires `filter_probe` to fire, then builds and round-trips every archive form. Failure is fail-closed at both levels — CMake refuses to configure if the generator, the manifest or a corpus script is absent, and the test refuses to run if the probe binary or the corpus is missing. A CTest fixture (`c9_tools_build`) builds `openrar` and `filter_probe` before `c9_build` runs, so CTest's no-build semantics cannot hand the script a missing probe; if that build fails, `c9_build` is reported as not run, which CTest counts as a failure. The script also deletes its own previous outputs first, so a second run is as strict as the first (appending to an existing solid archive fails, and stale volume parts would satisfy the part-count check). The QEMU lane excludes it by prefix (`-E ...|c9_.*`, so its fixture `c9_tools_build` is excluded too), because it cannot run heavy corpora at a 60 s per-test timeout. Large members are generated, not committed blobs. **Each W2-D row names the subsets it uses**; a decode row that cites only C1 is vacuous (G-9) | every W2-D row |
 
 **C5 recipe** (reproducible, licence-clean, no sysroot needed): `clang --target=aarch64-linux-gnu -O2 -c pinned.c -o pinned.a64.o`, same for `riscv64-linux-gnu`. If clang cannot target a triple on the Windows host, generate the corpus in CI (ubuntu leg) and pin the hashes — do not skip the corpus. The committed stub set exists because of Q-7; the size gate is `tools/measure_c5.py --baseline main=<main build> --candidate branch=<branch build>` and the current result is in `tests/fixtures/c5/README.md`.
@@ -841,7 +858,7 @@ graph TD
     CONSOL["EXP-MT-DECISION-CONSOLIDATE (prereq for 4.3)"] -.-> W2
     BLOCK["STARTING BLOCK — 4.33 pack profile → 4.30 QO → 4.25 decision fn → 4.23 block flush"] -.-> W2
     W2["Wave 2 — EXP-MT-DECISION-CONSOLIDATE → EXP-FILTER-SAFE-MT ∥ EXP-LITERAL-RUN-BULK"] --> W3
-    W3["Wave 3 — EXP-AUDIO-DETECT · EXP-HUFF-TABLE-REUSE (gated) · EXP-BLOCK-FLUSH-TUNE · EXP-SOLID-DECODE-ENTRY (closed) · EXP-IMAGE-STRIDE (closed, refuted) · EXP-PARALLEL-DECODE-EXTRA-DIST (closed, unavailable)"] --> W4
+    W3["Wave 3 — EXP-AUDIO-DETECT · EXP-HUFF-TABLE-REUSE (gated) · EXP-BLOCK-FLUSH-TUNE · EXP-SOLID-DECODE-ENTRY (closed) · EXP-IMAGE-STRIDE (closed, refuted) · EXP-PARALLEL-DECODE-EXTRA-DIST (closed, unreachable)"] --> W4
     W4["Wave 4 — EXP-HUFF-2SYM (gated at -mt1) · EXP-DELTA-MULTI-STRIDE · EXP-HASH-INSERT-WIDE (gated)"] --> W5
     W5["Wave 5 — PARALLEL-DECODE-TUNE · WILDCOPY-AVX512 (gated)"] --> W6
     W6["Track 4 — EXP-FUZZ-STRESS (interleave every 2 waves)"]
@@ -889,7 +906,7 @@ Rationale for the order:
 2. **EXP-HUFF-TABLE-REUSE (§4.22)** — MEAS-first, so a negative Stage-1 distribution report closes it for the price of a report; but it owes clause (a) (the decoder fix + 33-cell re-baseline) before clause (b) can be measured.
 3. **EXP-BLOCK-FLUSH-TUNE (§4.23)** — same MEAS-first shape and the same cheap closure (Stage 1's ≥0.5% kill condition); no decoder dependency, so it can run in parallel with (2).
 4. **EXP-IMAGE-STRIDE (§4.4)** — **CLOSED, refuted 2026-11-19.** The LZ-retention gate was built and run (`tools/lz_retention_probe.py`): the prize is real (−41.9%..−99.1% on structured content) but photographic content regresses (+3.6%..+11.1%) and no cheap statistic separates winners from losers. Do not re-propose on entropy arguments alone.
-5. **EXP-PARALLEL-DECODE-EXTRA-DIST (§4.26)** — **CLOSED, unavailable 2026-11-19.** RAR 7.20 cannot emit the flavor: every switch and dictionary combination tested produces `unp_ver=0`, verified by re-parsing (`tools/rar7_flavor_probe.cpp`). Two-wave time-box expired.
+5. **EXP-PARALLEL-DECODE-EXTRA-DIST (§4.26)** — **CLOSED, unavailable 2026-11-19.** The RAR encoder welds the version bit to `FCI_RAR5_COMPAT` and only emits the 446-table flavor at ≥ 8 GiB dictionaries, past the ≤ 4 GiB record ceiling. Confirmed by direct probing and by encoder structure; decode-only surface. Do not re-propose without a third-party or hand-crafted corpus.
 
 The order is a dependency order, not a preference: (1) is unblocked and measured, (2) and (3) are cheaply falsifiable, (4) and (5) are blocked on artefacts this wave cannot manufacture. A blocked row does not consume a slot — it stays PLANNED and the next row moves up.
 

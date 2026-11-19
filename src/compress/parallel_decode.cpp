@@ -120,6 +120,19 @@ bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size
     };
 
     unsigned workers = 0;
+    // extra_dist members (446-entry tables) always decode single-threaded:
+    // the span pipeline's record encoding assumes the RAR5 flavor. This is a
+    // deliberate scope limit, not a fallback for a broken input.
+    //
+    // Unverified against a real archive: no encoder we can access emits the
+    // flavor. The RAR encoder welds the version bit to FCI_RAR5_COMPAT and
+    // only reaches the 446-table code at >= 8 GiB dictionaries, past the
+    // 4 GiB record ceiling -- so run_sequential() below is what shipping
+    // OpenRAR does with these members, but no such member has ever been
+    // driven through it end to end. The table-selection logic IS covered
+    // (compress_tests test_large_window_uses_rar5_tables asserts a 446-table
+    // decoder rejects a 430-table stream); what is missing is a round trip of
+    // a genuine 446-table stream. See docs/experimentation-roadmap.md 4.26.
     if (extra_dist ||
         !should_use_parallel_decode(src_size, dest_size, win_size, /*solid_entry=*/false,
                                     requested_threads, &workers)) {
