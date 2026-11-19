@@ -293,6 +293,32 @@ The invariant that actually holds, and that the code must document and assert, i
 
 ### 4.4 EXP-IMAGE-STRIDE (W3, Wave 3)
 
+**Status:** **CLOSED, refuted by its own gate** (2026-11-19,
+`tools/lz_retention_probe.py`). The prize is real and large — delta on
+row-major BMP/TIFF/PPM measures **−41.9% to −99.1%** on synthetic, paletted
+and 8/16/24/32-bpp structured content, interop-verified (UnRAR 7.20 decodes
+byte-identically, `DELTA` records with correct channels and full coverage).
+But photographic content **regresses**: Kodim 01/02/03 come out **+3.6% /
++11.1% / +8.0%** while Kodim 04 improves −4.6%. The row's whole premise is
+that emission can be gated on a cheap LZ-retention check. The probe tested
+four candidates (`delta repeat8`, `delta entropy`, `abs repeat8 after`,
+`repeat8 before`) for separability and **all four fail** — every win range
+overlaps every loss range. There is no threshold on any of them that puts the
+winners on one side and the losers on the other.
+
+Consequence: shipping "detect a BMP and delta it" would trade a *certain*
+win on structured content for an *unmeasured* regression on photographic
+content, and the regression is the dangerous kind — the archive stays valid
+and only gets bigger, so no correctness test catches it. Per this project's
+posture, a coin-flip heuristic is worse than no filter. **§4.4 is closed as
+refuted and must not be re-proposed on entropy arguments alone.**
+
+What survives: the synthetic/paletted win (42–63%) is real but **not
+selectively claimable** with any statistic tested. If image delta is ever
+revisited it needs a signal that is not a per-member content statistic —
+e.g. an explicit encoder-side opt-in switch the user sets, which makes the
+trade-off a documented choice rather than a guess.
+
 **Scope ladder (stop at the first failure):** BMP → PPM/PGM → uncompressed TIFF strips → DDS → TGA type 2.
 
 **Detection.** `'BM'`; `biBitCount` at `0x1C`, `biCompression` at `0x1E` — accept **0 and 3** (BI_BITFIELDS is common at 16/32 bpp); pixel data starts at `bfOffBits` (`0x0A`). TIFF: only `Compression == 1`; JPEG-in-TIFF and PackBits/CCITT are explicitly **out** (already entropy-coded; delta would hurt). PPM: `P6`/`P5` with a parsed header. Extension hint from the archive layer is allowed and preferred over magic bytes alone.
