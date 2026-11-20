@@ -630,6 +630,43 @@ Subject to that, and **blocked until §4.16 reports**: if the probe attributes a
 
 ### 4.34 PROBE-ENTRY-DECODE (MEAS, Wave 2, ∥)
 
+**Status:** **MEASURED (2026-11-20)** — `tools/entry_decode_probe`, 610-entry corpus
+matching runbench's `many/` shape (20 dirs × 30 files + 10 in `deep/a/b/c`, 4 KiB
+incompressible each), 9 reps, same host.
+
+| Mode | min | mean |
+|:---|---:|---:|
+| `l` (open + header walk) | 0.069 s | 0.094 s |
+| `x` (per-entry durability) | 2.610 s | 2.860 s |
+| `x -db` (batch durability) | 1.400 s | 1.570 s |
+
+**Per-entry durability costs 1.29 s = 45.1% of extraction wall** (+2.11 ms per
+entry), stable across 5 and 9 reps. The extracted bytes are **identical** between
+the two modes, so `-db` changes only the durability policy and the delta is pure
+overhead. Header walk is 0.094 s — the archive is not header-parse-bound, so QO
+is not the lever here either.
+
+**Disposition:** outcome **(i)** of the row's exit criteria — the per-entry
+durability policy (journal record + per-entry flush) is the addressable cost, and
+it is **not a codec problem**. The many-entry gap vs UnRAR is dominated by
+durability work UnRAR does not do, plus the file-creation floor it shares with
+us. The decode-side rows stay closed (§4.6/§4.7/§4.32 refuted or sub-threshold;
+`decode_span` is only reached from the two-phase driver, so record emission is
+already absent from the single-threaded path).
+
+**This is a design decision, not a defect.** Per-entry durability exists so a
+crash mid-extraction does not leave a plausible-looking partial file. The
+measurement says it costs 45% on a 610-entry archive; whether that is the right
+trade is a charter question, not a coding one. `-db` is already available for
+callers who prefer speed. Nothing here recommends changing the default.
+
+**Corpus-shape note (worth keeping).** An earlier flat-file, compressible variant
+of this probe measured `-db` as *slower* than default, contradicting runbench.
+The difference was entirely corpus shape: with compressible text the `-m3`
+payload is tiny and decode does not dominate, and flat files take a different
+path than nested ones. The probe now matches runbench's shape; any future
+re-run must too, or the numbers are not comparable.
+
 **Why (measured, and it is the largest unattributed number left).** The 2026-11-19
 `runbench` matrix puts entry-wise many-file extraction at **5.535 s vs UnRAR's 0.812 s
 (6.8×)**, while batch extraction of the *same archive* is **2.103 s**. The 3.4 s difference

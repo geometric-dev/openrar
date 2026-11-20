@@ -389,6 +389,13 @@ target_link_libraries(archive_api_tests PRIVATE
     target_link_libraries(rar7_flavor_probe PRIVATE openrar_core)
     target_include_directories(rar7_flavor_probe PRIVATE ${OPENRAR_INCLUDES})
 
+    # PROBE-ENTRY-DECODE (§4.34): log-only probe for the per-entry extraction
+    # path. Attributes the many-entry gap by subtraction: decode is
+    # (compressed - stored), per-entry lifecycle is (stored - raw copy).
+    add_executable(entry_decode_probe tools/entry_decode_probe.cpp)
+    target_link_libraries(entry_decode_probe PRIVATE openrar_core)
+    target_include_directories(entry_decode_probe PRIVATE ${OPENRAR_INCLUDES})
+
     # v1.40 quick-win microprobe (not a test): per-entry extraction
     # operation costs for the quick-win scorecard.
     add_executable(perf_microprobe tools/perf_microprobe.cpp)
