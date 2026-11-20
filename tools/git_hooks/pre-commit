@@ -184,4 +184,36 @@ else
     echo "[pre-commit] Note: no WSL g++ available; skipping POSIX compile check (CI covers it)."
 fi
 
+# 6. clang-tidy naming check (2026-11-20).
+#
+# Same rationale as (5), different rule. clang-tidy enforces
+# readability-identifier-naming (ConstexprVariableCase = UPPER_CASE), and the
+# gate leg builds with -Werror. Two k-prefixed camelCase constants passed MSVC
+# and failed every GCC/Clang job. Naming is the half a syntax check cannot see.
+#
+# Runs the repository's own tools/clang_tidy_check.sh in WSL, which reads
+# build/compile_commands.json and scopes itself to what the build compiled.
+# Slower than (5) - a few seconds per TU - so it only runs when the staged set
+# is small enough to be interactive, and always skips loudly when the toolchain
+# or the compile database is absent.
+if command -v wsl >/dev/null 2>&1 && wsl command -v clang-tidy >/dev/null 2>&1; then
+    WSL_REPO="$(wsl wslpath -u "$REPO_ROOT" 2>/dev/null || echo "")"
+    if [ -n "$WSL_REPO" ] && [ -n "$STAGED_CPP" ]; then
+        # Count staged C/C++ files; only run when the set is interactive-sized.
+        N_STAGED=$(printf "%s\n" "$STAGED_CPP" | grep -cE '\.(cpp|hpp|h|c)$' || true)
+        if [ "${N_STAGED:-0}" -le 6 ]; then
+            if ! wsl bash -lc "cd '$WSL_REPO' && bash tools/clang_tidy_check.sh build" >/tmp/tidy_out.txt 2>&1; then
+                echo "[pre-commit] ERROR: clang-tidy reported findings (naming or static analysis):"
+                grep -E "warning:|error:" /tmp/tidy_out.txt | head -n 10 | sed 's/^/  /'
+                echo "             Run: wsl bash -lc \"cd <repo> && bash tools/clang_tidy_check.sh build\""
+                exit 1
+            fi
+        else
+            echo "[pre-commit] Note: $N_STAGED C/C++ files staged (>6); skipping clang-tidy for latency (CI runs it)."
+        fi
+    fi
+else
+    echo "[pre-commit] Note: no WSL clang-tidy available; skipping naming check (CI covers it)."
+fi
+
 exit 0
