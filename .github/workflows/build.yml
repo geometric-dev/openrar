@@ -1170,13 +1170,56 @@ jobs:
           if [ ! -f "$EXE" ]; then EXE="./build/Release/openrar.exe"; fi
           python3 tools/release_regression_guard.py --binary "$EXE"
 
+  # Stable-name aggregate gate. Every other job's name is matrix-interpolated
+  # (`${{ matrix.os }} - ${{ matrix.compiler }} ...`), so branch protection
+  # cannot require them by name without pinning a whole matrix. This job has a
+  # fixed name, needs all of them, and fails if any dependency failed or was
+  # cancelled - which makes "the tests passed" a single required check.
+  all-gates-passed:
+    name: All gates passed
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
+    needs:
+      - build-and-test
+      - linux-arm64-qemu
+      - simd-validation
+      - wasm
+      - windows-asan
+      - sanitizers
+      - tsan
+      - csharp
+      - python-sdk
+      - oracle-interop
+      - release-regression-guard
+      - windows-regression-guard
+      - roadmap-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert no dependency failed or was cancelled
+        env:
+          RESULTS: ${{ join(needs.*.result, ',') }}
+        run: |
+          set -euo pipefail
+          echo "dependency results: ${RESULTS}"
+          # Every dependency must be 'success'. 'skipped' is a failure here:
+          # a gate that did not run is not a gate that passed.
+          bad=0
+          IFS=',' read -ra arr <<< "${RESULTS}"
+          for r in "${arr[@]}"; do
+            if [ "$r" != "success" ]; then
+              echo "::error::a required gate did not succeed: $r"
+              bad=1
+            fi
+          done
+          exit "$bad"
+
   release-assets:
     name: Attach release artifacts
     # Runs only for version tags: packages everything the run built and
     # attaches it to the GitHub release named after the tag (creating the
     # release with generated notes if it does not exist yet).
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-and-test, linux-arm64-qemu, wasm, sanitizers, tsan, simd-validation, csharp, python-sdk, release-regression-guard, windows-regression-guard, oracle-interop]
+    needs: [all-gates-passed]
     runs-on: ubuntu-latest
     permissions:
       contents: write
