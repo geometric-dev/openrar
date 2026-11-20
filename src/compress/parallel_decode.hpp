@@ -60,7 +60,11 @@ bool should_use_parallel_decode(size_t pack_size, size_t dest_size, size_t win_s
 //
 // extra_dist is the member's table flavor (FileBlock::extra_dist). RAR7-
 // algorithm members always take the sequential path: the operation records
-// carry u32 distances, which cannot hold ExtraDist's > 4 GiB distances.
+// carry u32 distances, which cannot hold a full 4 GiB window's worth of
+// reach, and the span pipeline's record encoding assumes the RAR5 flavor.
+// Note the flavor is NOT implied by a large window -- it comes from
+// unp_ver 1 with FCI_RAR5_COMPAT clear, and no accessible encoder emits it
+// (see the dispatch-site note in decode_entry and roadmap 4.26).
 bool decode_entry(const core::byte* src, size_t src_size, size_t dest_size, size_t win_size,
                   Decompressor50::OutputCallback flush_cb, ParallelDecodeDiag* diag = nullptr,
                   unsigned requested_threads = 0, bool extra_dist = false,

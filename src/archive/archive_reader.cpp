@@ -310,6 +310,19 @@ bool mmap_fallback_debug() {
     return dbg;
 }
 
+// EXP-PROBE-QO-COVERAGE (§4.30): emit the QuickOpen taken/not-taken bit as a
+// machine-readable stderr line. Log-only, same shape as OPENRAR_DEBUG_MMAP:
+// no behaviour change and nothing printed unless the variable is set. The
+// probe requires the line to be present in both directions, so "the fast path
+// did not fire" cannot be confused with "the probe never looked".
+bool qo_debug() {
+    static const bool dbg = [] {
+        const char* e = std::getenv("OPENRAR_DEBUG_QO");
+        return e != nullptr && *e != 0;
+    }();
+    return dbg;
+}
+
 // Normalized absolute generic-string form used as the session-registry key.
 std::string session_key(const std::filesystem::path& p) {
     std::error_code ec;
@@ -994,8 +1007,19 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                 }
                 // QuickOpen fast-path: if main header carries a locator with a valid QO offset
                 // and this is not a multi-volume set, try reading all cached headers at once.
-                if (vol_main.has_locator && vol_main.locator_qo_offset > 0 &&
-                    !(vol_main.arc_flags & format::MHFL_VOLUME) && !hcrypt.active) {
+                const bool qo_eligible = vol_main.has_locator && vol_main.locator_qo_offset > 0 &&
+                                         !(vol_main.arc_flags & format::MHFL_VOLUME) &&
+                                         !hcrypt.active;
+                if (qo_debug() && !qo_eligible) {
+                    // Ineligible is a decision too: the probe needs the bit in
+                    // both directions or "not fired" and "not looked" are the
+                    // same observation.
+                    std::fprintf(
+                        stderr, "[qo] taken=0 reason=ineligible locator=%d vol=%d hdr_crypt=%d\n",
+                        vol_main.has_locator ? 1 : 0,
+                        (vol_main.arc_flags & format::MHFL_VOLUME) ? 1 : 0, hcrypt.active ? 1 : 0);
+                }
+                if (qo_eligible) {
                     core::uint64 qo_abs_pos =
                         head_start + static_cast<core::uint64>(vol_main.locator_qo_offset);
                     core::uint64 curr_pos = vs.tell();
@@ -1288,6 +1312,12 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                                             }
                                         }
 
+                                        if (qo_debug()) {
+                                            std::fprintf(
+                                                stderr, "[qo] taken=1 entries=%zu qo_bytes=%llu\n",
+                                                qo_entries.size(),
+                                                static_cast<unsigned long long>(qo_data_size));
+                                        }
                                         raw_out = std::move(qo_entries);
                                         return true;
                                     }
@@ -1296,6 +1326,12 @@ bool ArchiveReader::scan_archive(const ReaderHooks& hooks, bool strict_volumes, 
                         }
                     }
                     vs.seek(static_cast<core::int64>(curr_pos), io::SeekOrigin::Begin);
+                    if (qo_debug()) {
+                        // Eligible but the fast path did not complete: fall back
+                        // to the linear scan. Emitted unconditionally so the
+                        // probe never has to infer a negative from silence.
+                        std::fprintf(stderr, "[qo] taken=0 reason=fallback\n");
+                    }
                 }
             } else if (type == format::HEAD_FILE || type == format::HEAD_SERVICE) {
                 ArchiveEntry e;

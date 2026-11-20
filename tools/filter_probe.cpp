@@ -8,6 +8,10 @@
 //     offsets covering the member?
 //     `filter_probe --archive=<arc> --entry=<name> --expect=e8|delta|none [--channels=N]`
 //
+//  3. Whole-archive type scan — does ANY member carry a reserved filter type
+//     (4..7), which every reference decoder drops?
+//     `filter_probe --scan-types=<arc>`
+//
 // Detection firing is NECESSARY, not sufficient, for C7 coverage: a member
 // whose bytes never make `Filters50::detect_filter` return the expected type
 // is not C7 evidence at all, and a detector that fires while the encoder emits
@@ -22,6 +26,8 @@
 #include "compress/filters50.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -71,6 +77,17 @@ bool parse_expect(const char* arg, FilterType& out) {
         return true;
     }
     return false;
+}
+
+// Unique leaf per call: two probes (or two entries in one scan) must not share
+// a temp file, or a concurrent extraction can be truncated under the other.
+std::filesystem::path probe_temp_path(const char* tag) {
+    static std::atomic<unsigned> counter{0};
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    return std::filesystem::temp_directory_path() /
+           ("openrar_filter_probe_" + std::string(tag) + "_" +
+            std::to_string(static_cast<unsigned long long>(stamp)) + "_" +
+            std::to_string(counter.fetch_add(1)));
 }
 
 std::vector<core::byte> read_file(const char* path, bool& ok) {
@@ -145,12 +162,11 @@ int emission_mode(const std::string& archive_path, const std::string& entry_name
 
     FilterCensus census;
     reader.set_filter_census(&census);
-    const std::filesystem::path tmp =
-        std::filesystem::temp_directory_path() /
-        ("filter_probe_" + std::to_string(static_cast<unsigned long long>(dest_size)) + ".bin");
+    const std::filesystem::path tmp = probe_temp_path("emit");
     const bool extracted = reader.extract_entry(*entry, tmp);
     std::error_code ec;
     std::filesystem::remove(tmp, ec);
+    reader.set_filter_census(nullptr);
     if (!extracted) {
         std::fprintf(stderr, "FILTER-PROBE: entry '%s' did not decode\n", entry_name.c_str());
         return 1;
@@ -219,10 +235,69 @@ int emission_mode(const std::string& archive_path, const std::string& entry_name
     return pass ? 0 : 1;
 }
 
+// Whole-archive filter-type scan (SEC-INTEROP-UNDEF-FILTER). Decodes every
+// regular member and asserts no emitted filter record carries a reserved type
+// (4..7). This is the corpus half of the row: the enum pin proves the encoder
+// cannot write one, this proves the bytes on disk carry none.
+int scan_types_mode(const std::string& archive_path) {
+    ArchiveReader reader;
+    if (!reader.open(archive_path)) {
+        std::fprintf(stderr, "FILTER-PROBE: cannot open archive %s\n", archive_path.c_str());
+        return 2;
+    }
+
+    size_t members = 0, records = 0, reserved = 0;
+    for (const auto& entry : reader.entries()) {
+        if (entry.header.is_service) continue;
+        if ((entry.header.file_flags & format::file_flags::DIRECTORY) != 0) continue;
+        if (entry.header.redir_type != 0) continue;
+
+        FilterCensus census;
+        reader.set_filter_census(&census);
+        const std::filesystem::path tmp = probe_temp_path("scan");
+        const bool ok = reader.extract_entry(entry, tmp);
+        std::error_code ec;
+        std::filesystem::remove(tmp, ec);
+        reader.set_filter_census(nullptr);
+        if (!ok) {
+            std::fprintf(stderr,
+                         "FILTER-PROBE: %s:%s did not decode; cannot claim a clean "
+                         "filter-type scan\n",
+                         archive_path.c_str(), entry.header.file_name.c_str());
+            return 1;
+        }
+        ++members;
+
+        std::lock_guard<std::mutex> lock(census.mutex);
+        for (const auto& r : census.entries) {
+            ++records;
+            if (r.type > 3) {
+                ++reserved;
+                std::fprintf(stderr,
+                             "FILTER-PROBE: %s:%s emitted RESERVED filter type %u "
+                             "(reference decoders drop the region)\n",
+                             archive_path.c_str(), entry.header.file_name.c_str(),
+                             static_cast<unsigned>(r.type));
+            }
+        }
+    }
+
+    const bool pass = reserved == 0 && members > 0;
+    std::printf("[%s] %s members=%zu records=%zu type>3=%zu\n", pass ? "PASS" : "FAIL",
+                archive_path.c_str(), members, records, reserved);
+    if (members == 0) {
+        std::fprintf(stderr,
+                     "FILTER-PROBE: %s has no decodable regular members; an empty "
+                     "scan is not evidence\n",
+                     archive_path.c_str());
+    }
+    return pass ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
-    std::string archive_path, entry_name;
+    std::string archive_path, entry_name, scan_path;
     std::vector<std::string> files;
     FilterType expect = FilterType::None;
     bool archive_mode = false, have_expect = false;
@@ -230,7 +305,9 @@ int main(int argc, char** argv) {
 
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
-        if (std::strncmp(a, "--archive=", 10) == 0) {
+        if (std::strncmp(a, "--scan-types=", 13) == 0) {
+            scan_path = a + 13;
+        } else if (std::strncmp(a, "--archive=", 10) == 0) {
             archive_path = a + 10;
             archive_mode = true;
         } else if (std::strncmp(a, "--entry=", 8) == 0) {
@@ -250,6 +327,13 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (!scan_path.empty()) {
+        if (archive_mode || !files.empty()) {
+            std::fprintf(stderr, "usage: filter_probe --scan-types=<arc>\n");
+            return 2;
+        }
+        return scan_types_mode(scan_path);
+    }
     if (archive_mode) {
         if (!have_expect || entry_name.empty() || !files.empty()) {
             std::fprintf(stderr, "usage: filter_probe --archive=<arc> --entry=<name> "

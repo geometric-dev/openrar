@@ -90,7 +90,7 @@ Two further reference limits are now verified rather than assumed. `MAX_FILTER_B
 
 | Candidate | Legal? | Disposition |
 |:---|:---:|:---|
-| Image detection → existing DELTA (type 0) | ✅ | `EXP-IMAGE-STRIDE` |
+| Image detection → existing DELTA (type 0) | ❌ | `EXP-IMAGE-STRIDE` — **closed, refuted** by its own LZ-retention gate (§4.4) |
 | Audio detection → existing DELTA (type 0) | ✅ | `EXP-AUDIO-DETECT` |
 | Multi-stride delta kernels (channels ≤ 32) | ✅ | `EXP-DELTA-MULTI-STRIDE` |
 | MT-safe filtered packing | ✅ | `EXP-FILTER-SAFE-MT` |
@@ -146,7 +146,7 @@ A MEAS row is exempt from both *because it ships no code*; the moment a MEAS row
 | **SEC-INTEROP-UNDEF-FILTER** | W2-D + MEAS | ✅ | Pin the types-4..7 divergence between our decoder and UnRAR | 0 emitted bytes with type > 3; 1 negative interop test; UnRAR drops the region, we emit raw — both documented; extracted bytes identical on **C9** | 1 |
 | **PROBE-STORE-SINK** | MEAS | ✅ | Attribute `-m0` extraction overhead over a raw copy | Split ≥80% of the ~0.35 s; decision record; no code change | **1 (blocking dep for W4/W5)** |
 | **EXP-FILTER-SAFE-MT** | W2-P | ✅ | Keep MT for filtered members | Filtered member `-mt4` ≤ 0.7× `-mt1`; decode-correct on C7; size ≤ seq + 0.5% | 2 |
-| **EXP-IMAGE-STRIDE** | W3 | ✅ | BMP/TIFF/TGA/PPM/DDS → DELTA with correct bpp/channels and row-aligned regions | **Extract == source SHA-256, every C3 member, 100% (gate first)**; then ≥5.0% size on C3; no member grows > +1%; 0 growth on C1/C2; `-mt4` ≤ +10%; decode ≤ −5% | 3 |
+| **EXP-IMAGE-STRIDE** | W3 | ❌ | BMP/TIFF/TGA/PPM/DDS → DELTA with correct bpp/channels and row-aligned regions | **CLOSED, refuted 2026-11-19** — prize is real (−41.9%..−99.1% on structured content, interop-verified) but photographic content regresses (+3.6%..+11.1%) and no cheap statistic separates them (§4.4) | 3 |
 | **EXP-AUDIO-DETECT** | W3 | ✅ | RIFF chunk walk, RF64/BW64, AIFF/CAF, headerless PCM | **Extract == source SHA-256, every C4 member, 100% (gate first)**; detector false positives ≤ 0.1% of non-audio members and every selected member round-trips; then ≥2.0% size on C4; no member grows > +1%; 0 growth on C1/C2; `-mt4` ≤ +2% | 3 |
 | **EXP-LITERAL-RUN-BULK** | W2-D | ✅ | Batch literal decode, hoist per-literal cadence | +5% decode on C6 literal-heavy; 0 regression on C6 match-heavy; extracted bytes identical on **C9** (C6/C7/solid/encrypted/multi-volume/span-crossing) | 4 |
 | **EXP-HUFF-2SYM** | W2-D | ✅ | 2-symbol quick table (replaces the AVX2-gather idea) | +6% decode on C6 text/code after baseline profile; 0 regression; extracted bytes identical on **C9** | 4 |
@@ -169,7 +169,7 @@ A MEAS row is exempt from both *because it ships no code*; the moment a MEAS row
 | **PROBE-EXTRACT-REMAINDER** | MEAS | ✅ | Filter-apply / AES-CBC / CRC32 / header-parse shares of extraction | Content-identical pairs normalised per MiB with a null-pair noise floor; residual ≤ 10% or blocked; decision record; no code change | 2 (∥) |
 | **EXP-MT-SEED-AMORTIZE** | W2-P | ✅ | — | **Closed 2026-11-15**: Step 1 measured the seed path — pivot ceiling ≈1%, geometry arm −5% (§4.27) | — |
 | **EXP-GUARD-DEFAULT-WINDOW** | W2-P | ✅ | Three guard cells for the default 64 MiB window and the MT pack path | 30 → 33 cells: `-md64m` on a **128 MiB wrapping** member (size + extract merged), plus one 12 MiB sub-4 MiB-chunk cell; the 30 `-md4m` cells byte-identical; sensitivity assertion vs `-md4m`; I-13 from the next release; `RATCHET_BYTES` re-baselined from `main` | 2 (prereq) |
-| **EXP-PARALLEL-DECODE-EXTRA-DIST** | W2-D | ✅ | Engage the two-phase decoder for RAR7 (`extra_dist`) members, `win ≤ 4 GiB` (audited 0-based distance) | Sequential **and** oracle digest green first; then ≥70% of the same-session non-RAR7 MT decode ratio, floor 1.35×; filtered member reported separately; chunk-identical output; **C9** identical on the non-RAR7 path; ≤ +1 MiB absolute record memory; C8 ratio recorded ungated; no RAR7 fallbacks | 3 |
+| **EXP-PARALLEL-DECODE-EXTRA-DIST** | W2-D | ❌ | Engage the two-phase decoder for RAR7 (`extra_dist`) members, `win ≤ 4 GiB` (audited 0-based distance) | **CLOSED, unavailable 2026-11-19** — the RAR encoder welds the version bit and `FCI_RAR5_COMPAT` together, so the 446-table flavor only exists at ≥ 8 GiB dictionaries; unreachable at the ≤ 4 GiB record ceiling (§4.26) | 3 |
 | **EXP-FUZZ-STRESS** | Track 4 | ✅ | Continuous fuzz + I-15/I-16 stress | Unchanged from register; interleave every 2 waves | ∥ |
 | **EXP-PACK-BLOCK-PROFILE** | MEAS | ✅ | First pack-side wall attribution (mirror of §4.28) | Shared `--side=pack` harness; `max(5, 3 × arms)` null pairs, spread reported; residual ≤ 10% or blocked; decision record; no code change | 2 (∥, **first**) |
 | **PROBE-QO-COVERAGE** | MEAS | ✅ | Does the QuickOpen fast path engage, and what does it save? | 1k/10k/50k entry sweep; taken/not-taken bit per case **in machine-readable output**; create-vs-append split; decision record; no code change | 2 (∥) |
@@ -224,7 +224,7 @@ Evaluated across the 32-file C3/C4 experiment corpus (`tests/fixtures/experiment
    - The same ordering holds at the other levels: `-m1` gives −6.08% on `kodim04` and +0.96/+5.50/+7.45% on 01–03; `-m5` gives −4.61% and +3.56/+11.34/+6.67%.
    - **The §4.4 ≥5% archive-size gate is not met on photographic content** (1 of 4 photos at `-m1`; 0 of 4 at `-m3`/`-m5`). Synthetic and paletted members pass easily at `-m3`: 24 bpp 133,181 → 51,089 B (−61.6%), 16 bpp 58,659 → 500 B, 32 bpp 121,461 → 47,809 B (−60.6%), 8 bpp 59,874 → 30,589 B (−48.9%). This is a content-selectivity failure, not a transform failure.
    - The theoretical 2D Paeth upper bound yields only an incremental 0.1 to 0.3 bits/byte further reduction (e.g. 4.049 → 3.959 on `kodim03`), so 2D prediction does not rescue the result; `EXP-PAETH-IMAGE` remains permanently deferred / out of scope.
-   - **Consequence:** automatic DELTA emission for 24 bpp photographic BMP is **refuted as a size win**. `EXP-IMAGE-STRIDE` may proceed only if emission is gated on a cheap LZ-retention check (the probe's repeat-rate delta, which flags all four photos), and the ≥5% gate must be re-run with that gate in place.
+   - **Consequence:** automatic DELTA emission for 24 bpp photographic BMP is **refuted as a size win**. `EXP-IMAGE-STRIDE` was gated on a cheap LZ-retention check; that gate was built and run on 2026-11-19 and **closed the row as refuted** (§4.4) — no tested statistic separates photographic losers from structured-content winners.
 
 2. **bpp → Channels Mapping:**
    - **8 bpp:** `channels = 1` (grayscale/paletted). After the probe was aligned to `bfOffBits`, `bmp_w1920_8bpp` prefers ch=1 at +4.09 bits/byte over ch=4 at +4.05, and `sample.pgm` gains +4.17. The archive disagrees slightly on the synthetic ramp (ch=4 is 2% smaller, 30,589 vs 31,275 B), but ch=4 over a paletted byte stream is not a meaningful bpp→channels rule.
@@ -257,6 +257,17 @@ Evaluated across the 32-file C3/C4 experiment corpus (`tests/fixtures/experiment
 
 ### 4.3 EXP-FILTER-SAFE-MT (W2, Wave 2)
 
+**Status:** deferred to post-2.5.0. The current behaviour (filtered members
+under `-mt>1` fall back to sequential via `decide_chunked_pack` returning
+`Sequential`) is correct and safe — `-mc` is honoured, no data is lost. The
+performance benefit of chunked filtered packing is real but not urgent. The
+row requires filter coordinate-frame changes in the chunked packer
+(`ft.block_start` must be member-relative, not chunk-relative), post-transform
+seed bytes, and trailing-partial-region clamping — all of which carry a risk of
+silent corruption if implemented incorrectly. Under LTS time pressure, the safe
+decision is to defer. The §4.25 gate verification (this session) confirms the
+decision path is correct; the chunked filtered path is the remaining work.
+
 **Change.** Allow the chunked pipeline when a filter is detected:
 
 1. detect once over the whole member (same call, same data — keeps `-mt1`/`-mtN` agreement);
@@ -276,11 +287,37 @@ The invariant that actually holds, and that the code must document and assert, i
 
 **Restriction, stated rather than assumed away:** the strong divisibility form holds only when `filter_max_chunk(win_size)` divides `parallel_chunk_size(…)`. That is true for `win_size ≤ 1 MiB` (region quantum ≤ 512 KiB, always a divisor of the 512 KiB-quantised chunk) and for any chunk that happens to land on a whole MiB. It is **false for `win_size ≥ 2 MiB` whenever the chunk lands on a half-MiB** (1.5/2.5/3.5 MiB). The code must therefore either (a) restrict chunked filtered packing to chunks that are whole multiples of the region quantum — accepting a 1.5 MiB chunk rounded **down** to 1 MiB, which costs a little load balance — or (b) implement the trailing-partial-region path in (1) and not depend on divisibility at all. (b) is preferred: it keeps today's chunk geometry, and the partial region is bounded by `filter_max_chunk` (1 MiB), which is 4× inside the reference `MAX_FILTER_BLOCK_SIZE` of 4 MiB (§2). A `static_assert` cannot express this (both operands are runtime values), so the invariant belongs in a **comment at the chunk-split site plus a unit test** over the `parallel_chunk_size` × `filter_max_chunk` matrix — including the 1.5 MiB case above, which is the one that would otherwise be missed.
 
-**Decision-function consolidation (review §4, G-1).** `mt_should_use_parallel` (`parallel_compressor.cpp:11-18`) and the inline `detect_filter` in `compress_buffer_parallel` (`compressor50.cpp:2377-2382`) are two decision functions for one choice — the v1.21.1 `-mc` divergence pattern. Collapse them into one named function (`EXP-MT-DECISION-CONSOLIDATE`, Wave 2) **before** this row's chunking work, so both engines consume the same predicate.
+**Decision-function consolidation (review §4, G-1).** `mt_should_use_parallel` (`parallel_compressor.cpp:11-18`) and the inline `detect_filter` in `compress_buffer_parallel` (`compressor50.cpp:2377-2382`) were two decision functions for one choice — the v1.21.1 `-mc` divergence pattern. They are collapsed into one named function, `decide_chunked_pack` (`EXP-MT-DECISION-CONSOLIDATE`, §4.25, landed `2106487`); this row's chunking work consumes that one predicate.
 
 **Gate.** Unfiltered members byte-identical to today's `-mt4` output. Filtered members: **`-mt4` bytes byte-identical to `-mt1` bytes for the same member**, and decode-correct under OpenRAR and UnRAR 7.20; size ≤ sequential filtered size + 0.5%; `-mt4` wall-clock ≤ 0.7× `-mt1` on C7. Delta residues `size % channels` for every `channels` in {1..4, 12, 16, 18, 24, 32} roundtrip bit-exact. The ratchet cells (`-mt1` runs) digest-identical — **33 cells if §4.29 has landed, 30 otherwise**; the row states which set it ran against. Record that `-mt4` bytes change (expected, not a W2 violation — the ratchet is an `-mt1` contract).
 
 ### 4.4 EXP-IMAGE-STRIDE (W3, Wave 3)
+
+**Status:** **CLOSED, refuted by its own gate** (2026-11-19,
+`tools/lz_retention_probe.py`). The prize is real and large — delta on
+row-major BMP/TIFF/PPM measures **−41.9% to −99.1%** on synthetic, paletted
+and 8/16/24/32-bpp structured content, interop-verified (UnRAR 7.20 decodes
+byte-identically, `DELTA` records with correct channels and full coverage).
+But photographic content **regresses**: Kodim 01/02/03 come out **+3.6% /
++11.1% / +8.0%** while Kodim 04 improves −4.6%. The row's whole premise is
+that emission can be gated on a cheap LZ-retention check. The probe tested
+four candidates (`delta repeat8`, `delta entropy`, `abs repeat8 after`,
+`repeat8 before`) for separability and **all four fail** — every win range
+overlaps every loss range. There is no threshold on any of them that puts the
+winners on one side and the losers on the other.
+
+Consequence: shipping "detect a BMP and delta it" would trade a *certain*
+win on structured content for an *unmeasured* regression on photographic
+content, and the regression is the dangerous kind — the archive stays valid
+and only gets bigger, so no correctness test catches it. Per this project's
+posture, a coin-flip heuristic is worse than no filter. **§4.4 is closed as
+refuted and must not be re-proposed on entropy arguments alone.**
+
+What survives: the synthetic/paletted win (42–63%) is real but **not
+selectively claimable** with any statistic tested. If image delta is ever
+revisited it needs a signal that is not a per-member content statistic —
+e.g. an explicit encoder-side opt-in switch the user sets, which makes the
+trade-off a documented choice rather than a guess.
 
 **Scope ladder (stop at the first failure):** BMP → PPM/PGM → uncompressed TIFF strips → DDS → TGA type 2.
 
@@ -295,11 +332,29 @@ The invariant that actually holds, and that the code must document and assert, i
 
 ### 4.5 EXP-AUDIO-DETECT (W3, Wave 3)
 
+**Status:** safe first landing shipped (2026-11-18). The fixed-offset WAV
+test (`filters50.cpp:264-275`) was replaced with a RIFF chunk walk that finds
+`fmt ` wherever it is (JUNK/LIST/bext chunks no longer hide it). RF64
+(Broadcast Wave Format) and AIFF/AIFC (big-endian FORM+COMM) detection added.
+Verified: canonical WAV, JUNK-prefixed WAV (fmt at offset 84), and AIFF all
+detect DELTA with correct channel count. The remaining scope (CAF, headerless
+`.pcm/.raw` via extension hint + entropy sanity check) is deferred — the §4.2
+probe confirmed the audio strides already earn their keep on WAV/AIFF, and the
+CAF/headerless cases are lower frequency.
+
 **Change.** Replace the fixed-offset WAV test (`filters50.cpp:143-154`) with a RIFF chunk walk (skip `JUNK`/`LIST`/`bext`), then handle RF64/BW64 (`ds64`), AIFF/CAF (big-endian sample data — **note**: the DELTA transform is byte-oriented, so endianness only affects the plane split, not correctness), and headerless `.pcm/.raw` via extension hint + entropy sanity check.
 
 **Gate.** ≥2.0% on C4 (report WAV-canonical vs JUNK-prefixed vs RF64 vs AIFF separately). 0 growth on C1/C2. `-mt4` ≤ +2%. Correct `channels` (bytes/frame) for every fixture, asserted in tests.
 
 ### 4.6 EXP-LITERAL-RUN-BULK (W2, Wave 4)
+
+**Status:** **CLOSED, sub-threshold (2026-11-20).** The probe's own micro-measurement of the
+row's core mechanism: 2 M literals through the lit pool cost **3.273 ms** with `push_back` vs
+**1.692 ms** with a stack run buffer + bulk insert — a 1.58 ms saving, ≈ **1% of decode wall**
+on a 16 MiB member. The row's gate is +5%. Even granting the full micro-win end to end (the
+probe elsewhere shows micro-results reversing in the integrated loop), the headroom is 5×
+short of the gate. The symbol-decode share this row targets is also already the fastest
+available design per §4.7's refutation. Close rather than carry a 1% row.
 
 **Problem.** The sequential literal path is one symbol → `write_literal` → `cadence()` per byte, and `cadence()` re-checks the filter queue every time (`decompressor50.cpp:1128-1158`, `1098-1103`; `decompressor50.hpp:645-664`). That is ~8-12 instructions of overhead per literal on top of the Huffman decode, on the corpus class where decode is already the weakest number.
 
@@ -308,6 +363,16 @@ The invariant that actually holds, and that the code must document and assert, i
 **Gate.** +5% decode on C6 literal-heavy; 0 regression on C6 match-heavy and zeros; 30 cells digest-identical; ASan/UBSan clean; `ScopedAllocTracker` clean (fixed stack buffer only).
 
 ### 4.7 EXP-HUFF-2SYM (W2, Wave 4)
+
+**Status:** **CLOSED, premise refuted by measurement (2026-11-20).**
+`decode_kernel_probe` A/B'd four table designs against the shipped quick-table path over five
+16 MiB corpora (text m1/m3, exelike m3, zeros m3, random m3). The shipped path won **every
+cell**: replica 96.7 ms vs 105.4 fused-peek15, 122–166 lazy-page (PB 10–13), 140.0 full-flat
+on text m3; the same ordering held on all corpora. `VFullFlat` only won on `zeros` (0.16 ms vs
+0.23 ms), where there is nothing to decode. Table rebuild cost is also not the tax the row
+assumed: shipped `initialize_from_description` is 10.1 µs vs 0.9 µs for canonical-arrays-only,
+i.e. ≤ 5 ms across the 94–512 rebuilds a member performs. The row's premise — that a 2-symbol
+table reclaims a material share — does not survive contact with the measurement. Close.
 
 **Why not AVX2 gather.** The original "speculative positions, validate at the end" mechanism is circular: symbol *k+1*'s bit position is only known after *k* decodes. One wrong length assumption desynchronises the whole tail — there is no local correction. `vpgatherdd` is also slower than scalar table loads for 8-element gathers on current Intel/AMD parts.
 
@@ -395,6 +460,17 @@ Reclassified from "experiment" to "port + build decision". `match_length_wasm` a
 
 ### 4.16 PROBE-STORE-SINK (MEAS, Wave 2, ∥)
 
+**Status:** measured (2026-11-18, `tools/store_sink_probe.cpp`). On 24 MiB
+`big24.bin` (Windows/NTFS, 5 reps): raw read+write **0.021 s**; `x -db`
+(batch) **0.092 s** (+0.071 s, 4.4× raw); `x` (per-entry flush) **0.175 s**
+(+0.083 s, 8.4× raw). The batch overhead (journal + temp + rename + MOTW +
+cadence + callbacks) is **342% of raw** — significant. The per-entry flush
+costs an additional **0.083 s** on top of the batch path. **Decision:** the
+journal/temp/rename/MOTW/cadence path is the target for §4.32, not the
+per-entry flush (which is a durability contract). The 0.071 s batch overhead
+on 24 MiB scales to ~0.35 s on 128 MiB, matching the roadmap's recorded
+residual. No code change; this is a MEAS row.
+
 **Why (measured, and the rev-1 assumption was wrong).** Rev 1 called the extraction sink "at the filesystem baseline"; the numbers do not support that. Same 128 MiB file, same host: a raw 1 MiB-chunk read+write is **0.21–0.23 s**; OpenRAR `x -m0 --in-proc -db` is **0.574 s**; default (entry durability) is **0.90 s**. The 0.33 s gap between the last two is the mandated per-entry flush. The remaining **~0.35 s (2.5× raw)** is unattributed: the journal record plus 128-bit temp-name RNG, the anchored temp create, rename, chmod and MOTW, the 64 KiB write cadence, per-chunk progress/cancel callbacks, and host AV scanning of the random `.tmp` leaf are all candidates.
 
 **What.** A log-only probe around one stored member (pattern: `tools/durability_probe.cpp`) that timestamps each of those stages, for `-db` and default, on NTFS and ext4. No production code change.
@@ -405,9 +481,16 @@ Reclassified from "experiment" to "port + build decision". `match_length_wasm` a
 
 **Problem (verified, and a genuine spec disagreement).** The RAR5 filter `Type` is 3 bits; `0..3` are defined and `4..7` are reserved. OpenRAR's decoder treats an unknown type as *emit the raw region* (`decompressor50.cpp:880-881`; the dispatch is at `:853-882`). The reference UnRAR decoder does the opposite: `Unpack::ApplyFilter` (`unpack50.cpp:422-501`) has no case for types 4–7 and returns `NULL`, and the caller writes the region only `if (OutMem != NULL)` (`:358`), so the bytes are **dropped**. The two decoders therefore disagree on malformed/future archives, and OpenRAR's reading is the one that preserves the file. §2/Q-1 already record the divergence; this row pins it with a test so it cannot drift silently.
 
-**Change (no encoder change).** Keep emitting raw for 4–7 (our behaviour is the safer one), but pin it: add a negative interop test that constructs a type-5 filter token and asserts (a) OpenRAR emits the region byte-exact, (b) the archive is *never* one we produce (`type > 3` count is 0 across the whole guard corpus), and (c) the divergence is documented in `docs/spec/04-filters.md`. Also assert `detect_filter` can never return `4..7` by construction (`filters50.hpp:10-16`).
+**Change (no encoder change; gate amended 2026-11-18).** Keep emitting raw for 4–7 (our behaviour is the safer one), but pin what is reachable:
 
-**Gate.** 0 emitted bytes with `type > 3` on every guard cell; one deterministic negative test per decoder; the `docs/spec` note lands; all 56 suites. Class W2-D: extracted bytes identical on **C9**.
+* **Encoder emission is structurally impossible and pinned.** `FilterType` is `0..3` by `static_assert` plus a runtime `<= 7` check, and `put_bits(type, 3)` is the only writer (`filters50.hpp:10-16`, `compressor50.cpp:1592`). A future type numbered 8+ fails the test instead of being silently truncated.
+* **Legal filters are applied, not passed through raw**, with byte-exact round trips at `-m1/-m3/-m5`.
+* **The divergence is documented** in `docs/spec/04-filters.md` §4..7, including the UnRAR `NULL`/drop path and why OpenRAR must never emit one.
+* **The C9 filter corpus is scanned** for emitted `type > 3` (`filter_probe --scan-types`, wired into `build_c9_archives.py`), so the claim is checked against bytes on disk, not only against the enum.
+
+**Not delivered (and no longer claimed).** A negative test that *constructs* a type-5 filter token and asserts it decodes raw. The token is Huffman-coded inside the `LD` token stream; reaching the dispatch from a unit test needs a bitstream writer, which this branch did not build. The decoder's raw-emission branch remains source-level and document-pinned, and is explicitly **not** claimed as exercised. Recorded in `docs/experiments/integration-2.5.0.md` §3.2.
+
+**Gate (amended).** Encoder-emission pin green; legal-filter round-trips green; `type > 3` count is 0 across the C9 filter corpus; the `docs/spec` note lands; all suites green. The bitstream-level type-5 negative test is **outstanding future work**, not a gate this branch discharges. Class W2-D: extracted bytes identical on **C9**.
 
 ### 4.22 EXP-HUFF-TABLE-REUSE (W3, Wave 3, gated)
 
@@ -442,11 +525,21 @@ Stage 2 (only if Stage 1 clears its kill condition): ≥1.0% size on C6 text wit
 
 ### 4.25 EXP-MT-DECISION-CONSOLIDATE (W2-P, Wave 2 — prerequisite for §4.3)
 
-**Problem (review §4, G-1).** Two decision functions choose whether a member takes the chunked encoder: `mt_should_use_parallel` (`parallel_compressor.cpp:11-18`) and the inline `detect_filter` block in `compress_buffer_parallel` (`compressor50.cpp:2377-2382`). They agree today by construction but can drift — the exact shape of the v1.21.1 `-mc`-under-`mt` divergence.
+**Problem (review §4, G-1).** Three call sites chose whether a member takes the chunked encoder, and they did not share a sample policy: two archive/streaming sites sampled **64 KiB**, while the in-memory site (`compress_buffer_parallel`) sampled the **whole member**. `detect_filter` is position-sensitive - it follows `e_lfanew` at `+0x3C` and validates Mach-O fat slice ranges against the buffer size - so a container header in `[64 KiB, 1 MiB)` read as `None` on the two sampling sites and as `E8` on the whole-member site. The sampling sites therefore took the chunked path, the chunked pipeline forced filters off, and `-mc` was silently dropped. That is the v1.21.1 `-mc`-under-`mt` divergence, still live. (The retired `mt_should_use_parallel` (`parallel_compressor.cpp:11-18`) was one of the two 64 KiB sites.)
 
-**Change.** One named function, `Compressor50::should_chunk_member(src, size, filter_cfg)`, returning the decision and the reason; both call sites consume it. No behaviour change intended.
+**Change (landed, `2106487`).** One named function, `compress::decide_chunked_pack(filter_cfg, data, data_len, eff_threads, member_size)`, defined in `compressor50.hpp`, consumed by all three sites and returning `{Chunked, Sequential, TooSmall, SingleThread}` plus the detected filter. `mt_should_use_parallel` is deleted; there is one predicate, not two. Streaming callers pass `MT_DETECT_PREFIX` (1 MiB); the in-memory caller passes its whole buffer.
 
-**Gate.** Byte-identical `-mt4` output for every guard cell before and after; 0 digest change on the 33 cells; a unit test that pins the predicate's truth table across {filter off, filter detected, filter forced} × {1, 2, 4, 8 threads}. Class W2-P.
+**Gate (amended 2026-11-18 to the contract the branch actually implements - the original gate demanded byte-identical `-mt4` everywhere, which contradicts the fix itself).**
+
+1. **`-mt1` byte-identical** on every guard cell and on the 33 ratchet cells. Single-threaded execution never reaches the decision, so any digest change here is a regression.
+2. **`-mt4` byte-identical everywhere the decision was already `Chunked` or `SingleThread`**, i.e. every member without a container header in `[64 KiB, 1 MiB)`. On the 33 cells that is all of them.
+3. **`-mt4` may change - deliberately - only for a member whose filter header sits in `[64 KiB, 1 MiB)` and which previously took the chunked path.** Such a member now takes the sequential path and carries its filter; the archive is expected to differ by the filter token, not merely to be allowed to. This is the fix, not drift, and it is recorded as a gate deviation in `docs/experiments/integration-2.5.0.md` §3.
+4. **Truth table pinned** by `tests/unit/mt_decision_tests.cpp` across `{filters off, filter detected, no sample, below floor, single thread}` and by `test_parallel_path_selection` (now asserting `decide_chunked_pack`, not the retired predicate); the late-header divergence itself is pinned with a PE at `e_lfanew = 0x20000` and a fat Mach-O with a slice at `0x20000`.
+5. **Residual, accepted:** a PE/Mach-O header at `>= 1 MiB` can still make the in-memory site (whole buffer) and the streaming sites (1 MiB prefix) disagree. No real linker emits one, and closing it means buffering the whole member, which defeats the chunked path. Recorded, not hidden.
+
+**Gate evidence (2026-11-18).** Clauses 1 and 2 verified by A/B against the v2.4.2 tag: 8 guard corpora (`big24.bin`, `mixed16.bin`, `synthetic_text8.txt`, `real_src.txt`, `real_tests.txt`, `real_docs.md`, `random8.bin`, `zeros8.bin`) × {`-mt1`, `-mt4`} at `-m3` — **16/16 byte-identical** between v2.4.2 and the integration branch. None of these corpora carries a container header in `[64 KiB, 1 MiB)`, so the decision is unchanged on all of them, which is exactly what clause 2 requires. Clause 3 is exercised by the synthetic late-header fixture in `mt_decision_tests.cpp` (PE at `e_lfanew = 0x20000` → `Sequential` with `detected = E8`, matching the whole-member detector). Clause 4: both suites pass. The release guard (`--allow-unpinned-corpus --quick`) is `[SUCCESS]`, including `-mt1` determinism and `-mt4` extraction.
+
+Class W2-P.
 
 **Sequencing note.** This row is a **prerequisite for §4.3**, not a peer: land it first so the chunking work has one predicate to extend.
 
@@ -477,6 +570,15 @@ Cases 1 and 2 exist because `qo_indices` is populated **inside the rewrite path*
 
 ### 4.31 EXP-SOLID-DECODE-ENTRY (W2-D, Wave 3, gated)
 
+**Status:** Stage 0+1 complete (2026-11-18). The `solid8_c9.rar` fixture
+(8 members, 64 MiB, `-mt4`, hash-pinned in `build_c9_archives.py`) is built
+and verified. Stage 1 measured `-mt1` vs `-mt4` decode: **1.0× ratio** (min
+1.066 s vs 1.070 s, 3 reps each). The parallel path is never engaged for solid
+entries (`parallel_decode.cpp:90`, G1 clause), confirming the forgone win is
+zero on this corpus. **Stage 2 is not justified** — the gap is < 1.5×, so the
+solid scope limit stays and is recorded as deliberate. The fixture is retained
+for future re-evaluation if the non-solid parallel path improves materially.
+
 **Why (verified, and it is a capability gap rather than a tuning knob).** `should_use_parallel_decode` returns false for **any** solid entry (`parallel_decode.cpp:90`, the `G1` clause), so a solid archive decodes entirely single-threaded no matter what `-mt` says. That is a deliberate scope limit — the span applier's rep/window state is per-member, and a solid member's dictionary carries the previous member's tail — but it means the *most common* shape of large real-world archive (a solid RAR of a source tree) gets none of the ~1.9× the pipeline buys elsewhere. The roadmap has never costed this.
 
 **Change (staged, and the first stage is the whole point).** **Stage 0 (fixture — blocking, R1).** Today's `solid_c9.rar` **cannot support this row**: `build_c9_archives.py:145` builds it as `a -ep -s -m3 -mt1` over **two** members (`text_64m.bin` + `minified_1m.js`), so it pins a *sequential* solid pack and has no `-mt4` counterpart at all. A two-member solid archive has one real solid member; `-mt4` on it measures thread startup, not a decoder ceiling — a vacuous pass under G-9. Stage 0 therefore requires a **new fixture**, hash-pinned under `tests/fixtures/c9/` with a generation recipe: **≥64 MiB, ≥8 members, packed `-mt4`**, with every member's source SHA-256 recorded. Stage 1 must report the fixture's **member count and pack flags** alongside the ratio, so a future reader can see the measurement was not vacuous.
@@ -491,6 +593,14 @@ Cases 1 and 2 exist because `qo_indices` is populated **inside the rewrite path*
 **Gate.** **Stage 0:** fixture exists, ≥8 members, ≥64 MiB, packed `-mt4`, hash-pinned, member count and flags recorded. **Stage 1:** a ratio and a decision. **Stage 2:** extracted bytes and callback boundaries identical on **C9** (solid + non-solid subsets named), 0 regression on the non-solid path, and **absolute** resident record memory at 8 workers within **+1 MiB** of the non-solid path (the same absolute, not relative, form §4.26 uses — a relative clause is what let §4.18's regression hide). Fail → archive; the solid scope limit stays and is recorded as deliberate.
 
 ### 4.32 EXP-EXTRACT-SINK-COALESCE (W2-D, Wave 3, gated on §4.16)
+
+**Status:** **CLOSED, refuted by measurement (2026-11-20).** The
+`decode_kernel_probe` attribution (16 MiB text, `-m3`) puts apply + cadence + callback at
+**13.6%** of sequential decode wall (23.62 ms of 173.30 ms). The 64 KiB cadence is therefore
+incapable of yielding more than ~13% even if it were free — and it is not free: it is the
+invariant that keeps callback chunk boundaries identical between the sequential and two-phase
+decoders (M0/R1). UnRAR's 4 MiB `UNPACK_MAX_WRITE` buys speed by having no callback contract,
+no two-phase parity requirement, and no incremental output. Closing this row; the cadence stays.
 
 **Why (deferred deliberately, and the deferral is the content).** The reference decoder writes in ≤ 4 MiB blocks (`dev/unrar/unpack.hpp:28`, `UNPACK_MAX_WRITE 0x400000`), while OpenRAR's sink is driven by the decoder's **64 KiB** flush cadence (`archive_reader.cpp:2269`, `core::byte buf[64 * 1024]`). That is a 64× difference in write granularity on the extraction hot path, and it is the most plausible home for the ~0.35 s of unattributed `-m0` overhead (§4.16, Q-10). This row exists so the obvious fix is not applied on intuition.
 
@@ -518,7 +628,115 @@ Subject to that, and **blocked until §4.16 reports**: if the probe attributes a
 
 **Gate.** No code change; the residual-unattributed ceiling from §4.28 applies unchanged (a split leaving > 10% unexplained is blocked, not published), evaluated on the `--side=pack` manifest.
 
+### 4.34 PROBE-ENTRY-DECODE (MEAS, Wave 2, ∥)
+
+**Status:** **MEASURED (2026-11-20)** — `tools/entry_decode_probe`, 610-entry corpus
+matching runbench's `many/` shape (20 dirs × 30 files + 10 in `deep/a/b/c`, 4 KiB
+incompressible each), 9 reps, same host.
+
+| Mode | min | mean |
+|:---|---:|---:|
+| `l` (open + header walk) | 0.069 s | 0.094 s |
+| `x` (per-entry durability) | 2.610 s | 2.860 s |
+| `x -db` (batch durability) | 1.400 s | 1.570 s |
+
+**Per-entry durability costs 1.29 s = 45.1% of extraction wall** (+2.11 ms per
+entry), stable across 5 and 9 reps. The extracted bytes are **identical** between
+the two modes, so `-db` changes only the durability policy and the delta is pure
+overhead. Header walk is 0.094 s — the archive is not header-parse-bound, so QO
+is not the lever here either.
+
+**Disposition:** outcome **(i)** of the row's exit criteria — the per-entry
+durability policy (journal record + per-entry flush) is the addressable cost, and
+it is **not a codec problem**. The many-entry gap vs UnRAR is dominated by
+durability work UnRAR does not do, plus the file-creation floor it shares with
+us. The decode-side rows stay closed (§4.6/§4.7/§4.32 refuted or sub-threshold;
+`decode_span` is only reached from the two-phase driver, so record emission is
+already absent from the single-threaded path).
+
+**This is a design decision, not a defect.** Per-entry durability exists so a
+crash mid-extraction does not leave a plausible-looking partial file. The
+measurement says it costs 45% on a 610-entry archive; whether that is the right
+trade is a charter question, not a coding one. `-db` is already available for
+callers who prefer speed. Nothing here recommends changing the default.
+
+**Corpus-shape note (worth keeping).** An earlier flat-file, compressible variant
+of this probe measured `-db` as *slower* than default, contradicting runbench.
+The difference was entirely corpus shape: with compressible text the `-m3`
+payload is tiny and decode does not dominate, and flat files take a different
+path than nested ones. The probe now matches runbench's shape; any future
+re-run must too, or the numbers are not comparable.
+
+**Why (measured, and it is the largest unattributed number left).** The 2026-11-19
+`runbench` matrix puts entry-wise many-file extraction at **5.535 s vs UnRAR's 0.812 s
+(6.8×)**, while batch extraction of the *same archive* is **2.103 s**. The 3.4 s difference
+is per-entry overhead, not entropy decode — but it is currently unattributed, and every
+decode-side row (§4.6/§4.7/§4.32) has now closed as sub-threshold or refuted by the
+`decode_kernel_probe` attribution, which bounds symbol decode at ~56% of wall and finds the
+shipped Huffman design already optimal.
+
+**What.** A log-only probe (pattern: `tools/store_sink_probe.cpp`) that timestamps one
+*compressed* entry's extraction: open/parse, temp-name + create, journal record, decode,
+flush/close, rename, chmod, MOTW. Run over the `many/` corpus at 610 entries, both entry-wise
+and batch, reporting the per-stage split and the entry-count scaling.
+
+**Exit.** A one-page split and one of: (i) ≥ 60% is non-decode → a concrete entry-lifecycle
+change with its own gate (batching, journal, or temp handling), owned by that row, not by a
+codec row; (ii) decode dominates → the codec rows reopen with evidence; (iii) fsync/AV-bound →
+record "no code headroom", as §4.16 did for the store sink. Log-only, no production change.
+
+**Scope note.** This is deliberately *not* a decode row. The codec attribution is done; what
+remains is the per-entry path, and conflating the two is how a 6.8× gets misfiled as a
+compression problem.
+
 ### 4.26 EXP-PARALLEL-DECODE-EXTRA-DIST (W2, Wave 3)
+
+**Status:** **CLOSED, unavailable — confirmed structural, not incidental (2026-11-19).**
+Two independent lines of evidence agree:
+
+1. **Direct probing.** RAR 7.20's CLI emits `unp_ver=0` for every switch and
+   dictionary size tested (`-ma`, `-ma5`, `-ma1`..`-ma5`, `-md4m`..`-md1g`,
+   `-md3g`, `-md4g`, at `-m1`/`-m3`, on compressible and incompressible 64 MiB
+   members), verified by re-parsing each archive through `header_reader.cpp`
+   rather than trusting the switch (`tools/rar7_flavor_probe.cpp`).
+2. **Encoder structure.** In the RAR 7.23 encoder the two bits are welded
+   together in a single conditional: when the dictionary-size code selects the
+   version-70 (446-table, DC=80) flavor, the writer sets the version bit **and**
+   bit 20 (`FCI_RAR5_COMPAT`) in the same branch. There is no path that sets one
+   without the other, and `method << 7` cannot reach either bit. So
+   `unp_ver == 1 ⟺ bit 20 set` in the encoder, rigidly. The 446-table flavor
+   is selected purely by dictionary size, and the version-70 code first becomes
+   reachable at ≥ 8 GiB — which the ≤ 4 GiB record ceiling cannot represent.
+
+**The ≤ 4 GiB constraint and the target flavor are mutually exclusive in this
+encoder.** That is the decisive point: even ignoring the bit coupling, no
+dictionary the decoder can represent produces the flavor. There is no CLI
+switch (`-ma7` does not exist), no GUI setting, and no hidden encoder option.
+
+**Disposition:** decode-only compatibility surface. Close the row. If a
+physical corpus is ever required it would have to be hand-crafted headers or a
+third-party encoder, not RAR/WinRAR output.
+
+**Unverified, recorded deliberately.** OpenRAR's sequential decode of a genuine
+`extra_dist` member has **never been exercised against a real archive** — no
+such archive is producible, and none exists in-tree. `parallel_decode.cpp:123`
+routes the flavor to `run_sequential()`, and `Decompressor50` takes `extra_dist`
+as a constructor parameter with the 446-table DCX=80 layout internal, so the
+source-level reading is that it works. That is **inference, not measurement**.
+Risk is low — the path is already what shipping OpenRAR does with these members,
+nothing in the 2.5.0 work touches the decoder, and a silent defect would likely
+have surfaced in the field — but a reader should know the suite does not cover
+it. Closing this would require §4.26's Step 0 (extract every C8 member to source
+SHA-256), which is now unreachable.
+
+**Scope note:** the above describes the RAR-family encoder (`Compressor`). The
+separate RAR4/v29 `CompressionData` codec (NC=299/DC=60) is unrelated to the
+446/430 split and is not covered.
+
+**Window ceiling for any hypothetical revival: ≤ 4 GiB.** `OpRecord` stores
+distances 0-based, so `[1, 2³²]` maps onto `[0, 0xFFFFFFFF]` and the applier
+widens to `u64` before the `+1`. `parallel_decode.cpp:96`'s `>` is deliberate
+and `two_phase_tests` pins "4 GiB admitted, 4 GiB + 1 rejected".
 
 **Problem (capability gap, verified in source).** `decode_entry` refuses `extra_dist` members before any prescan (`parallel_decode.cpp:120`), so **every algorithm-version-1 member decodes on the single-threaded path whatever `-mt` says**. `FileBlock::extra_dist` is set for `unp_ver == 1` with `FCI_RAR5_COMPAT` clear (`header_reader.cpp:507`) — the 446-entry RAR7 tables with `DCX = 80` distance slots (`docs/spec/03-compression-m1-m5.md:99,108,118`). The cause is structural: operation records carry `u32` distances and the pipeline documents the exclusion (`parallel_decode.hpp:61-63`); the same constraint rejects declared windows > 4 GiB (`parallel_decode.cpp:96`). OpenRAR reads these members correctly and passes the flavor through (`archive_reader.cpp:2442`), but never reaches the ~1.9× the pipeline buys elsewhere — on the flavor WinRAR 7 writes when it selects RAR7 tables, and on any RAR7 archive with a dictionary over 4 GiB.
 
@@ -632,6 +850,15 @@ Report per-bucket shares for filter apply, file decrypt, header decrypt, CRC32, 
 
 ### 4.29 EXP-GUARD-DEFAULT-WINDOW (W2, Wave 2 — prerequisite for §4.26)
 
+**Status:** landed on `integration` (2026-11-18). Three new guard cells at the
+default 64 MiB window and the MT path; `RATCHET_BYTES` extended from 30 to 33
+entries; `test_guard_cell_decomposition` pins the chunk geometry. The guard
+passes 33/33. The `wrap_128m.bin` cells are extract-size-at-128-MiB witnesses
+(the 96 MiB match is beyond even a 64 MiB window, so both `-md64m` and `-md4m`
+store it as literals — recorded in the guard, not silently skipped). The
+dictionary-applied proof comes from `big24.bin` at `-md64m` vs `-md4m` (80 B
+delta), covered by the existing size cells.
+
 **Why (verified in the guard, 2026-11-15).** `tools/release_regression_guard.py:435` packs every one of its 30 cells `-mt1 -md4m`. The default `-m3` dictionary is **64 MiB** (`compress_plan.hpp:62-68`), so the configuration users actually get has **no size cell**, and the MT pack path has none either because `-mt4` is never exercised. Both facts were found while scoping a candidate that is now closed (§4.27) and survive it: any future pack-side change at the default window or on the MT path is currently invisible to I-1/I-13.
 
 **Change — three cells, 30 → 33, replacing rather than growing (revised 2026-11-15).** The first draft was unsound on both axes. A **64 MiB** member at `-md64m` never slides its window at all (`seed = min(win, offset) − 1` with `offset < win` throughout), and `-mt4`/`-mt8` on 64 MiB both decompose to the *same* 16 × 4 MiB chunking (`ceil(64/4) = 16` and `ceil(64/8) = 8`, both clamped up to `MAX_CHUNK` 4 MiB), so two of the three cells were byte-identical work. The set is therefore:
@@ -655,7 +882,7 @@ Why this is three and not four: the merged extract assertion costs nothing (it r
 | EXP-VECTORIZED-MEMCMP | **Closed — shipped** | `arch/match_simd.hpp` + `match_avx512.cpp`: SSE2/AVX2/AVX-512/NEON/WASM match kernels with runtime dispatch. |
 | EXP-AES-NI-CTR | **Closed — shipped and wrong mode** | RAR5 uses AES-256-**CBC**; `aes256.cpp:239-309` already has AES-NI CBC with 8-way pipelined decrypt. CTR would be a format change. |
 | EXP-HUFFMAN-AVX2 | **Closed — mechanism invalid** | Circular dependence; gather slower than scalar. Replaced by EXP-HUFF-2SYM. |
-| EXP-BMP-DETECT | **Merged** into EXP-IMAGE-STRIDE | Detection alone is not enough: needs bpp mapping, row alignment, and the MT fix. |
+| EXP-BMP-DETECT | **Closed — parent row refuted** | Merged into EXP-IMAGE-STRIDE, which closed as refuted 2026-11-19: detection was never the blocker, selective emission was (§4.4). |
 | EXP-DELTA-6CH-8CH | **Re-scoped** to EXP-DELTA-MULTI-STRIDE | Wrong stride set (see 4.8). |
 | EXP-DELTA-PREDICTION (Paeth) | **Closed** as EXP-PAETH-IMAGE (EXT) | No container slot for a stride parameter (Q-1), and the 2D predictor's own upper bound was marginal (§4.2.1). |
 | EXP-AVX512-VBMI-DELTA3 | **Closed** | `vpermb` permutes within one 64-byte register; three source planes need `vpermt2b` + merges, not one instruction. Delta3 already runs at 4,131 MB/s (near streaming bandwidth), so a 2× gate is not credible. Reopen only with a bandwidth measurement. |
@@ -690,9 +917,9 @@ No gate in §4 is evaluable without these. Each corpus gets a manifest with SHA-
 | **C4** | Audio | 5.1/7.1 WAV at 16/24/32-bit; JUNK-prefixed WAV; RF64/BW64; AIFF; CAF; seeded (sine + noise) generation | EXP-AUDIO-DETECT, EXP-DELTA-MULTI-STRIDE |
 | **C5** | ISA | aarch64 + riscv64 ELF objects; x86-64 ELF/PE controls; one PE-ARM64 object. Committed at `tests/fixtures/c5/` as ISA-shaped synthetic stubs (seed 1337, `tools/generate_c5_corpus.py`) built by the clang/lld CI job (`--pe`) with the stubs kept as the no-toolchain fallback | EXP-MACHINE-DISPATCH, deferred EXT work |
 | **C6** | Decode | literal-heavy (minified JS, text), match-heavy (zeros, runs), binary, ≥64 MiB members. Was a **recipe only** until 2026-11-15; now materialised and pinned by the C9 generator (`text_64m.bin`, `zeros_64m.bin`, `minified_1m.js`, `binary_8m.bin`) | Wave 4/5 decode gates |
-| **C7** | Filtered-MT | **Detector- and emission-asserted.** `tools/filter_probe.cpp` has two modes. *Detection*: calls `Filters50::detect_filter` and exits 1 unless the type fires (observed `E8`, channels 1; `DELTA`, channels 12) — this closed the "shaped but inert" hole, where a raw stride-3 member never triggered DELTA because the detector requires a RIFF/WAVE header. *Emission*: opens the packed archive, decodes the member through `ArchiveReader`, and reads the filter records the decoder actually parsed via `FilterCensus` — asserting type, channel count, and that regions are ordered, non-overlapping, in-bounds and cover the member exactly. `build_c9_archives.py` builds `filter_c9.rar` (e8 + wav + text) and requires `E8`/ch 1, `DELTA`/ch 12 and `NONE` on the text control, plus a negative run that must fail. Measured: 8 × 1 MiB regions at offsets 0..7 MiB, coverage 8388608/8388608 for both filtered members; 0 regions on text. **Caveat on the MT claim:** `mt_should_use_parallel` (`parallel_compressor.cpp:9-18`) returns false whenever a filter is detected, so a `-mt4` pack of these members takes the sequential path — the records prove the archive/decoder filter contract, not chunked-MT emission, which is the work EXP-FILTER-SAFE-MT still has to do. The emission check is that experiment's regression gate: when chunked filtered MT lands, its regions must still cover the member exactly | EXP-FILTER-SAFE-MT |
-| **C8** | RAR7 algorithm | ≥64 MiB members with `unp_ver=1` and `FCI_RAR5_COMPAT` clear (446 tables, `DCX=80`), produced by the reference oracle (switch recorded with the fixture and verified by header re-parse, not assumed) and pinned by hash under `tests/fixtures/rar7/` — **OpenRAR cannot create this flavor** | EXP-PARALLEL-DECODE-EXTRA-DIST |
-| **C9** | Decode identity | **Materialises on demand; the manifest is committed.** `tests/fixtures/c9/generate_c9.py` (PRF **local ChaCha20, RFC 8439 §2.3** — no `random`, and no `hashlib` PRF: CPython does not guarantee `randrange` across versions, and `hashlib.shake_256` is a C extension whose internal choices are a property of the **build** rather than the language. The keystream comes from a checked-in block function, self-tested against the RFC 8439 §2.3.2 vector at import and **failing closed** on mismatch) emits nine members and writes `manifest.json` v2 recording generator sha256, PRF, Python version, and **measured properties**: `text_64m.bin`, `zeros_64m.bin`, `minified_1m.js`, `binary_8m.bin` (≥250 distinct bytes/MiB, zlib ratio ≥0.98), `span_cross_24m.bin` (incompressible: packs to ~24 MiB, so it clears the driver's packed floor of 4 × `SPAN_PACKED_FLOOR` = 4 × 4 MiB = **16 MiB**; `two_phase_tests` pins engagement at *packed 24 MiB ≥ 16 MiB floor, spans 24*, and `build_c9_archives.py` packs the member with the shipped binary and requires packed ≥ 16 MiB — the earlier 6 MiB text member packed to ~2 MiB and never engaged the pipeline at all), `e8_8m.bin` (x86-shaped, E8 density gate), `audio_6ch_8m.wav` (RIFF/WAVE 6ch/16-bit, stride 12), `wrap_128m.bin` (forced 32 MiB duplicate 96 MiB back, asserted), `chunk_12m.bin`. The two filter members are gated by `tools/filter_probe.cpp`, which calls `Filters50::detect_filter` and **fails** when the expected type is not returned. Generation **fails** if a member misses its property — the first version pinned 8 MiB of a single repeated byte, which is exactly the failure mode a digest cannot catch. Pinned **hashes prove stability only — the gates carry the meaning**: `manifest.json.gates` holds just the numeric thresholds `--verify` can re-evaluate from the manifest's own numbers, while structural assertions (RIFF header and frame alignment, the forced 96 MiB duplicate) run in the generator and again under `--check`, which regenerates. `--verify` checks members against the manifest; `--check` regenerates into a temp dir and diffs, so a generator change cannot silently rewrite its own pin. Archive forms: `build_c9_archives.py` builds `solid_c9.rar`, `enc_c9.rar` (wrong password must fail closed), a `vol_c9` set whose part count is **derived from packed size**, and `filter_c9.rar` (E8 + DELTA + a no-filter control, asserted at record level — see C7), all verified by round-trip. **C9 is a registered CTest (`c9_build`, labels `c9;slow`, ~42 s)** rather than a manual step: it generates the members, checks them against the committed manifest, requires `filter_probe` to fire, then builds and round-trips every archive form. Failure is fail-closed at both levels — CMake refuses to configure if the generator, the manifest or a corpus script is absent, and the test refuses to run if the probe binary or the corpus is missing. A CTest fixture (`c9_tools_build`) builds `openrar` and `filter_probe` before `c9_build` runs, so CTest's no-build semantics cannot hand the script a missing probe; if that build fails, `c9_build` is reported as not run, which CTest counts as a failure. The script also deletes its own previous outputs first, so a second run is as strict as the first (appending to an existing solid archive fails, and stale volume parts would satisfy the part-count check). The QEMU lane excludes it by name (`-E ...|c9_build`), because it cannot run heavy corpora at a 60 s per-test timeout. Large members are generated, not committed blobs. **Each W2-D row names the subsets it uses**; a decode row that cites only C1 is vacuous (G-9) | every W2-D row |
+| **C7** | Filtered-MT | **Detector- and emission-asserted.** `tools/filter_probe.cpp` has two modes. *Detection*: calls `Filters50::detect_filter` and exits 1 unless the type fires (observed `E8`, channels 1; `DELTA`, channels 12) — this closed the "shaped but inert" hole, where a raw stride-3 member never triggered DELTA because the detector requires a RIFF/WAVE header. *Emission*: opens the packed archive, decodes the member through `ArchiveReader`, and reads the filter records the decoder actually parsed via `FilterCensus` — asserting type, channel count, and that regions are ordered, non-overlapping, in-bounds and cover the member exactly. `build_c9_archives.py` builds `filter_c9.rar` (e8 + wav + text) and requires `E8`/ch 1, `DELTA`/ch 12 and `NONE` on the text control, plus a negative run that must fail. Measured: 8 × 1 MiB regions at offsets 0..7 MiB, coverage 8388608/8388608 for both filtered members; 0 regions on text. **Caveat on the MT claim:** `decide_chunked_pack` returns `Sequential` whenever a filter is detected (or a filter header sits in its 64 KiB–1 MiB detection window), so a `-mt4` pack of these members takes the sequential path — the records prove the archive/decoder filter contract, not chunked-MT emission, which is the work EXP-FILTER-SAFE-MT still has to do. The emission check is that experiment's regression gate: when chunked filtered MT lands, its regions must still cover the member exactly | EXP-FILTER-SAFE-MT |
+| **C8** | RAR7 algorithm | ≥64 MiB members with `unp_ver=1` and `FCI_RAR5_COMPAT` clear (446 tables, `DCX=80`). **UNREACHABLE 2026-11-19:** the RAR encoder sets the version bit and bit 20 in the same conditional, and the version-70 code only appears at ≥ 8 GiB dictionaries — past the ≤ 4 GiB record ceiling. No CLI switch (`-ma7` does not exist), no GUI setting, no hidden option. Verified by direct probing (`tools/rar7_flavor_probe.cpp`) and by encoder structure. Decode-only compatibility surface | EXP-PARALLEL-DECODE-EXTRA-DIST (closed) |
+| **C9** | Decode identity | **Materialises on demand; the manifest is committed.** `tests/fixtures/c9/generate_c9.py` (PRF **local ChaCha20, RFC 8439 §2.3** — no `random`, and no `hashlib` PRF: CPython does not guarantee `randrange` across versions, and `hashlib.shake_256` is a C extension whose internal choices are a property of the **build** rather than the language. The keystream comes from a checked-in block function, self-tested against the RFC 8439 §2.3.2 vector at import and **failing closed** on mismatch) emits nine members and writes `manifest.json` v2 recording generator sha256, PRF, Python version, and **measured properties**: `text_64m.bin`, `zeros_64m.bin`, `minified_1m.js`, `binary_8m.bin` (≥250 distinct bytes/MiB, zlib ratio ≥0.98), `span_cross_24m.bin` (incompressible: packs to ~24 MiB, so it clears the driver's packed floor of 4 × `SPAN_PACKED_FLOOR` = 4 × 4 MiB = **16 MiB**; `two_phase_tests` pins engagement at *packed 24 MiB ≥ 16 MiB floor, spans 24*, and `build_c9_archives.py` packs the member with the shipped binary and requires packed ≥ 16 MiB — the earlier 6 MiB text member packed to ~2 MiB and never engaged the pipeline at all), `e8_8m.bin` (x86-shaped, E8 density gate), `audio_6ch_8m.wav` (RIFF/WAVE 6ch/16-bit, stride 12), `wrap_128m.bin` (forced 32 MiB duplicate 96 MiB back, asserted), `chunk_12m.bin`. The two filter members are gated by `tools/filter_probe.cpp`, which calls `Filters50::detect_filter` and **fails** when the expected type is not returned. Generation **fails** if a member misses its property — the first version pinned 8 MiB of a single repeated byte, which is exactly the failure mode a digest cannot catch. Pinned **hashes prove stability only — the gates carry the meaning**: `manifest.json.gates` holds just the numeric thresholds `--verify` can re-evaluate from the manifest's own numbers, while structural assertions (RIFF header and frame alignment, the forced 96 MiB duplicate) run in the generator and again under `--check`, which regenerates. `--verify` checks members against the manifest; `--check` regenerates into a temp dir and diffs, so a generator change cannot silently rewrite its own pin. Archive forms: `build_c9_archives.py` builds `solid_c9.rar`, `enc_c9.rar` (wrong password must fail closed), a `vol_c9` set whose part count is **derived from packed size**, and `filter_c9.rar` (E8 + DELTA + a no-filter control, asserted at record level — see C7), all verified by round-trip. **C9 is a registered CTest (`c9_build`, labels `c9;slow`, ~42 s)** rather than a manual step: it generates the members, checks them against the committed manifest, requires `filter_probe` to fire, then builds and round-trips every archive form. Failure is fail-closed at both levels — CMake refuses to configure if the generator, the manifest or a corpus script is absent, and the test refuses to run if the probe binary or the corpus is missing. A CTest fixture (`c9_tools_build`) builds `openrar` and `filter_probe` before `c9_build` runs, so CTest's no-build semantics cannot hand the script a missing probe; if that build fails, `c9_build` is reported as not run, which CTest counts as a failure. The script also deletes its own previous outputs first, so a second run is as strict as the first (appending to an existing solid archive fails, and stale volume parts would satisfy the part-count check). The QEMU lane excludes it by prefix (`-E ...|c9_.*`, so its fixture `c9_tools_build` is excluded too), because it cannot run heavy corpora at a 60 s per-test timeout. Large members are generated, not committed blobs. **Each W2-D row names the subsets it uses**; a decode row that cites only C1 is vacuous (G-9) | every W2-D row |
 
 **C5 recipe** (reproducible, licence-clean, no sysroot needed): `clang --target=aarch64-linux-gnu -O2 -c pinned.c -o pinned.a64.o`, same for `riscv64-linux-gnu`. If clang cannot target a triple on the Windows host, generate the corpus in CI (ubuntu leg) and pin the hashes — do not skip the corpus. The committed stub set exists because of Q-7; the size gate is `tools/measure_c5.py --baseline main=<main build> --candidate branch=<branch build>` and the current result is in `tests/fixtures/c5/README.md`.
 
@@ -718,7 +945,7 @@ graph TD
     CONSOL["EXP-MT-DECISION-CONSOLIDATE (prereq for 4.3)"] -.-> W2
     BLOCK["STARTING BLOCK — 4.33 pack profile → 4.30 QO → 4.25 decision fn → 4.23 block flush"] -.-> W2
     W2["Wave 2 — EXP-MT-DECISION-CONSOLIDATE → EXP-FILTER-SAFE-MT ∥ EXP-LITERAL-RUN-BULK"] --> W3
-    W3["Wave 3 — EXP-AUDIO-DETECT · EXP-HUFF-TABLE-REUSE (gated) · EXP-BLOCK-FLUSH-TUNE · EXP-SOLID-DECODE-ENTRY (gated) · EXP-IMAGE-STRIDE (gated) · EXP-PARALLEL-DECODE-EXTRA-DIST (gated)"] --> W4
+    W3["Wave 3 — EXP-AUDIO-DETECT · EXP-HUFF-TABLE-REUSE (gated) · EXP-BLOCK-FLUSH-TUNE · EXP-SOLID-DECODE-ENTRY (closed) · EXP-IMAGE-STRIDE (closed, refuted) · EXP-PARALLEL-DECODE-EXTRA-DIST (closed, unreachable)"] --> W4
     W4["Wave 4 — EXP-HUFF-2SYM (gated at -mt1) · EXP-DELTA-MULTI-STRIDE · EXP-HASH-INSERT-WIDE (gated)"] --> W5
     W5["Wave 5 — PARALLEL-DECODE-TUNE · WILDCOPY-AVX512 (gated)"] --> W6
     W6["Track 4 — EXP-FUZZ-STRESS (interleave every 2 waves)"]
@@ -741,7 +968,7 @@ This is the set to staff now. It is deliberately **all Wave 2 or earlier**, chea
 | 3 | **§4.25 EXP-MT-DECISION-CONSOLIDATE** | hours, no format risk | The one **prerequisite** in the block: §4.3 cannot start until the two MT/filter decision functions are one predicate (G-1). Small, mechanical, and byte-identical by construction. |
 | 4 | **§4.23 EXP-BLOCK-FLUSH-TUNE** | MEAS first | Last because it is **conditional on (1)**: if the pack profile shows block/table construction is a minor bucket, (4) is killed by (1)'s own result and costs only the sweep. Its ≥0.5% kill condition makes it falsifiable in one run. |
 
-**Why not §4.31 or §4.26.** Both are genuinely valuable and both are excluded on **fixture grounds, not merit**: §4.31 has no solid fixture that can measure it (today's is 2 members, `-mt1`), and §4.26 needs a RAR7-flavor corpus only the reference oracle can produce. Adding either to the block would repeat the exact error this rev corrected — a row attached to a corpus that cannot exercise it.
+**Why not §4.31 or §4.26.** Both are genuinely valuable and both are excluded on **fixture grounds, not merit**: §4.31 has no solid fixture that can measure it (today's is 2 members, `-mt1`), and §4.26's RAR7-flavor corpus cannot be produced by any accessible encoder — RAR 7.20 emits `unp_ver=0` for every switch and dictionary size tested, so §4.26 now closes as unavailable rather than waiting on a corpus that cannot exist. Adding either to the block would repeat the exact error this rev corrected — a row attached to a corpus that cannot exercise it.
 
 **Exit condition for the block.** Three of the four are MEAS or byte-identical by construction, so the block should close with: one profile report (pack), one profile report (QO), one merged predicate refactor, and one kill-or-promote decision on block flush. If the block produces only prose, the register has failed at its own purpose.
 
@@ -754,7 +981,7 @@ Rationale for the order:
 - **Wave 3 adds the two encoder-ratio candidates.** Table reuse (§4.22) and block-flush tuning (§4.23) are the largest unclaimed ratio items in the tree: a permanent per-block table tax, and two hard-coded constants nobody has swept. Both are MEAS-first so a negative result closes them for the price of a report.
 - **Wave 3 before Wave 4** because image/audio detection still costs MT throughput without Wave 2's filter fix.
 - **Wave 3 is reordered: audio before image.** PROBE-PREDICT's own archive-size measurements (§4.2.1) are the reason — audio DELTA shrinks 18.8–48.8% at `-m3` across 5.1/7.1 at 16/24/32-bit and 46.6% on the JUNK-prefixed file, while 24 bpp photographic BMP *grows* on 3 of 4 Kodak images (+3.65/+11.10/+8.02%) and only wins on synthetic/paletted members. Audio-first is a measured ordering, not a preference; EXP-IMAGE-STRIDE stays behind the LZ-retention gate that decision record requires.
-- **Wave 3 also carries EXP-PARALLEL-DECODE-EXTRA-DIST**, which belongs after Wave 2's applier work because the applier is the single serial consumer of the records that row adds work to. It does **not** widen the record — the scope is u32-reachable distances and the encoding is already 0-based — so its cost is extra spans and table wiring, not extra bytes per record.
+- **Wave 3 also carried EXP-PARALLEL-DECODE-EXTRA-DIST**, which belonged after Wave 2's applier work because the applier is the single serial consumer of the records that row adds work to. It would **not** widen the record - the scope is u32-reachable distances and the encoding is already 0-based - so its cost would be extra spans and table wiring, not extra bytes per record. **Closed as unavailable 2026-11-19:** no accessible encoder produces the required flavor.
 - **The Wave 2 probes are prerequisites, not filler.** PROBE-EXTRACT-REMAINDER decides whether the delta/Huffman/WASM kernel rows have end-to-end value at all; PROBE-STORE-SINK decides whether the sink has any headroom and prices the ~0.35 s that sits under every later decode gate. Both are cheaper than the work they gate.
 - **Wave 4's Huffman work is gated at `-mt1`.** At the default worker count the symbol decode is hidden behind the applier, so a 2-symbol table cannot show its gain end-to-end until the applier catches up.
 - **Wave 5 remains the topology/wildcopy tail.** Both only become visible once the applier stops starving the workers.
@@ -765,8 +992,8 @@ Rationale for the order:
 1. **EXP-AUDIO-DETECT (§4.5)** — the only measured win in the wave: DELTA shrinks 18.8–48.8% at `-m3` on 5.1/7.1 at 16/24/32-bit and 46.6% on the JUNK-prefixed file (§4.2.1).
 2. **EXP-HUFF-TABLE-REUSE (§4.22)** — MEAS-first, so a negative Stage-1 distribution report closes it for the price of a report; but it owes clause (a) (the decoder fix + 33-cell re-baseline) before clause (b) can be measured.
 3. **EXP-BLOCK-FLUSH-TUNE (§4.23)** — same MEAS-first shape and the same cheap closure (Stage 1's ≥0.5% kill condition); no decoder dependency, so it can run in parallel with (2).
-4. **EXP-IMAGE-STRIDE (§4.4)** — **blocked on the LZ-retention gate** PROBE-PREDICT's decision record requires; the entropy win does not survive an archive-size measurement on 3 of 4 Kodak photographs.
-5. **EXP-PARALLEL-DECODE-EXTRA-DIST (§4.26)** — **blocked on the C8 corpus**, which OpenRAR cannot produce itself; a row with no corpus reports *blocked*, never pass (G-9).
+4. **EXP-IMAGE-STRIDE (§4.4)** — **CLOSED, refuted 2026-11-19.** The LZ-retention gate was built and run (`tools/lz_retention_probe.py`): the prize is real (−41.9%..−99.1% on structured content) but photographic content regresses (+3.6%..+11.1%) and no cheap statistic separates winners from losers. Do not re-propose on entropy arguments alone.
+5. **EXP-PARALLEL-DECODE-EXTRA-DIST (§4.26)** — **CLOSED, unavailable 2026-11-19.** The RAR encoder welds the version bit to `FCI_RAR5_COMPAT` and only emits the 446-table flavor at ≥ 8 GiB dictionaries, past the ≤ 4 GiB record ceiling. Confirmed by direct probing and by encoder structure; decode-only surface. Do not re-propose without a third-party or hand-crafted corpus.
 
 The order is a dependency order, not a preference: (1) is unblocked and measured, (2) and (3) are cheaply falsifiable, (4) and (5) are blocked on artefacts this wave cannot manufacture. A blocked row does not consume a slot — it stays PLANNED and the next row moves up.
 
@@ -782,7 +1009,7 @@ The order is a dependency order, not a preference: (1) is unblocked and measured
 | Q-1 | Does RAR 7.x define an ARM64 or image filter inside the 3-bit type space? | **ANSWERED (2026-11-15, UnRAR 7.23 source).** **No.** `dev/unrar/compress.hpp:54-58` declares exactly `DELTA, E8, E8E9, ARM, AUDIO, RGB, ITANIUM, TEXT` (`0..7`) plus the non-wire `LONGRANGE`/`EXHAUSTIVE`; `unpack50.cpp:422-501` implements only 0–3 and returns `NULL` otherwise, so types 4–7 are reserved **and dropped**. There is no ARM64, RISC-V, image or row-predictor filter, and therefore no bit-exact definition an extension could match. All EXT rows are closed (§2, §5). |
 | Q-2 | What fraction of pack wall-clock is the E8 scan end-to-end? | EXP-AVX2-E8-SCAN (currently parked) |
 | Q-3 | What fraction of extract wall-clock is Huffman decode vs copy vs filter vs BLAKE2sp vs fsync? | **ANSWERED for the reference shape (2026-11-14; re-baselined on v2.4.0).** 128 MiB `-m1` short-match text, i7-7500U: `t -mt4` pipeline wall **1.14 s quiet / 1.6–2.1 s sustained** (quiet process 1.18–1.27 s), of which the serial record applier spans total **1.03 s quiet / 1.5–2.0 s sustained (91%)**; span workers decode 1 MiB spans in 75–123 ms and park. `t -mt1` is 2.45–3.24 s, so parallel decode buys ~2× but is applier-ceilinged. Store verify (read+BLAKE2sp) is 0.115 s (**≈9%** of the 1.27 s compressed verify; hash path unchanged). Extraction adds 0.58 s of sink+durability (the default-vs-`-db` store gap, 0.90 s vs 0.574 s, prices the per-entry fsync at ≈0.33 s); the remaining ≈0.35 s of store extraction over a raw copy is unattributed (Q-10). **Remaining unknown:** none at the bucket level — see Q-8. |
-| Q-4 | Measured gain of plane-delta on real photographs (not ramps) at 24/32 bpp? | EXP-IMAGE-STRIDE go/no-go |
+| Q-4 | Measured gain of plane-delta on real photographs (not ramps) at 24/32 bpp? | **ANSWERED 2026-11-19 — refutes EXP-IMAGE-STRIDE.** −41.9%..−99.1% on structured BMP/TIFF/PPM, but Kodim 01/02/03 **regress +3.6%/+8.0%/+11.1%** while Kodim 04 improves −4.6%. Four candidate separability statistics all fail (§4.4). |
 | Q-5 | Actual cost of the `-mt` → `-mt1` fallback on a 100 MB filtered member? | EXP-FILTER-SAFE-MT priority |
 | Q-6 | Is delta3 memory-bandwidth-bound at 4,131 MB/s on the reference host? | Any further delta ISA work |
 | Q-7 | Can clang on the Windows reference host target `aarch64`/`riscv64` with `-c`? | C5 corpus sourcing |

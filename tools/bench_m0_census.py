@@ -26,6 +26,14 @@ if sys.platform == "win32":
         pass
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# §4.29: the guard's two new cells (wrap_128m.bin, chunk_12m.bin) use the
+# same recipes as the C9 corpus generator, byte-for-byte. Importing the
+# generator rather than reimplementing avoids subtle PRF mismatches (the C9
+# generator uses hashlib.shake_256 with a length-prefixed tag; a reimplementation
+# using random.Random would produce different bytes and different sizes).
+sys.path.insert(0, str(ROOT / "tests" / "fixtures" / "c9"))
+import generate_c9 as _c9  # noqa: E402
 def _default_bin() -> Path:
     """Locate the CLI under test: $OPENRAR_BIN, else the first build layout that exists
     (MSVC: build/openrar64/Release, build/Release; Ninja/Make on Linux and macOS: build/openrar)."""
@@ -70,6 +78,8 @@ CORPUS_SHA256 = {
     "synthetic_text8.txt": "029ac157f7029f7d24e558deb4779220199602cb2ff03c5e01b4df30cb23d288",
     "mixed16.bin": "f835d53c2426e60f52f6682f610626486d43e6028cd84656faf9ed8570deda45",
     "big24.bin": "4d4e12c9ec52a8ccfa2e4859bd167d5ca0834eb464c5ecc0343840205ed48bdf",
+    "wrap_128m.bin": "363bb70dd30946a20876fb8e8e1c645f4bd00b367ff6584d425c82b35ac9bd7e",
+    "chunk_12m.bin": "b11180aa880372245a7d43f26dc9e0325ae6099a44ab5e5921d476ff99ab6e89",
 }
 
 
@@ -178,6 +188,21 @@ def generate_corpora() -> dict:
             with open(p_rand, "rb") as f_in:
                 f_out.write(f_in.read(8 * 1024 * 1024))
     corpora["big24.bin"] = p_big
+
+    # F. wrap_128m.bin (§4.29 cell 1+2: 128 MiB with a forced 32 MiB match at
+    # offset 96 MiB, beyond a 64 MiB window). Uses the C9 generator's recipe.
+    p_wrap = WORK_DIR / "wrap_128m.bin"
+    if not _pinned_ok(p_wrap):
+        print("Generating wrap_128m.bin (128 MiB)...")
+        p_wrap.write_bytes(_c9.wrap_128m(128 * 1024 * 1024, 2026))
+    corpora["wrap_128m.bin"] = p_wrap
+
+    # G. chunk_12m.bin (§4.29 cell 3: 12 MiB text-like, 3 MiB chunks at -mt4).
+    p_chunk = WORK_DIR / "chunk_12m.bin"
+    if not _pinned_ok(p_chunk):
+        print("Generating chunk_12m.bin (12 MiB)...")
+        p_chunk.write_bytes(_c9.text_like(12 * 1024 * 1024, 4096))
+    corpora["chunk_12m.bin"] = p_chunk
 
     for name, path in corpora.items():
         got = sha256_file(path)

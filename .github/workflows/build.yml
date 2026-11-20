@@ -2,13 +2,17 @@ name: CI Build & Test
 
 on:
   push:
-    # master is the only active branch line: v2 and v2.1 were retired and deleted
-    # (docs/versioning.md § Branch retirement). Tags still gate releases. If a
-    # maintenance line is ever cut again, add its branch here deliberately.
-    branches: [ master ]
+    # master is the release line and must only ever be green. `integration` is
+    # the promotion branch: feature branches merge there, the full matrix runs
+    # on the result, and a green integration is then merged to master via a
+    # pull request - so master's own checks also run on the merge commit.
+    # v2 and v2.1 were retired and deleted (docs/versioning.md § Branch
+    # retirement). If a maintenance line is ever cut again, add it here
+    # deliberately.
+    branches: [ master, integration ]
     tags: [ 'v*' ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, integration ]
   workflow_dispatch:
     inputs:
       npm_oidc_check:
@@ -145,6 +149,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
             -DOPENRAR_DLL_SUFFIX=${{ matrix.dll_suffix }} \
             -DOPENRAR_INMEM_ARCHIVE=ON \
+            -DOPENRAR_REQUIRE_C9=ON \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             "${ARCH_ARGS[@]}" \
             $WARN_FLAG
@@ -157,7 +162,13 @@ jobs:
           fi
           CF=$(command -v clang-format-18 || command -v clang-format)
           $CF --version
-          find src include tests -name '*.cpp' -o -name '*.hpp' -o -name '*.h' | \
+          # src/include/tests are the shipped code. tools/ is included because
+          # the probes added this session (store_sink_probe, entry_decode_probe,
+          # rar7_flavor_probe) are C++ TUs in the repo and were previously only
+          # covered by the local pre-commit hook, so a format break there would
+          # reach master unnoticed.
+          find src include tests tools -maxdepth 1 \
+            \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) | \
             xargs $CF --dry-run --Werror
 
       - name: Layer direction check (gate leg only)
@@ -189,7 +200,7 @@ jobs:
       - name: Configure CMake (Windows MSVC)
         if: runner.os == 'Windows'
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} -DOPENRAR_DLL_SUFFIX=${{ matrix.dll_suffix }} -DOPENRAR_INMEM_ARCHIVE=ON
+          cmake -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} -DOPENRAR_DLL_SUFFIX=${{ matrix.dll_suffix }} -DOPENRAR_INMEM_ARCHIVE=ON -DOPENRAR_REQUIRE_C9=ON
 
       - name: Build All Targets
         run: |
@@ -517,10 +528,13 @@ jobs:
         # heavy multi-megabyte compression corpora (compress_tests, stream_encoder_tests, volume_tests)
         # stall software emulation, and child-process spawning (sfx_*, cli_tests) creates excessive emulation overhead.
         # Native multi-threading, large-scale compression, and process isolation on ARM64 are verified natively on Apple Silicon & Windows ARM64 runners.
+        # C9 is excluded as a prefix (`c9_.*`, not just `c9_build`) so its
+        # fixture `c9_tools_build` does not build openrar + filter_probe under
+        # emulation for a consumer that is itself excluded.
         # Here we run the single-threaded in-process suites (crypto, recovery, format, bitreader, dll, etc.) with a 60s per-test timeout.
         run: |
           ctest --test-dir build -C Release --output-on-failure --timeout 60 \
-            -E 'compress_tests|stream_encoder_tests|solid_packer_tests|volume_tests|benchmark_tests|file_handle_tests|mutation_tests|parallel_compress_tests|two_phase_tests|sfx_.*|cli_tests|collision_matrix_tests|extraction_report_tests|transcode_tests|foreign_format_tests|sandbox_.*|python_conformance|fuzz_.*|c9_build'
+            -E 'compress_tests|stream_encoder_tests|solid_packer_tests|volume_tests|benchmark_tests|file_handle_tests|mutation_tests|parallel_compress_tests|two_phase_tests|sfx_.*|cli_tests|collision_matrix_tests|extraction_report_tests|transcode_tests|foreign_format_tests|sandbox_.*|python_conformance|fuzz_.*|c9_.*'
 
       - name: Aggregate JUnit report (v1.45 M0 gate)
         if: always()
@@ -862,11 +876,15 @@ jobs:
       #   python_conformance - loads the DLL from non-instrumented python.
       #   transcode_tests - excluded on wall-clock budget.
       #   (archive_tests re-admitted: decoupled 16.7M PBKDF2 cycle allows <1s execution).
+      #   c9_tools_build / c9_build - the fixture rebuilds openrar + filter_probe
+      #     in a sub-build, which doubles sanitizer build time on top of the
+      #     excluded suites' budget. C9 coverage is unchanged: c9_build is a
+      #     correctness fixture, not a sanitizer-specific target.
       - name: Unit suite under sanitizers
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|sfx_tests|sfx_pipeline_tests|sfx_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance'
+        run: ctest --test-dir build --output-on-failure --exclude-regex 'transcode_tests|sfx_tests|sfx_pipeline_tests|sfx_e2e_tests|sandbox_sandboxed_e2e_tests|python_conformance|c9_.*'
 
       - name: Aggregate JUnit report (v1.45 M0 gate)
         if: always()
@@ -1162,13 +1180,56 @@ jobs:
           if [ ! -f "$EXE" ]; then EXE="./build/Release/openrar.exe"; fi
           python3 tools/release_regression_guard.py --binary "$EXE"
 
+  # Stable-name aggregate gate. Every other job's name is matrix-interpolated
+  # (`${{ matrix.os }} - ${{ matrix.compiler }} ...`), so branch protection
+  # cannot require them by name without pinning a whole matrix. This job has a
+  # fixed name, needs all of them, and fails if any dependency failed or was
+  # cancelled - which makes "the tests passed" a single required check.
+  all-gates-passed:
+    name: All gates passed
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.npm_oidc_check) }}
+    needs:
+      - build-and-test
+      - linux-arm64-qemu
+      - simd-validation
+      - wasm
+      - windows-asan
+      - sanitizers
+      - tsan
+      - csharp
+      - python-sdk
+      - oracle-interop
+      - release-regression-guard
+      - windows-regression-guard
+      - roadmap-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert no dependency failed or was cancelled
+        env:
+          RESULTS: ${{ join(needs.*.result, ',') }}
+        run: |
+          set -euo pipefail
+          echo "dependency results: ${RESULTS}"
+          # Every dependency must be 'success'. 'skipped' is a failure here:
+          # a gate that did not run is not a gate that passed.
+          bad=0
+          IFS=',' read -ra arr <<< "${RESULTS}"
+          for r in "${arr[@]}"; do
+            if [ "$r" != "success" ]; then
+              echo "::error::a required gate did not succeed: $r"
+              bad=1
+            fi
+          done
+          exit "$bad"
+
   release-assets:
     name: Attach release artifacts
     # Runs only for version tags: packages everything the run built and
     # attaches it to the GitHub release named after the tag (creating the
     # release with generated notes if it does not exist yet).
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-and-test, linux-arm64-qemu, wasm, sanitizers, tsan, simd-validation, csharp, python-sdk, release-regression-guard, windows-regression-guard, oracle-interop]
+    needs: [all-gates-passed]
     runs-on: ubuntu-latest
     permissions:
       contents: write

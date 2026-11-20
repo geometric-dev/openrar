@@ -413,7 +413,7 @@ public:
 
     struct PrescanDescription {
         TableLengths lengths;   // cur_table_size_ code lengths
-        bool extra_dist{false}; // 446-entry table (RAR7 >4 GiB dict)
+        bool extra_dist{false}; // 446-entry table; see the constructor note above
     };
 
     // Hostile-stream cap (review R2): minimal 3-byte headers would otherwise

@@ -133,7 +133,7 @@ def main():
     stage_count = 0
     passed_count = 0
 
-    EXPECTED_STAGES = 35  # 5 corpora * 7 stages
+    EXPECTED_STAGES = 49  # 7 corpora * 7 stages (5 original + 2 from §4.29)
     manifest_count = len(corpora) * len(manifest)
     if manifest_count != EXPECTED_STAGES:
         print(f"[FATAL] Manifest count is {manifest_count}, expected {EXPECTED_STAGES}. Gate G1 FAILS CLOSED.")

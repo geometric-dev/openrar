@@ -862,6 +862,75 @@ inline size_t parallel_chunk_size(core::uint64 total_size, unsigned eff_threads,
     return ((clamped + BLOCK_QUANTUM - 1) / BLOCK_QUANTUM) * BLOCK_QUANTUM;
 }
 
-} // namespace openrar::compress
 
+// ── EXP-MT-DECISION-CONSOLIDATE (§4.25) ────────────────────────────────────
+// The ONE decision function for "does this member take the chunked encoder".
+// Defined in compressor50.hpp (not parallel_compressor.hpp, which includes
+// this header) so compressor50.cpp can consume it without a circular include.
+//
+// Three call sites used to answer this independently:
+//   A. archive_mutator.cpp  - eff_threads > 1 && !solid_packer + 64 KiB sample
+//   B. archive_mutator.cpp  - direct_stream_threads > 1      + 64 KiB sample
+//   C. compressor50.cpp     - eff_threads > 1 && size >= 1 MiB + WHOLE member
+//
+// On ordinary inputs they agreed, which is how the v1.21.1 `-mc`-under-`mt`
+// divergence survived. detect_filter() is position-sensitive (it follows
+// e_lfanew at +0x3C and validates Mach-O fat slice ranges against the BUFFER
+// SIZE), so a 64 KiB sample can reach a different verdict than the whole
+// member: tests/unit/mt_decision_tests.cpp shows a fat Mach-O with a slice at
+// 0x20000, and a PE with e_lfanew at 0x20000, both returning E8 on the full
+// member and None on a 64 KiB prefix. Sites A and B therefore chunked such a
+// member (forcing filters off, silently losing -mc) while site C, which read
+// the whole member, did not.
+//
+// CONTRACT: callers pass the bytes they hold and how many are valid. The
+// canonical amount is MT_DETECT_PREFIX, NOT 64 KiB.
+//
+// A 64 KiB policy was tried and is wrong. detect_filter is position-sensitive:
+// it follows e_lfanew at +0x3C and validates Mach-O fat slice ranges against the
+// BUFFER SIZE, so a PE with e_lfanew at 0x20000 or a fat Mach-O with a late
+// slice reads as E8 on the full member and None on a 64 KiB prefix. Sampling
+// that short therefore DROPS the filter on the chunked path - the exact
+// `-mc`-under-`mt` divergence this row exists to remove. Reproducible with the
+// shipped binary on a synthetic 4 MiB PE with e_lfanew at 0x20000 and no E8
+// bytes (the transform is a no-op on this input, so size alone does not move):
+//   -mc- -mt4 : 421 B   -mc- -mt1 : 409 B      <- the old divergence: MT ran
+//                                              with filters OFF
+//   default -mt4 == default -mt1 : 441 B each   <- the fix: both carry the
+//                                                  filter token (filter_probe
+//                                                  reads 4 x E8 regions)
+// The size delta is a path difference, not a quality regression: the chunked
+// member had no filter token at all.
+//
+// MT_DETECT_PREFIX is 1 MiB: it covers every container header a real linker
+// emits (PE e_lfanew lands in the first 1 KiB; Mach-O fat slice tables are a
+// few KiB), and it is the same order as the chunk floor, so buffering it per
+// member is not a memory regression. Beyond it the prefix misses the header and
+// falls through to the opcode-density scan, which never looks past the first
+// 64 KiB - so the answer is independent of how much more the caller holds. The
+// residual is a PE/Mach-O header at 1 MiB..member_size: the in-memory site sees
+// it and the streaming sites do not. That case is not reachable from a real
+// linker, and closing it would mean buffering the whole member - the cost the
+// chunked path exists to avoid. It is recorded in the §4.25 gate rather than
+// papered over.
+enum class MtDecision : core::uint8 {
+    Chunked = 0,      // no filter would fire - chunking is safe
+    Sequential = 1,   // a filter would fire - must not chunk
+    TooSmall = 2,     // below the chunking floor
+    SingleThread = 3, // fewer than 2 effective threads
+};
+
+struct MtDecisionResult {
+    MtDecision decision{MtDecision::Sequential};
+    FilterType detected{FilterType::None};
+    core::uint8 channels{1};
+};
+
+// How many leading bytes a streaming caller must be able to supply. The
+// in-memory caller passes its whole buffer and is not bound by this.
+constexpr size_t MT_DETECT_PREFIX = static_cast<size_t>(1024) * 1024;
+
+MtDecisionResult decide_chunked_pack(const FilterConfig& filter_cfg, const core::byte* data,
+                                     size_t data_len, unsigned eff_threads, size_t member_size);
+} // namespace openrar::compress
 #endif // OPENRAR_COMPRESS_COMPRESSOR50_HPP

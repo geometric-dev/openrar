@@ -117,7 +117,7 @@ def main():
     # fails, and stale volume parts would satisfy the >1-part check without
     # this run producing any. Both are this script's own outputs.
     for stale in os.listdir(args.out):
-        if stale.startswith(("solid_c9", "enc_c9", "vol_c9", "filter_c9")):
+        if stale.startswith(("solid_c", "solid8_c", "enc_c", "vol_c", "filter_c")):
             os.remove(os.path.join(args.out, stale))
     text = os.path.join(args.src, "text_64m.bin")
     mini = os.path.join(args.src, "minified_1m.js")
@@ -151,6 +151,44 @@ def main():
         check(sha256(os.path.join(ex, "minified_1m.js")) == sha256(mini),
               "solid: minified_1m.js round-trips")
 
+        # --- solid-8+ (§4.31 Stage 0 fixture) ----------------------------
+        # A solid archive with >=8 members, >=64 MiB total, packed -mt4.
+        # The existing solid_c9.rar is 2 members at -mt1 - a two-member solid
+        # archive has one real solid member, so -mt4 on it measures thread
+        # startup, not a decoder ceiling (vacuous under G-9). This fixture
+        # is the real input to §4.31 Stage 1.
+        solid8_dir = os.path.join(tmp, "solid8_src")
+        os.makedirs(solid8_dir, exist_ok=True)
+        solid8_members = []
+        # 8 members of ~8 MiB each = ~64 MiB total. Use slices of the text
+        # member so the sources are deterministic and already pinned.
+        chunk_sz = 8 * MIB
+        for i in range(8):
+            off = i * chunk_sz
+            member = os.path.join(solid8_dir, "m%02d.bin" % i)
+            with open(text, "rb") as f:
+                f.seek(off)
+                data = f.read(chunk_sz)
+            with open(member, "wb") as f:
+                f.write(data)
+            solid8_members.append(member)
+        solid8 = os.path.join(args.out, "solid8_c9.rar")
+        run(exe, ["a", "-ep", "-s", "-m3", "-mt4", "-y", solid8] + solid8_members)
+        ex8 = os.path.join(tmp, "solid8")
+        p8 = extract(exe, solid8, ex8)
+        check(p8.returncode == 0, "solid8_c9.rar extracts (-mt4 solid, >=8 members)")
+        for i, member in enumerate(solid8_members):
+            name = os.path.basename(member)
+            check(sha256(os.path.join(ex8, name)) == sha256(member),
+                  "solid8: %s round-trips" % name)
+        # Record the fixture's shape so a future reader can see the measurement
+        # was not vacuous (G-9).
+        total_unp = sum(os.path.getsize(m) for m in solid8_members)
+        check(total_unp >= 64 * MIB,
+              "solid8: total uncompressed >= 64 MiB (%d bytes)" % total_unp)
+        print("  ..  solid8_c9.rar: %d members, %d MiB total, -mt4" %
+              (len(solid8_members), total_unp // MIB))
+
         # --- encrypted ---------------------------------------------------
         enc = os.path.join(args.out, "enc_c9.rar")
         run(exe, ["a", "-ep", "-m3", "-mt1", "-p" + PASSWORD, "-y", enc, mini])
@@ -162,7 +200,7 @@ def main():
         ex_bad = os.path.join(tmp, "enc_bad")
         p_bad = extract(exe, enc, ex_bad, "wrong-password")
         leaked = os.path.exists(os.path.join(ex_bad, "minified_1m.js"))
-        check(p_bad.returncode != 0 or not leaked,
+        check(p_bad.returncode != 0 and not leaked,
               "encrypted: wrong password fails closed (rc=%d, leaked=%s)"
               % (p_bad.returncode, leaked))
 
@@ -233,6 +271,16 @@ def main():
         check(q.returncode != 0,
               "filter_c9: the emission gate is not vacuous (no-filter entry "
               "fails an E8/DELTA expectation)")
+
+        # SEC-INTEROP-UNDEF-FILTER (§4.21): no member may carry a reserved filter
+        # type (4..7). OpenRAR emits such a region raw, but every reference
+        # decoder drops it, so an archive that contains one is not interoperable.
+        # Scan the whole archive, not just the three members asserted above.
+        q = run(probe, ["--scan-types=" + filt], expect_ok=False)
+        for line in (q.stdout or "").strip().splitlines():
+            print("  ..  " + line)
+        check(q.returncode == 0,
+              "filter_c9: no member emits a reserved filter type (type > 3)")
 
     print("C9 archive forms verified.")
     return 0

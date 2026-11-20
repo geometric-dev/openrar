@@ -115,6 +115,13 @@ Operates on 4-byte ARM instruction groups, little-endian. `file_offset` truncate
 
 `AUDIO` (4), `RGB` (5), `ITANIUM` (6), `TEXT` (7) — not emitted by current RAR5 `m1..m5` encoders for `LD` filter type dispatch. Decoders for the LZ `LD=256` path must skip unknown types as no filter (`FILTER_NONE`). VM standard filters for audio/ITANIUM are defined separately in the VM specification and are not part of this LZ filter dispatch.
 
+**Divergence: "skip" does not mean the same thing in both decoders (recorded 2026-11-18).** UnRAR 7.23's `Unpack::ApplyFilter` (`unpack50.cpp:422-501`) has no case for types 4–7 and returns `NULL`; its caller writes the region only when the pointer is non-`NULL` (`unpack50.cpp:358`), so the affected bytes are **dropped** and the extracted member no longer matches its stored CRC. OpenRAR (`decompressor50.cpp:853-882`) takes the other reading: an undefined type leaves the region untransformed and emits it raw, so the member survives. Neither is "no filter" in the sense of the sentence above — one loses bytes, the other preserves them.
+
+Consequences, both pinned by tests:
+
+* OpenRAR **must never emit** types 4–7 — its `FilterType` space is `0..3` by construction, and `put_bits(type, 3)` is its only writer. An archive carrying one is malformed for every decoder; scanning it with OpenRAR recovers the bytes, scanning it with UnRAR loses them.
+* The source-level raw-emission branch is documented here rather than claimed as exercised by a unit test: the type is Huffman-coded inside the `LD` stream, so a negative test would need a bitstream writer. See `tests/unit/sec_interop_undef_filter_tests.cpp` for the properties that *are* pinned (emission width, legal round-trips, applied-not-raw).
+
 ---
 
 ## Encoder Constraints

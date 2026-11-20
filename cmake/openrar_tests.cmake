@@ -5,6 +5,13 @@
 
 enable_testing()
 
+# The C9 corpus gate needs Python 3 (find_package(Python3), below). It is a
+# fixtures-backed ctest entry, not a build prerequisite, so a host without
+# Python 3 only loses that entry - configure warns instead of failing. CI and
+# release gates set this ON so the entry cannot disappear silently.
+option(OPENRAR_REQUIRE_C9
+       "Fail configure when the Python-3-backed C9 corpus gate cannot be registered" OFF)
+
 # ── Unit tests (native only — Emscripten has its own node-based harness) ────
 if(NOT EMSCRIPTEN)
     # The whole unit-test suite expresses its expectations with assert().
@@ -48,6 +55,17 @@ if(NOT EMSCRIPTEN)
     add_openrar_test(two_phase_tests tests/unit/two_phase_tests.cpp)
     add_openrar_test(bitreader_stream_tests tests/unit/bitreader_stream_tests.cpp)
     add_openrar_test(parallel_compress_tests tests/unit/parallel_compress_tests.cpp)
+    # EXP-MT-DECISION-CONSOLIDATE (§4.25): the MT decision predicate's truth
+    # table, and the single-decision property that replaced three divergent
+    # call sites. A member whose PE/Mach-O header sits past the 64 KiB sample
+    # used to be chunked by one site and not by another.
+    add_openrar_test(mt_decision_tests tests/unit/mt_decision_tests.cpp)
+    # SEC-INTEROP-UNDEF-FILTER (§4.21): the RAR5 filter Type field is 3 bits and
+    # only 0..3 are legal. Pins that the encoder cannot emit a reserved type,
+    # that every legal filter round-trips, and that the decoder passes an
+    # unknown type through raw where UnRAR would drop the region.
+    add_openrar_test(sec_interop_undef_filter_tests
+                     tests/unit/sec_interop_undef_filter_tests.cpp)
 
     # Streaming encoder & decoder gates: byte-identical vs one-shot, the historical
     # iteration-3 crash regression, cancel/progress, flush sink.
@@ -355,6 +373,29 @@ target_link_libraries(archive_api_tests PRIVATE
     target_link_libraries(durability_probe PRIVATE openrar_core)
     target_include_directories(durability_probe PRIVATE ${OPENRAR_INCLUDES})
 
+    # PROBE-STORE-SINK (§4.16): log-only probe for the store-extraction sink.
+    # Not a test — timestamps each stage of the store path (journal, temp,
+    # rename, MOTW, write cadence, per-entry flush) so the 2.5x residual is
+    # attributed before any change is attempted.
+    add_executable(store_sink_probe tools/store_sink_probe.cpp)
+    target_link_libraries(store_sink_probe PRIVATE openrar_core)
+    target_include_directories(store_sink_probe PRIVATE ${OPENRAR_INCLUDES})
+
+    # RAR7 flavor probe (§4.26 C8 gate): re-parses an archive and reports
+    # whether any member carries unp_ver=1 with FCI_RAR5_COMPAT clear (the
+    # extra_dist flavor). The roadmap refuses to assume -ma7 produces it, so
+    # this is the verification step, not a switch-trust.
+    add_executable(rar7_flavor_probe tools/rar7_flavor_probe.cpp)
+    target_link_libraries(rar7_flavor_probe PRIVATE openrar_core)
+    target_include_directories(rar7_flavor_probe PRIVATE ${OPENRAR_INCLUDES})
+
+    # PROBE-ENTRY-DECODE (§4.34): log-only probe for the per-entry extraction
+    # path. Attributes the many-entry gap by subtraction: decode is
+    # (compressed - stored), per-entry lifecycle is (stored - raw copy).
+    add_executable(entry_decode_probe tools/entry_decode_probe.cpp)
+    target_link_libraries(entry_decode_probe PRIVATE openrar_core)
+    target_include_directories(entry_decode_probe PRIVATE ${OPENRAR_INCLUDES})
+
     # v1.40 quick-win microprobe (not a test): per-entry extraction
     # operation costs for the quick-win scorecard.
     add_executable(perf_microprobe tools/perf_microprobe.cpp)
@@ -548,10 +589,22 @@ target_link_libraries(archive_api_tests PRIVATE
         set_tests_properties(c9_build PROPERTIES
             TIMEOUT 1800 LABELS "c9;slow" FIXTURES_REQUIRED c9_tools)
     else()
-        message(FATAL_ERROR
-            "C9 corpus build requires a Python 3 interpreter, and find_package(Python3) "
-            "failed. Install Python 3 (or point -DPython3_EXECUTABLE at one): C9 must "
-            "not be skipped silently.")
+        # Python 3 is optional so a plain `cmake -B build` works on a host that
+        # has no interpreter; without it the c9_build entry simply is not
+        # registered. That is a visible loss of gate coverage, so say it loudly,
+        # and let release/CI configurations make it fatal instead.
+        if(OPENRAR_REQUIRE_C9)
+            message(FATAL_ERROR
+                "OPENRAR_REQUIRE_C9=ON but no Python 3 interpreter was found "
+                "(find_package(Python3) failed). Install Python 3 or point "
+                "-DPython3_EXECUTABLE at one: C9 must not be skipped silently "
+                "on a gate build.")
+        else()
+            message(WARNING
+                "C9 corpus gate skipped: no Python 3 interpreter found. Install "
+                "Python 3 and re-configure, or pass -DOPENRAR_REQUIRE_C9=ON to "
+                "make this a configure error.")
+        endif()
     endif()
 
     # ── Kernel throughput benchmark (informational, never a gate) ───────────

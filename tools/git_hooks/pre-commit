@@ -1,6 +1,13 @@
 #!/bin/sh
 # OpenRAR git pre-commit hook
 # Validates anchor lint, version synchrony, and clang-format on staged C/C++ files.
+#
+# Branch policy (2026-11-20): master is the release line and must only ever be
+# green. Commits are made on feature branches, promoted through `integration`,
+# and reach master only via a pull request whose required checks have passed.
+# This hook refuses a commit made directly on master (or on a tag) so the rule
+# holds locally as well as in CI. Override with ALLOW_MASTER_COMMIT=1 for the
+# rare deliberate case (a release-tag bump, a hotfix you are about to PR).
 
 set -e
 export MSYS_NO_PATHCONV=1
@@ -8,6 +15,18 @@ export MSYS_NO_PATHCONV=1
 # Resolve repository root
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$REPO_ROOT"
+
+# 0. Branch policy: no direct commits to master
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+if [ "$BRANCH" = "master" ] && [ "${ALLOW_MASTER_COMMIT:-0}" != "1" ]; then
+    echo "[pre-commit] ERROR: refusing to commit directly on master."
+    echo "             Branch first, then promote via a pull request:"
+    echo "               git switch -c fix/my-change"
+    echo "               git commit -m '...'"
+    echo "               git push -u origin fix/my-change"
+    echo "             Set ALLOW_MASTER_COMMIT=1 to override deliberately."
+    exit 1
+fi
 
 # Detect Python interpreter
 if command -v python3 >/dev/null 2>&1; then
@@ -107,6 +126,94 @@ if [ -n "$STAGED_CPP" ]; then
     else
         echo "[pre-commit] Note: clang-format not found; skipping formatting check."
     fi
+fi
+
+# 5. POSIX compile check (2026-11-20).
+#
+# Added after two defects shipped to CI in one afternoon: a ::open call placed
+# outside its _WIN32 guard, then <fcntl.h> included only under _WIN32. Both are
+# invisible on MSVC and both broke every GCC/Clang leg. A local Linux toolchain
+# is available (WSL), so a platform-specific break is a local mistake, not bad
+# luck - but only if something actually checks it before push.
+#
+# Syntax-only compile of the staged .cpp files: no link, no full build, a few
+# seconds. Requires the generated openrar/version.h, which is why this runs only
+# when a build directory already exists. If no toolchain is reachable this is a
+# loud skip, never a silent pass - the CI matrix remains the backstop.
+if command -v wsl >/dev/null 2>&1 && wsl command -v g++ >/dev/null 2>&1; then
+    WSL_REPO="$(wsl wslpath -u "$REPO_ROOT" 2>/dev/null || echo "")"
+    if [ -n "$WSL_REPO" ]; then
+        # Find a build tree with a generated version.h; without one, skip.
+        GEN_INC=""
+        for cand in build/include build; do
+            if wsl test -f "$WSL_REPO/$cand/openrar/version.h" 2>/dev/null; then
+                GEN_INC="$WSL_REPO/$cand"
+                break
+            fi
+        done
+        # Some trees nest it one level deeper (build/<config>/include/openrar/...).
+        if [ -z "$GEN_INC" ]; then
+            GEN_INC="$(wsl bash -lc "find '$WSL_REPO/build' -name version.h -path '*openrar*' 2>/dev/null | head -1 | xargs -r dirname | xargs -r dirname" 2>/dev/null || echo "")"
+        fi
+        if [ -n "$GEN_INC" ] && [ -n "$STAGED_CPP" ]; then
+            POSIX_FAIL=""
+            for file in $STAGED_CPP; do
+                case "$file" in
+                    src/*.cpp|tools/*.cpp)
+                        WSL_FILE="$(wsl wslpath -u "$REPO_ROOT/$file" 2>/dev/null || echo "")"
+                        if [ -n "$WSL_FILE" ]; then
+                            if ! wsl g++ -std=c++17 -fsyntax-only \
+                                    -I"$WSL_REPO/src" -I"$WSL_REPO/include" \
+                                    -I"$GEN_INC" "$WSL_FILE" >/dev/null 2>&1; then
+                                POSIX_FAIL="$POSIX_FAIL\n  - $file"
+                            fi
+                        fi
+                        ;;
+                esac
+            done
+            if [ -n "$POSIX_FAIL" ]; then
+                echo "[pre-commit] ERROR: staged C++ does not compile under g++/Linux:"
+                printf "%b\n" "$POSIX_FAIL"
+                echo "             MSVC accepts platform-specific code that GCC/Clang reject."
+                echo "             Reproduce: wsl g++ -std=c++17 -fsyntax-only -Isrc -Iinclude <file>"
+                exit 1
+            fi
+        fi
+    fi
+else
+    echo "[pre-commit] Note: no WSL g++ available; skipping POSIX compile check (CI covers it)."
+fi
+
+# 6. clang-tidy naming check (2026-11-20).
+#
+# Same rationale as (5), different rule. clang-tidy enforces
+# readability-identifier-naming (ConstexprVariableCase = UPPER_CASE), and the
+# gate leg builds with -Werror. Two k-prefixed camelCase constants passed MSVC
+# and failed every GCC/Clang job. Naming is the half a syntax check cannot see.
+#
+# Runs the repository's own tools/clang_tidy_check.sh in WSL, which reads
+# build/compile_commands.json and scopes itself to what the build compiled.
+# Slower than (5) - a few seconds per TU - so it only runs when the staged set
+# is small enough to be interactive, and always skips loudly when the toolchain
+# or the compile database is absent.
+if command -v wsl >/dev/null 2>&1 && wsl command -v clang-tidy >/dev/null 2>&1; then
+    WSL_REPO="$(wsl wslpath -u "$REPO_ROOT" 2>/dev/null || echo "")"
+    if [ -n "$WSL_REPO" ] && [ -n "$STAGED_CPP" ]; then
+        # Count staged C/C++ files; only run when the set is interactive-sized.
+        N_STAGED=$(printf "%s\n" "$STAGED_CPP" | grep -cE '\.(cpp|hpp|h|c)$' || true)
+        if [ "${N_STAGED:-0}" -le 6 ]; then
+            if ! wsl bash -lc "cd '$WSL_REPO' && bash tools/clang_tidy_check.sh build" >/tmp/tidy_out.txt 2>&1; then
+                echo "[pre-commit] ERROR: clang-tidy reported findings (naming or static analysis):"
+                grep -E "warning:|error:" /tmp/tidy_out.txt | head -n 10 | sed 's/^/  /'
+                echo "             Run: wsl bash -lc \"cd <repo> && bash tools/clang_tidy_check.sh build\""
+                exit 1
+            fi
+        else
+            echo "[pre-commit] Note: $N_STAGED C/C++ files staged (>6); skipping clang-tidy for latency (CI runs it)."
+        fi
+    fi
+else
+    echo "[pre-commit] Note: no WSL clang-tidy available; skipping naming check (CI covers it)."
 fi
 
 exit 0

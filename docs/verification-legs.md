@@ -11,9 +11,14 @@ requires updating this inventory **in the same change**. Anything not listed
 here is advisory by definition — if it should be a gate, list it; if it is
 advisory, say so in its row.
 
+**Normative rule (promotion flow, 2026-11-20):** `master` is the release
+line and must only ever be green. Work lands on `integration` and reaches
+`master` only through a pull request whose required checks passed. Details
+in `docs/versioning.md` § Branch Naming & Experiment Promotion Policy.
+
 ---
 
-## CI — `.github/workflows/build.yml` (push/PR to `master`, tags `v*`)
+## CI — `.github/workflows/build.yml` (push/PR to `master` and `integration`, tags `v*`)
 
 | Leg | What it runs | Notes |
 |---|---|---|
@@ -35,6 +40,8 @@ advisory, say so in its row.
 | **tsan** (v1.30 M5) | ThreadSanitizer over the threaded suites (parallel pipeline, slot readers); configures through `cmake/sanitizers.cmake` (`-DOPENRAR_SANITIZE=thread`) | PRIMARY leg. |
 | **windows-asan** (2026-11 review) | the same unit suite under MSVC `/fsanitize=address` (`-DOPENRAR_SANITIZE=address`, RelWithDebInfo because Debug's `/RTC1` is incompatible with ASan), same exclusions as the Linux leg; `detect_leaks=0` (LeakSanitizer does not exist on Windows) | PRIMARY-ish: covers the Windows-only paths (NT anchored containment opens, `win32_meta`, sandbox spawn, MOTW, SFX GUI stub) that no Linux sanitizer leg compiles. Not in `release-assets.needs` yet. |
 | **msan** (v1.30 M5) | MemorySanitizer over compress tests, instrumented libc++; configures through `cmake/sanitizers.cmake` (`-DOPENRAR_SANITIZE=memory`, which adds `-fsanitize-memory-track-origins` and `-stdlib=libc++`) | BEST-EFFORT per §7.2 revised: `continue-on-error`, reported, never gates. |
+| **POSIX compile check** (2026-11-20, local only) | `g++ -std=c++17 -fsyntax-only` over staged `src/*.cpp` and `tools/*.cpp`, run through WSL | Added after two platform-specific defects reached CI in one afternoon: a `::open` call outside its `_WIN32` guard, then `<fcntl.h>` included only under `_WIN32`. Both are invisible on MSVC and both broke every GCC/Clang leg. Syntax-only, so it costs seconds. Skips loudly (with a `[pre-commit] Note:`) when no WSL g++ or no generated `openrar/version.h` exists — CI's matrix remains the backstop, and a silent pass is never reported. |
+| **clang-tidy naming** (2026-11-20, local only) | `tools/clang_tidy_check.sh build` through WSL, scoped by `build/compile_commands.json` | Same rationale, different rule: `readability-identifier-naming` (`ConstexprVariableCase = UPPER_CASE`) is enforced by clang-tidy and the gate leg builds `-Werror`. Two `k`-prefixed constants passed MSVC and failed every GCC/Clang job. Naming is the half a syntax check cannot see. Runs only when ≤6 C/C++ files are staged, to stay interactive; skips loudly otherwise and when clang-tidy or the compile database is absent. CI is always the authority. |
 | **release-assets** (tags `v*` only) | zips all uploaded artifacts onto the GitHub release, then SHA256SUMS + CycloneDX SBOM (syft) + Sigstore keyless build-provenance attestations (v1.30 M6) | `permissions: contents: write`, needs all jobs above (incl. sanitizers/tsan). |
 
 ## Nightly — `.github/workflows/fuzz.yml`
