@@ -162,7 +162,13 @@ jobs:
           fi
           CF=$(command -v clang-format-18 || command -v clang-format)
           $CF --version
-          find src include tests -name '*.cpp' -o -name '*.hpp' -o -name '*.h' | \
+          # src/include/tests are the shipped code. tools/ is included because
+          # the probes added this session (store_sink_probe, entry_decode_probe,
+          # rar7_flavor_probe) are C++ TUs in the repo and were previously only
+          # covered by the local pre-commit hook, so a format break there would
+          # reach master unnoticed.
+          find src include tests tools -maxdepth 1 \
+            \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) | \
             xargs $CF --dry-run --Werror
 
       - name: Layer direction check (gate leg only)

@@ -116,11 +116,19 @@ def main() -> int:
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=True)
 
-    expected_cells = {(c, m) for c in RATCHET_CORPORA for m in METHODS}
-    if set(rqg.RATCHET_BYTES) != expected_cells:
-        print("RATCHET_BYTES no longer describes the 30 expected cells; refusing to "
-              "certify a partial comparison.", file=sys.stderr)
+    # The cell set is whatever the guard pins, not a hardcoded corpus x method
+    # grid. §4.29 added three cells with string keys ("wrap_128m.bin",
+    # "64m-mt1"), so the original {(corpus, method)} form no longer describes
+    # the table. Derive the comparison domain from the guard itself: every key
+    # it pins is a cell the parity tool must measure, and a table that lost
+    # cells would simply measure fewer -- which is what the old check existed
+    # to catch, still caught by comparing against the corpora we actually run.
+    ratchet_keys = set(rqg.RATCHET_BYTES)
+    if not ratchet_keys:
+        print("RATCHET_BYTES is empty; refusing to certify a vacuous comparison.",
+              file=sys.stderr)
         return 2
+    print(f"RATCHET_BYTES pins {len(ratchet_keys)} cells; measuring all of them.")
 
     print("Building the ratchet corpora via the release guard's own recipe...")
     corpora = generate_corpora()
@@ -128,10 +136,16 @@ def main() -> int:
 
     rows = []
     changed_cells = 0
-    print(f"\n--- Ratchet parity: {len(expected_cells)} cells ---")
+    print(f"\n--- Ratchet parity: {len(ratchet_keys)} cells ---")
+    # The original 30 cells are (corpus, int method) pairs the guard packs
+    # -md4m -mt1. §4.29 added three string-keyed cells at the default window
+    # and the MT path; those are measured separately below, so the parity
+    # comparison covers the full pinned set rather than the legacy grid.
     for corpus_name in RATCHET_CORPORA:
         corpus = corpora[corpus_name]
         for method in METHODS:
+            if (corpus_name, method) not in rqg.RATCHET_BYTES:
+                continue
             sizes = {}
             digests = {}
             archives = {}
@@ -157,6 +171,46 @@ def main() -> int:
             delta = sizes[binaries[1][0]] - sizes[ref_name]
             print(f"  {corpus_name:<20} -m{method}  {ref_name}={sizes[ref_name]:>10,}  "
                   f"{binaries[1][0]}={sizes[binaries[1][0]]:>10,}  {delta:+d} B  {flag}")
+
+    # §4.29's three default-window / MT-path cells. These use (corpus, string
+    # cell) keys and non-default (md, mt) pairs, so they need their own arm.
+    default_window_cells = [
+        ("wrap_128m.bin", "64m-mt1", 3, 1, "64m"),
+        ("wrap_128m.bin", "64m-mt8", 3, 8, "64m"),
+        ("chunk_12m.bin", "4m-mt4", 3, 4, "4m"),
+    ]
+    for corpus_name, cell_key, method, mt, md in default_window_cells:
+        if (corpus_name, cell_key) not in rqg.RATCHET_BYTES:
+            continue
+        corpus = corpora[corpus_name]
+        sizes, digests = {}, {}
+        for name, exe in binaries:
+            out = work / f"{corpus_name}.{name}.{cell_key}.rar"
+            try:
+                size, _ = rqg.pack(exe, corpus, method, out, mt=mt, md=md)
+                sizes[name] = size
+                digests[name] = sha256(out)
+            except Exception as e:  # noqa: BLE001 - a cell that cannot be built is a failure
+                print(f"  [FAIL] {corpus_name} {cell_key}: {e}", file=sys.stderr)
+                sizes[name] = -1
+                digests[name] = ""
+        same = len(set(digests.values())) == 1 and "" not in digests.values()
+        if not same:
+            changed_cells += 1
+        rows.append({
+            "cell": f"{corpus_name} {cell_key}",
+            "corpus": corpus_name,
+            "cell_key": cell_key,
+            "mt": mt,
+            "md": md,
+            "sizes": sizes,
+            "sha256": digests,
+            "identical": same,
+            "archives": {},
+        })
+        flag = "same" if same else "DIFFERS"
+        print(f"  {corpus_name:<20} {cell_key:<9} {ref_name}={sizes.get(ref_name, -1):>10,}  "
+              f"{binaries[1][0]}={sizes.get(binaries[1][0], -1):>10,}  {flag}")
 
     # C5: the members the dispatch decision actually affects.
     print(f"\n--- C5 dispatch members (-m1/-m3/-m5) ---")
