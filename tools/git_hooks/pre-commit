@@ -128,4 +128,60 @@ if [ -n "$STAGED_CPP" ]; then
     fi
 fi
 
+# 5. POSIX compile check (2026-11-20).
+#
+# Added after two defects shipped to CI in one afternoon: a ::open call placed
+# outside its _WIN32 guard, then <fcntl.h> included only under _WIN32. Both are
+# invisible on MSVC and both broke every GCC/Clang leg. A local Linux toolchain
+# is available (WSL), so a platform-specific break is a local mistake, not bad
+# luck - but only if something actually checks it before push.
+#
+# Syntax-only compile of the staged .cpp files: no link, no full build, a few
+# seconds. Requires the generated openrar/version.h, which is why this runs only
+# when a build directory already exists. If no toolchain is reachable this is a
+# loud skip, never a silent pass - the CI matrix remains the backstop.
+if command -v wsl >/dev/null 2>&1 && wsl command -v g++ >/dev/null 2>&1; then
+    WSL_REPO="$(wsl wslpath -u "$REPO_ROOT" 2>/dev/null || echo "")"
+    if [ -n "$WSL_REPO" ]; then
+        # Find a build tree with a generated version.h; without one, skip.
+        GEN_INC=""
+        for cand in build/include build; do
+            if wsl test -f "$WSL_REPO/$cand/openrar/version.h" 2>/dev/null; then
+                GEN_INC="$WSL_REPO/$cand"
+                break
+            fi
+        done
+        # Some trees nest it one level deeper (build/<config>/include/openrar/...).
+        if [ -z "$GEN_INC" ]; then
+            GEN_INC="$(wsl bash -lc "find '$WSL_REPO/build' -name version.h -path '*openrar*' 2>/dev/null | head -1 | xargs -r dirname | xargs -r dirname" 2>/dev/null || echo "")"
+        fi
+        if [ -n "$GEN_INC" ] && [ -n "$STAGED_CPP" ]; then
+            POSIX_FAIL=""
+            for file in $STAGED_CPP; do
+                case "$file" in
+                    src/*.cpp|tools/*.cpp)
+                        WSL_FILE="$(wsl wslpath -u "$REPO_ROOT/$file" 2>/dev/null || echo "")"
+                        if [ -n "$WSL_FILE" ]; then
+                            if ! wsl g++ -std=c++17 -fsyntax-only \
+                                    -I"$WSL_REPO/src" -I"$WSL_REPO/include" \
+                                    -I"$GEN_INC" "$WSL_FILE" >/dev/null 2>&1; then
+                                POSIX_FAIL="$POSIX_FAIL\n  - $file"
+                            fi
+                        fi
+                        ;;
+                esac
+            done
+            if [ -n "$POSIX_FAIL" ]; then
+                echo "[pre-commit] ERROR: staged C++ does not compile under g++/Linux:"
+                printf "%b\n" "$POSIX_FAIL"
+                echo "             MSVC accepts platform-specific code that GCC/Clang reject."
+                echo "             Reproduce: wsl g++ -std=c++17 -fsyntax-only -Isrc -Iinclude <file>"
+                exit 1
+            fi
+        fi
+    fi
+else
+    echo "[pre-commit] Note: no WSL g++ available; skipping POSIX compile check (CI covers it)."
+fi
+
 exit 0
