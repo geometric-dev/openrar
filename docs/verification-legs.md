@@ -11,9 +11,14 @@ requires updating this inventory **in the same change**. Anything not listed
 here is advisory by definition — if it should be a gate, list it; if it is
 advisory, say so in its row.
 
+**Normative rule (promotion flow, 2026-11-20):** `master` is the release
+line and must only ever be green. Work lands on `integration` and reaches
+`master` only through a pull request whose required checks passed. Details
+in `docs/versioning.md` § Branch Naming & Experiment Promotion Policy.
+
 ---
 
-## CI — `.github/workflows/build.yml` (push/PR to `master`, tags `v*`)
+## CI — `.github/workflows/build.yml` (push/PR to `master` and `integration`, tags `v*`)
 
 | Leg | What it runs | Notes |
 |---|---|---|

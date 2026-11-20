@@ -121,9 +121,12 @@ To prevent premature release commitment, history pollution, and shipping unverif
    - Experiment branches are **fully disposable, squashable, and rebaseable**.
    - If a candidate fails its kill gate (as occurred with the forward-arrival parser in Arc 2.1 or BEXTR in H-20), the branch is squashed and archived under `archive/exp-<topic>` or pruned completely. **Failed experiments must never leave residual debt in trunk or release branches.**
 
-3. **Feature Promotion (`feat/<topic>` → `master`):**
+3. **Feature Promotion (`feat/<topic>` → `integration` → `master`):**
    - Only when an experiment passes all kill gates and demonstrates verified, reproducible improvements against baseline (`v2.0.23`) is it promoted.
-   - The candidate is squashed into atomic, production-quality commits on a `feat/<topic>` branch with complete test and benchmark receipts, then merged to `master`.
+   - The candidate is squashed into atomic, production-quality commits on a `feat/<topic>` branch with complete test and benchmark receipts, then merged to **`integration`** via a pull request.
+   - **`integration` is the promotion branch and the only path to `master`.** It accumulates promoted work and is gated by the full CI matrix on every push. `master` is the release line and must **only ever be green**: it is never committed to directly (the local `pre-commit` hook refuses it), never force-pushed, and never merged into from a red integration.
+   - `integration` → `master` is a **pull request**, not an automerge and not a direct push. That is the only point where the entire matrix validates the *merge result* as a unit; a branch that was green before a second merge landed is not evidence that the combination works. Required checks on `master` are strict (`strict: true`), so the PR branch must be up to date with `master` and the tested SHA is the merged SHA.
+   - Releases are cut from `master` only. A tag on a commit that did not pass `master`'s required checks is not a release.
 
 4. **Release Branches (`release/vX.Y`):**
    - Release staging branches (e.g., `release/v2.3`) are cut exclusively from `master` when a milestone's promoted features are complete and entering final stabilization.
