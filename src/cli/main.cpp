@@ -184,12 +184,37 @@ static std::string read_password_from_terminal(const char* prompt) {
 // check is on the opened descriptor (fstat), not the path, so a swap between
 // check and read cannot race. Returns an empty string on failure.
 static std::string read_password_from_file(const std::string& path) {
-    int fd = ::open(path.c_str(), O_RDONLY);
+#ifdef _WIN32
+    // Windows has no mode bits to check (the DACL is inherited at creation), so
+    // read straight through the CRT. fopen_s avoids the MSVC deprecation
+    // warning that plain fopen raises under /W4.
+    FILE* f = nullptr;
+    if (::fopen_s(&f, path.c_str(), "rb") != 0 || f == nullptr) {
+        std::cerr << "Error: cannot open password file '" << path << "'.\n";
+        return {};
+    }
+    char buf[kMaxPasswordLen + 1];
+    const size_t got = std::fread(buf, 1, kMaxPasswordLen, f);
+    std::fclose(f);
+    if (got == 0) {
+        std::cerr << "Error: password file '" << path << "' is empty or unreadable.\n";
+        return {};
+    }
+    size_t n = got;
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) --n;
+    if (n == 0) {
+        std::cerr << "Error: password file '" << path << "' contains only a newline.\n";
+        return {};
+    }
+    std::string result(buf, n);
+    crypto::secure_wipe(buf, sizeof(buf));
+    return result;
+#else
+    const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
         std::cerr << "Error: cannot open password file '" << path << "'.\n";
         return {};
     }
-#ifndef _WIN32
     struct stat st {};
     if (::fstat(fd, &st) != 0) {
         std::cerr << "Error: cannot stat password file '" << path << "'.\n";
@@ -208,23 +233,23 @@ static std::string read_password_from_file(const std::string& path) {
         ::close(fd);
         return {};
     }
-#endif
     char buf[kMaxPasswordLen + 1];
-    core::int64 n = ::read(fd, buf, kMaxPasswordLen);
+    const ssize_t got = ::read(fd, buf, kMaxPasswordLen);
     ::close(fd);
-    if (n <= 0) {
+    if (got <= 0) {
         std::cerr << "Error: password file '" << path << "' is empty or unreadable.\n";
         return {};
     }
-    // Strip trailing newline.
+    size_t n = static_cast<size_t>(got);
     while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) --n;
     if (n == 0) {
         std::cerr << "Error: password file '" << path << "' contains only a newline.\n";
         return {};
     }
-    std::string result(buf, static_cast<size_t>(n));
+    std::string result(buf, n);
     crypto::secure_wipe(buf, sizeof(buf));
     return result;
+#endif
 }
 
 #ifndef _WIN32
