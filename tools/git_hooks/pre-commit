@@ -1,6 +1,13 @@
 #!/bin/sh
 # OpenRAR git pre-commit hook
 # Validates anchor lint, version synchrony, and clang-format on staged C/C++ files.
+#
+# Branch policy (2026-11-20): master is the release line and must only ever be
+# green. Commits are made on feature branches, promoted through `integration`,
+# and reach master only via a pull request whose required checks have passed.
+# This hook refuses a commit made directly on master (or on a tag) so the rule
+# holds locally as well as in CI. Override with ALLOW_MASTER_COMMIT=1 for the
+# rare deliberate case (a release-tag bump, a hotfix you are about to PR).
 
 set -e
 export MSYS_NO_PATHCONV=1
@@ -8,6 +15,18 @@ export MSYS_NO_PATHCONV=1
 # Resolve repository root
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$REPO_ROOT"
+
+# 0. Branch policy: no direct commits to master
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+if [ "$BRANCH" = "master" ] && [ "${ALLOW_MASTER_COMMIT:-0}" != "1" ]; then
+    echo "[pre-commit] ERROR: refusing to commit directly on master."
+    echo "             Branch first, then promote via a pull request:"
+    echo "               git switch -c fix/my-change"
+    echo "               git commit -m '...'"
+    echo "               git push -u origin fix/my-change"
+    echo "             Set ALLOW_MASTER_COMMIT=1 to override deliberately."
+    exit 1
+fi
 
 # Detect Python interpreter
 if command -v python3 >/dev/null 2>&1; then

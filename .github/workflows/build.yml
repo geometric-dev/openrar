@@ -2,13 +2,17 @@ name: CI Build & Test
 
 on:
   push:
-    # master is the only active branch line: v2 and v2.1 were retired and deleted
-    # (docs/versioning.md § Branch retirement). Tags still gate releases. If a
-    # maintenance line is ever cut again, add its branch here deliberately.
-    branches: [ master ]
+    # master is the release line and must only ever be green. `integration` is
+    # the promotion branch: feature branches merge there, the full matrix runs
+    # on the result, and a green integration is then merged to master via a
+    # pull request - so master's own checks also run on the merge commit.
+    # v2 and v2.1 were retired and deleted (docs/versioning.md § Branch
+    # retirement). If a maintenance line is ever cut again, add it here
+    # deliberately.
+    branches: [ master, integration ]
     tags: [ 'v*' ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, integration ]
   workflow_dispatch:
     inputs:
       npm_oidc_check:

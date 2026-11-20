@@ -64,7 +64,8 @@
 #include <io.h>
 #include <fcntl.h>
 #else
-#include <unistd.h>
+#include <fcntl.h>  // ::open, O_RDONLY (password-file channel, §4.14)
+#include <unistd.h> // ::read, ::close
 #include <termios.h>
 #include <sys/stat.h>
 #include <sys/types.h>
