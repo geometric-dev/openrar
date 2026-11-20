@@ -99,7 +99,7 @@ namespace openrar::cli {
 
 // Maximum password length: the KDF truncates at 128 bytes (PBKDF2-HMAC-SHA256
 // with a 1024-byte block), so reading more would silently discard the tail.
-constexpr size_t kMaxPasswordLen = 127;
+constexpr size_t MAX_PASSWORD_LEN = 127;
 
 // Read a line from `fd` with echo disabled. Returns the number of bytes read
 // (excluding the newline), or -1 on error. The buffer is secure_wiped.
@@ -159,11 +159,11 @@ static std::string read_password_from_terminal(const char* prompt) {
     }
     std::fprintf(stderr, "%s", prompt);
     std::fflush(stderr);
-    char buf[kMaxPasswordLen + 1];
+    char buf[MAX_PASSWORD_LEN + 1];
 #ifdef _WIN32
-    core::int64 n = read_line_no_echo(_fileno(stdin), buf, kMaxPasswordLen);
+    core::int64 n = read_line_no_echo(_fileno(stdin), buf, MAX_PASSWORD_LEN);
 #else
-    core::int64 n = read_line_no_echo(STDIN_FILENO, buf, kMaxPasswordLen);
+    core::int64 n = read_line_no_echo(STDIN_FILENO, buf, MAX_PASSWORD_LEN);
 #endif
     // Echo is restored inside read_line_no_echo; emit a newline so the shell
     // prompt is not glued to the user's cursor position.
@@ -194,8 +194,8 @@ static std::string read_password_from_file(const std::string& path) {
         std::cerr << "Error: cannot open password file '" << path << "'.\n";
         return {};
     }
-    char buf[kMaxPasswordLen + 1];
-    const size_t got = std::fread(buf, 1, kMaxPasswordLen, f);
+    char buf[MAX_PASSWORD_LEN + 1];
+    const size_t got = std::fread(buf, 1, MAX_PASSWORD_LEN, f);
     std::fclose(f);
     if (got == 0) {
         std::cerr << "Error: password file '" << path << "' is empty or unreadable.\n";
@@ -234,8 +234,8 @@ static std::string read_password_from_file(const std::string& path) {
         ::close(fd);
         return {};
     }
-    char buf[kMaxPasswordLen + 1];
-    const ssize_t got = ::read(fd, buf, kMaxPasswordLen);
+    char buf[MAX_PASSWORD_LEN + 1];
+    const ssize_t got = ::read(fd, buf, MAX_PASSWORD_LEN);
     ::close(fd);
     if (got <= 0) {
         std::cerr << "Error: password file '" << path << "' is empty or unreadable.\n";

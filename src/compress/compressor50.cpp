@@ -2368,7 +2368,7 @@ MtDecisionResult decide_chunked_pack(const FilterConfig& filter_cfg, const core:
     // detect_filter is bounds-safe: it guards pe_off + 6 < size and falls
     // through to the E8 density scan when a header points past the buffer, so a
     // prefix shorter than the member is safe - just less able to see a late
-    // header. kMtDetectPrefix is sized so real linkers never land past it.
+    // header. MT_DETECT_PREFIX is sized so real linkers never land past it.
     r.detected = Filters50::detect_filter(data, data_len, r.channels, filter_cfg);
     r.decision = (r.detected == FilterType::None) ? MtDecision::Chunked : MtDecision::Sequential;
     return r;

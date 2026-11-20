@@ -1509,7 +1509,7 @@ bool ArchiveMutator::prepare_add_file(
                             // off); default -mt4 == default -mt1 at 441 B once
                             // the shared predicate sees the header.
                             //
-                            // kMtDetectPrefix is the documented compromise: large
+                            // MT_DETECT_PREFIX is the documented compromise: large
                             // enough to cover every header a real linker emits
                             // (PE e_lfanew is in the first 1 KiB; the largest
                             // genuine Mach-O fat slice table is a few KiB), small
@@ -1517,7 +1517,7 @@ bool ArchiveMutator::prepare_add_file(
                             // header sits beyond it falls through to the same
                             // 64 KiB-bounded density scan the sequential path runs.
                             std::vector<core::byte> sample(static_cast<size_t>(
-                                std::min<core::uint64>(file_sz, compress::kMtDetectPrefix)));
+                                std::min<core::uint64>(file_sz, compress::MT_DETECT_PREFIX)));
                             const bool have_sample =
                                 !sample.empty() &&
                                 src.read(sample.data(), sample.size()) == sample.size();
@@ -2821,7 +2821,7 @@ int ArchiveMutator::write_batch_add_ex(
 
                 // Decision consolidation (v2.4.x §4.25): same shared predicate
                 // as the other two sites. `direct_stream_threads > 1` is the
-                // thread-count input; the prefix policy is kMtDetectPrefix.
+                // thread-count input; the prefix policy is MT_DETECT_PREFIX.
                 bool use_parallel = pf.direct_stream_threads > 1;
                 if (use_parallel) {
                     if (filter_cfg.mode == compress::FilterMode::DisableAll) {
@@ -2833,7 +2833,7 @@ int ArchiveMutator::write_batch_add_ex(
                                            .decision == compress::MtDecision::Chunked;
                     } else {
                         std::vector<core::byte> sample(static_cast<size_t>(
-                            std::min<core::uint64>(pf.fb.unp_size, compress::kMtDetectPrefix)));
+                            std::min<core::uint64>(pf.fb.unp_size, compress::MT_DETECT_PREFIX)));
                         const bool have_sample =
                             !sample.empty() &&
                             src_in.read(sample.data(), sample.size()) == sample.size();

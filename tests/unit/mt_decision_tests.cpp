@@ -31,7 +31,7 @@ using namespace openrar::compress;
 // the v1.44 ledger's measured table: it uses a local check() counter rather
 // than the doctest macros, so a file with zero counted assertions is omitted
 // from that table entirely.
-static_assert(kMtDetectPrefix == 1024 * 1024, "kMtDetectPrefix must stay 1 MiB");
+static_assert(MT_DETECT_PREFIX == 1024 * 1024, "MT_DETECT_PREFIX must stay 1 MiB");
 
 namespace {
 
@@ -113,7 +113,7 @@ int main() {
     std::printf("predicate truth table:\n");
 
     // Single thread -> never chunked, regardless of content.
-    check(decide_chunked_pack(auto_cfg, text.data(), std::min<size_t>(text.size(), kMtDetectPrefix),
+    check(decide_chunked_pack(auto_cfg, text.data(), std::min<size_t>(text.size(), MT_DETECT_PREFIX),
                               1, text.size())
                   .decision == MtDecision::SingleThread,
           "1 thread -> SingleThread");
@@ -127,12 +127,12 @@ int main() {
         std::vector<core::byte> pe = make_pe(0x200);
         pe.resize(2 * 1024 * 1024, 0); // clear the 1 MiB floor
         check(decide_chunked_pack(no_filters, pe.data(),
-                                  std::min<size_t>(pe.size(), kMtDetectPrefix), 4, pe.size())
+                                  std::min<size_t>(pe.size(), MT_DETECT_PREFIX), 4, pe.size())
                       .decision == MtDecision::Chunked,
               "filters disabled + 2 MiB PE -> Chunked");
         // And the same input with filters enabled is NOT chunked: a filter would
         // fire on the PE header, and chunking would silently drop -mc.
-        check(decide_chunked_pack(auto_cfg, pe.data(), std::min<size_t>(pe.size(), kMtDetectPrefix),
+        check(decide_chunked_pack(auto_cfg, pe.data(), std::min<size_t>(pe.size(), MT_DETECT_PREFIX),
                                   4, pe.size())
                       .decision == MtDecision::Sequential,
               "filters enabled + 2 MiB PE -> Sequential");
@@ -142,13 +142,13 @@ int main() {
     {
         std::vector<core::byte> tiny(1024, 'x');
         check(decide_chunked_pack(auto_cfg, tiny.data(),
-                                  std::min<size_t>(tiny.size(), kMtDetectPrefix), 4, tiny.size())
+                                  std::min<size_t>(tiny.size(), MT_DETECT_PREFIX), 4, tiny.size())
                       .decision == MtDecision::TooSmall,
               "1 KiB member -> TooSmall");
     }
 
     // Filter-free text -> Chunked.
-    check(decide_chunked_pack(auto_cfg, text.data(), std::min<size_t>(text.size(), kMtDetectPrefix),
+    check(decide_chunked_pack(auto_cfg, text.data(), std::min<size_t>(text.size(), MT_DETECT_PREFIX),
                               4, text.size())
                   .decision == MtDecision::Chunked,
           "4 MiB text -> Chunked");
@@ -156,22 +156,22 @@ int main() {
     // ── 2. The divergence this row exists to fix ───────────────────────────
     // detect_filter is position-sensitive, so a TRUNCATED prefix can read as
     // None where the full member reads as E8. Two properties matter:
-    //   (a) a header inside kMtDetectPrefix is always seen, so a member that
+    //   (a) a header inside MT_DETECT_PREFIX is always seen, so a member that
     //       would be filtered is never chunked;
     //   (b) the two archive sites and the in-memory site all get the same
     //       answer, because they now pass the same prefix length.
     std::printf("\nsingle-decision property (late container headers):\n");
     {
         // e_lfanew at 0x20000 (128 KiB): past a naive 64 KiB sample, well
-        // inside kMtDetectPrefix. The constant check is not decorative: if a
+        // inside MT_DETECT_PREFIX. The constant check is not decorative: if a
         // future edit shrinks the prefix this fixture silently stops proving
         // the divergence, so fail here instead.
         std::vector<core::byte> pe = make_pe(0x20000);
         pe.resize(4 * 1024 * 1024, 0); // clear the chunking floor
-        check(kMtDetectPrefix > 0x20000 + 0x400, "the late PE header fits inside kMtDetectPrefix");
+        check(MT_DETECT_PREFIX > 0x20000 + 0x400, "the late PE header fits inside MT_DETECT_PREFIX");
 
         const auto d = decide_chunked_pack(
-            auto_cfg, pe.data(), std::min<size_t>(pe.size(), kMtDetectPrefix), 4, pe.size());
+            auto_cfg, pe.data(), std::min<size_t>(pe.size(), MT_DETECT_PREFIX), 4, pe.size());
         std::printf("    PE@0x20000 -> %s (detected=%d)\n",
                     d.decision == MtDecision::Chunked ? "Chunked" : "Sequential",
                     static_cast<int>(d.detected));
@@ -194,7 +194,7 @@ int main() {
         std::vector<core::byte> mo = make_fat_macho(0x20000);
         mo.resize(4 * 1024 * 1024, 0);
         const auto dm = decide_chunked_pack(
-            auto_cfg, mo.data(), std::min<size_t>(mo.size(), kMtDetectPrefix), 4, mo.size());
+            auto_cfg, mo.data(), std::min<size_t>(mo.size(), MT_DETECT_PREFIX), 4, mo.size());
         core::uint8 ch2 = 1;
         const FilterType whole_m = Filters50::detect_filter(mo.data(), mo.size(), ch2, auto_cfg);
         std::printf("    fat macho@0x20000 -> %s (detected=%d)\n",
@@ -211,11 +211,11 @@ int main() {
 
     // ── 3. Prefix policy is shared, not per-site ───────────────────────────
     std::printf("\nshared prefix policy:\n");
-    std::printf("  [PASS] kMtDetectPrefix is %zu bytes (pinned at compile time)\n",
-                kMtDetectPrefix);
+    std::printf("  [PASS] MT_DETECT_PREFIX is %zu bytes (pinned at compile time)\n",
+                MT_DETECT_PREFIX);
     {
         // The documented contract: every site passes the same prefix length.
-        const size_t n = std::min<size_t>(text.size(), kMtDetectPrefix);
+        const size_t n = std::min<size_t>(text.size(), MT_DETECT_PREFIX);
         core::uint8 a_ch = 1, b_ch = 1;
         const FilterType a = Filters50::detect_filter(text.data(), n, a_ch, auto_cfg);
         const FilterType b = Filters50::detect_filter(text.data(), n, b_ch, auto_cfg);

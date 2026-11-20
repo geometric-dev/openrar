@@ -884,7 +884,7 @@ inline size_t parallel_chunk_size(core::uint64 total_size, unsigned eff_threads,
 // the whole member, did not.
 //
 // CONTRACT: callers pass the bytes they hold and how many are valid. The
-// canonical amount is kMtDetectPrefix, NOT 64 KiB.
+// canonical amount is MT_DETECT_PREFIX, NOT 64 KiB.
 //
 // A 64 KiB policy was tried and is wrong. detect_filter is position-sensitive:
 // it follows e_lfanew at +0x3C and validates Mach-O fat slice ranges against the
@@ -902,7 +902,7 @@ inline size_t parallel_chunk_size(core::uint64 total_size, unsigned eff_threads,
 // The size delta is a path difference, not a quality regression: the chunked
 // member had no filter token at all.
 //
-// kMtDetectPrefix is 1 MiB: it covers every container header a real linker
+// MT_DETECT_PREFIX is 1 MiB: it covers every container header a real linker
 // emits (PE e_lfanew lands in the first 1 KiB; Mach-O fat slice tables are a
 // few KiB), and it is the same order as the chunk floor, so buffering it per
 // member is not a memory regression. Beyond it the prefix misses the header and
@@ -928,7 +928,7 @@ struct MtDecisionResult {
 
 // How many leading bytes a streaming caller must be able to supply. The
 // in-memory caller passes its whole buffer and is not bound by this.
-constexpr size_t kMtDetectPrefix = 1024 * 1024;
+constexpr size_t MT_DETECT_PREFIX = static_cast<size_t>(1024) * 1024;
 
 MtDecisionResult decide_chunked_pack(const FilterConfig& filter_cfg, const core::byte* data,
                                      size_t data_len, unsigned eff_threads, size_t member_size);

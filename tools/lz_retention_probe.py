@@ -31,7 +31,7 @@ alone.
 
 PREFIX-vs-WHOLE (decision-relevant for cost)
 --------------------------------------------
-A streaming caller has 1 MiB (kMtDetectPrefix); the in-memory caller has the
+A streaming caller has 1 MiB (MT_DETECT_PREFIX); the in-memory caller has the
 whole member. Statistics are computed on both so the report says whether the
 cheap prefix form predicts as well as the full form. If it does not, the gate
 is either expensive or unreliable -- both are reasons to stop.
@@ -54,7 +54,7 @@ import tempfile
 from collections import Counter
 
 MIB = 1024 * 1024
-PREFIX = MIB  # kMtDetectPrefix: what a streaming caller can supply
+PREFIX = MIB  # MT_DETECT_PREFIX: what a streaming caller can supply
 
 
 # --------------------------------------------------------------------------
