@@ -113,8 +113,8 @@ int main() {
     std::printf("predicate truth table:\n");
 
     // Single thread -> never chunked, regardless of content.
-    check(decide_chunked_pack(auto_cfg, text.data(), std::min<size_t>(text.size(), MT_DETECT_PREFIX),
-                              1, text.size())
+    check(decide_chunked_pack(auto_cfg, text.data(),
+                              std::min<size_t>(text.size(), MT_DETECT_PREFIX), 1, text.size())
                   .decision == MtDecision::SingleThread,
           "1 thread -> SingleThread");
 
@@ -132,8 +132,8 @@ int main() {
               "filters disabled + 2 MiB PE -> Chunked");
         // And the same input with filters enabled is NOT chunked: a filter would
         // fire on the PE header, and chunking would silently drop -mc.
-        check(decide_chunked_pack(auto_cfg, pe.data(), std::min<size_t>(pe.size(), MT_DETECT_PREFIX),
-                                  4, pe.size())
+        check(decide_chunked_pack(auto_cfg, pe.data(),
+                                  std::min<size_t>(pe.size(), MT_DETECT_PREFIX), 4, pe.size())
                       .decision == MtDecision::Sequential,
               "filters enabled + 2 MiB PE -> Sequential");
     }
@@ -148,8 +148,8 @@ int main() {
     }
 
     // Filter-free text -> Chunked.
-    check(decide_chunked_pack(auto_cfg, text.data(), std::min<size_t>(text.size(), MT_DETECT_PREFIX),
-                              4, text.size())
+    check(decide_chunked_pack(auto_cfg, text.data(),
+                              std::min<size_t>(text.size(), MT_DETECT_PREFIX), 4, text.size())
                   .decision == MtDecision::Chunked,
           "4 MiB text -> Chunked");
 
@@ -168,7 +168,8 @@ int main() {
         // the divergence, so fail here instead.
         std::vector<core::byte> pe = make_pe(0x20000);
         pe.resize(4 * 1024 * 1024, 0); // clear the chunking floor
-        check(MT_DETECT_PREFIX > 0x20000 + 0x400, "the late PE header fits inside MT_DETECT_PREFIX");
+        check(MT_DETECT_PREFIX > 0x20000 + 0x400,
+              "the late PE header fits inside MT_DETECT_PREFIX");
 
         const auto d = decide_chunked_pack(
             auto_cfg, pe.data(), std::min<size_t>(pe.size(), MT_DETECT_PREFIX), 4, pe.size());
