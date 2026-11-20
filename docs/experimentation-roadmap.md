@@ -348,6 +348,14 @@ CAF/headerless cases are lower frequency.
 
 ### 4.6 EXP-LITERAL-RUN-BULK (W2, Wave 4)
 
+**Status:** **CLOSED, sub-threshold (2026-11-20).** The probe's own micro-measurement of the
+row's core mechanism: 2 M literals through the lit pool cost **3.273 ms** with `push_back` vs
+**1.692 ms** with a stack run buffer + bulk insert — a 1.58 ms saving, ≈ **1% of decode wall**
+on a 16 MiB member. The row's gate is +5%. Even granting the full micro-win end to end (the
+probe elsewhere shows micro-results reversing in the integrated loop), the headroom is 5×
+short of the gate. The symbol-decode share this row targets is also already the fastest
+available design per §4.7's refutation. Close rather than carry a 1% row.
+
 **Problem.** The sequential literal path is one symbol → `write_literal` → `cadence()` per byte, and `cadence()` re-checks the filter queue every time (`decompressor50.cpp:1128-1158`, `1098-1103`; `decompressor50.hpp:645-664`). That is ~8-12 instructions of overhead per literal on top of the Huffman decode, on the corpus class where decode is already the weakest number.
 
 **Change.** Decode up to 255 literals into a stack run buffer, then bulk-copy wrap-aware into the window, evaluating cadence and filter completion once per run. The span applier already does exactly this (`decompressor50.cpp:1480-1527`) — mirror it in the sequential decoder. Split the run at the 64 KiB cadence boundary and at any pending filter end so flush positions are identical by construction.
@@ -355,6 +363,16 @@ CAF/headerless cases are lower frequency.
 **Gate.** +5% decode on C6 literal-heavy; 0 regression on C6 match-heavy and zeros; 30 cells digest-identical; ASan/UBSan clean; `ScopedAllocTracker` clean (fixed stack buffer only).
 
 ### 4.7 EXP-HUFF-2SYM (W2, Wave 4)
+
+**Status:** **CLOSED, premise refuted by measurement (2026-11-20).**
+`decode_kernel_probe` A/B'd four table designs against the shipped quick-table path over five
+16 MiB corpora (text m1/m3, exelike m3, zeros m3, random m3). The shipped path won **every
+cell**: replica 96.7 ms vs 105.4 fused-peek15, 122–166 lazy-page (PB 10–13), 140.0 full-flat
+on text m3; the same ordering held on all corpora. `VFullFlat` only won on `zeros` (0.16 ms vs
+0.23 ms), where there is nothing to decode. Table rebuild cost is also not the tax the row
+assumed: shipped `initialize_from_description` is 10.1 µs vs 0.9 µs for canonical-arrays-only,
+i.e. ≤ 5 ms across the 94–512 rebuilds a member performs. The row's premise — that a 2-symbol
+table reclaims a material share — does not survive contact with the measurement. Close.
 
 **Why not AVX2 gather.** The original "speculative positions, validate at the end" mechanism is circular: symbol *k+1*'s bit position is only known after *k* decodes. One wrong length assumption desynchronises the whole tail — there is no local correction. `vpgatherdd` is also slower than scalar table loads for 8-element gathers on current Intel/AMD parts.
 
@@ -576,6 +594,14 @@ for future re-evaluation if the non-solid parallel path improves materially.
 
 ### 4.32 EXP-EXTRACT-SINK-COALESCE (W2-D, Wave 3, gated on §4.16)
 
+**Status:** **CLOSED, refuted by measurement (2026-11-20).** The
+`decode_kernel_probe` attribution (16 MiB text, `-m3`) puts apply + cadence + callback at
+**13.6%** of sequential decode wall (23.62 ms of 173.30 ms). The 64 KiB cadence is therefore
+incapable of yielding more than ~13% even if it were free — and it is not free: it is the
+invariant that keeps callback chunk boundaries identical between the sequential and two-phase
+decoders (M0/R1). UnRAR's 4 MiB `UNPACK_MAX_WRITE` buys speed by having no callback contract,
+no two-phase parity requirement, and no incremental output. Closing this row; the cadence stays.
+
 **Why (deferred deliberately, and the deferral is the content).** The reference decoder writes in ≤ 4 MiB blocks (`dev/unrar/unpack.hpp:28`, `UNPACK_MAX_WRITE 0x400000`), while OpenRAR's sink is driven by the decoder's **64 KiB** flush cadence (`archive_reader.cpp:2269`, `core::byte buf[64 * 1024]`). That is a 64× difference in write granularity on the extraction hot path, and it is the most plausible home for the ~0.35 s of unattributed `-m0` overhead (§4.16, Q-10). This row exists so the obvious fix is not applied on intuition.
 
 **Change — read the invariant first (R4).** **This row must not be able to weaken durability, and if §4.16 attributes the ~0.35 s to fsync or AV scanning, the row is VOID — not "closed unbuilt".** A row that is merely skipped leaves a reader free to re-propose it later on the same evidence; a row that is **void** records that the evidence forbids it. The per-entry fsync cost (0.33 s, the default-vs-`-db` gap) is a **contract**, and no clause below may trade it.
@@ -601,6 +627,30 @@ Subject to that, and **blocked until §4.16 reports**: if the probe attributes a
 **Exit.** A one-page split naming the largest bucket, which then decides whether §4.24 (hash insert) and §4.23 (block flush) are worth their gates at all — both currently assume their target is material. If pack wall is dominated by match search, both are correctly killed before any code is written. This is the cheapest row in the register and it can retire two others.
 
 **Gate.** No code change; the residual-unattributed ceiling from §4.28 applies unchanged (a split leaving > 10% unexplained is blocked, not published), evaluated on the `--side=pack` manifest.
+
+### 4.34 PROBE-ENTRY-DECODE (MEAS, Wave 2, ∥)
+
+**Why (measured, and it is the largest unattributed number left).** The 2026-11-19
+`runbench` matrix puts entry-wise many-file extraction at **5.535 s vs UnRAR's 0.812 s
+(6.8×)**, while batch extraction of the *same archive* is **2.103 s**. The 3.4 s difference
+is per-entry overhead, not entropy decode — but it is currently unattributed, and every
+decode-side row (§4.6/§4.7/§4.32) has now closed as sub-threshold or refuted by the
+`decode_kernel_probe` attribution, which bounds symbol decode at ~56% of wall and finds the
+shipped Huffman design already optimal.
+
+**What.** A log-only probe (pattern: `tools/store_sink_probe.cpp`) that timestamps one
+*compressed* entry's extraction: open/parse, temp-name + create, journal record, decode,
+flush/close, rename, chmod, MOTW. Run over the `many/` corpus at 610 entries, both entry-wise
+and batch, reporting the per-stage split and the entry-count scaling.
+
+**Exit.** A one-page split and one of: (i) ≥ 60% is non-decode → a concrete entry-lifecycle
+change with its own gate (batching, journal, or temp handling), owned by that row, not by a
+codec row; (ii) decode dominates → the codec rows reopen with evidence; (iii) fsync/AV-bound →
+record "no code headroom", as §4.16 did for the store sink. Log-only, no production change.
+
+**Scope note.** This is deliberately *not* a decode row. The codec attribution is done; what
+remains is the per-entry path, and conflating the two is how a 6.8× gets misfiled as a
+compression problem.
 
 ### 4.26 EXP-PARALLEL-DECODE-EXTRA-DIST (W2, Wave 3)
 
